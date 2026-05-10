@@ -1,8 +1,11 @@
 //! CLI rendering and command dispatch for conU.
 //!
-//! Phase 2 builds the user-facing command shell only. Commands that need real
-//! identity, daemon, IPC, relay, or persistence are represented as honest
-//! previews and point to their owning future phase.
+//! Phase 3 adds local persistent identity and state while keeping daemon, IPC,
+//! relay, and messaging features as honest previews.
+
+use std::path::PathBuf;
+
+use conu_core::state::{self, InitReport, StateSnapshot};
 
 /// A rendered CLI command result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,15 +39,27 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
+    run_with_home(args, None)
+}
+
+/// Dispatch a conU CLI invocation with an explicit state home.
+///
+/// This is mostly used by tests and smoke checks so they do not touch a real
+/// user profile.
+pub fn run_with_home<I, S>(args: I, home_override: Option<PathBuf>) -> CliOutput
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
     let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
     let Some(command) = args.first().map(String::as_str) else {
-        return CliOutput::success(render_dashboard());
+        return CliOutput::success(render_dashboard(home_override));
     };
 
     match command {
-        "init" => render_init(&args[1..]),
-        "status" => render_status(&args[1..]),
-        "agents" | "peers" => render_agents(&args[1..]),
+        "init" => render_init(&args[1..], home_override),
+        "status" => render_status(&args[1..], home_override),
+        "agents" | "peers" => render_agents(&args[1..], home_override),
         "pair" => render_pair(&args[1..]),
         "join" => render_join(&args[1..]),
         "connect" => render_connect(&args[1..]),
@@ -60,7 +75,18 @@ where
     }
 }
 
-fn render_dashboard() -> String {
+fn render_dashboard(home_override: Option<PathBuf>) -> String {
+    let snapshot = state::read_state(home_override).ok();
+    let node = snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.node.as_ref())
+        .map(|node| node.node_id.as_str())
+        .unwrap_or("not initialized");
+    let state = snapshot
+        .as_ref()
+        .map(initialization_label)
+        .unwrap_or("unavailable");
+
     format!(
         r"                 __  __
   ___ ___  _ __ |  \/  |
@@ -73,7 +99,8 @@ agent-native encrypted overlay
 
 control room
   runtime       offline        conUD starts in Phase 4
-  node          not initialized identity arrives in Phase 3
+  node          {node}
+  state         {state}
   local agents  none           registration arrives in Phase 5
   remote peers  none           pairing arrives in Phase 7
   network       offline        relay arrives in Phase 8
@@ -90,60 +117,56 @@ quick commands
     )
 }
 
-fn render_init(args: &[String]) -> CliOutput {
+fn render_init(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     if let Some(error) = reject_args(args) {
         return error;
     }
 
-    CliOutput::success(
-        r"conU init
-
-status: ready for Phase 3
-action: no files written in Phase 2
-next: Phase 3 will create the local node identity and trust store",
-    )
+    match state::init_state(home_override) {
+        Ok(report) => CliOutput::success(render_init_report(&report)),
+        Err(error) => CliOutput::failure(1, format!("conU init failed\n\n{error}")),
+    }
 }
 
-fn render_status(args: &[String]) -> CliOutput {
+fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let snapshot = match state::read_state(home_override) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
+
     match json_flag(args) {
-        Ok(true) => CliOutput::success(render_status_json()),
-        Ok(false) => CliOutput::success(
-            r"conU status
-
-runtime
-  conUD         offline
-  local IPC     not available until Phase 4
-  relay         not available until Phase 8
-
-identity
-  node          not initialized
-  trust store   not initialized
-
-agents
-  local         0 registered
-  remote        0 visible
-
-privacy
-  payload view  contents are not displayed by conU",
-        ),
+        Ok(true) => CliOutput::success(render_status_json(&snapshot)),
+        Ok(false) => CliOutput::success(render_status_text(&snapshot)),
         Err(error) => error,
     }
 }
 
-fn render_agents(args: &[String]) -> CliOutput {
+fn render_agents(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let snapshot = match state::read_state(home_override) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return CliOutput::failure(1, format!("conU agents failed\n\n{error}")),
+    };
+    let registry_state = ready_label(snapshot.agent_registry_exists);
+
     match json_flag(args) {
-        Ok(true) => CliOutput::success(
-            r#"{
+        Ok(true) => CliOutput::success(format!(
+            r#"{{
   "local": [],
   "remote": [],
+  "registry": "{}",
+  "registryPath": "{}",
   "status": "agent registration arrives in Phase 5"
-}"#,
-        ),
-        Ok(false) => CliOutput::success(
+}}"#,
+            registry_state,
+            json_escape(&snapshot.paths.agent_registry.display().to_string())
+        )),
+        Ok(false) => CliOutput::success(format!(
             r"conU agents
 
 local agents
   none registered yet
+  registry      {}
+  path          {}
 
 remote agents
   none visible yet
@@ -151,7 +174,9 @@ remote agents
 next
   Phase 5: local agent registration
   Phase 9: remote discovery and presence",
-        ),
+            registry_state,
+            snapshot.paths.agent_registry.display()
+        )),
         Err(error) => error,
     }
 }
@@ -162,14 +187,14 @@ fn render_pair(args: &[String]) -> CliOutput {
             r#"{
   "status": "reserved",
   "phase": "Phase 7",
-  "message": "pairing code generation is not active in Phase 2"
+  "message": "pairing code generation is not active in Phase 3"
 }"#,
         ),
         Ok(false) => CliOutput::success(
             r"conU pair
 
 status: reserved for Phase 7
-code: not generated in Phase 2
+code: not generated in Phase 3
 purpose: create trust between two conUD runtimes",
         ),
         Err(error) => error,
@@ -183,7 +208,7 @@ fn render_join(args: &[String]) -> CliOutput {
                 r#"{
   "status": "reserved",
   "phase": "Phase 7",
-  "message": "join validation is not active in Phase 2"
+  "message": "join validation is not active in Phase 3"
 }"#,
             ),
             Err(error) => error,
@@ -196,7 +221,7 @@ fn render_join(args: &[String]) -> CliOutput {
 
 status: reserved for Phase 7
 code: accepted for command shape only
-action: no trust entry created in Phase 2",
+action: no trust entry created in Phase 3",
         ),
         Err(error) => error,
     }
@@ -260,26 +285,133 @@ fn render_reserved_phase(command: &str, phase: &str, owner: &str) -> CliOutput {
     ))
 }
 
-fn render_status_json() -> String {
-    r#"{
-  "runtime": {
+fn render_init_report(report: &InitReport) -> String {
+    let repaired =
+        report.config_created || report.trust_store_created || report.agent_registry_created;
+    let status = if report.node_created {
+        "created"
+    } else if repaired {
+        "repaired"
+    } else {
+        "already initialized"
+    };
+
+    format!(
+        r"conU init
+
+status: {status}
+node: {}
+name: {}
+state path: {}
+
+files
+  node identity  {}
+  config         {}
+  trust store    {}
+  agent registry {}
+
+next
+  conu status
+  conu start     reserved for Phase 4",
+        report.node.node_id,
+        report.node.display_name,
+        report.paths.home.display(),
+        created_label(report.node_created),
+        created_label(report.config_created),
+        created_label(report.trust_store_created),
+        created_label(report.agent_registry_created)
+    )
+}
+
+fn render_status_text(snapshot: &StateSnapshot) -> String {
+    let node = snapshot
+        .node
+        .as_ref()
+        .map(|node| node.node_id.as_str())
+        .unwrap_or("not initialized");
+    let display_name = snapshot
+        .node
+        .as_ref()
+        .map(|node| node.display_name.as_str())
+        .unwrap_or("not initialized");
+
+    format!(
+        r"conU status
+
+runtime
+  conUD         offline
+  local IPC     not available until Phase 4
+  relay         not available until Phase 8
+
+identity
+  state         {}
+  node          {}
+  name          {}
+  state path    {}
+  config        {}
+  trust store   {}
+
+agents
+  local         0 registered
+  registry      {}
+  remote        0 visible
+
+privacy
+  payload view  contents are not displayed by conU",
+        initialization_label(snapshot),
+        node,
+        display_name,
+        snapshot.paths.home.display(),
+        ready_label(snapshot.config_exists),
+        ready_label(snapshot.trust_store_exists),
+        ready_label(snapshot.agent_registry_exists)
+    )
+}
+
+fn render_status_json(snapshot: &StateSnapshot) -> String {
+    let node = snapshot
+        .node
+        .as_ref()
+        .map(|node| node.node_id.as_str())
+        .unwrap_or("not_initialized");
+    let display_name = snapshot
+        .node
+        .as_ref()
+        .map(|node| node.display_name.as_str())
+        .unwrap_or("not_initialized");
+
+    format!(
+        r#"{{
+  "runtime": {{
     "conud": "offline",
     "localIpc": "phase_4",
     "relay": "phase_8"
-  },
-  "identity": {
-    "node": "not_initialized",
-    "trustStore": "not_initialized"
-  },
-  "agents": {
+  }},
+  "identity": {{
+    "state": "{}",
+    "node": "{}",
+    "displayName": "{}",
+    "statePath": "{}",
+    "config": "{}",
+    "trustStore": "{}"
+  }},
+  "agents": {{
     "local": 0,
+    "registry": "{}",
     "remote": 0
-  },
-  "privacy": {
+  }},
+  "privacy": {{
     "contentsDisplayed": false
-  }
-}"#
-    .to_string()
+  }}
+}}"#,
+        initialization_label(snapshot),
+        json_escape(node),
+        json_escape(display_name),
+        json_escape(&snapshot.paths.home.display().to_string()),
+        ready_label(snapshot.config_exists),
+        ready_label(snapshot.trust_store_exists),
+        ready_label(snapshot.agent_registry_exists)
+    )
 }
 
 fn render_help() -> String {
@@ -299,8 +431,42 @@ Usage:
   conu --help
   conu --version
 
-Phase 2 builds the CLI control room. Runtime identity, IPC, pairing, relay, and streaming arrive in later phases."
+Phase 3 adds local identity and persistent state. Daemon IPC, pairing, relay, and streaming arrive in later phases."
         .to_string()
+}
+
+fn initialization_label(snapshot: &StateSnapshot) -> &'static str {
+    if snapshot.is_initialized() {
+        "initialized"
+    } else {
+        "not_initialized"
+    }
+}
+
+fn ready_label(is_ready: bool) -> &'static str {
+    if is_ready { "ready" } else { "not_initialized" }
+}
+
+fn created_label(created: bool) -> &'static str {
+    if created { "created" } else { "kept" }
+}
+
+fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            value if value.is_control() => escaped.push_str(&format!("\\u{:04x}", value as u32)),
+            value => escaped.push(value),
+        }
+    }
+
+    escaped
 }
 
 fn json_flag(args: &[String]) -> Result<bool, CliOutput> {
@@ -349,10 +515,12 @@ fn finish(mut output: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn dashboard_renders_control_room() {
-        let output = run(Vec::<String>::new());
+        let output = run_with_home(Vec::<String>::new(), Some(temp_home("dashboard")));
 
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("control room"));
@@ -361,9 +529,11 @@ mod tests {
     }
 
     #[test]
-    fn phase_two_commands_are_registered() {
+    fn phase_three_commands_are_registered() {
+        let home = temp_home("commands");
+
         for command in ["init", "status", "agents", "pair", "connect", "watch"] {
-            let output = run([command]);
+            let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
         }
 
@@ -372,11 +542,46 @@ mod tests {
     }
 
     #[test]
+    fn init_creates_state_and_status_reads_it() {
+        let home = temp_home("init-status");
+
+        let init = run_with_home(["init"], Some(home.clone()));
+        let status = run_with_home(["status"], Some(home));
+
+        assert_eq!(init.code, 0, "{}", init.stderr);
+        assert!(init.stdout.contains("status: created"));
+        assert!(init.stdout.contains("node_"));
+        assert_eq!(status.code, 0, "{}", status.stderr);
+        assert!(status.stdout.contains("state         initialized"));
+        assert!(status.stdout.contains("trust store   ready"));
+    }
+
+    #[test]
+    fn init_is_idempotent() {
+        let home = temp_home("init-idempotent");
+
+        let first = run_with_home(["init"], Some(home.clone()));
+        let second = run_with_home(["init"], Some(home));
+
+        assert_eq!(first.code, 0, "{}", first.stderr);
+        assert_eq!(second.code, 0, "{}", second.stderr);
+        assert!(first.stdout.contains("status: created"));
+        assert!(second.stdout.contains("status: already initialized"));
+        assert!(second.stdout.contains("node identity  kept"));
+    }
+
+    #[test]
     fn status_json_is_machine_readable_shape() {
-        let output = run(["status", "--json"]);
+        let home = temp_home("status-json");
+        let init = run_with_home(["init"], Some(home.clone()));
+        assert_eq!(init.code, 0, "{}", init.stderr);
+
+        let output = run_with_home(["status", "--json"], Some(home));
 
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("\"conud\": \"offline\""));
+        assert!(output.stdout.contains("\"state\": \"initialized\""));
+        assert!(output.stdout.contains("\"node\": \"node_"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
     }
 
@@ -405,5 +610,14 @@ mod tests {
         assert_eq!(output.code, 2);
         assert!(output.stderr.contains("unknown command"));
         assert!(output.stderr.contains("Usage:"));
+    }
+
+    fn temp_home(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        std::env::temp_dir().join(format!("conu-cli-test-{label}-{}-{nonce}", process::id()))
     }
 }

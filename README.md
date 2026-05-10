@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 2 is complete. The CLI identity and dashboard shell exists; Phase 3 will add real local identity and persistent state.
+Phase 3 is complete. The CLI identity/dashboard shell exists and `conu init` now creates real local state for this runtime.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -22,6 +22,29 @@ The repository currently contains compile-ready crate boundaries for:
 - `conu-relay`: relay/bootstrap scaffold.
 
 This phase is intentionally std-only so the workspace validates on Windows machines that have Rust installed but do not yet have the Visual Studio C++ linker/Windows SDK configured. Production dependencies such as clap, Tokio, tracing, and serde should be introduced in the relevant future phases once linker support is available locally or in CI.
+
+## Local State
+
+`conu init` creates the Phase 3 state store:
+
+```txt
+%APPDATA%\conU\        Windows default
+~/.conu/               Unix fallback
+```
+
+Set `CONU_HOME` to use a different directory for development or smoke checks.
+
+```txt
+node.toml              local node id only, not a secret or auth credential
+config.toml            local runtime config skeleton
+trust.toml             trusted/revoked peer skeleton
+agents/registry.toml   local agent registry skeleton
+sessions/              future runtime sessions
+mailbox/               future encrypted mailbox storage
+logs/                  future payload-safe logs
+```
+
+No private message payloads or secret keys are stored by Phase 3.
 
 ## Development
 
@@ -44,6 +67,7 @@ Useful CLI commands:
 cargo run -p conu-cli --
 cargo run -p conu-cli -- init
 cargo run -p conu-cli -- status
+cargo run -p conu-cli -- status --json
 cargo run -p conu-cli -- agents
 cargo run -p conu-cli -- pair
 cargo run -p conu-cli -- join 482913

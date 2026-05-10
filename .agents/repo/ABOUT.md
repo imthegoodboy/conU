@@ -6,13 +6,16 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 2.
+The repository has completed Phase 3.
 
 Implemented so far:
 
 - project memory and architecture
 - Rust workspace scaffold
 - CLI identity/dashboard command shell
+- local node identity persistence
+- local config, trust store skeleton, and agent registry skeleton
+- payload-safe status and agent registry reporting
 - payload-safe protocol scaffold
 - daemon and relay placeholder binaries
 
