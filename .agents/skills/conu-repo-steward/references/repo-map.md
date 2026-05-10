@@ -13,17 +13,17 @@ plan.md
   future-agent memory, rules, and skills
 ```
 
-## Future Rust Workspace
+## Rust Workspace
 
 ```txt
 crates/conu-cli
   CLI commands, ASCII dashboard, watch animation, user control flow
 
 crates/conud
-  daemon process, local IPC server, session manager, runtime lifecycle
+  daemon process, local gateway processing, session manager, runtime lifecycle
 
 crates/conu-core
-  identity, trust store, route manager, policy engine, shared runtime logic
+  local state, runtime lifecycle, agent registry, gateway processing, future trust/policy logic
 
 crates/conu-protocol
   envelopes, agent cards, control-plane messages, data-plane messages

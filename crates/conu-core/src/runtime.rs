@@ -1,7 +1,7 @@
 //! Local conUD runtime state and heartbeat management.
 //!
-//! Phase 4 uses a file-backed health signal so the CLI can detect a local
-//! runtime without introducing IPC or networking before their dedicated phases.
+//! Phase 5 uses file-backed health and gateway state so the CLI can detect a
+//! local runtime and agents can submit metadata-only registration requests.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -12,11 +12,12 @@ use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::agents;
 use crate::state::{self, NodeIdentity, StateError, StatePaths};
 
 const STATUS_VERSION: &str = "1";
 const STALE_AFTER_SECS: u64 = 10;
-const LOCAL_ENDPOINT: &str = "local-ipc:phase-5-pending";
+const LOCAL_ENDPOINT: &str = "file-ipc:runtime/ipc/inbox";
 
 /// High-level state for the local conUD runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +124,8 @@ impl RuntimeLease {
     pub fn serve_until_stop(&self, heartbeat_every: Duration) -> Result<(), RuntimeError> {
         while !self.stop_requested() {
             self.heartbeat()?;
+            agents::process_gateway_requests_from_paths(&self.paths, &self.node.node_id)
+                .map_err(RuntimeError::Agent)?;
             thread::sleep(heartbeat_every);
         }
 
@@ -176,6 +179,7 @@ impl Drop for RuntimeLease {
 #[derive(Debug)]
 pub enum RuntimeError {
     State(StateError),
+    Agent(agents::AgentError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -198,6 +202,7 @@ impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::State(error) => write!(formatter, "{error}"),
+            Self::Agent(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -219,6 +224,12 @@ impl std::error::Error for RuntimeError {}
 impl From<StateError> for RuntimeError {
     fn from(error: StateError) -> Self {
         Self::State(error)
+    }
+}
+
+impl From<agents::AgentError> for RuntimeError {
+    fn from(error: agents::AgentError) -> Self {
+        Self::Agent(error)
     }
 }
 

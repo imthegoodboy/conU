@@ -1,8 +1,9 @@
 //! Local persistent state for conU.
 //!
-//! Phase 4 keeps this intentionally small and std-only: a locally generated
-//! node id, config, trust store skeleton, agent registry skeleton, and runtime
-//! metadata. Secret keys and encrypted payload storage belong to later phases.
+//! Phase 5 keeps this intentionally small and std-only: a locally generated
+//! node id, config, trust store skeleton, agent registry, runtime metadata, and
+//! local gateway inbox. Secret keys and encrypted payload storage belong to
+//! later phases.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -23,6 +24,10 @@ const TRUST_FILE: &str = "trust.toml";
 const AGENTS_DIR: &str = "agents";
 const AGENT_REGISTRY_FILE: &str = "registry.toml";
 const RUNTIME_DIR: &str = "runtime";
+const IPC_DIR: &str = "ipc";
+const IPC_INBOX_DIR: &str = "inbox";
+const IPC_PROCESSED_DIR: &str = "processed";
+const IPC_REJECTED_DIR: &str = "rejected";
 const SESSIONS_DIR: &str = "sessions";
 const MAILBOX_DIR: &str = "mailbox";
 const LOGS_DIR: &str = "logs";
@@ -40,6 +45,10 @@ pub struct StatePaths {
     pub runtime_status: PathBuf,
     pub runtime_lock: PathBuf,
     pub runtime_stop_request: PathBuf,
+    pub ipc_dir: PathBuf,
+    pub ipc_inbox_dir: PathBuf,
+    pub ipc_processed_dir: PathBuf,
+    pub ipc_rejected_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub mailbox_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -60,6 +69,7 @@ impl StatePaths {
     pub fn from_home(home: PathBuf) -> Self {
         let agents_dir = home.join(AGENTS_DIR);
         let runtime_dir = home.join(RUNTIME_DIR);
+        let ipc_dir = runtime_dir.join(IPC_DIR);
 
         Self {
             node_identity: home.join(NODE_FILE),
@@ -71,6 +81,10 @@ impl StatePaths {
             runtime_lock: runtime_dir.join("conud.lock"),
             runtime_stop_request: runtime_dir.join("stop.request"),
             runtime_dir,
+            ipc_inbox_dir: ipc_dir.join(IPC_INBOX_DIR),
+            ipc_processed_dir: ipc_dir.join(IPC_PROCESSED_DIR),
+            ipc_rejected_dir: ipc_dir.join(IPC_REJECTED_DIR),
+            ipc_dir,
             sessions_dir: home.join(SESSIONS_DIR),
             mailbox_dir: home.join(MAILBOX_DIR),
             logs_dir: home.join(LOGS_DIR),
@@ -234,6 +248,10 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.home,
         &paths.agents_dir,
         &paths.runtime_dir,
+        &paths.ipc_dir,
+        &paths.ipc_inbox_dir,
+        &paths.ipc_processed_dir,
+        &paths.ipc_rejected_dir,
         &paths.sessions_dir,
         &paths.mailbox_dir,
         &paths.logs_dir,
@@ -361,7 +379,7 @@ fn render_trust_store() -> String {
 }
 
 fn render_agent_registry() -> String {
-    "# conU local agent registry skeleton\nversion = \"1\"\nagents = []\n".to_string()
+    "# conU local agent registry\nversion = \"1\"\n".to_string()
 }
 
 fn escape_file_value(value: &str) -> String {
@@ -462,6 +480,12 @@ mod tests {
         assert!(home.join(TRUST_FILE).exists());
         assert!(home.join(AGENTS_DIR).join(AGENT_REGISTRY_FILE).exists());
         assert!(home.join(RUNTIME_DIR).exists());
+        assert!(
+            home.join(RUNTIME_DIR)
+                .join(IPC_DIR)
+                .join(IPC_INBOX_DIR)
+                .exists()
+        );
     }
 
     #[test]

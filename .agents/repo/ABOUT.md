@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 4.
+The repository has completed Phase 5.
 
 Implemented so far:
 
@@ -17,7 +17,12 @@ Implemented so far:
 - local config, trust store skeleton, and agent registry skeleton
 - conUD runtime heartbeat/status skeleton
 - `conu start`, `conu stop`, and runtime-aware `conu status`
+- file-backed local IPC gateway under `runtime/ipc/`
+- local agent registration through `conu agents register`
+- local presence heartbeat through `conu agents heartbeat`
+- persisted local agent registry with capability metadata
 - payload-safe status and agent registry reporting
+- payload-safe runtime and agent metadata logs
 - payload-safe protocol scaffold
 - daemon and relay placeholder binaries
 
