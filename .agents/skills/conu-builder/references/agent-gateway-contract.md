@@ -173,6 +173,26 @@ conud --process-ipc
 
 `conu sessions sync` reads trusted peers and mirrors route/session metadata so `conu agents` can show visible remote agents. It does not transfer private payloads and does not yet create an interactive live stream. Revoked peers must disappear from the active remote-agent mirror after sync.
 
+The Phase 10 stream/watch surface is metadata-only stream lifecycle:
+
+```txt
+streams/registry.toml   stream lifecycle metadata
+streams/events.toml     private watch event bus
+logs/streams.log        metadata-only stream events
+```
+
+Supported commands:
+
+```txt
+conu streams [--json]
+conu streams open <from-agent> <to-agent> [--kind <kind>] [--json]
+conu streams write <stream-id> --stdin [--json]
+conu streams close <stream-id> [--json]
+conu watch
+```
+
+`conu streams write` accepts opaque bytes from stdin and records only byte counts. `conu watch` renders transport flow, route, stream id, packet count, and bytes without rendering message or chunk contents.
+
 ## Safety
 
 "Full access" means full communication access inside trust boundaries. It does not mean raw filesystem, shell, network, or secret access.

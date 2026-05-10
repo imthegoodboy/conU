@@ -28,12 +28,18 @@ The conU CLI should feel like a live network control room for agents.
 ```txt
 conU watch
 
-codex-desktop  >>> encrypted stream >>>  claude-laptop
-payload: private
-route: relay-us-east
-latency: 31ms
-streams: 3
-packets: 814
+transport view
+  codex-desktop  == encrypted stream ==>  claude-laptop
+  route         metadata-relay
+  stream        stream_abc
+  event         chunk
+  open streams  1
+  packets       3
+  bytes         814
+  contents      not displayed
+
+animation
+  [agent] >>> private packets >>> [agent]
 ```
 
 ## Design Rule

@@ -94,6 +94,17 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Revoked peers must not remain visible as active remote agents after session sync.
 - Route metadata may include relay endpoint, peer id, state, and reconnect counts; it must not include message contents, tokens, or private payload bytes.
 
+## Stream And Watch Rules
+
+- Phase 10 streams are metadata-first in `conu_core::streams`.
+- Stream lifecycle state belongs under `streams/registry.toml`; watch events belong under `streams/events.toml`.
+- `conu streams write` must read opaque chunk bytes from stdin and record byte counts only.
+- Stream logs must use metadata-only lines with stream id, route, byte count, chunk count, state, and `payload=not_observed`.
+- `conu watch` may animate agents, stream ids, routes, packet counts, byte counts, and private-packet movement.
+- `conu watch` must never show message text, chunk bytes, prompt text, reasoning, file contents, or tool output.
+- Backpressure checks should reject oversized chunks before writing stream metadata.
+- Do not claim live relay-backed byte streaming until the transport/encryption phases actually move encrypted chunks over the relay.
+
 ## Privacy Rules
 
 - Never log plaintext payloads.

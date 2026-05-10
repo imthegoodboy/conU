@@ -17,6 +17,7 @@ use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
 use conu_core::sessions::{self, RemoteAgentRecord, RemoteSession, SessionSyncReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
+use conu_core::streams::{self, StreamEvent, StreamRecord};
 use conu_core::trust::{self, TrustStatus, TrustedPeer};
 use conu_protocol::OpaquePayload;
 
@@ -97,11 +98,12 @@ where
         "agents" => render_agents(&args[1..], home_override),
         "peers" => render_peers(&args[1..], home_override),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
+        "streams" => render_streams(&args[1..], home_override, stdin_payload),
         "sessions" => render_sessions(&args[1..], home_override),
         "pair" => render_pair(&args[1..], home_override),
         "join" => render_join(&args[1..], home_override),
         "connect" => render_connect(&args[1..], home_override),
-        "watch" => render_watch(&args[1..]),
+        "watch" => render_watch(&args[1..], home_override),
         "components" => render_components(&args[1..]),
         "start" => render_start(&args[1..], home_override),
         "stop" => render_stop(&args[1..], home_override),
@@ -170,6 +172,7 @@ quick commands
   conu agents
   conu agents register <agent-id> <display-name>
   conu messages send <from-agent> <to-agent> --stdin
+  conu streams open <from-agent> <to-agent>
   conu pair
   conu peers
   conu join <code>
@@ -211,8 +214,12 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         Ok(sessions) => sessions,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
-    let remote_agents = match sessions::list_remote_agents(home_override) {
+    let remote_agents = match sessions::list_remote_agents(home_override.clone()) {
         Ok(agents) => agents,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
+    let stream_records = match streams::list_streams(home_override.clone()) {
+        Ok(streams) => streams,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
 
@@ -223,6 +230,7 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
             &local_agents,
             &remote_agents,
             &sessions,
+            &stream_records,
             &peers,
         )),
         Ok(false) => CliOutput::success(render_status_text(
@@ -231,6 +239,7 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
             &local_agents,
             &remote_agents,
             &sessions,
+            &stream_records,
             &peers,
         )),
         Err(error) => error,
@@ -1075,6 +1084,377 @@ fn render_messages_usage() -> String {
         .to_string()
 }
 
+fn render_streams(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("open") => render_stream_open(&args[1..], home_override),
+        Some("write") => render_stream_write(&args[1..], home_override, stdin_payload),
+        Some("close") => render_stream_close(&args[1..], home_override),
+        _ => render_streams_list(args, home_override),
+    }
+}
+
+fn render_stream_open(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_stream_open_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    match streams::open_stream(
+        home_override,
+        &parsed.from_agent_id,
+        &parsed.to_agent_id,
+        &parsed.kind,
+    ) {
+        Ok(report) => {
+            if parsed.json {
+                CliOutput::success(render_stream_json(&report.stream, "opened"))
+            } else {
+                CliOutput::success(render_stream_open_text(&report.stream))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU streams open failed\n\n{error}")),
+    }
+}
+
+fn render_stream_write(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let parsed = match parse_stream_io_args(args, "write") {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.stdin {
+        return CliOutput::failure(2, "usage: conu streams write <stream-id> --stdin [--json]");
+    }
+    if stdin_payload.is_empty() {
+        return CliOutput::failure(2, "stdin payload is empty");
+    }
+
+    match streams::write_stream(
+        home_override,
+        &parsed.stream_id,
+        OpaquePayload::from_bytes(stdin_payload),
+    ) {
+        Ok(report) => {
+            if parsed.json {
+                CliOutput::success(render_stream_event_json(&report.stream, &report.event))
+            } else {
+                CliOutput::success(render_stream_write_text(&report.stream, &report.event))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU streams write failed\n\n{error}")),
+    }
+}
+
+fn render_stream_close(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_stream_io_args(args, "close") {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    match streams::close_stream(home_override, &parsed.stream_id) {
+        Ok(report) => {
+            if parsed.json {
+                CliOutput::success(render_stream_event_json(&report.stream, &report.event))
+            } else {
+                CliOutput::success(render_stream_close_text(&report.stream))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU streams close failed\n\n{error}")),
+    }
+}
+
+fn render_streams_list(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let streams = match streams::list_streams(home_override) {
+        Ok(streams) => streams,
+        Err(error) => return CliOutput::failure(1, format!("conU streams failed\n\n{error}")),
+    };
+
+    match json_flag(args) {
+        Ok(true) => CliOutput::success(render_streams_json(&streams)),
+        Ok(false) => CliOutput::success(render_streams_text(&streams)),
+        Err(error) => error,
+    }
+}
+
+fn render_streams_json(streams: &[StreamRecord]) -> String {
+    let items = streams
+        .iter()
+        .map(|stream| {
+            format!(
+                r#"    {{
+      "streamId": "{}",
+      "fromAgentId": "{}",
+      "toAgentId": "{}",
+      "kind": "{}",
+      "state": "{}",
+      "route": "{}",
+      "chunksWritten": {},
+      "bytesWritten": {},
+      "backpressureWindow": {}
+    }}"#,
+                json_escape(&stream.stream_id),
+                json_escape(&stream.from_agent_id),
+                json_escape(&stream.to_agent_id),
+                json_escape(&stream.kind),
+                stream.state.as_str(),
+                json_escape(&stream.route),
+                stream.chunks_written,
+                stream.bytes_written,
+                stream.backpressure_window
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let streams_json = if items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "streams": {},
+  "contentsDisplayed": false
+}}"#,
+        streams_json
+    )
+}
+
+fn render_streams_text(streams: &[StreamRecord]) -> String {
+    let lines = if streams.is_empty() {
+        "  none opened yet".to_string()
+    } else {
+        streams
+            .iter()
+            .map(|stream| {
+                format!(
+                    "  {}  {} -> {}  {}  chunks {}  bytes {}",
+                    stream.stream_id,
+                    stream.from_agent_id,
+                    stream.to_agent_id,
+                    stream.state.as_str(),
+                    stream.chunks_written,
+                    stream.bytes_written
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU streams
+
+streams
+{lines}
+
+privacy
+  payload view  contents are not displayed by conU
+
+next
+  conu streams open <from-agent> <to-agent>"
+    )
+}
+
+fn render_stream_open_text(stream: &StreamRecord) -> String {
+    format!(
+        r"conU streams open
+
+status: opened
+stream: {}
+from: {}
+to: {}
+kind: {}
+route: {}
+backpressure window: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        stream.stream_id,
+        stream.from_agent_id,
+        stream.to_agent_id,
+        stream.kind,
+        stream.route,
+        stream.backpressure_window
+    )
+}
+
+fn render_stream_write_text(stream: &StreamRecord, event: &StreamEvent) -> String {
+    format!(
+        r"conU streams write
+
+status: chunk recorded
+stream: {}
+bytes: {}
+chunks: {}
+total bytes: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        stream.stream_id, event.payload_bytes, stream.chunks_written, stream.bytes_written
+    )
+}
+
+fn render_stream_close_text(stream: &StreamRecord) -> String {
+    format!(
+        r"conU streams close
+
+status: closed
+stream: {}
+chunks: {}
+bytes: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        stream.stream_id, stream.chunks_written, stream.bytes_written
+    )
+}
+
+fn render_stream_json(stream: &StreamRecord, status: &str) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "streamId": "{}",
+  "fromAgentId": "{}",
+  "toAgentId": "{}",
+  "kind": "{}",
+  "state": "{}",
+  "route": "{}",
+  "chunksWritten": {},
+  "bytesWritten": {},
+  "backpressureWindow": {},
+  "contentsDisplayed": false
+}}"#,
+        status,
+        json_escape(&stream.stream_id),
+        json_escape(&stream.from_agent_id),
+        json_escape(&stream.to_agent_id),
+        json_escape(&stream.kind),
+        stream.state.as_str(),
+        json_escape(&stream.route),
+        stream.chunks_written,
+        stream.bytes_written,
+        stream.backpressure_window
+    )
+}
+
+fn render_stream_event_json(stream: &StreamRecord, event: &StreamEvent) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "streamId": "{}",
+  "eventId": "{}",
+  "payloadBytes": {},
+  "chunksWritten": {},
+  "bytesWritten": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(&event.event_type),
+        json_escape(&stream.stream_id),
+        json_escape(&event.event_id),
+        event.payload_bytes,
+        stream.chunks_written,
+        stream.bytes_written
+    )
+}
+
+struct StreamOpenArgs {
+    from_agent_id: String,
+    to_agent_id: String,
+    kind: String,
+    json: bool,
+}
+
+struct StreamIoArgs {
+    stream_id: String,
+    stdin: bool,
+    json: bool,
+}
+
+fn parse_stream_open_args(args: &[String]) -> Result<StreamOpenArgs, CliOutput> {
+    let mut json = false;
+    let mut kind = "message".to_string();
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--kind" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_streams_usage()));
+                };
+                kind = value.clone();
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_streams_usage()));
+    }
+
+    Ok(StreamOpenArgs {
+        from_agent_id: positional[0].clone(),
+        to_agent_id: positional[1].clone(),
+        kind,
+        json,
+    })
+}
+
+fn parse_stream_io_args(args: &[String], command: &'static str) -> Result<StreamIoArgs, CliOutput> {
+    let mut json = false;
+    let mut stdin = false;
+    let mut stream_id = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--stdin" => stdin = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => {
+                if stream_id.is_some() {
+                    return Err(CliOutput::failure(2, render_streams_usage()));
+                }
+                stream_id = Some(value.to_string());
+            }
+        }
+    }
+
+    let Some(stream_id) = stream_id else {
+        return Err(CliOutput::failure(
+            2,
+            format!("usage: conu streams {command} <stream-id> [--stdin] [--json]"),
+        ));
+    };
+
+    Ok(StreamIoArgs {
+        stream_id,
+        stdin,
+        json,
+    })
+}
+
+fn render_streams_usage() -> String {
+    r"usage:
+  conu streams [--json]
+  conu streams open <from-agent> <to-agent> [--kind <kind>] [--json]
+  conu streams write <stream-id> --stdin [--json]
+  conu streams close <stream-id> [--json]"
+        .to_string()
+}
+
 fn render_sessions(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("sync") => render_sessions_sync(&args[1..], home_override),
@@ -1560,28 +1940,66 @@ selector
   target remote agent  {remote}
   mode                 message | stream | room | observe
 
-status: remote discovery mirror ready; interactive sessions arrive in Phase 10+",
+status: stream sessions use `conu streams open`; interactive selector remains future work",
     ))
 }
 
-fn render_watch(args: &[String]) -> CliOutput {
+fn render_watch(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     if let Some(error) = reject_args(args) {
         return error;
     }
 
-    CliOutput::success(
+    let stream_records = streams::list_streams(home_override.clone()).unwrap_or_default();
+    let events = streams::list_events(home_override).unwrap_or_default();
+    let open_streams = stream_records
+        .iter()
+        .filter(|stream| stream.state.as_str() == "open")
+        .count();
+    let total_packets: u64 = stream_records
+        .iter()
+        .map(|stream| stream.chunks_written)
+        .sum();
+    let total_bytes: usize = stream_records
+        .iter()
+        .map(|stream| stream.bytes_written)
+        .sum();
+    let latest = events.last();
+    let flow = latest
+        .map(|event| {
+            format!(
+                "{}  == encrypted stream ==>  {}",
+                event.from_agent_id, event.to_agent_id
+            )
+        })
+        .unwrap_or_else(|| "local-agent   -> conUD -> encrypted route -> remote-agent".to_string());
+    let route = latest
+        .map(|event| event.route.as_str())
+        .unwrap_or("inactive");
+    let stream_id = latest
+        .map(|event| event.stream_id.as_str())
+        .unwrap_or("none");
+    let latest_event = latest
+        .map(|event| event.event_type.as_str())
+        .unwrap_or("idle");
+
+    CliOutput::success(format!(
         r"conU watch
 
 transport view
-  local-agent   -> conUD -> encrypted route -> remote conUD -> remote-agent
-  route         inactive
-  latency       n/a
-  streams       0
-  packets       0
+  {flow}
+  route         {route}
+  stream        {stream_id}
+  event         {latest_event}
+  open streams  {open_streams}
+  packets       {total_packets}
+  bytes         {total_bytes}
   contents      not displayed
 
-status: live stream animation arrives in Phase 10",
-    )
+animation
+  [agent] >>> private packets >>> [agent]
+
+status: stream metadata only",
+    ))
 }
 
 fn render_components(args: &[String]) -> CliOutput {
@@ -1734,6 +2152,7 @@ fn render_status_text(
     local_agents: &[LocalAgentRecord],
     remote_agents: &[RemoteAgentRecord],
     sessions: &[RemoteSession],
+    stream_records: &[StreamRecord],
     peers: &[TrustedPeer],
 ) -> String {
     let node = snapshot
@@ -1771,6 +2190,7 @@ agents
   registry      {}
   trusted peers {}
   sessions      {}
+  streams       {}
 
 privacy
   payload view  contents are not displayed by conU",
@@ -1787,7 +2207,8 @@ privacy
         remote_agents.len(),
         ready_label(snapshot.agent_registry_exists),
         trusted_peer_count(peers),
-        sessions.len()
+        sessions.len(),
+        stream_records.len()
     )
 }
 
@@ -1797,6 +2218,7 @@ fn render_status_json(
     local_agents: &[LocalAgentRecord],
     remote_agents: &[RemoteAgentRecord],
     sessions: &[RemoteSession],
+    stream_records: &[StreamRecord],
     peers: &[TrustedPeer],
 ) -> String {
     let node = snapshot
@@ -1833,7 +2255,8 @@ fn render_status_json(
     "remote": {},
     "registry": "{}",
     "trustedPeers": {},
-    "sessions": {}
+    "sessions": {},
+    "streams": {}
   }},
   "privacy": {{
     "contentsDisplayed": false
@@ -1853,7 +2276,8 @@ fn render_status_json(
         remote_agents.len(),
         ready_label(snapshot.agent_registry_exists),
         trusted_peer_count(peers),
-        sessions.len()
+        sessions.len(),
+        stream_records.len()
     )
 }
 
@@ -1870,6 +2294,10 @@ Usage:
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages inbox <agent-id> [--json]
   conu messages receipts [--json]
+  conu streams [--json]
+  conu streams open <from-agent> <to-agent> [--kind <kind>] [--json]
+  conu streams write <stream-id> --stdin [--json]
+  conu streams close <stream-id> [--json]
   conu sessions [--json]
   conu sessions sync [--json]
   conu peers [--json]
@@ -1884,7 +2312,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 9 adds conUD-owned remote session and discovery mirrors. Streaming arrives in later phases."
+Phase 10 adds stream lifecycle metadata and private watch flow. Payload contents remain hidden."
         .to_string()
 }
 
@@ -2124,11 +2552,12 @@ mod tests {
     }
 
     #[test]
-    fn phase_nine_commands_are_registered() {
+    fn phase_ten_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [
-            "init", "status", "agents", "sessions", "pair", "peers", "connect", "watch", "stop",
+            "init", "status", "agents", "streams", "sessions", "pair", "peers", "connect", "watch",
+            "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
@@ -2195,6 +2624,38 @@ mod tests {
         assert!(status.stdout.contains("\"remote\": 1"));
         assert!(status.stdout.contains("\"sessions\": 1"));
         assert!(!agents.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn streams_flow_and_watch_are_metadata_only() {
+        let home = temp_home("streams-flow");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+
+        let opened = run_with_home(
+            ["streams", "open", "agent.sender", "agent.receiver"],
+            Some(home.clone()),
+        );
+        let stream_id = stream_id_from_output(&opened.stdout);
+        let written = run_with_home_and_stdin(
+            ["streams", "write", &stream_id, "--stdin"],
+            Some(home.clone()),
+            b"private message contents".to_vec(),
+        );
+        let watch = run_with_home(["watch"], Some(home.clone()));
+        let closed = run_with_home(["streams", "close", &stream_id], Some(home.clone()));
+        let listed = run_with_home(["streams", "--json"], Some(home));
+
+        assert_eq!(opened.code, 0, "{}", opened.stderr);
+        assert_eq!(written.code, 0, "{}", written.stderr);
+        assert_eq!(closed.code, 0, "{}", closed.stderr);
+        assert!(written.stdout.contains("bytes: 24"));
+        assert!(watch.stdout.contains("private packets"));
+        assert!(watch.stdout.contains("contents      not displayed"));
+        assert!(listed.stdout.contains("\"streams\": ["));
+        assert!(listed.stdout.contains("\"state\": \"closed\""));
+        assert!(!watch.stdout.contains("private message contents"));
+        assert!(!listed.stdout.contains("private message contents"));
     }
 
     #[test]
@@ -2446,6 +2907,7 @@ mod tests {
         assert!(output.stdout.contains("\"remote\": 0"));
         assert!(output.stdout.contains("\"trustedPeers\": 0"));
         assert!(output.stdout.contains("\"sessions\": 0"));
+        assert!(output.stdout.contains("\"streams\": 0"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
     }
 
@@ -2490,6 +2952,14 @@ mod tests {
             .lines()
             .find_map(|line| line.trim().strip_prefix("code: "))
             .expect("pairing code line")
+            .to_string()
+    }
+
+    fn stream_id_from_output(output: &str) -> String {
+        output
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("stream: "))
+            .expect("stream id line")
             .to_string()
     }
 

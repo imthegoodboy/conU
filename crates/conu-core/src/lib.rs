@@ -6,6 +6,7 @@ pub mod relay;
 pub mod runtime;
 pub mod sessions;
 pub mod state;
+pub mod streams;
 pub mod trust;
 
 /// The product invariant every crate should preserve.

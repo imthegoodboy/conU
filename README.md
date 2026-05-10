@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 9 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, registered local agents can exchange opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, and conUD can sync remote session/discovery metadata for trusted peers.
+Phase 10 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, registered local agents can exchange opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, and streams now produce payload-safe watch events.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -49,6 +49,8 @@ runtime/ipc/rejected/  rejected gateway requests and safe reasons
 runtime/ipc/messages/  opaque local message request queue
 messages/inbox/        delivered local opaque envelopes by recipient agent
 messages/receipts/     metadata-only local delivery receipts
+streams/registry.toml  stream lifecycle metadata
+streams/events.toml    payload-safe watch event bus
 pairing/invites/       pending local pairing invitations
 pairing/used/          consumed local pairing invitations
 sessions/registry.toml remote runtime session metadata
@@ -57,6 +59,7 @@ logs/conud.log         runtime metadata log
 logs/agents.log        local agent metadata log
 logs/messages.log      local message delivery metadata log
 logs/sessions.log      remote session sync metadata log
+logs/streams.log       stream lifecycle metadata log
 ```
 
 Runtime, agent, and message logs contain metadata only, such as event name, pid, node id, agent id, envelope id, byte count, and `payload=not_observed`. Phase 6 local message payload bytes are stored only as opaque recipient-inbox envelope data; CLI output, receipts, processed markers, rejected markers, and logs do not display message contents. Until encryption hardening lands in Phase 11, agents should prefer already-encrypted payload bytes for sensitive local messages.
@@ -133,6 +136,22 @@ conu agents --json
 
 This phase is still metadata/discovery groundwork: remote agent cards are derived from trusted peer metadata until the full relay-backed session exchange lands. Payloads remain opaque and are never displayed by session or agent listing commands.
 
+## Streams And Watch
+
+Phase 10 adds stream lifecycle metadata and a private watch view:
+
+```bash
+conu streams
+conu streams open agent.sender agent.receiver
+conu streams write stream_example --stdin
+conu streams close stream_example
+conu watch
+```
+
+`conu streams write` reads chunk bytes from stdin, records byte counts, updates backpressure metadata, and appends watch events without storing or printing the chunk contents. `conu watch` shows route, stream id, packet count, byte count, and an ASCII private-packet flow only.
+
+The stream layer is still metadata-first. Full live relay-backed byte streaming and encrypted stream transport are future hardening/transport work.
+
 ## Development
 
 ```bash
@@ -162,6 +181,10 @@ cargo run -p conu-cli -- agents heartbeat agent.codex --presence busy
 cargo run -p conu-cli -- messages send agent.sender agent.receiver --stdin
 cargo run -p conu-cli -- messages inbox agent.receiver --json
 cargo run -p conu-cli -- messages receipts --json
+cargo run -p conu-cli -- streams open agent.sender agent.receiver
+cargo run -p conu-cli -- streams write stream_example --stdin
+cargo run -p conu-cli -- streams close stream_example
+cargo run -p conu-cli -- watch
 cargo run -p conu-cli -- sessions sync
 cargo run -p conu-cli -- sessions --json
 cargo run -p conu-cli -- pair

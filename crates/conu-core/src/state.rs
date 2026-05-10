@@ -32,6 +32,9 @@ const IPC_REJECTED_DIR: &str = "rejected";
 const MESSAGES_DIR: &str = "messages";
 const MESSAGE_INBOX_DIR: &str = "inbox";
 const MESSAGE_RECEIPTS_DIR: &str = "receipts";
+const STREAMS_DIR: &str = "streams";
+const STREAM_REGISTRY_FILE: &str = "registry.toml";
+const STREAM_EVENTS_FILE: &str = "events.toml";
 const PAIRING_DIR: &str = "pairing";
 const PAIRING_INVITES_DIR: &str = "invites";
 const PAIRING_USED_DIR: &str = "used";
@@ -65,6 +68,9 @@ pub struct StatePaths {
     pub messages_dir: PathBuf,
     pub message_inbox_dir: PathBuf,
     pub message_receipts_dir: PathBuf,
+    pub streams_dir: PathBuf,
+    pub stream_registry: PathBuf,
+    pub stream_events: PathBuf,
     pub pairing_dir: PathBuf,
     pub pairing_invites_dir: PathBuf,
     pub pairing_used_dir: PathBuf,
@@ -92,6 +98,7 @@ impl StatePaths {
         let ipc_dir = runtime_dir.join(IPC_DIR);
         let message_ipc_dir = ipc_dir.join(MESSAGES_DIR);
         let messages_dir = home.join(MESSAGES_DIR);
+        let streams_dir = home.join(STREAMS_DIR);
         let pairing_dir = home.join(PAIRING_DIR);
 
         Self {
@@ -116,6 +123,9 @@ impl StatePaths {
             message_inbox_dir: messages_dir.join(MESSAGE_INBOX_DIR),
             message_receipts_dir: messages_dir.join(MESSAGE_RECEIPTS_DIR),
             messages_dir,
+            stream_registry: streams_dir.join(STREAM_REGISTRY_FILE),
+            stream_events: streams_dir.join(STREAM_EVENTS_FILE),
+            streams_dir,
             pairing_invites_dir: pairing_dir.join(PAIRING_INVITES_DIR),
             pairing_used_dir: pairing_dir.join(PAIRING_USED_DIR),
             pairing_dir,
@@ -294,6 +304,7 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.messages_dir,
         &paths.message_inbox_dir,
         &paths.message_receipts_dir,
+        &paths.streams_dir,
         &paths.pairing_dir,
         &paths.pairing_invites_dir,
         &paths.pairing_used_dir,

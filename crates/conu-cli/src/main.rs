@@ -30,8 +30,36 @@ fn needs_stdin_payload(args: &[String]) -> bool {
     matches!(
         args,
         [command, subcommand, ..]
-            if command == "messages"
-                && subcommand == "send"
+            if ((command == "messages" && subcommand == "send")
+                || (command == "streams" && subcommand == "write"))
                 && args.iter().any(|arg| arg == "--stdin")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdin_payload_is_read_for_message_and_stream_writes() {
+        assert!(needs_stdin_payload(&[
+            "messages".to_string(),
+            "send".to_string(),
+            "agent.a".to_string(),
+            "agent.b".to_string(),
+            "--stdin".to_string(),
+        ]));
+        assert!(needs_stdin_payload(&[
+            "streams".to_string(),
+            "write".to_string(),
+            "stream_1".to_string(),
+            "--stdin".to_string(),
+        ]));
+        assert!(!needs_stdin_payload(&[
+            "streams".to_string(),
+            "open".to_string(),
+            "agent.a".to_string(),
+            "agent.b".to_string(),
+        ]));
+    }
 }
