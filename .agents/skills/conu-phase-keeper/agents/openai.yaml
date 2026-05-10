@@ -1,0 +1,3 @@
+display_name: conU Phase Keeper
+short_description: Keep plan.md accurate as phases start, pause, and complete.
+default_prompt: Use the conU phase keeper workflow to update plan.md with status, validation, gaps, and next steps.

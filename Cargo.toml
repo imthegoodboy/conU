@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/conu-cli",
+    "crates/conu-core",
+    "crates/conu-protocol",
+    "crates/conu-relay",
+    "crates/conud",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/imthegoodboy/conU"
+authors = ["conU contributors"]
+
+[workspace.dependencies]
+conu-core = { path = "crates/conu-core" }
+conu-protocol = { path = "crates/conu-protocol" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

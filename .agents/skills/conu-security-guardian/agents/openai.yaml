@@ -1,0 +1,3 @@
+display_name: conU Security Guardian
+short_description: Review ConU privacy, trust, relay, logging, and payload opacity.
+default_prompt: Use the conU security guardian checklist to review privacy, trust, encryption, relay blindness, logging, and CLI watch safety.
