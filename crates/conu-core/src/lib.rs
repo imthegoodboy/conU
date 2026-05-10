@@ -1,5 +1,7 @@
 //! Core conU runtime concepts shared by binaries.
 
+pub mod state;
+
 /// The product invariant every crate should preserve.
 pub const PRODUCT_LAW: &str = "Agents own the conversation. conU owns the connection.";
 

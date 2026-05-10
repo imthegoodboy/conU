@@ -29,6 +29,14 @@ This workspace was first validated on Windows where the default MSVC Rust toolch
 
 Do not add proc-macro/build-script-heavy dependencies unless validation can still run in the active environment or CI.
 
+## Local State Rules
+
+- `CONU_HOME` overrides the default state directory and should be used for smoke checks.
+- Windows defaults to `%APPDATA%\conU`; non-Windows falls back to `$HOME/.conu`.
+- Tests should pass an explicit state home instead of mutating global process environment.
+- The Phase 3 node id is a local runtime identifier only. It is not a secret, not an authentication credential, and not a replacement for future signed/encrypted identity.
+- conU-owned state must not store plaintext private payloads.
+
 ## Privacy Rules
 
 - Never log plaintext payloads.

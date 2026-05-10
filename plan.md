@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 3 - Local Identity And Persistent State
+Current phase: Phase 4 - conUD Daemon Skeleton
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -242,7 +242,7 @@ Next:
 
 ## Phase 3 - Local Identity And Persistent State
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -258,9 +258,55 @@ Deliverables:
 
 Exit criteria:
 
-- `conu init` creates local identity.
-- `conu status` reads identity and config.
-- Re-running init is safe.
+- [x] `conu init` creates local identity.
+- [x] `conu status` reads identity and config.
+- [x] Re-running init is safe.
+
+Completed work:
+
+- Created GitHub issue #5 for Phase 3.
+- Created and pushed branch `codex/phase-3-local-identity`.
+- Added std-only local state management in `conu-core`.
+- Added safe state path resolution with `CONU_HOME`, Windows `%APPDATA%\conU`, and Unix `$HOME/.conu` fallback.
+- Added idempotent creation of `node.toml`, `config.toml`, `trust.toml`, `agents/registry.toml`, and future runtime directories.
+- Added `conu init` integration that creates or repairs Phase 3 state without overwriting existing files.
+- Added `conu status` and `conu status --json` integration that reads persisted identity/config/trust/registry readiness.
+- Added `conu agents --json` registry readiness metadata while keeping actual registration reserved for Phase 5.
+- Added tests for local state creation, idempotency, missing-state reads, CLI status, JSON shape, and watch payload privacy.
+- Updated README, repo overview, and implementation guardrails.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/state.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- init` passed with isolated `CONU_HOME`.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- init` passed a second time and preserved the same node id.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- status` passed with isolated `CONU_HOME`.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- status --json` passed with isolated `CONU_HOME`.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- agents --json` passed with isolated `CONU_HOME`.
+
+Known gaps:
+
+- Phase 3 node id is a local identifier only, not a cryptographic identity or authentication credential.
+- No private keys, signed identities, encrypted mailbox, or key storage exists yet; those remain Phase 11 hardening work.
+- No real daemon lifecycle exists yet; that remains Phase 4.
+- No local agent registration exists yet; that remains Phase 5.
+- Trust store and agent registry are skeleton files only until pairing/registration phases.
+
+Next:
+
+- Start Phase 4: conUD daemon skeleton with runtime state, health/status detection, graceful shutdown, and payload-safe logs.
 
 ## Phase 4 - conUD Daemon Skeleton
 
@@ -534,4 +580,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 0 completed. User approved implementation and Phase 1 started.
 2026-05-10 - Phase 1 completed. Rust workspace scaffold created and validated with cargo fmt/check/test plus binary smoke commands using stable-x86_64-pc-windows-gnu. Next: Phase 2 CLI identity and dashboard.
 2026-05-10 - Phase 2 completed. CLI dashboard and command shell created with payload-safe outputs, tests, and smoke validation. Next: Phase 3 local identity and persistent state.
+2026-05-10 - Phase 3 completed. Local identity and persistent state added with idempotent init, status reads, tests, and isolated CONU_HOME smoke validation. Next: Phase 4 conUD daemon skeleton.
 ```
