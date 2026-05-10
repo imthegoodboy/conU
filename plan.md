@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 5 - Local IPC And Agent Registration
+Current phase: Phase 6 - Opaque Envelope Messaging
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -386,7 +386,7 @@ Next:
 
 ## Phase 5 - Local IPC And Agent Registration
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -394,17 +394,71 @@ Let local agents register with conUD through a local gateway.
 
 Deliverables:
 
-- local IPC transport
-- register agent request
-- agent card model
-- presence heartbeat
-- `conu agents` local list
+- [x] local IPC transport
+- [x] register agent request
+- [x] agent card model
+- [x] presence heartbeat
+- [x] `conu agents` local list
 
 Exit criteria:
 
-- A sample local agent can register.
-- CLI lists local registered agents.
-- Agent identity persists.
+- [x] A sample local agent can register.
+- [x] CLI lists local registered agents.
+- [x] Agent identity persists.
+
+Completed work:
+
+- Created GitHub issue #9 for Phase 5.
+- Created and pushed branch `codex/phase-5-local-ipc-agents`.
+- Added std-only `conu_core::agents` local gateway and registry module.
+- Added file-backed IPC directories under `runtime/ipc/inbox`, `runtime/ipc/processed`, and `runtime/ipc/rejected`.
+- Added metadata-only registration request submission and processing.
+- Added presence heartbeat submission and processing for registered local agents.
+- Persisted local agent records in `agents/registry.toml` with id, display name, node id, kind, presence, last seen time, and capability booleans.
+- Integrated conUD serve loop and `conud --process-ipc` with gateway request processing.
+- Updated `conu agents`, `conu agents --json`, `conu agents register`, and `conu agents heartbeat`.
+- Updated `conu status` and dashboard output with local IPC and local agent count.
+- Added payload-safe `logs/agents.log` metadata lines with `payload=not_observed`.
+- Hardened rejected IPC request errors so arbitrary request contents are not echoed into rejection reasons.
+- Updated README, repo overview, builder guardrails, and agent gateway contract.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/agents.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/runtime.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conud/src/main.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu build -p conud -p conu-cli` passed.
+- Direct binary smoke passed with isolated `CONU_HOME`: `conu init`, `conu start`, `conu agents register agent.codex "Codex Desktop" --kind coding-agent`, `conu agents heartbeat agent.codex --presence busy`, `conu status --json`, and `conu stop`.
+- Smoke follow-up confirmed `conu agents --json` showed `presence: busy`.
+- Smoke log review confirmed `logs/agents.log` contains only metadata lines with `payload=not_observed`.
+- `conud --process-ipc` passed after daemon stop with no pending requests.
+- Explicit process check confirmed no `conud` process remained running after smoke.
+
+Known gaps:
+
+- Phase 5 IPC is file-backed for reliability and visibility; it is not yet named pipes, Unix sockets, or binary framed IPC.
+- The gateway only supports registration and presence. Message send/receive starts in Phase 6.
+- Agent capabilities are basic booleans only; policy grants and signed agent cards arrive in later trust/security phases.
+- There is no remote discovery or relay integration yet.
+
+Next:
+
+- Start Phase 6: local opaque envelope messaging with sender/receiver validation, local inbox, and delivery metadata that never displays payload contents.
 
 ## Phase 6 - Opaque Envelope Messaging
 
@@ -636,4 +690,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 2 completed. CLI dashboard and command shell created with payload-safe outputs, tests, and smoke validation. Next: Phase 3 local identity and persistent state.
 2026-05-10 - Phase 3 completed. Local identity and persistent state added with idempotent init, status reads, tests, and isolated CONU_HOME smoke validation. Next: Phase 4 conUD daemon skeleton.
 2026-05-10 - Phase 4 completed. conUD daemon skeleton added with start/stop, runtime heartbeat status, stale restart handling, payload-safe logs, tests, and isolated CONU_HOME process smoke. Next: Phase 5 local IPC and agent registration.
+2026-05-10 - Phase 5 completed. File-backed local IPC gateway added with metadata-only agent registration, presence heartbeat, persisted local agent registry, conUD processing, CLI listing, tests, docs, and isolated CONU_HOME smoke validation. Next: Phase 6 opaque envelope messaging.
 ```

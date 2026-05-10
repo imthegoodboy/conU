@@ -45,6 +45,16 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Treat stale heartbeats as restartable runtime metadata, not proof of a live process.
 - Runtime logs must remain payload-safe and use metadata-only lines such as event, pid, node id, and `payload=not_observed`.
 
+## Local Agent Gateway Rules
+
+- Phase 5 local gateway is file-backed and metadata-only: `runtime/ipc/inbox`, `runtime/ipc/processed`, and `runtime/ipc/rejected`.
+- Accepted Phase 5 request types are only `register_agent` and `presence_heartbeat`.
+- Registration may store agent id, display name, kind, node id, presence, last seen time, and capability booleans.
+- Presence heartbeat may update only an already registered local agent.
+- Rejected requests must not echo arbitrary request contents into CLI output, logs, tests, or `.error` files.
+- Agent logs must use metadata-only lines such as event, agent id, and `payload=not_observed`.
+- Do not add message send/receive, payload storage, remote discovery, or relay behavior to the gateway until the relevant later phase.
+
 ## Privacy Rules
 
 - Never log plaintext payloads.

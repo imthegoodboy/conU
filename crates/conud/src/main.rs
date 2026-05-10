@@ -11,6 +11,7 @@ fn main() -> ExitCode {
         }
         Some("--serve") | None => serve_runtime(),
         Some("--once") => run_once(),
+        Some("--process-ipc") => process_ipc_once(),
         Some("--status") => print_status(),
         Some("--help") | Some("-h") => {
             print_help();
@@ -74,7 +75,11 @@ fn serve_runtime() -> ExitCode {
 
 fn run_once() -> ExitCode {
     match conu_core::runtime::acquire_runtime(None) {
-        Ok(lease) => match lease.heartbeat().and_then(|_| lease.stop()) {
+        Ok(lease) => match lease.heartbeat().and_then(|_| {
+            conu_core::agents::process_gateway_requests(None)
+                .map_err(conu_core::runtime::RuntimeError::from)?;
+            lease.stop()
+        }) {
             Ok(status) => {
                 println!(
                     "conUD one-shot completed; state {}; payloads not observed",
@@ -89,6 +94,22 @@ fn run_once() -> ExitCode {
         },
         Err(error) => {
             eprintln!("conUD one-shot failed: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn process_ipc_once() -> ExitCode {
+    match conu_core::agents::process_gateway_requests(None) {
+        Ok(report) => {
+            println!(
+                "conUD IPC processed {}; rejected {}; payloads not observed",
+                report.processed, report.rejected
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("conUD IPC processing failed: {error}");
             ExitCode::from(1)
         }
     }
@@ -117,7 +138,7 @@ fn print_status() -> ExitCode {
 
 fn print_check() {
     println!("{}", conu_core::scaffold_status("conud"));
-    println!("runtime: phase 4 heartbeat skeleton ready; payloads not observed");
+    println!("runtime: phase 5 local IPC registration ready; payloads not observed");
 }
 
 fn print_help() {
@@ -128,6 +149,7 @@ Usage:
   conud
   conud --serve
   conud --once
+  conud --process-ipc
   conud --check
   conud --status
   conud --help

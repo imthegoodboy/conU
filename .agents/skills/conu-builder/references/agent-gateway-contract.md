@@ -45,6 +45,36 @@ conUD handles:
 - delivery receipts
 - relay fallback
 
+## Phase 5 Implemented Surface
+
+The current local gateway is a file-backed, metadata-only IPC path:
+
+```txt
+runtime/ipc/inbox       submitted requests
+runtime/ipc/processed   accepted requests
+runtime/ipc/rejected    rejected requests and safe reasons
+agents/registry.toml    persisted local agent cards
+logs/agents.log         metadata-only agent events
+```
+
+Supported commands:
+
+```txt
+conu agents register <agent-id> <display-name> [--kind <kind>] [--json]
+conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
+conu agents [--json]
+conud --process-ipc
+```
+
+Supported request types:
+
+```txt
+register_agent
+presence_heartbeat
+```
+
+This phase intentionally does not expose `send`, `receive`, streams, rooms, relay discovery, or payload storage. Those start in later phases.
+
 ## Safety
 
 "Full access" means full communication access inside trust boundaries. It does not mean raw filesystem, shell, network, or secret access.

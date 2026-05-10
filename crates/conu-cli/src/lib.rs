@@ -1,7 +1,7 @@
 //! CLI rendering and command dispatch for conU.
 //!
-//! Phase 4 adds local persistent identity, state, and conUD runtime detection
-//! while keeping IPC, relay, and messaging features as honest previews.
+//! Phase 5 adds conUD runtime detection and metadata-only local agent
+//! registration.
 
 use std::env;
 use std::path::PathBuf;
@@ -9,6 +9,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+use conu_core::agents::{
+    self, AgentPresence, AgentRegistration, LocalAgentRecord, PresenceHeartbeat,
+};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
 
@@ -67,7 +70,7 @@ where
         "agents" | "peers" => render_agents(&args[1..], home_override),
         "pair" => render_pair(&args[1..]),
         "join" => render_join(&args[1..]),
-        "connect" => render_connect(&args[1..]),
+        "connect" => render_connect(&args[1..], home_override),
         "watch" => render_watch(&args[1..]),
         "components" => render_components(&args[1..]),
         "start" => render_start(&args[1..], home_override),
@@ -83,7 +86,10 @@ where
 
 fn render_dashboard(home_override: Option<PathBuf>) -> String {
     let snapshot = state::read_state(home_override.clone()).ok();
-    let runtime_status = runtime::read_runtime(home_override).ok();
+    let runtime_status = runtime::read_runtime(home_override.clone()).ok();
+    let local_agents = agents::list_local_agents(home_override)
+        .map(|agents| agents.len())
+        .unwrap_or(0);
     let node = snapshot
         .as_ref()
         .and_then(|snapshot| snapshot.node.as_ref())
@@ -112,7 +118,7 @@ control room
   runtime       {runtime_state}
   node          {node}
   state         {state}
-  local agents  none           registration arrives in Phase 5
+  local agents  {local_agents}
   remote peers  none           pairing arrives in Phase 7
   network       offline        relay arrives in Phase 8
 
@@ -120,6 +126,7 @@ quick commands
   conu init
   conu status
   conu agents
+  conu agents register <agent-id> <display-name>
   conu pair
   conu join <code>
   conu connect
@@ -144,42 +151,254 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         Ok(snapshot) => snapshot,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
-    let runtime_status = match runtime::read_runtime(home_override) {
+    let runtime_status = match runtime::read_runtime(home_override.clone()) {
         Ok(status) => status,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
+    let local_agents = match agents::list_local_agents(home_override) {
+        Ok(agents) => agents,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
 
     match json_flag(args) {
-        Ok(true) => CliOutput::success(render_status_json(&snapshot, &runtime_status)),
-        Ok(false) => CliOutput::success(render_status_text(&snapshot, &runtime_status)),
+        Ok(true) => CliOutput::success(render_status_json(
+            &snapshot,
+            &runtime_status,
+            &local_agents,
+        )),
+        Ok(false) => CliOutput::success(render_status_text(
+            &snapshot,
+            &runtime_status,
+            &local_agents,
+        )),
         Err(error) => error,
     }
 }
 
 fn render_agents(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
-    let snapshot = match state::read_state(home_override) {
+    match args.first().map(String::as_str) {
+        Some("register") => render_agent_register(&args[1..], home_override),
+        Some("heartbeat") => render_agent_heartbeat(&args[1..], home_override),
+        _ => render_agents_list(args, home_override),
+    }
+}
+
+fn render_agents_list(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let snapshot = match state::read_state(home_override.clone()) {
         Ok(snapshot) => snapshot,
+        Err(error) => return CliOutput::failure(1, format!("conU agents failed\n\n{error}")),
+    };
+    let local_agents = match agents::list_local_agents(home_override) {
+        Ok(agents) => agents,
         Err(error) => return CliOutput::failure(1, format!("conU agents failed\n\n{error}")),
     };
     let registry_state = ready_label(snapshot.agent_registry_exists);
 
     match json_flag(args) {
-        Ok(true) => CliOutput::success(format!(
+        Ok(true) => CliOutput::success(render_agents_json(
+            &local_agents,
+            registry_state,
+            &snapshot.paths.agent_registry.display().to_string(),
+        )),
+        Ok(false) => CliOutput::success(render_agents_text(
+            &local_agents,
+            registry_state,
+            &snapshot.paths.agent_registry.display().to_string(),
+        )),
+        Err(error) => error,
+    }
+}
+
+fn render_agent_register(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_register_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let registration =
+        match AgentRegistration::new(&parsed.agent_id, &parsed.display_name, &parsed.kind) {
+            Ok(registration) => registration,
+            Err(error) => {
+                return CliOutput::failure(2, format!("conU agents register failed\n\n{error}"));
+            }
+        };
+
+    let submission = match agents::submit_registration(home_override.clone(), registration) {
+        Ok(submission) => submission,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU agents register failed\n\n{error}"));
+        }
+    };
+    let processed = wait_for_agent(home_override.clone(), &parsed.agent_id);
+    let status = if processed { "registered" } else { "queued" };
+
+    if parsed.json {
+        return CliOutput::success(format!(
             r#"{{
-  "local": [],
+  "status": "{}",
+  "agentId": "{}",
+  "requestId": "{}",
+  "processed": {},
+  "contentsDisplayed": false
+}}"#,
+            status,
+            json_escape(&parsed.agent_id),
+            json_escape(&submission.request_id),
+            processed
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU agents register
+
+status: {status}
+agent: {}
+name: {}
+kind: {}
+request: {}
+gateway: file IPC
+
+privacy
+  payload view  contents are not displayed by conU",
+        parsed.agent_id, parsed.display_name, parsed.kind, submission.request_id
+    ))
+}
+
+fn render_agent_heartbeat(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_heartbeat_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let heartbeat = match PresenceHeartbeat::new(&parsed.agent_id, parsed.presence) {
+        Ok(heartbeat) => heartbeat,
+        Err(error) => {
+            return CliOutput::failure(2, format!("conU agents heartbeat failed\n\n{error}"));
+        }
+    };
+    let submission = match agents::submit_presence_heartbeat(home_override.clone(), heartbeat) {
+        Ok(submission) => submission,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU agents heartbeat failed\n\n{error}"));
+        }
+    };
+    let processed = wait_for_agent_presence(home_override, &parsed.agent_id, parsed.presence);
+    let status = if processed {
+        "presence updated"
+    } else {
+        "queued"
+    };
+
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "{}",
+  "agentId": "{}",
+  "presence": "{}",
+  "requestId": "{}",
+  "processed": {},
+  "contentsDisplayed": false
+}}"#,
+            status,
+            json_escape(&parsed.agent_id),
+            parsed.presence.as_str(),
+            json_escape(&submission.request_id),
+            processed
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU agents heartbeat
+
+status: {status}
+agent: {}
+presence: {}
+request: {}
+gateway: file IPC
+
+privacy
+  payload view  contents are not displayed by conU",
+        parsed.agent_id,
+        parsed.presence.as_str(),
+        submission.request_id
+    ))
+}
+
+fn render_agents_json(agents: &[LocalAgentRecord], registry: &str, registry_path: &str) -> String {
+    let local_items = agents
+        .iter()
+        .map(|agent| {
+            format!(
+                r#"    {{
+      "agentId": "{}",
+      "displayName": "{}",
+      "kind": "{}",
+      "presence": "{}",
+      "nodeId": "{}",
+      "capabilities": {{
+        "messages": {},
+        "streams": {},
+        "rooms": {},
+        "files": {},
+        "presence": {}
+      }}
+    }}"#,
+                json_escape(&agent.agent_id),
+                json_escape(&agent.display_name),
+                json_escape(&agent.kind),
+                agent.presence.as_str(),
+                json_escape(&agent.node_id),
+                agent.capabilities.messages,
+                agent.capabilities.streams,
+                agent.capabilities.rooms,
+                agent.capabilities.files,
+                agent.capabilities.presence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let local = if local_items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{local_items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "local": {},
   "remote": [],
   "registry": "{}",
   "registryPath": "{}",
-  "status": "agent registration arrives in Phase 5"
+  "status": "local agent registration active"
 }}"#,
-            registry_state,
-            json_escape(&snapshot.paths.agent_registry.display().to_string())
-        )),
-        Ok(false) => CliOutput::success(format!(
-            r"conU agents
+        local,
+        registry,
+        json_escape(registry_path)
+    )
+}
+
+fn render_agents_text(agents: &[LocalAgentRecord], registry: &str, registry_path: &str) -> String {
+    let local = if agents.is_empty() {
+        "  none registered yet".to_string()
+    } else {
+        agents
+            .iter()
+            .map(|agent| {
+                format!(
+                    "  {}  {}  {}  kind {}",
+                    agent.agent_id,
+                    agent.presence.as_str(),
+                    agent.display_name,
+                    agent.kind
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU agents
 
 local agents
-  none registered yet
+{local}
   registry      {}
   path          {}
 
@@ -187,13 +406,183 @@ remote agents
   none visible yet
 
 next
-  Phase 5: local agent registration
+  conu agents register <agent-id> <display-name>
+  conu agents heartbeat <agent-id>
   Phase 9: remote discovery and presence",
-            registry_state,
-            snapshot.paths.agent_registry.display()
-        )),
-        Err(error) => error,
+        registry, registry_path
+    )
+}
+
+struct RegisterArgs {
+    agent_id: String,
+    display_name: String,
+    kind: String,
+    json: bool,
+}
+
+struct HeartbeatArgs {
+    agent_id: String,
+    presence: AgentPresence,
+    json: bool,
+}
+
+fn parse_register_args(args: &[String]) -> Result<RegisterArgs, CliOutput> {
+    let mut json = false;
+    let mut kind = "local-agent".to_string();
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--kind" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(
+                        2,
+                        "usage: conu agents register <agent-id> <display-name> [--kind <kind>] [--json]",
+                    ));
+                };
+                kind = value.clone();
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => {
+                positional.push(value.to_string());
+                index += 1;
+            }
+        }
     }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(
+            2,
+            "usage: conu agents register <agent-id> <display-name> [--kind <kind>] [--json]",
+        ));
+    }
+
+    Ok(RegisterArgs {
+        agent_id: positional.remove(0),
+        display_name: positional.remove(0),
+        kind,
+        json,
+    })
+}
+
+fn parse_heartbeat_args(args: &[String]) -> Result<HeartbeatArgs, CliOutput> {
+    let mut json = false;
+    let mut presence = AgentPresence::Ready;
+    let mut agent_id = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--presence" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(
+                        2,
+                        "usage: conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]",
+                    ));
+                };
+                presence = parse_presence(value)?;
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => {
+                if agent_id.is_some() {
+                    return Err(CliOutput::failure(
+                        2,
+                        "usage: conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]",
+                    ));
+                }
+                agent_id = Some(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    let Some(agent_id) = agent_id else {
+        return Err(CliOutput::failure(
+            2,
+            "usage: conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]",
+        ));
+    };
+
+    Ok(HeartbeatArgs {
+        agent_id,
+        presence,
+        json,
+    })
+}
+
+fn parse_presence(value: &str) -> Result<AgentPresence, CliOutput> {
+    match value {
+        "ready" => Ok(AgentPresence::Ready),
+        "busy" => Ok(AgentPresence::Busy),
+        "idle" => Ok(AgentPresence::Idle),
+        "offline" => Ok(AgentPresence::Offline),
+        _ => Err(CliOutput::failure(
+            2,
+            "presence must be ready, busy, idle, or offline",
+        )),
+    }
+}
+
+fn wait_for_agent(home_override: Option<PathBuf>, agent_id: &str) -> bool {
+    if !runtime_is_live(home_override.clone()) {
+        return false;
+    }
+
+    for _ in 0..40 {
+        if agents::agent_exists(home_override.clone(), agent_id).unwrap_or(false) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    false
+}
+
+fn wait_for_agent_presence(
+    home_override: Option<PathBuf>,
+    agent_id: &str,
+    presence: AgentPresence,
+) -> bool {
+    if !runtime_is_live(home_override.clone()) {
+        return false;
+    }
+
+    for _ in 0..40 {
+        if agents::list_local_agents(home_override.clone())
+            .map(|agents| {
+                agents
+                    .iter()
+                    .any(|agent| agent.agent_id == agent_id && agent.presence == presence)
+            })
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    false
+}
+
+fn runtime_is_live(home_override: Option<PathBuf>) -> bool {
+    runtime::read_runtime(home_override)
+        .map(|status| status.is_live())
+        .unwrap_or(false)
 }
 
 fn render_pair(args: &[String]) -> CliOutput {
@@ -202,14 +591,14 @@ fn render_pair(args: &[String]) -> CliOutput {
             r#"{
   "status": "reserved",
   "phase": "Phase 7",
-  "message": "pairing code generation is not active in Phase 4"
+  "message": "pairing code generation is not active in Phase 5"
 }"#,
         ),
         Ok(false) => CliOutput::success(
             r"conU pair
 
 status: reserved for Phase 7
-code: not generated in Phase 4
+code: not generated in Phase 5
 purpose: create trust between two conUD runtimes",
         ),
         Err(error) => error,
@@ -223,7 +612,7 @@ fn render_join(args: &[String]) -> CliOutput {
                 r#"{
   "status": "reserved",
   "phase": "Phase 7",
-  "message": "join validation is not active in Phase 4"
+  "message": "join validation is not active in Phase 5"
 }"#,
             ),
             Err(error) => error,
@@ -236,27 +625,44 @@ fn render_join(args: &[String]) -> CliOutput {
 
 status: reserved for Phase 7
 code: accepted for command shape only
-action: no trust entry created in Phase 4",
+action: no trust entry created in Phase 5",
         ),
         Err(error) => error,
     }
 }
 
-fn render_connect(args: &[String]) -> CliOutput {
+fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     if let Some(error) = reject_args(args) {
         return error;
     }
+    let local_agents = agents::list_local_agents(home_override).unwrap_or_default();
+    let local = if local_agents.is_empty() {
+        "none registered".to_string()
+    } else {
+        local_agents
+            .iter()
+            .map(|agent| {
+                format!(
+                    "{} ({}, {})",
+                    agent.agent_id,
+                    agent.presence.as_str(),
+                    agent.kind
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
 
-    CliOutput::success(
+    CliOutput::success(format!(
         r"conU connect
 
 selector
-  source local agent   none registered
+  source local agent   {local}
   target remote agent  none visible
   mode                 message | stream | room | observe
 
-status: waiting for Phase 5 local agents and Phase 9 remote discovery",
-    )
+status: waiting for Phase 6 local messaging and Phase 9 remote discovery",
+    ))
 }
 
 fn render_watch(args: &[String]) -> CliOutput {
@@ -423,7 +829,11 @@ next
     )
 }
 
-fn render_status_text(snapshot: &StateSnapshot, runtime_status: &RuntimeStatus) -> String {
+fn render_status_text(
+    snapshot: &StateSnapshot,
+    runtime_status: &RuntimeStatus,
+    local_agents: &[LocalAgentRecord],
+) -> String {
     let node = snapshot
         .node
         .as_ref()
@@ -442,7 +852,7 @@ runtime
   conUD         {}
   pid           {}
   health        {}
-  local IPC     reserved for Phase 5
+  local IPC     file gateway active
   relay         not available until Phase 8
 
 identity
@@ -454,7 +864,7 @@ identity
   trust store   {}
 
 agents
-  local         0 registered
+  local         {} registered
   registry      {}
   remote        0 visible
 
@@ -469,11 +879,16 @@ privacy
         snapshot.paths.home.display(),
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
+        local_agents.len(),
         ready_label(snapshot.agent_registry_exists)
     )
 }
 
-fn render_status_json(snapshot: &StateSnapshot, runtime_status: &RuntimeStatus) -> String {
+fn render_status_json(
+    snapshot: &StateSnapshot,
+    runtime_status: &RuntimeStatus,
+    local_agents: &[LocalAgentRecord],
+) -> String {
     let node = snapshot
         .node
         .as_ref()
@@ -492,7 +907,7 @@ fn render_status_json(snapshot: &StateSnapshot, runtime_status: &RuntimeStatus) 
     "pid": {},
     "heartbeatAgeSecs": {},
     "localHealth": "{}",
-    "localIpc": "phase_5",
+    "localIpc": "file_gateway",
     "relay": "phase_8"
   }},
   "identity": {{
@@ -504,7 +919,7 @@ fn render_status_json(snapshot: &StateSnapshot, runtime_status: &RuntimeStatus) 
     "trustStore": "{}"
   }},
   "agents": {{
-    "local": 0,
+    "local": {},
     "registry": "{}",
     "remote": 0
   }},
@@ -522,6 +937,7 @@ fn render_status_json(snapshot: &StateSnapshot, runtime_status: &RuntimeStatus) 
         json_escape(&snapshot.paths.home.display().to_string()),
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
+        local_agents.len(),
         ready_label(snapshot.agent_registry_exists)
     )
 }
@@ -534,6 +950,8 @@ Usage:
   conu init
   conu status [--json]
   conu agents [--json]
+  conu agents register <agent-id> <display-name> [--kind <kind>] [--json]
+  conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
   conu peers [--json]
   conu pair [--json]
   conu join <code> [--json]
@@ -545,7 +963,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 4 adds the conUD daemon skeleton and local runtime heartbeat. Agent IPC, pairing, relay, and streaming arrive in later phases."
+Phase 5 adds metadata-only local agent registration through the conUD file gateway. Pairing, relay, messaging, and streaming arrive in later phases."
         .to_string()
 }
 
@@ -774,7 +1192,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_four_commands_are_registered() {
+    fn phase_five_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [
@@ -786,6 +1204,76 @@ mod tests {
 
         let join = run(["join", "123456"]);
         assert_eq!(join.code, 0);
+    }
+
+    #[test]
+    fn agents_register_queues_metadata_request() {
+        let home = temp_home("agent-register-queued");
+
+        let output = run_with_home(
+            [
+                "agents",
+                "register",
+                "agent.codex",
+                "Codex Desktop",
+                "--kind",
+                "coding-agent",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("status: queued"));
+        assert!(
+            output
+                .stdout
+                .contains("payload view  contents are not displayed")
+        );
+        assert!(state::StatePaths::from_home(home).ipc_inbox_dir.exists());
+    }
+
+    #[test]
+    fn agents_list_persisted_local_agent() {
+        let home = temp_home("agent-list");
+        let registration = AgentRegistration::new("agent.codex", "Codex Desktop", "coding-agent")
+            .expect("valid registration");
+        agents::submit_registration(Some(home.clone()), registration).expect("request submits");
+        agents::process_gateway_requests(Some(home.clone())).expect("request processes");
+
+        let output = run_with_home(["agents"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("agent.codex"));
+        assert!(output.stdout.contains("Codex Desktop"));
+        assert!(output.stdout.contains("ready"));
+    }
+
+    #[test]
+    fn agents_json_lists_persisted_local_agent() {
+        let home = temp_home("agent-json");
+        let registration = AgentRegistration::new("agent.codex", "Codex Desktop", "coding-agent")
+            .expect("valid registration");
+        agents::submit_registration(Some(home.clone()), registration).expect("request submits");
+        agents::process_gateway_requests(Some(home.clone())).expect("request processes");
+
+        let output = run_with_home(["agents", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"agentId\": \"agent.codex\""));
+        assert!(output.stdout.contains("\"displayName\": \"Codex Desktop\""));
+    }
+
+    #[test]
+    fn agents_heartbeat_queues_presence_request() {
+        let home = temp_home("agent-heartbeat");
+        let output = run_with_home(
+            ["agents", "heartbeat", "agent.codex", "--presence", "busy"],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("status: queued"));
+        assert!(output.stdout.contains("presence: busy"));
     }
 
     #[test]
@@ -863,7 +1351,7 @@ mod tests {
 
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("\"conud\": \"offline\""));
-        assert!(output.stdout.contains("\"localIpc\": \"phase_5\""));
+        assert!(output.stdout.contains("\"localIpc\": \"file_gateway\""));
         assert!(output.stdout.contains("\"state\": \"initialized\""));
         assert!(output.stdout.contains("\"node\": \"node_"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));

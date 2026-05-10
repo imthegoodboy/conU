@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 4 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, and `conu start` launches the local `conUD` runtime skeleton.
+Phase 5 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, and local agents can register metadata and presence through the file-backed gateway.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -42,12 +42,35 @@ agents/registry.toml   local agent registry skeleton
 runtime/status.toml    conUD heartbeat/status metadata
 runtime/conud.lock     local runtime process lock
 runtime/stop.request   graceful shutdown request file
+runtime/ipc/inbox/     metadata-only agent gateway requests
+runtime/ipc/processed/ processed gateway requests
+runtime/ipc/rejected/  rejected gateway requests and safe reasons
 sessions/              future runtime sessions
 mailbox/               future encrypted mailbox storage
-logs/                  future payload-safe logs
+logs/conud.log         runtime metadata log
+logs/agents.log        local agent metadata log
 ```
 
-No private message payloads or secret keys are stored by Phase 4. Runtime logs contain metadata only, such as event name, pid, node id, and `payload=not_observed`.
+No private message payloads or secret keys are stored by Phase 5. Runtime and agent logs contain metadata only, such as event name, pid, node id, agent id, and `payload=not_observed`.
+
+## Local Agent Gateway
+
+Phase 5 exposes a local, metadata-only gateway for agent registration and presence:
+
+```bash
+conu agents register agent.codex "Codex Desktop" --kind coding-agent
+conu agents heartbeat agent.codex --presence busy
+conu agents
+conu agents --json
+```
+
+When `conUD` is running, it processes pending requests from `runtime/ipc/inbox/` and moves them to `processed/` or `rejected/`. Without a running daemon, requests remain queued and can be processed manually:
+
+```bash
+conud --process-ipc
+```
+
+This gateway does not send or receive message payloads yet. Opaque local messaging starts in Phase 6.
 
 ## Development
 
@@ -72,6 +95,9 @@ cargo run -p conu-cli -- init
 cargo run -p conu-cli -- status
 cargo run -p conu-cli -- status --json
 cargo run -p conu-cli -- agents
+cargo run -p conu-cli -- agents --json
+cargo run -p conu-cli -- agents register agent.codex "Codex Desktop" --kind coding-agent
+cargo run -p conu-cli -- agents heartbeat agent.codex --presence busy
 cargo run -p conu-cli -- pair
 cargo run -p conu-cli -- join 482913
 cargo run -p conu-cli -- connect
@@ -80,6 +106,7 @@ cargo run -p conu-cli -- start
 cargo run -p conu-cli -- stop
 cargo run -p conud -- --check
 cargo run -p conud -- --once
+cargo run -p conud -- --process-ipc
 cargo run -p conu-relay -- --check
 ```
 
