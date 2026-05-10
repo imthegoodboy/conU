@@ -9,9 +9,9 @@ Agents own the conversation.
 conU owns the connection.
 ```
 
-## Current Phase
+## Current Status
 
-Phase 1: Rust workspace scaffold.
+Phase 2 is complete. The CLI identity and dashboard shell exists; Phase 3 will add real local identity and persistent state.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -38,11 +38,17 @@ rustup toolchain install stable-x86_64-pc-windows-gnu
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 ```
 
-Useful scaffold commands:
+Useful CLI commands:
 
 ```bash
+cargo run -p conu-cli --
+cargo run -p conu-cli -- init
 cargo run -p conu-cli -- status
-cargo run -p conu-cli -- components
+cargo run -p conu-cli -- agents
+cargo run -p conu-cli -- pair
+cargo run -p conu-cli -- join 482913
+cargo run -p conu-cli -- connect
+cargo run -p conu-cli -- watch
 cargo run -p conud -- --check
 cargo run -p conu-relay -- --check
 ```

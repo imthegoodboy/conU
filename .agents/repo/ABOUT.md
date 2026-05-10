@@ -6,7 +6,15 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository is still in planning and project-memory setup.
+The repository has completed Phase 2.
+
+Implemented so far:
+
+- project memory and architecture
+- Rust workspace scaffold
+- CLI identity/dashboard command shell
+- payload-safe protocol scaffold
+- daemon and relay placeholder binaries
 
 Current important files:
 
@@ -33,6 +41,14 @@ crates/
 |- conu-relay/     hosted relay/bootstrap service
 `- conu-sdk/       agent-facing client libraries later
 ```
+
+Current Rust crates:
+
+- `crates/conu-cli`
+- `crates/conud`
+- `crates/conu-core`
+- `crates/conu-protocol`
+- `crates/conu-relay`
 
 ## Non-Negotiable Product Rule
 

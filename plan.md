@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 2 - CLI Identity And Dashboard
+Current phase: Phase 3 - Local Identity And Persistent State
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -166,7 +166,7 @@ Next:
 
 ## Phase 2 - CLI Identity And Dashboard
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -187,9 +187,58 @@ conu watch
 
 Exit criteria:
 
-- CLI renders cleanly on Windows terminals.
-- No private payload concepts are displayed.
-- Commands have helpful structured output.
+- [x] CLI renders cleanly on Windows terminals.
+- [x] No private payload contents are displayed.
+- [x] Commands have helpful structured output.
+
+Completed work:
+
+- Created GitHub issue #3 for Phase 2.
+- Created and pushed branch `codex/phase-2-cli-dashboard`.
+- Refactored `conu-cli` into a testable library plus thin binary adapter.
+- Added ASCII dashboard for `conu`.
+- Added command shell for `init`, `status`, `agents`, `peers`, `pair`, `join <code>`, `connect`, `watch`, `components`, and reserved `start`.
+- Added text and JSON status/agent outputs where useful.
+- Kept Phase 3+ behavior honest: no persistent identity, trust store, IPC, relay, or real daemon state is created in Phase 2.
+- Added tests for command registration, dashboard rendering, status JSON, join usage, unknown command handling, and watch content privacy.
+- Updated README and repo overview for the completed CLI shell.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `plan.md`
+- `crates/conu-cli/Cargo.toml`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-cli/src/main.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli --` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- init` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- status --json` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- agents` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- pair` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- join 482913` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- connect` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- watch` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- peers --json` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- start` passed.
+
+Known gaps:
+
+- No real local identity is created; that remains Phase 3.
+- No real daemon lifecycle is implemented; that remains Phase 4.
+- No real local agent registration exists; that remains Phase 5.
+- Pairing/join are command-shape previews only; trust creation remains Phase 7.
+- Watch shows a static transport view only; live animation remains Phase 10.
+
+Next:
+
+- Start Phase 3: local identity, config, trust store skeleton, and safe state path resolution.
 
 ## Phase 3 - Local Identity And Persistent State
 
@@ -484,4 +533,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 0 started. Architecture and agent memory created. Waiting for user approval before implementation.
 2026-05-10 - Phase 0 completed. User approved implementation and Phase 1 started.
 2026-05-10 - Phase 1 completed. Rust workspace scaffold created and validated with cargo fmt/check/test plus binary smoke commands using stable-x86_64-pc-windows-gnu. Next: Phase 2 CLI identity and dashboard.
+2026-05-10 - Phase 2 completed. CLI dashboard and command shell created with payload-safe outputs, tests, and smoke validation. Next: Phase 3 local identity and persistent state.
 ```

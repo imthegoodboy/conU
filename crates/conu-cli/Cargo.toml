@@ -13,5 +13,9 @@ path = "src/main.rs"
 [dependencies]
 conu-core.workspace = true
 
+[lib]
+name = "conu_cli"
+path = "src/lib.rs"
+
 [lints]
 workspace = true
