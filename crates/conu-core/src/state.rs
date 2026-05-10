@@ -1,9 +1,9 @@
 //! Local persistent state for conU.
 //!
-//! Phase 5 keeps this intentionally small and std-only: a locally generated
-//! node id, config, trust store skeleton, agent registry, runtime metadata, and
-//! local gateway inbox. Secret keys and encrypted payload storage belong to
-//! later phases.
+//! Phase 6 keeps this intentionally small and std-only: a locally generated
+//! node id, config, trust store skeleton, agent registry, runtime metadata,
+//! local gateway inboxes, and local opaque message inboxes. Secret keys and
+//! encrypted remote mailbox storage belong to later phases.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -28,6 +28,9 @@ const IPC_DIR: &str = "ipc";
 const IPC_INBOX_DIR: &str = "inbox";
 const IPC_PROCESSED_DIR: &str = "processed";
 const IPC_REJECTED_DIR: &str = "rejected";
+const MESSAGES_DIR: &str = "messages";
+const MESSAGE_INBOX_DIR: &str = "inbox";
+const MESSAGE_RECEIPTS_DIR: &str = "receipts";
 const SESSIONS_DIR: &str = "sessions";
 const MAILBOX_DIR: &str = "mailbox";
 const LOGS_DIR: &str = "logs";
@@ -49,6 +52,13 @@ pub struct StatePaths {
     pub ipc_inbox_dir: PathBuf,
     pub ipc_processed_dir: PathBuf,
     pub ipc_rejected_dir: PathBuf,
+    pub message_ipc_dir: PathBuf,
+    pub message_ipc_inbox_dir: PathBuf,
+    pub message_ipc_processed_dir: PathBuf,
+    pub message_ipc_rejected_dir: PathBuf,
+    pub messages_dir: PathBuf,
+    pub message_inbox_dir: PathBuf,
+    pub message_receipts_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub mailbox_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -70,6 +80,8 @@ impl StatePaths {
         let agents_dir = home.join(AGENTS_DIR);
         let runtime_dir = home.join(RUNTIME_DIR);
         let ipc_dir = runtime_dir.join(IPC_DIR);
+        let message_ipc_dir = ipc_dir.join(MESSAGES_DIR);
+        let messages_dir = home.join(MESSAGES_DIR);
 
         Self {
             node_identity: home.join(NODE_FILE),
@@ -84,7 +96,14 @@ impl StatePaths {
             ipc_inbox_dir: ipc_dir.join(IPC_INBOX_DIR),
             ipc_processed_dir: ipc_dir.join(IPC_PROCESSED_DIR),
             ipc_rejected_dir: ipc_dir.join(IPC_REJECTED_DIR),
+            message_ipc_inbox_dir: message_ipc_dir.join(IPC_INBOX_DIR),
+            message_ipc_processed_dir: message_ipc_dir.join(IPC_PROCESSED_DIR),
+            message_ipc_rejected_dir: message_ipc_dir.join(IPC_REJECTED_DIR),
+            message_ipc_dir,
             ipc_dir,
+            message_inbox_dir: messages_dir.join(MESSAGE_INBOX_DIR),
+            message_receipts_dir: messages_dir.join(MESSAGE_RECEIPTS_DIR),
+            messages_dir,
             sessions_dir: home.join(SESSIONS_DIR),
             mailbox_dir: home.join(MAILBOX_DIR),
             logs_dir: home.join(LOGS_DIR),
@@ -252,6 +271,13 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.ipc_inbox_dir,
         &paths.ipc_processed_dir,
         &paths.ipc_rejected_dir,
+        &paths.message_ipc_dir,
+        &paths.message_ipc_inbox_dir,
+        &paths.message_ipc_processed_dir,
+        &paths.message_ipc_rejected_dir,
+        &paths.messages_dir,
+        &paths.message_inbox_dir,
+        &paths.message_receipts_dir,
         &paths.sessions_dir,
         &paths.mailbox_dir,
         &paths.logs_dir,
@@ -483,6 +509,14 @@ mod tests {
         assert!(
             home.join(RUNTIME_DIR)
                 .join(IPC_DIR)
+                .join(IPC_INBOX_DIR)
+                .exists()
+        );
+        assert!(home.join(MESSAGES_DIR).join(MESSAGE_INBOX_DIR).exists());
+        assert!(
+            home.join(RUNTIME_DIR)
+                .join(IPC_DIR)
+                .join(MESSAGES_DIR)
                 .join(IPC_INBOX_DIR)
                 .exists()
         );

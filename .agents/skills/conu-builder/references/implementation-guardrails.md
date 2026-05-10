@@ -53,7 +53,17 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Presence heartbeat may update only an already registered local agent.
 - Rejected requests must not echo arbitrary request contents into CLI output, logs, tests, or `.error` files.
 - Agent logs must use metadata-only lines such as event, agent id, and `payload=not_observed`.
-- Do not add message send/receive, payload storage, remote discovery, or relay behavior to the gateway until the relevant later phase.
+- Do not add message send/receive, payload storage, remote discovery, or relay behavior to the Phase 5 registration inbox; Phase 6+ message work belongs in separate message routing modules and queues.
+
+## Local Message Routing Rules
+
+- Phase 6 local messages use a separate file-backed queue under `runtime/ipc/messages/`.
+- CLI message send must read payload bytes from stdin or a future SDK/gateway API, not from a direct command-line text argument.
+- Sender and recipient must both be registered local agents before conUD delivers an envelope.
+- Recipient inbox files may store opaque payload bytes for local delivery, but all CLI, log, receipt, processed-marker, and rejected-marker surfaces must show metadata only.
+- Rejected message requests must delete the original payload-bearing request and write only a safe reason.
+- Message logs must use metadata-only lines such as envelope id, from, to, byte count, and `payload=not_observed`.
+- Do not add remote message routing, relay forwarding, discovery, streams, or rooms while completing Phase 6.
 
 ## Privacy Rules
 

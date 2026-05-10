@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 5.
+The repository has completed Phase 6.
 
 Implemented so far:
 
@@ -21,8 +21,13 @@ Implemented so far:
 - local agent registration through `conu agents register`
 - local presence heartbeat through `conu agents heartbeat`
 - persisted local agent registry with capability metadata
+- local opaque envelope submission through `conu messages send --stdin`
+- local recipient inbox listing through `conu messages inbox`
+- metadata-only delivery receipts through `conu messages receipts`
+- conUD processing for local message delivery
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs
+- payload-safe message delivery metadata logs
 - payload-safe protocol scaffold
 - daemon and relay placeholder binaries
 

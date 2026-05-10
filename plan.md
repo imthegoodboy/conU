@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 6 - Opaque Envelope Messaging
+Current phase: Phase 7 - Pairing And Trust
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -462,7 +462,7 @@ Next:
 
 ## Phase 6 - Opaque Envelope Messaging
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -470,16 +470,71 @@ Implement local opaque message envelopes and local send/receive routing.
 
 Deliverables:
 
-- envelope type
-- message id
-- sender/receiver validation
-- local inbox
-- delivery receipt skeleton
+- [x] envelope type
+- [x] message id
+- [x] sender/receiver validation
+- [x] local inbox
+- [x] delivery receipt skeleton
 
 Exit criteria:
 
-- One local agent can send an opaque payload to another local agent.
-- CLI can show delivery metadata without showing payload.
+- [x] One local agent can send an opaque payload to another local agent.
+- [x] CLI can show delivery metadata without showing payload.
+
+Completed work:
+
+- Created GitHub issue #11 for Phase 6.
+- Created and pushed branch `codex/phase-6-opaque-messaging`.
+- Added std-only `conu_core::messages` local message routing module.
+- Added file-backed message request queue under `runtime/ipc/messages/`.
+- Added recipient inbox storage under `messages/inbox/<agent-id>/`.
+- Added metadata-only delivery receipts under `messages/receipts/`.
+- Added sender and recipient validation against the local registered agent registry.
+- Added `conu messages send <from-agent> <to-agent> --stdin`.
+- Added `conu messages inbox <agent-id>` and JSON output.
+- Added `conu messages receipts` and JSON output.
+- Wired conUD serve loop, `conud --once`, and `conud --process-ipc` to process local message requests.
+- Added payload-safe `logs/messages.log` metadata lines with `payload=not_observed`.
+- Ensured processed and rejected message request markers do not keep or display payload contents.
+- Updated README, repo overview, builder guardrails, repo map, and agent gateway contract.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `plan.md`
+- `crates/conu-cli/Cargo.toml`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-cli/src/main.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/messages.rs`
+- `crates/conu-core/src/runtime.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conud/src/main.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu build -p conud -p conu-cli` passed.
+- Live isolated `CONU_HOME` smoke passed: `conu init`, `conu start`, two `conu agents register` calls, `conu messages send agent.sender agent.receiver --stdin`, `conu messages inbox agent.receiver --json`, `conu messages receipts --json`, `conu stop`, and `conud --process-ipc`.
+- Smoke confirmed delivery status `delivered`, recipient inbox metadata, `delivered_local` receipt metadata, and `logs/messages.log` with `payload=not_observed`.
+- Explicit process check confirmed no `conud` process remained running after smoke.
+
+Known gaps:
+
+- Phase 6 is local-only; there is no remote relay, remote discovery, pairing, streams, rooms, or pub/sub yet.
+- Message payload bytes are stored as opaque local recipient-inbox envelope data, not displayed or logged. Encryption hardening and encrypted mailbox storage remain Phase 11 work.
+- The CLI can submit from stdin and list metadata, but SDK/MCP receive APIs arrive in Phase 12.
+- File-backed message IPC is intentionally simple; named pipes, Unix sockets, and binary framed IPC remain future production upgrades.
+
+Next:
+
+- Start Phase 7: pairing and trust records between runtimes, including code lifecycle, trust entry persistence, and revocation/listing groundwork.
 
 ## Phase 7 - Pairing And Trust
 
@@ -691,4 +746,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 3 completed. Local identity and persistent state added with idempotent init, status reads, tests, and isolated CONU_HOME smoke validation. Next: Phase 4 conUD daemon skeleton.
 2026-05-10 - Phase 4 completed. conUD daemon skeleton added with start/stop, runtime heartbeat status, stale restart handling, payload-safe logs, tests, and isolated CONU_HOME process smoke. Next: Phase 5 local IPC and agent registration.
 2026-05-10 - Phase 5 completed. File-backed local IPC gateway added with metadata-only agent registration, presence heartbeat, persisted local agent registry, conUD processing, CLI listing, tests, docs, and isolated CONU_HOME smoke validation. Next: Phase 6 opaque envelope messaging.
+2026-05-10 - Phase 6 completed. Local opaque envelope messaging added with stdin submission, registered sender/receiver validation, recipient inboxes, metadata-only receipts/logs, conUD processing, tests, docs, and isolated CONU_HOME smoke validation. Next: Phase 7 pairing and trust.
 ```

@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 5 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, and local agents can register metadata and presence through the file-backed gateway.
+Phase 6 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, and registered local agents can exchange opaque message envelopes through conUD.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -45,13 +45,17 @@ runtime/stop.request   graceful shutdown request file
 runtime/ipc/inbox/     metadata-only agent gateway requests
 runtime/ipc/processed/ processed gateway requests
 runtime/ipc/rejected/  rejected gateway requests and safe reasons
+runtime/ipc/messages/  opaque local message request queue
+messages/inbox/        delivered local opaque envelopes by recipient agent
+messages/receipts/     metadata-only local delivery receipts
 sessions/              future runtime sessions
 mailbox/               future encrypted mailbox storage
 logs/conud.log         runtime metadata log
 logs/agents.log        local agent metadata log
+logs/messages.log      local message delivery metadata log
 ```
 
-No private message payloads or secret keys are stored by Phase 5. Runtime and agent logs contain metadata only, such as event name, pid, node id, agent id, and `payload=not_observed`.
+Runtime, agent, and message logs contain metadata only, such as event name, pid, node id, agent id, envelope id, byte count, and `payload=not_observed`. Phase 6 local message payload bytes are stored only as opaque recipient-inbox envelope data; CLI output, receipts, processed markers, rejected markers, and logs do not display message contents. Until encryption hardening lands in Phase 11, agents should prefer already-encrypted payload bytes for sensitive local messages.
 
 ## Local Agent Gateway
 
@@ -70,7 +74,18 @@ When `conUD` is running, it processes pending requests from `runtime/ipc/inbox/`
 conud --process-ipc
 ```
 
-This gateway does not send or receive message payloads yet. Opaque local messaging starts in Phase 6.
+## Local Opaque Messages
+
+Phase 6 adds local-only message delivery between registered agents:
+
+```bash
+conu messages send agent.sender agent.receiver --stdin
+conu messages inbox agent.receiver
+conu messages inbox agent.receiver --json
+conu messages receipts
+```
+
+`conu messages send` reads bytes from stdin so payloads are not placed directly in the command line. When `conUD` is running, delivery is processed automatically. If the runtime is offline, message requests remain queued under `runtime/ipc/messages/inbox/` and can be processed with `conud --process-ipc`.
 
 ## Development
 
@@ -98,6 +113,9 @@ cargo run -p conu-cli -- agents
 cargo run -p conu-cli -- agents --json
 cargo run -p conu-cli -- agents register agent.codex "Codex Desktop" --kind coding-agent
 cargo run -p conu-cli -- agents heartbeat agent.codex --presence busy
+cargo run -p conu-cli -- messages send agent.sender agent.receiver --stdin
+cargo run -p conu-cli -- messages inbox agent.receiver --json
+cargo run -p conu-cli -- messages receipts --json
 cargo run -p conu-cli -- pair
 cargo run -p conu-cli -- join 482913
 cargo run -p conu-cli -- connect
