@@ -20,11 +20,19 @@ pub struct Component {
     pub responsibility: &'static str,
 }
 
-/// Static manifest for the Phase 1 workspace.
+/// Static manifest for the conU workspace.
 pub const COMPONENTS: &[Component] = &[
     Component {
         name: "conu-cli",
         responsibility: "human control room for runtime state and private transport flow",
+    },
+    Component {
+        name: "conu-sdk",
+        responsibility: "typed agent-facing API over conU-owned connection surfaces",
+    },
+    Component {
+        name: "conu-mcp",
+        responsibility: "MCP stdio adapter exposing conU as payload-safe agent tools",
     },
     Component {
         name: "conud",
@@ -51,7 +59,7 @@ pub fn scaffold_status(component: &str) -> String {
     )
 }
 
-/// Return true when the named component is part of the Phase 1 workspace.
+/// Return true when the named component is part of the conU workspace.
 pub fn has_component(name: &str) -> bool {
     COMPONENTS
         .iter()
@@ -66,6 +74,8 @@ mod tests {
     fn phase_one_manifest_contains_required_components() {
         for name in [
             "conu-cli",
+            "conu-sdk",
+            "conu-mcp",
             "conud",
             "conu-core",
             "conu-protocol",

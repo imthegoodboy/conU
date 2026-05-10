@@ -118,6 +118,20 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - CLI security output may show readiness booleans and key ids, but must never show private keys, shared secrets, plaintext payloads, or decrypted payloads.
 - Peer key agreement helpers are available for later live relay-backed encrypted delivery, but current remote sessions are still metadata mirrors.
 
+## SDK And MCP Rules
+
+- Phase 12 agent-facing APIs live in `crates/conu-sdk`, `crates/conu-mcp`, and `sdk/python/conu_sdk`.
+- The Rust SDK should wrap `conu-core` surfaces instead of duplicating file-format logic.
+- SDK send/list/status/receipt/stream methods must return metadata only unless the method is an explicit receive call.
+- `receive_message_bytes(agent_id, envelope_id)` must verify the envelope is present in that addressed local agent inbox before returning bytes.
+- `conu-mcp` uses MCP stdio: newline-delimited JSON-RPC on stdin/stdout.
+- `conu-mcp` stdout must contain only valid MCP messages. Use stderr only for infrastructure errors, never payloads.
+- MCP tools should return text content containing JSON-shaped results for compatibility, but send/list/status/stream results must not echo payload text.
+- `conu_receive_message` returns metadata by default and may return `payloadHex` only when `includePayload` is true.
+- `CONU_AGENT_ID` may bind one `conu-mcp` server to one local agent; bound servers must not act as another agent.
+- Python SDK wrappers should pass payload bytes through stdin and avoid printing/logging payloads.
+- TypeScript SDK is intentionally later; do not mark it complete until implemented and validated.
+
 ## Privacy Rules
 
 - Never log plaintext payloads.

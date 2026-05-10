@@ -32,7 +32,16 @@ crates/conu-relay
   std-only WebSocket relay service, session auth, metadata-only forwarding, relay/bootstrap groundwork
 
 crates/conu-sdk
-  agent gateway clients later
+  Rust agent-facing SDK over registration, presence, peers, messages, receive, streams, and security audit
+
+crates/conu-mcp
+  MCP stdio adapter exposing conU tools over newline-delimited JSON-RPC
+
+sdk/python/conu_sdk
+  stdlib Python wrapper around installed conu and conud binaries
+
+examples/python
+  Python local-agent integration examples
 ```
 
 ## Placement Rule

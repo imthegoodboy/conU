@@ -211,6 +211,51 @@ conu security audit [--json]
 
 New local message request and inbox files store encrypted-at-rest payload fields instead of `payload_hex`. New or updated local agent cards are signed in `agents/registry.toml`. `conu security audit` may report readiness and key ids, but it must not display private keys, shared secrets, plaintext payloads, or decrypted payloads.
 
+The Phase 12 SDK/MCP surface is the preferred agent integration path:
+
+```txt
+crates/conu-sdk          Rust SDK for typed local conU calls
+crates/conu-mcp          MCP stdio adapter for agent tool use
+sdk/python/conu_sdk      Python wrapper around conu/conud binaries
+```
+
+Rust SDK calls:
+
+```txt
+ConuClient::register_agent()
+ConuClient::set_presence()
+ConuClient::list_agents()
+ConuClient::list_peers()
+ConuClient::send_message_bytes()
+ConuClient::inbox_metadata()
+ConuClient::receive_message_bytes()
+ConuClient::open_stream()
+ConuClient::write_stream_bytes()
+ConuClient::close_stream()
+ConuClient::security_audit()
+```
+
+MCP tools:
+
+```txt
+conu_status
+conu_security_audit
+conu_register_agent
+conu_set_presence
+conu_process_queued
+conu_list_agents
+conu_list_peers
+conu_send_message
+conu_receive_message
+conu_open_stream
+conu_write_stream
+conu_close_stream
+```
+
+SDK/MCP receive is explicit. Normal list, send, receipt, status, and stream outputs remain metadata-only. Payload bytes may be returned only through `ConuClient::receive_message_bytes()` or `conu_receive_message` with `includePayload: true`, and only for an envelope present in the addressed local agent inbox.
+
+When launching `conu-mcp` for one agent, set `CONU_AGENT_ID`. A bound MCP server must reject register, presence, send, receive, stream-open, stream-write, and stream-close attempts for a different local agent.
+
 ## Safety
 
 "Full access" means full communication access inside trust boundaries. It does not mean raw filesystem, shell, network, or secret access.

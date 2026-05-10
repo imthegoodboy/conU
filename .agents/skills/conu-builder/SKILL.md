@@ -56,6 +56,9 @@ conUD
 Agent Gateway
   local entrance for agents
 
+SDK/MCP
+  agent-facing API and tool adapter
+
 Protocol
   control plane + data plane
 

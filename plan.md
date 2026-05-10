@@ -28,9 +28,9 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 12 - SDK And MCP Adapter
+Current phase: Phase 13 - Direct Transport And NAT Upgrade
 Status: not_started
-Last updated: 2026-05-10
+Last updated: 2026-05-11
 ```
 
 ## Phase 0 - Project Memory
@@ -130,6 +130,7 @@ Files changed:
 - `.gitignore`
 - `Cargo.toml`
 - `Cargo.lock`
+- `.gitignore`
 - `README.md`
 - `crates/conu-cli/Cargo.toml`
 - `crates/conu-cli/src/main.rs`
@@ -900,7 +901,7 @@ Next:
 
 ## Phase 12 - SDK And MCP Adapter
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -916,8 +917,72 @@ Deliverables:
 
 Exit criteria:
 
-- Agent can call register, peers, send, receive, stream.
-- MCP-capable agents can use conU as tools.
+- [x] Agent can call register, peers, send, receive, stream.
+- [x] MCP-capable agents can use conU as tools.
+
+Completed work:
+
+- Created GitHub issue #26 for Phase 12.
+- Created branch `codex/phase-12-sdk-mcp-adapter`.
+- Added `crates/conu-sdk`, a Rust SDK wrapping existing `conu-core` gateway, message, trust, session, stream, runtime, state, and security surfaces.
+- Added explicit addressed-agent receive API through `ConuClient::receive_message_bytes`.
+- Added `crates/conu-mcp`, a newline-delimited JSON-RPC MCP stdio adapter exposing conU as tools.
+- Added MCP tools for status, security audit, register, presence, process queued, list agents, list peers, send message, receive message, open stream, write stream, and close stream.
+- Added payload-safe MCP behavior: list/send/status/stream results are metadata-only, while `conu_receive_message` returns `payloadHex` only when `includePayload` is true.
+- Added optional `CONU_AGENT_ID` binding so one `conu-mcp` stdio server can be scoped to one local agent.
+- Added stdlib Python wrapper SDK under `sdk/python/conu_sdk`.
+- Added Rust and Python local-agent examples.
+- Updated README, user install guide, production/security docs, repo memory, agent gateway contract, implementation guardrails, repo map, and security checklist.
+- Checked current MCP transport docs and aligned the adapter with stdio JSON-RPC messages delimited by newlines.
+
+Files changed:
+
+- `Cargo.toml`
+- `Cargo.lock`
+- `README.md`
+- `docs/sdk-and-mcp.md`
+- `docs/user-install-and-agent-guide.md`
+- `docs/production-readiness.md`
+- `docs/security-hardening.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/SKILL.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-sdk/Cargo.toml`
+- `crates/conu-sdk/src/lib.rs`
+- `crates/conu-sdk/examples/local_agents.rs`
+- `crates/conu-mcp/Cargo.toml`
+- `crates/conu-mcp/src/lib.rs`
+- `crates/conu-mcp/src/main.rs`
+- `sdk/python/README.md`
+- `sdk/python/conu_sdk/__init__.py`
+- `examples/python/local_agent_pair.py`
+
+Validation:
+
+- `cargo fmt` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-sdk --example local_agents` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-mcp` stdio `tools/list` smoke passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- Python SDK smoke passed with local `target/debug/conu.exe` and `target/debug/conud.exe`.
+- Default `cargo check --workspace` still fails locally because the active MSVC toolchain cannot find `link.exe`; GNU toolchain validation passed.
+
+Known gaps:
+
+- TypeScript SDK remains future work.
+- MCP adapter is stdio-only; no HTTP MCP transport is implemented.
+- SDK/MCP local receive returns payload bytes only for local addressed inboxes; real remote data-plane delivery remains future work.
+- Capability grants and richer permission policy are not complete yet.
+- Packaging and installer support remain Phase 15.
+
+Next:
+
+- Start Phase 13: direct transport and NAT upgrade, including route selection, relay fallback integration in conUD, and live encrypted data-plane delivery groundwork.
 
 ## Phase 13 - Direct Transport And NAT Upgrade
 
@@ -1005,4 +1070,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 9 completed. conUD-owned remote session mirror, trusted remote agent cards, `conu sessions`, remote visibility in agents/status/connect, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 10 streams and watch animation.
 2026-05-10 - Phase 10 completed. Stream lifecycle metadata, stdin-only opaque stream writes, backpressure checks, watch event bus, private watch animation, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 11 encryption hardening.
 2026-05-10 - Phase 11 completed. Local security module added with Ed25519 signed agent cards, X25519 peer key agreement helpers, XChaCha20Poly1305 encrypted-at-rest message storage, replay protection, `conu security audit`, tests, docs, and GNU-toolchain validation. Next: Phase 12 SDK and MCP adapter.
+2026-05-11 - Phase 12 completed. Rust SDK, MCP stdio adapter, Python wrapper SDK, local agent examples, explicit addressed-agent receive API, tests, docs, and GNU-toolchain validation added. Next: Phase 13 direct transport and NAT upgrade.
 ```

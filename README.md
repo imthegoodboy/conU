@@ -11,11 +11,13 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 11 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, streams produce payload-safe watch events, and `conu security audit` reports hardened controls without showing secrets.
+Phase 12 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, and agents can now use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter.
 
 The repository currently contains compile-ready crate boundaries for:
 
 - `conu-cli`: human control room.
+- `conu-sdk`: Rust agent-facing API over conU local gateway surfaces.
+- `conu-mcp`: MCP stdio adapter exposing conU as agent tools.
 - `conud`: local daemon/runtime scaffold.
 - `conu-core`: shared runtime primitives and project invariants.
 - `conu-protocol`: protocol identities, agent cards, and opaque envelopes.
@@ -174,6 +176,21 @@ conu watch
 
 The stream layer is still metadata-first. Full live relay-backed byte streaming and encrypted stream transport are future hardening/transport work.
 
+## SDK And MCP Adapter
+
+Phase 12 adds agent-facing integrations:
+
+```bash
+cargo run -p conu-sdk --example local_agents
+cargo run -p conu-mcp
+```
+
+Rust agents can use `conu_sdk::ConuClient` to register, update presence, list agents/peers, send opaque bytes, receive local payload bytes for the addressed agent, and open/write/close streams. Python agents can use the stdlib wrapper under `sdk/python`.
+
+MCP-capable agents can launch `conu-mcp` as a stdio server. It exposes tools such as `conu_register_agent`, `conu_list_agents`, `conu_send_message`, `conu_receive_message`, `conu_open_stream`, and `conu_security_audit`. The adapter follows the current MCP stdio transport shape: newline-delimited JSON-RPC 2.0 messages on stdin/stdout. Tool list/send/status outputs remain metadata-only. Set `CONU_AGENT_ID` when launching one MCP server for one agent; then the adapter rejects attempts to act as another local agent. `conu_receive_message` returns payload bytes as `payloadHex` only when the addressed local agent explicitly passes `includePayload: true`.
+
+See `docs/sdk-and-mcp.md` for SDK examples, MCP tool contracts, and privacy rules.
+
 ## Development
 
 ```bash
@@ -224,6 +241,8 @@ cargo run -p conud -- --once
 cargo run -p conud -- --process-ipc
 cargo run -p conu-relay -- --check
 cargo run -p conu-relay -- --serve 127.0.0.1:8787
+cargo run -p conu-sdk --example local_agents
+cargo run -p conu-mcp
 ```
 
 When running from a development checkout, build `conud` first or set `CONUD_EXE` to the local daemon binary before using `conu start`.
