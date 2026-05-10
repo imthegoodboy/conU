@@ -2,6 +2,8 @@
 
 This document tracks what is ready, what is intentionally local-only, and what must be finished before a real public release.
 
+For hands-on install and agent usage instructions, see `docs/user-install-and-agent-guide.md`.
+
 ## Ready In The Current Repo
 
 - Rust workspace for CLI, runtime daemon, core, protocol, and relay.
