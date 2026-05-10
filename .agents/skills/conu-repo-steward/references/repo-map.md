@@ -23,7 +23,7 @@ crates/conud
   daemon process, local gateway/message processing, session manager, runtime lifecycle
 
 crates/conu-core
-  local state, runtime lifecycle, agent registry, local message routing, future trust/policy logic
+  local state, runtime lifecycle, agent registry, local message routing, trust store, future policy logic
 
 crates/conu-protocol
   envelopes, agent cards, control-plane messages, data-plane messages

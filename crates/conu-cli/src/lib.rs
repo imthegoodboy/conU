@@ -16,6 +16,7 @@ use conu_core::agents::{
 use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
+use conu_core::trust::{self, TrustStatus, TrustedPeer};
 use conu_protocol::OpaquePayload;
 
 /// A rendered CLI command result.
@@ -92,10 +93,11 @@ where
     match command {
         "init" => render_init(&args[1..], home_override),
         "status" => render_status(&args[1..], home_override),
-        "agents" | "peers" => render_agents(&args[1..], home_override),
+        "agents" => render_agents(&args[1..], home_override),
+        "peers" => render_peers(&args[1..], home_override),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
-        "pair" => render_pair(&args[1..]),
-        "join" => render_join(&args[1..]),
+        "pair" => render_pair(&args[1..], home_override),
+        "join" => render_join(&args[1..], home_override),
         "connect" => render_connect(&args[1..], home_override),
         "watch" => render_watch(&args[1..]),
         "components" => render_components(&args[1..]),
@@ -113,8 +115,16 @@ where
 fn render_dashboard(home_override: Option<PathBuf>) -> String {
     let snapshot = state::read_state(home_override.clone()).ok();
     let runtime_status = runtime::read_runtime(home_override.clone()).ok();
-    let local_agents = agents::list_local_agents(home_override)
+    let local_agents = agents::list_local_agents(home_override.clone())
         .map(|agents| agents.len())
+        .unwrap_or(0);
+    let trusted_peers = trust::list_peers(home_override)
+        .map(|peers| {
+            peers
+                .iter()
+                .filter(|peer| peer.status == TrustStatus::Trusted)
+                .count()
+        })
         .unwrap_or(0);
     let node = snapshot
         .as_ref()
@@ -145,7 +155,7 @@ control room
   node          {node}
   state         {state}
   local agents  {local_agents}
-  remote peers  none           pairing arrives in Phase 7
+  remote peers  {trusted_peers} trusted
   network       offline        relay arrives in Phase 8
 
 quick commands
@@ -155,6 +165,7 @@ quick commands
   conu agents register <agent-id> <display-name>
   conu messages send <from-agent> <to-agent> --stdin
   conu pair
+  conu peers
   conu join <code>
   conu connect
   conu watch",
@@ -182,8 +193,12 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         Ok(status) => status,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
-    let local_agents = match agents::list_local_agents(home_override) {
+    let local_agents = match agents::list_local_agents(home_override.clone()) {
         Ok(agents) => agents,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
+    let peers = match trust::list_peers(home_override) {
+        Ok(peers) => peers,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
 
@@ -192,11 +207,13 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
             &snapshot,
             &runtime_status,
             &local_agents,
+            &peers,
         )),
         Ok(false) => CliOutput::success(render_status_text(
             &snapshot,
             &runtime_status,
             &local_agents,
+            &peers,
         )),
         Err(error) => error,
     }
@@ -1002,48 +1019,240 @@ fn wait_for_message_delivery(
     None
 }
 
-fn render_pair(args: &[String]) -> CliOutput {
-    match json_flag(args) {
-        Ok(true) => CliOutput::success(
-            r#"{
-  "status": "reserved",
-  "phase": "Phase 7",
-  "message": "pairing code generation is not active in Phase 6"
-}"#,
-        ),
-        Ok(false) => CliOutput::success(
-            r"conU pair
+fn render_peers(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("revoke") => render_peer_revoke(&args[1..], home_override),
+        _ => render_peer_list(args, home_override),
+    }
+}
 
-status: reserved for Phase 7
-code: not generated in Phase 6
-purpose: create trust between two conUD runtimes",
-        ),
+fn render_peer_list(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let peers = match trust::list_peers(home_override) {
+        Ok(peers) => peers,
+        Err(error) => return CliOutput::failure(1, format!("conU peers failed\n\n{error}")),
+    };
+
+    match json_flag(args) {
+        Ok(true) => CliOutput::success(render_peers_json(&peers)),
+        Ok(false) => CliOutput::success(render_peers_text(&peers)),
         Err(error) => error,
     }
 }
 
-fn render_join(args: &[String]) -> CliOutput {
-    if args.iter().any(|arg| arg == "--json") {
-        return match join_code(args) {
-            Ok(_) => CliOutput::success(
-                r#"{
-  "status": "reserved",
-  "phase": "Phase 7",
-  "message": "join validation is not active in Phase 6"
-}"#,
-            ),
-            Err(error) => error,
-        };
+fn render_peer_revoke(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let (peer_node_id, json) = match parse_peer_revoke_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let report = match trust::revoke_peer(home_override, &peer_node_id) {
+        Ok(report) => report,
+        Err(error) => return CliOutput::failure(1, format!("conU peers revoke failed\n\n{error}")),
+    };
+
+    if json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "{}",
+  "peerNodeId": "{}",
+  "changed": {},
+  "contentsDisplayed": false
+}}"#,
+            report.peer.status.as_str(),
+            json_escape(&report.peer.peer_node_id),
+            report.changed
+        ));
     }
 
-    match join_code(args) {
-        Ok(_) => CliOutput::success(
-            r"conU join
+    CliOutput::success(format!(
+        r"conU peers revoke
 
-status: reserved for Phase 7
-code: accepted for command shape only
-action: no trust entry created in Phase 6",
-        ),
+status: {}
+peer: {}
+changed: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        report.peer.status.as_str(),
+        report.peer.peer_node_id,
+        report.changed
+    ))
+}
+
+fn render_peers_json(peers: &[TrustedPeer]) -> String {
+    let trusted = trusted_peer_count(peers);
+    let peer_items = peers
+        .iter()
+        .map(|peer| {
+            format!(
+                r#"    {{
+      "peerNodeId": "{}",
+      "displayName": "{}",
+      "status": "{}",
+      "source": "{}",
+      "updatedAtUnix": {}
+    }}"#,
+                json_escape(&peer.peer_node_id),
+                json_escape(&peer.display_name),
+                peer.status.as_str(),
+                json_escape(&peer.source),
+                peer.updated_at_unix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let peers = if peer_items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{peer_items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "peers": {},
+  "trusted": {},
+  "contentsDisplayed": false
+}}"#,
+        peers, trusted
+    )
+}
+
+fn render_peers_text(peers: &[TrustedPeer]) -> String {
+    let rows = if peers.is_empty() {
+        "  none trusted yet".to_string()
+    } else {
+        peers
+            .iter()
+            .map(|peer| {
+                format!(
+                    "  {}  {}  {}",
+                    peer.peer_node_id,
+                    peer.status.as_str(),
+                    peer.display_name
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU peers
+
+trusted peers
+{rows}
+
+next
+  conu pair
+  conu join <code>
+  conu peers revoke <peer-node-id>"
+    )
+}
+
+fn parse_peer_revoke_args(args: &[String]) -> Result<(String, bool), CliOutput> {
+    let mut json = false;
+    let mut peer = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => {
+                if peer.is_some() {
+                    return Err(CliOutput::failure(
+                        2,
+                        "usage: conu peers revoke <peer-node-id> [--json]",
+                    ));
+                }
+                peer = Some(value.to_string());
+            }
+        }
+    }
+
+    let Some(peer) = peer else {
+        return Err(CliOutput::failure(
+            2,
+            "usage: conu peers revoke <peer-node-id> [--json]",
+        ));
+    };
+
+    Ok((peer, json))
+}
+
+fn render_pair(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match json_flag(args) {
+        Ok(json) => match trust::create_pairing_invite(home_override) {
+            Ok(invite) => {
+                if json {
+                    CliOutput::success(format!(
+                        r#"{{
+  "status": "pairing_code_created",
+  "code": "{}",
+  "peerNodeId": "{}",
+  "expiresAtUnix": {},
+  "relay": "phase_8",
+  "contentsDisplayed": false
+}}"#,
+                        invite.code,
+                        json_escape(&invite.peer_node_id),
+                        invite.expires_at_unix
+                    ))
+                } else {
+                    CliOutput::success(format!(
+                        r"conU pair
+
+status: pairing code created
+code: {}
+peer: {}
+expires at unix: {}
+relay: arrives in Phase 8
+
+next
+  conu join {}",
+                        invite.code, invite.peer_node_id, invite.expires_at_unix, invite.code
+                    ))
+                }
+            }
+            Err(error) => CliOutput::failure(1, format!("conU pair failed\n\n{error}")),
+        },
+        Err(error) => error,
+    }
+}
+
+fn render_join(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = args.iter().any(|arg| arg == "--json");
+
+    match join_code(args) {
+        Ok(code) => match trust::join_pairing_code(home_override, code) {
+            Ok(report) => {
+                if json {
+                    CliOutput::success(format!(
+                        r#"{{
+  "status": "trusted",
+  "peerNodeId": "{}",
+  "displayName": "{}",
+  "contentsDisplayed": false
+}}"#,
+                        json_escape(&report.peer.peer_node_id),
+                        json_escape(&report.peer.display_name)
+                    ))
+                } else {
+                    CliOutput::success(format!(
+                        r"conU join
+
+status: trusted
+peer: {}
+name: {}
+source: local pairing code
+
+next
+  conu peers",
+                        report.peer.peer_node_id, report.peer.display_name
+                    ))
+                }
+            }
+            Err(error) => CliOutput::failure(1, format!("conU join failed\n\n{error}")),
+        },
         Err(error) => error,
     }
 }
@@ -1250,6 +1459,7 @@ fn render_status_text(
     snapshot: &StateSnapshot,
     runtime_status: &RuntimeStatus,
     local_agents: &[LocalAgentRecord],
+    peers: &[TrustedPeer],
 ) -> String {
     let node = snapshot
         .node
@@ -1283,7 +1493,7 @@ identity
 agents
   local         {} registered
   registry      {}
-  remote        0 visible
+  trusted peers {}
 
 privacy
   payload view  contents are not displayed by conU",
@@ -1297,7 +1507,8 @@ privacy
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
         local_agents.len(),
-        ready_label(snapshot.agent_registry_exists)
+        ready_label(snapshot.agent_registry_exists),
+        trusted_peer_count(peers)
     )
 }
 
@@ -1305,6 +1516,7 @@ fn render_status_json(
     snapshot: &StateSnapshot,
     runtime_status: &RuntimeStatus,
     local_agents: &[LocalAgentRecord],
+    peers: &[TrustedPeer],
 ) -> String {
     let node = snapshot
         .node
@@ -1338,7 +1550,7 @@ fn render_status_json(
   "agents": {{
     "local": {},
     "registry": "{}",
-    "remote": 0
+    "trustedPeers": {}
   }},
   "privacy": {{
     "contentsDisplayed": false
@@ -1355,7 +1567,8 @@ fn render_status_json(
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
         local_agents.len(),
-        ready_label(snapshot.agent_registry_exists)
+        ready_label(snapshot.agent_registry_exists),
+        trusted_peer_count(peers)
     )
 }
 
@@ -1373,6 +1586,7 @@ Usage:
   conu messages inbox <agent-id> [--json]
   conu messages receipts [--json]
   conu peers [--json]
+  conu peers revoke <peer-node-id> [--json]
   conu pair [--json]
   conu join <code> [--json]
   conu connect
@@ -1383,7 +1597,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 6 adds local opaque envelope delivery through conUD. Pairing, relay, remote discovery, and streaming arrive in later phases."
+Phase 7 adds local pairing invitations and trusted peer records. Relay, remote discovery, and streaming arrive in later phases."
         .to_string()
 }
 
@@ -1505,6 +1719,13 @@ fn runtime_pid_label(status: &RuntimeStatus) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
+fn trusted_peer_count(peers: &[TrustedPeer]) -> usize {
+    peers
+        .iter()
+        .filter(|peer| peer.status == TrustStatus::Trusted)
+        .count()
+}
+
 fn json_u32(value: Option<u32>) -> String {
     value
         .map(|value| value.to_string())
@@ -1616,20 +1837,63 @@ mod tests {
     }
 
     #[test]
-    fn phase_six_commands_are_registered() {
+    fn phase_seven_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [
-            "init", "status", "agents", "pair", "connect", "watch", "stop",
+            "init", "status", "agents", "pair", "peers", "connect", "watch", "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
         }
 
-        let join = run(["join", "123456"]);
-        assert_eq!(join.code, 0);
         let receipts = run_with_home(["messages", "receipts"], Some(home));
         assert_eq!(receipts.code, 0);
+    }
+
+    #[test]
+    fn pair_and_join_create_trusted_peer() {
+        let home = temp_home("pair-join");
+        let pair = run_with_home(["pair"], Some(home.clone()));
+        let code = pairing_code_from_output(&pair.stdout);
+
+        let join = run_with_home(["join", &code], Some(home.clone()));
+        let peers = run_with_home(["peers"], Some(home));
+
+        assert_eq!(pair.code, 0, "{}", pair.stderr);
+        assert_eq!(join.code, 0, "{}", join.stderr);
+        assert!(join.stdout.contains("status: trusted"));
+        assert!(peers.stdout.contains("peer_"));
+        assert!(peers.stdout.contains("trusted"));
+    }
+
+    #[test]
+    fn peers_json_and_revoke_are_metadata_only() {
+        let home = temp_home("peers-revoke");
+        let invite = trust::create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let joined = trust::join_pairing_code(Some(home.clone()), &invite.code).expect("join");
+
+        let peers = run_with_home(["peers", "--json"], Some(home.clone()));
+        let revoke = run_with_home(
+            ["peers", "revoke", &joined.peer.peer_node_id, "--json"],
+            Some(home.clone()),
+        );
+        let revoked = run_with_home(["peers"], Some(home));
+
+        assert_eq!(peers.code, 0, "{}", peers.stderr);
+        assert!(peers.stdout.contains("\"status\": \"trusted\""));
+        assert!(peers.stdout.contains("\"contentsDisplayed\": false"));
+        assert_eq!(revoke.code, 0, "{}", revoke.stderr);
+        assert!(revoke.stdout.contains("\"status\": \"revoked\""));
+        assert!(revoked.stdout.contains("revoked"));
+    }
+
+    #[test]
+    fn join_rejects_unknown_local_pairing_code() {
+        let output = run_with_home(["join", "123456"], Some(temp_home("join-missing")));
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("not available locally"));
     }
 
     #[test]
@@ -1870,6 +2134,7 @@ mod tests {
         assert!(output.stdout.contains("\"localIpc\": \"file_gateway\""));
         assert!(output.stdout.contains("\"state\": \"initialized\""));
         assert!(output.stdout.contains("\"node\": \"node_"));
+        assert!(output.stdout.contains("\"trustedPeers\": 0"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
     }
 
@@ -1907,6 +2172,14 @@ mod tests {
             .as_nanos();
 
         std::env::temp_dir().join(format!("conu-cli-test-{label}-{}-{nonce}", process::id()))
+    }
+
+    fn pairing_code_from_output(output: &str) -> String {
+        output
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("code: "))
+            .expect("pairing code line")
+            .to_string()
     }
 
     fn register_test_agent(home: &PathBuf, agent_id: &str) {
