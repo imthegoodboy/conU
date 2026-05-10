@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 8 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, registered local agents can exchange opaque message envelopes, local pairing/trust records can be created and revoked, and `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding.
+Phase 9 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, registered local agents can exchange opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, and conUD can sync remote session/discovery metadata for trusted peers.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -39,6 +39,7 @@ node.toml              local node id only, not a secret or auth credential
 config.toml            local runtime config skeleton
 trust.toml             trusted/revoked peer skeleton
 agents/registry.toml   local agent registry skeleton
+agents/remote.toml     mirrored trusted remote agent cards
 runtime/status.toml    conUD heartbeat/status metadata
 runtime/conud.lock     local runtime process lock
 runtime/stop.request   graceful shutdown request file
@@ -50,11 +51,12 @@ messages/inbox/        delivered local opaque envelopes by recipient agent
 messages/receipts/     metadata-only local delivery receipts
 pairing/invites/       pending local pairing invitations
 pairing/used/          consumed local pairing invitations
-sessions/              future runtime sessions
+sessions/registry.toml remote runtime session metadata
 mailbox/               future encrypted mailbox storage
 logs/conud.log         runtime metadata log
 logs/agents.log        local agent metadata log
 logs/messages.log      local message delivery metadata log
+logs/sessions.log      remote session sync metadata log
 ```
 
 Runtime, agent, and message logs contain metadata only, such as event name, pid, node id, agent id, envelope id, byte count, and `payload=not_observed`. Phase 6 local message payload bytes are stored only as opaque recipient-inbox envelope data; CLI output, receipts, processed markers, rejected markers, and logs do not display message contents. Until encryption hardening lands in Phase 11, agents should prefer already-encrypted payload bytes for sensitive local messages.
@@ -114,7 +116,22 @@ cargo run -p conu-relay -- --serve 127.0.0.1:8787
 
 Connected runtimes send `HELLO`, `FORWARD`, and `PING` frames. The relay answers with `WELCOME`, `ENVELOPE`, `SENT`, `UNDELIVERED`, `PONG`, or `ERROR` frames. Forwarding is metadata-only: the relay sees target node id, envelope id, and byte count, while payload fields are rejected and logs/output use `payload=not_observed` or `payload=opaque`.
 
-The relay is available now as a standalone service. conUD remote session management, remote agent discovery, reconnect loops, and encrypted payload hardening land in later phases.
+The relay is available now as a standalone service. Full relay-backed live session exchange, reconnect networking, and encrypted payload hardening land in later phases.
+
+## Remote Sessions And Discovery
+
+Phase 9 adds a conUD-owned remote session mirror for trusted peers:
+
+```bash
+conu sessions sync
+conu sessions
+conu sessions --json
+conu agents --json
+```
+
+`conu sessions sync` reads trusted peers, writes route/session metadata under `sessions/registry.toml`, mirrors visible remote agent cards into `agents/remote.toml`, and appends only metadata to `logs/sessions.log`. `conUD --process-ipc`, `conUD --once`, and the runtime serve loop also sync remote sessions.
+
+This phase is still metadata/discovery groundwork: remote agent cards are derived from trusted peer metadata until the full relay-backed session exchange lands. Payloads remain opaque and are never displayed by session or agent listing commands.
 
 ## Development
 
@@ -145,6 +162,8 @@ cargo run -p conu-cli -- agents heartbeat agent.codex --presence busy
 cargo run -p conu-cli -- messages send agent.sender agent.receiver --stdin
 cargo run -p conu-cli -- messages inbox agent.receiver --json
 cargo run -p conu-cli -- messages receipts --json
+cargo run -p conu-cli -- sessions sync
+cargo run -p conu-cli -- sessions --json
 cargo run -p conu-cli -- pair
 cargo run -p conu-cli -- join 123456
 cargo run -p conu-cli -- peers --json

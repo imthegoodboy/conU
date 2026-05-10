@@ -152,7 +152,26 @@ PONG payload=not_observed
 ERROR reason=<safe-reason> payload=not_observed
 ```
 
-Phase 8 does not yet expose this relay through the local agent gateway. conUD remote session management, remote agent discovery, reconnects, and relay-backed local commands begin in later phases.
+Phase 8 does not yet expose this relay through the local agent gateway. conUD remote session and discovery mirrors begin in Phase 9, while live relay-backed messaging/streaming lands later.
+
+The Phase 9 remote session surface is conUD-owned metadata sync:
+
+```txt
+sessions/registry.toml   remote runtime session metadata
+agents/remote.toml       mirrored trusted remote agent cards
+logs/sessions.log        metadata-only sync log
+```
+
+Supported commands:
+
+```txt
+conu sessions [--json]
+conu sessions sync [--json]
+conu agents [--json]
+conud --process-ipc
+```
+
+`conu sessions sync` reads trusted peers and mirrors route/session metadata so `conu agents` can show visible remote agents. It does not transfer private payloads and does not yet create an interactive live stream. Revoked peers must disappear from the active remote-agent mirror after sync.
 
 ## Safety
 

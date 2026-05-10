@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 8.
+The repository has completed Phase 9.
 
 Implemented so far:
 
@@ -32,9 +32,14 @@ Implemented so far:
 - std-only `conu-relay` WebSocket service
 - relay session authentication with a shared token
 - connected-runtime metadata forwarding with `WELCOME`, `ENVELOPE`, `SENT`, and `UNDELIVERED` frames
+- conUD-owned remote session sync through `conu sessions sync`
+- remote runtime session metadata under `sessions/registry.toml`
+- trusted remote agent mirror under `agents/remote.toml`
+- remote agents visible through `conu agents`
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs
 - payload-safe message delivery metadata logs
+- payload-safe remote session metadata logs
 - payload-safe protocol scaffold
 - daemon runtime skeleton and relay service binary
 

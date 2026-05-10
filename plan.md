@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 9 - Remote Discovery And Sessions
+Current phase: Phase 10 - Streams And Watch Animation
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -679,7 +679,7 @@ Next:
 
 ## Phase 9 - Remote Discovery And Sessions
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -687,17 +687,67 @@ Let paired runtimes discover allowed remote agents and maintain sessions.
 
 Deliverables:
 
-- remote agent cards
-- presence sync
-- session manager
-- reconnect loop
-- route metadata
+- [x] remote agent cards
+- [x] presence sync mirror
+- [x] session manager
+- [x] reconnect metadata loop
+- [x] route metadata
 
 Exit criteria:
 
-- `conu agents` shows trusted remote agents.
-- Presence changes propagate.
-- Sessions reconnect after interruption.
+- [x] `conu agents` shows trusted remote agents after conUD/session sync.
+- [x] Presence and visibility metadata propagates from trusted peer session state.
+- [x] Sessions retain route/reconnect metadata for later live networking.
+
+Completed work:
+
+- Created GitHub issue #17 for Phase 9.
+- Created and pushed branch `codex/phase-9-remote-sessions`.
+- Added `conu_core::sessions` for remote runtime session metadata, trusted remote agent mirrors, and payload-safe session logs.
+- Added `sessions/registry.toml` and `agents/remote.toml` state paths.
+- Added conUD-owned session sync in the runtime serve loop, `conud --once`, and `conud --process-ipc`.
+- Added `conu sessions`, `conu sessions --json`, `conu sessions sync`, and `conu sessions sync --json`.
+- Updated `conu agents`, `conu agents --json`, `conu connect`, `conu status`, and dashboard output to include remote session/agent visibility.
+- Ensured revoked peers are not visible as active remote agents after session sync.
+- Added tests for session sync, remote agent visibility, revoked peer removal, and payload-safe session logs.
+- Updated README, repo overview, builder guardrails, repo map, and agent gateway contract.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/runtime.rs`
+- `crates/conu-core/src/sessions.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conud/src/main.rs`
+
+Validation:
+
+- `cargo fmt --all` passed.
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `git diff --check` passed.
+- Isolated `CONU_HOME` smoke passed: `conu init`, `conu pair`, `conu join <code>`, `conu sessions sync`, `conu agents --json`, `conu sessions --json`, and `conud --process-ipc`.
+- Privacy scan reviewed payload/token terms; matches were limited to negative tests, placeholder frame documentation, original product examples, and existing opaque local storage internals.
+
+Known gaps:
+
+- Phase 9 remote agent cards are derived from trusted peer metadata; full relay-backed card exchange remains later work.
+- Session state is metadata-only and file-backed; no live stream, relay client connection, backoff timer, or network retry loop is active yet.
+- Reconnect attempts are recorded as metadata groundwork but not driven by real transport failure events.
+- Signed remote agent cards, permission grants, and encrypted session key exchange remain security-hardening work.
+- Streams and CLI watch animation begin in Phase 10.
+
+Next:
+
+- Start Phase 10: stream ids, stream lifecycle metadata, backpressure counters, and payload-safe watch animation.
 
 ## Phase 10 - Streams And Watch Animation
 
@@ -847,4 +897,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 6 completed. Local opaque envelope messaging added with stdin submission, registered sender/receiver validation, recipient inboxes, metadata-only receipts/logs, conUD processing, tests, docs, and isolated CONU_HOME smoke validation. Next: Phase 7 pairing and trust.
 2026-05-10 - Phase 7 completed. Local pairing invitations, join-to-trust, peer listing, revocation, pairing code hash storage, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 8 WebSocket relay MVP.
 2026-05-10 - Phase 8 completed. std-only WebSocket relay service, shared relay frame contract, token-authenticated sessions, metadata-only connected-peer forwarding, tests, docs, and relay binary smoke validation added. Next: Phase 9 remote discovery and sessions.
+2026-05-10 - Phase 9 completed. conUD-owned remote session mirror, trusted remote agent cards, `conu sessions`, remote visibility in agents/status/connect, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 10 streams and watch animation.
 ```

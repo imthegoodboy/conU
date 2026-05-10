@@ -4,6 +4,7 @@ pub mod agents;
 pub mod messages;
 pub mod relay;
 pub mod runtime;
+pub mod sessions;
 pub mod state;
 pub mod trust;
 

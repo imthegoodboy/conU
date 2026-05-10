@@ -1,7 +1,7 @@
 //! CLI rendering and command dispatch for conU.
 //!
-//! Phase 6 adds conUD runtime detection, metadata-only local agent
-//! registration, and local opaque envelope delivery.
+//! Phase 9 adds conUD runtime detection, metadata-only local/remote agent
+//! visibility, local opaque envelopes, and remote session mirrors.
 
 use std::collections::HashSet;
 use std::env;
@@ -15,6 +15,7 @@ use conu_core::agents::{
 };
 use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
+use conu_core::sessions::{self, RemoteAgentRecord, RemoteSession, SessionSyncReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
 use conu_core::trust::{self, TrustStatus, TrustedPeer};
 use conu_protocol::OpaquePayload;
@@ -96,6 +97,7 @@ where
         "agents" => render_agents(&args[1..], home_override),
         "peers" => render_peers(&args[1..], home_override),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
+        "sessions" => render_sessions(&args[1..], home_override),
         "pair" => render_pair(&args[1..], home_override),
         "join" => render_join(&args[1..], home_override),
         "connect" => render_connect(&args[1..], home_override),
@@ -118,13 +120,16 @@ fn render_dashboard(home_override: Option<PathBuf>) -> String {
     let local_agents = agents::list_local_agents(home_override.clone())
         .map(|agents| agents.len())
         .unwrap_or(0);
-    let trusted_peers = trust::list_peers(home_override)
+    let trusted_peers = trust::list_peers(home_override.clone())
         .map(|peers| {
             peers
                 .iter()
                 .filter(|peer| peer.status == TrustStatus::Trusted)
                 .count()
         })
+        .unwrap_or(0);
+    let remote_agents = sessions::list_remote_agents(home_override)
+        .map(|agents| agents.len())
         .unwrap_or(0);
     let node = snapshot
         .as_ref()
@@ -155,6 +160,7 @@ control room
   node          {node}
   state         {state}
   local agents  {local_agents}
+  remote agents {remote_agents}
   remote peers  {trusted_peers} trusted
   network       relay service  available via conu-relay
 
@@ -197,8 +203,16 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         Ok(agents) => agents,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
-    let peers = match trust::list_peers(home_override) {
+    let peers = match trust::list_peers(home_override.clone()) {
         Ok(peers) => peers,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
+    let sessions = match sessions::list_remote_sessions(home_override.clone()) {
+        Ok(sessions) => sessions,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
+    let remote_agents = match sessions::list_remote_agents(home_override) {
+        Ok(agents) => agents,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
 
@@ -207,12 +221,16 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
             &snapshot,
             &runtime_status,
             &local_agents,
+            &remote_agents,
+            &sessions,
             &peers,
         )),
         Ok(false) => CliOutput::success(render_status_text(
             &snapshot,
             &runtime_status,
             &local_agents,
+            &remote_agents,
+            &sessions,
             &peers,
         )),
         Err(error) => error,
@@ -232,7 +250,11 @@ fn render_agents_list(args: &[String], home_override: Option<PathBuf>) -> CliOut
         Ok(snapshot) => snapshot,
         Err(error) => return CliOutput::failure(1, format!("conU agents failed\n\n{error}")),
     };
-    let local_agents = match agents::list_local_agents(home_override) {
+    let local_agents = match agents::list_local_agents(home_override.clone()) {
+        Ok(agents) => agents,
+        Err(error) => return CliOutput::failure(1, format!("conU agents failed\n\n{error}")),
+    };
+    let remote_agents = match sessions::list_remote_agents(home_override.clone()) {
         Ok(agents) => agents,
         Err(error) => return CliOutput::failure(1, format!("conU agents failed\n\n{error}")),
     };
@@ -241,11 +263,13 @@ fn render_agents_list(args: &[String], home_override: Option<PathBuf>) -> CliOut
     match json_flag(args) {
         Ok(true) => CliOutput::success(render_agents_json(
             &local_agents,
+            &remote_agents,
             registry_state,
             &snapshot.paths.agent_registry.display().to_string(),
         )),
         Ok(false) => CliOutput::success(render_agents_text(
             &local_agents,
+            &remote_agents,
             registry_state,
             &snapshot.paths.agent_registry.display().to_string(),
         )),
@@ -366,7 +390,12 @@ privacy
     ))
 }
 
-fn render_agents_json(agents: &[LocalAgentRecord], registry: &str, registry_path: &str) -> String {
+fn render_agents_json(
+    agents: &[LocalAgentRecord],
+    remote_agents: &[RemoteAgentRecord],
+    registry: &str,
+    registry_path: &str,
+) -> String {
     let local_items = agents
         .iter()
         .map(|agent| {
@@ -404,22 +433,67 @@ fn render_agents_json(agents: &[LocalAgentRecord], registry: &str, registry_path
     } else {
         format!("[\n{local_items}\n  ]")
     };
+    let remote_items = remote_agents
+        .iter()
+        .map(|agent| {
+            format!(
+                r#"    {{
+      "agentId": "{}",
+      "displayName": "{}",
+      "kind": "{}",
+      "presence": "{}",
+      "nodeId": "{}",
+      "peerNodeId": "{}",
+      "capabilities": {{
+        "messages": {},
+        "streams": {},
+        "rooms": {},
+        "files": {},
+        "presence": {}
+      }}
+    }}"#,
+                json_escape(&agent.agent_id),
+                json_escape(&agent.display_name),
+                json_escape(&agent.kind),
+                agent.presence.as_str(),
+                json_escape(&agent.node_id),
+                json_escape(&agent.peer_node_id),
+                agent.capabilities.messages,
+                agent.capabilities.streams,
+                agent.capabilities.rooms,
+                agent.capabilities.files,
+                agent.capabilities.presence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let remote = if remote_items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{remote_items}\n  ]")
+    };
 
     format!(
         r#"{{
   "local": {},
-  "remote": [],
+  "remote": {},
   "registry": "{}",
   "registryPath": "{}",
-  "status": "local agent registration active"
+  "status": "agent registry active"
 }}"#,
         local,
+        remote,
         registry,
         json_escape(registry_path)
     )
 }
 
-fn render_agents_text(agents: &[LocalAgentRecord], registry: &str, registry_path: &str) -> String {
+fn render_agents_text(
+    agents: &[LocalAgentRecord],
+    remote_agents: &[RemoteAgentRecord],
+    registry: &str,
+    registry_path: &str,
+) -> String {
     let local = if agents.is_empty() {
         "  none registered yet".to_string()
     } else {
@@ -437,6 +511,23 @@ fn render_agents_text(agents: &[LocalAgentRecord], registry: &str, registry_path
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let remote = if remote_agents.is_empty() {
+        "  none visible yet".to_string()
+    } else {
+        remote_agents
+            .iter()
+            .map(|agent| {
+                format!(
+                    "  {}  {}  {}  peer {}",
+                    agent.agent_id,
+                    agent.presence.as_str(),
+                    agent.display_name,
+                    agent.peer_node_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
     format!(
         r"conU agents
@@ -447,12 +538,12 @@ local agents
   path          {}
 
 remote agents
-  none visible yet
+{remote}
 
 next
   conu agents register <agent-id> <display-name>
   conu agents heartbeat <agent-id>
-  Phase 9: remote discovery and presence",
+  conu sessions sync",
         registry, registry_path
     )
 }
@@ -984,6 +1075,171 @@ fn render_messages_usage() -> String {
         .to_string()
 }
 
+fn render_sessions(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("sync") => render_sessions_sync(&args[1..], home_override),
+        _ => render_sessions_list(args, home_override),
+    }
+}
+
+fn render_sessions_sync(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match json_flag(args) {
+        Ok(json) => match sessions::sync_remote_sessions(home_override) {
+            Ok(report) => {
+                if json {
+                    CliOutput::success(render_sessions_report_json(&report))
+                } else {
+                    CliOutput::success(render_sessions_report_text(&report))
+                }
+            }
+            Err(error) => CliOutput::failure(1, format!("conU sessions sync failed\n\n{error}")),
+        },
+        Err(error) => error,
+    }
+}
+
+fn render_sessions_list(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let remote_sessions = match sessions::list_remote_sessions(home_override.clone()) {
+        Ok(sessions) => sessions,
+        Err(error) => return CliOutput::failure(1, format!("conU sessions failed\n\n{error}")),
+    };
+    let remote_agents = match sessions::list_remote_agents(home_override) {
+        Ok(agents) => agents,
+        Err(error) => return CliOutput::failure(1, format!("conU sessions failed\n\n{error}")),
+    };
+
+    match json_flag(args) {
+        Ok(true) => CliOutput::success(render_sessions_json(&remote_sessions, &remote_agents)),
+        Ok(false) => CliOutput::success(render_sessions_text(&remote_sessions, &remote_agents)),
+        Err(error) => error,
+    }
+}
+
+fn render_sessions_json(
+    remote_sessions: &[RemoteSession],
+    remote_agents: &[RemoteAgentRecord],
+) -> String {
+    let session_items = remote_sessions
+        .iter()
+        .map(|session| {
+            format!(
+                r#"    {{
+      "peerNodeId": "{}",
+      "displayName": "{}",
+      "state": "{}",
+      "route": "{}",
+      "relayEndpoint": "{}",
+      "reconnectAttempts": {},
+      "remoteAgentCount": {}
+    }}"#,
+                json_escape(&session.peer_node_id),
+                json_escape(&session.display_name),
+                session.state.as_str(),
+                json_escape(&session.route),
+                json_escape(&session.relay_endpoint),
+                session.reconnect_attempts,
+                session.remote_agent_count
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let sessions_json = if session_items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{session_items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "sessions": {},
+  "remoteAgents": {},
+  "contentsDisplayed": false
+}}"#,
+        sessions_json,
+        remote_agents.len()
+    )
+}
+
+fn render_sessions_text(
+    remote_sessions: &[RemoteSession],
+    remote_agents: &[RemoteAgentRecord],
+) -> String {
+    let sessions_text = if remote_sessions.is_empty() {
+        "  none synced yet".to_string()
+    } else {
+        remote_sessions
+            .iter()
+            .map(|session| {
+                format!(
+                    "  {}  {}  route {}  agents {}",
+                    session.peer_node_id,
+                    session.state.as_str(),
+                    session.route,
+                    session.remote_agent_count
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU sessions
+
+remote sessions
+{sessions_text}
+
+remote agents
+  visible       {}
+
+privacy
+  payload view  contents are not displayed by conU
+
+next
+  conu sessions sync",
+        remote_agents.len()
+    )
+}
+
+fn render_sessions_report_json(report: &SessionSyncReport) -> String {
+    format!(
+        r#"{{
+  "status": "synced",
+  "sessionsSynced": {},
+  "remoteAgentsSynced": {},
+  "connected": {},
+  "reconnecting": {},
+  "offline": {},
+  "contentsDisplayed": false
+}}"#,
+        report.sessions_synced,
+        report.remote_agents_synced,
+        report.connected,
+        report.reconnecting,
+        report.offline
+    )
+}
+
+fn render_sessions_report_text(report: &SessionSyncReport) -> String {
+    format!(
+        r"conU sessions sync
+
+status: synced
+sessions: {}
+remote agents: {}
+connected: {}
+reconnecting: {}
+offline: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        report.sessions_synced,
+        report.remote_agents_synced,
+        report.connected,
+        report.reconnecting,
+        report.offline
+    )
+}
+
 fn inbox_ids(home_override: Option<PathBuf>, agent_id: &str) -> HashSet<String> {
     messages::list_agent_inbox(home_override, agent_id)
         .map(|entries| {
@@ -1261,7 +1517,8 @@ fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput 
     if let Some(error) = reject_args(args) {
         return error;
     }
-    let local_agents = agents::list_local_agents(home_override).unwrap_or_default();
+    let local_agents = agents::list_local_agents(home_override.clone()).unwrap_or_default();
+    let remote_agents = sessions::list_remote_agents(home_override).unwrap_or_default();
     let local = if local_agents.is_empty() {
         "none registered".to_string()
     } else {
@@ -1278,16 +1535,32 @@ fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput 
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let remote = if remote_agents.is_empty() {
+        "none visible".to_string()
+    } else {
+        remote_agents
+            .iter()
+            .map(|agent| {
+                format!(
+                    "{} ({}, peer {})",
+                    agent.agent_id,
+                    agent.presence.as_str(),
+                    agent.peer_node_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
 
     CliOutput::success(format!(
         r"conU connect
 
 selector
   source local agent   {local}
-  target remote agent  none visible
+  target remote agent  {remote}
   mode                 message | stream | room | observe
 
-status: local messages use `conu messages send`; interactive connect waits for Phase 9 remote discovery",
+status: remote discovery mirror ready; interactive sessions arrive in Phase 10+",
     ))
 }
 
@@ -1459,6 +1732,8 @@ fn render_status_text(
     snapshot: &StateSnapshot,
     runtime_status: &RuntimeStatus,
     local_agents: &[LocalAgentRecord],
+    remote_agents: &[RemoteAgentRecord],
+    sessions: &[RemoteSession],
     peers: &[TrustedPeer],
 ) -> String {
     let node = snapshot
@@ -1492,8 +1767,10 @@ identity
 
 agents
   local         {} registered
+  remote        {} visible
   registry      {}
   trusted peers {}
+  sessions      {}
 
 privacy
   payload view  contents are not displayed by conU",
@@ -1507,8 +1784,10 @@ privacy
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
         local_agents.len(),
+        remote_agents.len(),
         ready_label(snapshot.agent_registry_exists),
-        trusted_peer_count(peers)
+        trusted_peer_count(peers),
+        sessions.len()
     )
 }
 
@@ -1516,6 +1795,8 @@ fn render_status_json(
     snapshot: &StateSnapshot,
     runtime_status: &RuntimeStatus,
     local_agents: &[LocalAgentRecord],
+    remote_agents: &[RemoteAgentRecord],
+    sessions: &[RemoteSession],
     peers: &[TrustedPeer],
 ) -> String {
     let node = snapshot
@@ -1549,8 +1830,10 @@ fn render_status_json(
   }},
   "agents": {{
     "local": {},
+    "remote": {},
     "registry": "{}",
-    "trustedPeers": {}
+    "trustedPeers": {},
+    "sessions": {}
   }},
   "privacy": {{
     "contentsDisplayed": false
@@ -1567,8 +1850,10 @@ fn render_status_json(
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
         local_agents.len(),
+        remote_agents.len(),
         ready_label(snapshot.agent_registry_exists),
-        trusted_peer_count(peers)
+        trusted_peer_count(peers),
+        sessions.len()
     )
 }
 
@@ -1585,6 +1870,8 @@ Usage:
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages inbox <agent-id> [--json]
   conu messages receipts [--json]
+  conu sessions [--json]
+  conu sessions sync [--json]
   conu peers [--json]
   conu peers revoke <peer-node-id> [--json]
   conu pair [--json]
@@ -1597,7 +1884,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 8 adds the conu-relay WebSocket service for metadata-only relay forwarding. Remote discovery and streaming arrive in later phases."
+Phase 9 adds conUD-owned remote session and discovery mirrors. Streaming arrives in later phases."
         .to_string()
 }
 
@@ -1837,11 +2124,11 @@ mod tests {
     }
 
     #[test]
-    fn phase_eight_commands_are_registered() {
+    fn phase_nine_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [
-            "init", "status", "agents", "pair", "peers", "connect", "watch", "stop",
+            "init", "status", "agents", "sessions", "pair", "peers", "connect", "watch", "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
@@ -1886,6 +2173,28 @@ mod tests {
         assert_eq!(revoke.code, 0, "{}", revoke.stderr);
         assert!(revoke.stdout.contains("\"status\": \"revoked\""));
         assert!(revoked.stdout.contains("revoked"));
+    }
+
+    #[test]
+    fn sessions_sync_makes_remote_agent_visible() {
+        let home = temp_home("sessions-sync");
+        let pair = run_with_home(["pair"], Some(home.clone()));
+        let code = pairing_code_from_output(&pair.stdout);
+        let join = run_with_home(["join", &code], Some(home.clone()));
+        let sync = run_with_home(["sessions", "sync"], Some(home.clone()));
+        let sessions = run_with_home(["sessions"], Some(home.clone()));
+        let agents = run_with_home(["agents", "--json"], Some(home.clone()));
+        let status = run_with_home(["status", "--json"], Some(home));
+
+        assert_eq!(join.code, 0, "{}", join.stderr);
+        assert_eq!(sync.code, 0, "{}", sync.stderr);
+        assert!(sync.stdout.contains("remote agents: 1"));
+        assert!(sessions.stdout.contains("connected"));
+        assert!(agents.stdout.contains("\"remote\": ["));
+        assert!(agents.stdout.contains("agent.remote."));
+        assert!(status.stdout.contains("\"remote\": 1"));
+        assert!(status.stdout.contains("\"sessions\": 1"));
+        assert!(!agents.stdout.contains("private message contents"));
     }
 
     #[test]
@@ -2134,7 +2443,9 @@ mod tests {
         assert!(output.stdout.contains("\"localIpc\": \"file_gateway\""));
         assert!(output.stdout.contains("\"state\": \"initialized\""));
         assert!(output.stdout.contains("\"node\": \"node_"));
+        assert!(output.stdout.contains("\"remote\": 0"));
         assert!(output.stdout.contains("\"trustedPeers\": 0"));
+        assert!(output.stdout.contains("\"sessions\": 0"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
     }
 
