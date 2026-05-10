@@ -1,0 +1,3 @@
+display_name: conU Builder
+short_description: Build conU as a private Rust networking layer for agents.
+default_prompt: Use the conU builder workflow to continue the active phase, preserve payload privacy, and update plan.md when the phase is complete.

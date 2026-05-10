@@ -1,0 +1,17 @@
+/target/
+/.conu/
+
+# Rust/editor noise
+**/*.rs.bk
+Cargo.lock.orig
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# OS/editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

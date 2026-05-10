@@ -1,0 +1,17 @@
+[package]
+name = "conu-relay"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "conu-relay"
+path = "src/main.rs"
+
+[dependencies]
+conu-core.workspace = true
+
+[lints]
+workspace = true

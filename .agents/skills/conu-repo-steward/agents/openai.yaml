@@ -1,0 +1,3 @@
+display_name: conU Repo Steward
+short_description: Understand and maintain the conU repo structure and agent memory.
+default_prompt: Use the conU repo steward workflow to understand the repository, place files correctly, and leave clean handoff notes.
