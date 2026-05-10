@@ -78,6 +78,8 @@ fn run_once() -> ExitCode {
         Ok(lease) => match lease.heartbeat().and_then(|_| {
             conu_core::agents::process_gateway_requests(None)
                 .map_err(conu_core::runtime::RuntimeError::from)?;
+            conu_core::messages::process_message_requests(None)
+                .map_err(conu_core::runtime::RuntimeError::from)?;
             lease.stop()
         }) {
             Ok(status) => {
@@ -100,15 +102,25 @@ fn run_once() -> ExitCode {
 }
 
 fn process_ipc_once() -> ExitCode {
-    match conu_core::agents::process_gateway_requests(None) {
-        Ok(report) => {
+    match (
+        conu_core::agents::process_gateway_requests(None),
+        conu_core::messages::process_message_requests(None),
+    ) {
+        (Ok(agent_report), Ok(message_report)) => {
             println!(
-                "conUD IPC processed {}; rejected {}; payloads not observed",
-                report.processed, report.rejected
+                "conUD IPC agents processed {}; agents rejected {}; messages delivered {}; messages rejected {}; payloads not observed",
+                agent_report.processed,
+                agent_report.rejected,
+                message_report.delivered,
+                message_report.rejected
             );
             ExitCode::SUCCESS
         }
-        Err(error) => {
+        (Err(error), _) => {
+            eprintln!("conUD IPC processing failed: {error}");
+            ExitCode::from(1)
+        }
+        (_, Err(error)) => {
             eprintln!("conUD IPC processing failed: {error}");
             ExitCode::from(1)
         }
@@ -138,7 +150,7 @@ fn print_status() -> ExitCode {
 
 fn print_check() {
     println!("{}", conu_core::scaffold_status("conud"));
-    println!("runtime: phase 5 local IPC registration ready; payloads not observed");
+    println!("runtime: phase 6 local opaque messaging ready; payloads not observed");
 }
 
 fn print_help() {

@@ -20,10 +20,10 @@ crates/conu-cli
   CLI commands, ASCII dashboard, watch animation, user control flow
 
 crates/conud
-  daemon process, local gateway processing, session manager, runtime lifecycle
+  daemon process, local gateway/message processing, session manager, runtime lifecycle
 
 crates/conu-core
-  local state, runtime lifecycle, agent registry, gateway processing, future trust/policy logic
+  local state, runtime lifecycle, agent registry, local message routing, future trust/policy logic
 
 crates/conu-protocol
   envelopes, agent cards, control-plane messages, data-plane messages

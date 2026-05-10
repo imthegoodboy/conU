@@ -1,8 +1,9 @@
 //! CLI rendering and command dispatch for conU.
 //!
-//! Phase 5 adds conUD runtime detection and metadata-only local agent
-//! registration.
+//! Phase 6 adds conUD runtime detection, metadata-only local agent
+//! registration, and local opaque envelope delivery.
 
+use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -12,8 +13,10 @@ use std::time::Duration;
 use conu_core::agents::{
     self, AgentPresence, AgentRegistration, LocalAgentRecord, PresenceHeartbeat,
 };
+use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
+use conu_protocol::OpaquePayload;
 
 /// A rendered CLI command result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +50,7 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    run_with_home(args, None)
+    run_with_home_and_stdin(args, None, Vec::new())
 }
 
 /// Dispatch a conU CLI invocation with an explicit state home.
@@ -55,6 +58,28 @@ where
 /// This is mostly used by tests and smoke checks so they do not touch a real
 /// user profile.
 pub fn run_with_home<I, S>(args: I, home_override: Option<PathBuf>) -> CliOutput
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    run_with_home_and_stdin(args, home_override, Vec::new())
+}
+
+/// Dispatch a conU CLI invocation with explicit stdin bytes.
+pub fn run_with_stdin<I, S>(args: I, stdin_payload: Vec<u8>) -> CliOutput
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    run_with_home_and_stdin(args, None, stdin_payload)
+}
+
+/// Dispatch a conU CLI invocation with explicit state and stdin bytes.
+pub fn run_with_home_and_stdin<I, S>(
+    args: I,
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
@@ -68,6 +93,7 @@ where
         "init" => render_init(&args[1..], home_override),
         "status" => render_status(&args[1..], home_override),
         "agents" | "peers" => render_agents(&args[1..], home_override),
+        "messages" => render_messages(&args[1..], home_override, stdin_payload),
         "pair" => render_pair(&args[1..]),
         "join" => render_join(&args[1..]),
         "connect" => render_connect(&args[1..], home_override),
@@ -127,6 +153,7 @@ quick commands
   conu status
   conu agents
   conu agents register <agent-id> <display-name>
+  conu messages send <from-agent> <to-agent> --stdin
   conu pair
   conu join <code>
   conu connect
@@ -585,20 +612,410 @@ fn runtime_is_live(home_override: Option<PathBuf>) -> bool {
         .unwrap_or(false)
 }
 
+fn render_messages(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("send") => render_message_send(&args[1..], home_override, stdin_payload),
+        Some("inbox") => render_message_inbox(&args[1..], home_override),
+        Some("receipts") => render_message_receipts(&args[1..], home_override),
+        _ => CliOutput::failure(2, render_messages_usage()),
+    }
+}
+
+fn render_message_send(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let parsed = match parse_message_send_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.stdin {
+        return CliOutput::failure(2, render_messages_usage());
+    }
+    if stdin_payload.is_empty() {
+        return CliOutput::failure(2, "stdin payload is empty");
+    }
+
+    let before = inbox_ids(home_override.clone(), &parsed.to_agent_id);
+    let payload_bytes = stdin_payload.len();
+    let message = match LocalMessage::new(
+        &parsed.from_agent_id,
+        &parsed.to_agent_id,
+        OpaquePayload::from_bytes(stdin_payload),
+    ) {
+        Ok(message) => message,
+        Err(error) => {
+            return CliOutput::failure(2, format!("conU messages send failed\n\n{error}"));
+        }
+    };
+    let submission = match messages::submit_local_message(home_override.clone(), message) {
+        Ok(submission) => submission,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
+        }
+    };
+    let delivered = wait_for_message_delivery(
+        home_override,
+        &parsed.to_agent_id,
+        before,
+        submission.payload_bytes,
+    );
+    let status = if delivered.is_some() {
+        "delivered"
+    } else {
+        "queued"
+    };
+
+    if parsed.json {
+        let envelope_id = delivered
+            .as_ref()
+            .map(|entry| json_string(&entry.envelope_id))
+            .unwrap_or_else(|| "null".to_string());
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "{}",
+  "fromAgentId": "{}",
+  "toAgentId": "{}",
+  "requestId": "{}",
+  "envelopeId": {},
+  "payloadBytes": {},
+  "contentsDisplayed": false
+}}"#,
+            status,
+            json_escape(&parsed.from_agent_id),
+            json_escape(&parsed.to_agent_id),
+            json_escape(&submission.request_id),
+            envelope_id,
+            payload_bytes
+        ));
+    }
+
+    let envelope_line = delivered
+        .as_ref()
+        .map(|entry| format!("envelope: {}", entry.envelope_id))
+        .unwrap_or_else(|| "envelope: pending".to_string());
+
+    CliOutput::success(format!(
+        r"conU messages send
+
+status: {status}
+from: {}
+to: {}
+request: {}
+{envelope_line}
+bytes: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        parsed.from_agent_id, parsed.to_agent_id, submission.request_id, payload_bytes
+    ))
+}
+
+fn render_message_inbox(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_message_inbox_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let entries = match messages::list_agent_inbox(home_override, &parsed.agent_id) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU messages inbox failed\n\n{error}"));
+        }
+    };
+
+    if parsed.json {
+        return CliOutput::success(render_inbox_json(&parsed.agent_id, &entries));
+    }
+
+    CliOutput::success(render_inbox_text(&parsed.agent_id, &entries))
+}
+
+fn render_message_receipts(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+    let receipts = match messages::list_receipts(home_override) {
+        Ok(receipts) => receipts,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU messages receipts failed\n\n{error}"));
+        }
+    };
+
+    if json {
+        return CliOutput::success(render_receipts_json(&receipts));
+    }
+
+    CliOutput::success(render_receipts_text(&receipts))
+}
+
+fn render_inbox_json(agent_id: &str, entries: &[InboxEntry]) -> String {
+    let messages = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                r#"    {{
+      "envelopeId": "{}",
+      "fromAgentId": "{}",
+      "toAgentId": "{}",
+      "receiptId": "{}",
+      "payloadBytes": {},
+      "deliveredAtUnix": {}
+    }}"#,
+                json_escape(&entry.envelope_id),
+                json_escape(&entry.from_agent_id),
+                json_escape(&entry.to_agent_id),
+                json_escape(&entry.receipt_id),
+                entry.payload_bytes,
+                entry.delivered_at_unix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let messages = if messages.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{messages}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "agentId": "{}",
+  "messages": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(agent_id),
+        messages
+    )
+}
+
+fn render_inbox_text(agent_id: &str, entries: &[InboxEntry]) -> String {
+    let messages = if entries.is_empty() {
+        "  none delivered yet".to_string()
+    } else {
+        entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "  {}  from {}  bytes {}  receipt {}",
+                    entry.envelope_id, entry.from_agent_id, entry.payload_bytes, entry.receipt_id
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU messages inbox
+
+agent: {agent_id}
+messages
+{messages}
+
+privacy
+  payload view  contents are not displayed by conU"
+    )
+}
+
+fn render_receipts_json(receipts: &[DeliveryReceipt]) -> String {
+    let receipts = receipts
+        .iter()
+        .map(|receipt| {
+            format!(
+                r#"    {{
+      "receiptId": "{}",
+      "envelopeId": "{}",
+      "fromAgentId": "{}",
+      "toAgentId": "{}",
+      "status": "{}",
+      "payloadBytes": {},
+      "deliveredAtUnix": {}
+    }}"#,
+                json_escape(&receipt.receipt_id),
+                json_escape(&receipt.envelope_id),
+                json_escape(&receipt.from_agent_id),
+                json_escape(&receipt.to_agent_id),
+                json_escape(&receipt.status),
+                receipt.payload_bytes,
+                receipt.delivered_at_unix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let receipts = if receipts.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{receipts}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "receipts": {},
+  "contentsDisplayed": false
+}}"#,
+        receipts
+    )
+}
+
+fn render_receipts_text(receipts: &[DeliveryReceipt]) -> String {
+    let receipts = if receipts.is_empty() {
+        "  none recorded yet".to_string()
+    } else {
+        receipts
+            .iter()
+            .map(|receipt| {
+                format!(
+                    "  {}  {}  {} -> {}  bytes {}",
+                    receipt.receipt_id,
+                    receipt.status,
+                    receipt.from_agent_id,
+                    receipt.to_agent_id,
+                    receipt.payload_bytes
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU messages receipts
+
+receipts
+{receipts}
+
+privacy
+  payload view  contents are not displayed by conU"
+    )
+}
+
+struct MessageSendArgs {
+    from_agent_id: String,
+    to_agent_id: String,
+    stdin: bool,
+    json: bool,
+}
+
+struct MessageInboxArgs {
+    agent_id: String,
+    json: bool,
+}
+
+fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput> {
+    let mut json = false;
+    let mut stdin = false;
+    let mut positional = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--stdin" => stdin = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    }
+
+    Ok(MessageSendArgs {
+        from_agent_id: positional.remove(0),
+        to_agent_id: positional.remove(0),
+        stdin,
+        json,
+    })
+}
+
+fn parse_message_inbox_args(args: &[String]) -> Result<MessageInboxArgs, CliOutput> {
+    let mut json = false;
+    let mut agent_id = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => {
+                if agent_id.is_some() {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                }
+                agent_id = Some(value.to_string());
+            }
+        }
+    }
+
+    let Some(agent_id) = agent_id else {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    };
+
+    Ok(MessageInboxArgs { agent_id, json })
+}
+
+fn render_messages_usage() -> String {
+    r"usage:
+  conu messages send <from-agent> <to-agent> --stdin [--json]
+  conu messages inbox <agent-id> [--json]
+  conu messages receipts [--json]"
+        .to_string()
+}
+
+fn inbox_ids(home_override: Option<PathBuf>, agent_id: &str) -> HashSet<String> {
+    messages::list_agent_inbox(home_override, agent_id)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| entry.envelope_id)
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn wait_for_message_delivery(
+    home_override: Option<PathBuf>,
+    to_agent_id: &str,
+    before: HashSet<String>,
+    payload_bytes: usize,
+) -> Option<InboxEntry> {
+    if !runtime_is_live(home_override.clone()) {
+        return None;
+    }
+
+    for _ in 0..40 {
+        if let Ok(entries) = messages::list_agent_inbox(home_override.clone(), to_agent_id) {
+            if let Some(entry) = entries.into_iter().find(|entry| {
+                !before.contains(&entry.envelope_id) && entry.payload_bytes == payload_bytes
+            }) {
+                return Some(entry);
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    None
+}
+
 fn render_pair(args: &[String]) -> CliOutput {
     match json_flag(args) {
         Ok(true) => CliOutput::success(
             r#"{
   "status": "reserved",
   "phase": "Phase 7",
-  "message": "pairing code generation is not active in Phase 5"
+  "message": "pairing code generation is not active in Phase 6"
 }"#,
         ),
         Ok(false) => CliOutput::success(
             r"conU pair
 
 status: reserved for Phase 7
-code: not generated in Phase 5
+code: not generated in Phase 6
 purpose: create trust between two conUD runtimes",
         ),
         Err(error) => error,
@@ -612,7 +1029,7 @@ fn render_join(args: &[String]) -> CliOutput {
                 r#"{
   "status": "reserved",
   "phase": "Phase 7",
-  "message": "join validation is not active in Phase 5"
+  "message": "join validation is not active in Phase 6"
 }"#,
             ),
             Err(error) => error,
@@ -625,7 +1042,7 @@ fn render_join(args: &[String]) -> CliOutput {
 
 status: reserved for Phase 7
 code: accepted for command shape only
-action: no trust entry created in Phase 5",
+action: no trust entry created in Phase 6",
         ),
         Err(error) => error,
     }
@@ -661,7 +1078,7 @@ selector
   target remote agent  none visible
   mode                 message | stream | room | observe
 
-status: waiting for Phase 6 local messaging and Phase 9 remote discovery",
+status: local messages use `conu messages send`; interactive connect waits for Phase 9 remote discovery",
     ))
 }
 
@@ -952,6 +1369,9 @@ Usage:
   conu agents [--json]
   conu agents register <agent-id> <display-name> [--kind <kind>] [--json]
   conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
+  conu messages send <from-agent> <to-agent> --stdin [--json]
+  conu messages inbox <agent-id> [--json]
+  conu messages receipts [--json]
   conu peers [--json]
   conu pair [--json]
   conu join <code> [--json]
@@ -963,7 +1383,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 5 adds metadata-only local agent registration through the conUD file gateway. Pairing, relay, messaging, and streaming arrive in later phases."
+Phase 6 adds local opaque envelope delivery through conUD. Pairing, relay, remote discovery, and streaming arrive in later phases."
         .to_string()
 }
 
@@ -1132,6 +1552,10 @@ fn json_escape(value: &str) -> String {
     escaped
 }
 
+fn json_string(value: &str) -> String {
+    format!("\"{}\"", json_escape(value))
+}
+
 fn json_flag(args: &[String]) -> Result<bool, CliOutput> {
     let mut json = false;
     for arg in args {
@@ -1192,7 +1616,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_five_commands_are_registered() {
+    fn phase_six_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [
@@ -1204,6 +1628,8 @@ mod tests {
 
         let join = run(["join", "123456"]);
         assert_eq!(join.code, 0);
+        let receipts = run_with_home(["messages", "receipts"], Some(home));
+        assert_eq!(receipts.code, 0);
     }
 
     #[test]
@@ -1274,6 +1700,96 @@ mod tests {
         assert_eq!(output.code, 0, "{}", output.stderr);
         assert!(output.stdout.contains("status: queued"));
         assert!(output.stdout.contains("presence: busy"));
+    }
+
+    #[test]
+    fn messages_send_queues_opaque_stdin_payload() {
+        let home = temp_home("message-send-queued");
+
+        let output = run_with_home_and_stdin(
+            [
+                "messages",
+                "send",
+                "agent.sender",
+                "agent.receiver",
+                "--stdin",
+            ],
+            Some(home.clone()),
+            b"private message contents".to_vec(),
+        );
+        let request = std::fs::read_dir(state::StatePaths::from_home(home).message_ipc_inbox_dir)
+            .expect("message inbox reads")
+            .next()
+            .expect("message request exists")
+            .expect("message request entry");
+        let request_text = std::fs::read_to_string(request.path()).expect("request reads");
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("status: queued"));
+        assert!(output.stdout.contains("bytes: 24"));
+        assert!(!output.stdout.contains("private message contents"));
+        assert!(request_text.contains("payload_len = 24"));
+        assert!(!request_text.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_inbox_lists_metadata_without_payload() {
+        let home = temp_home("message-inbox");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+
+        let output = run_with_home(["messages", "inbox", "agent.receiver"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("from agent.sender"));
+        assert!(output.stdout.contains("bytes 24"));
+        assert!(
+            output
+                .stdout
+                .contains("payload view  contents are not displayed")
+        );
+        assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_inbox_json_lists_metadata_without_payload() {
+        let home = temp_home("message-inbox-json");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes([7, 8, 9]),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+
+        let output = run_with_home(
+            ["messages", "inbox", "agent.receiver", "--json"],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"fromAgentId\": \"agent.sender\""));
+        assert!(output.stdout.contains("\"payloadBytes\": 3"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+    }
+
+    #[test]
+    fn messages_send_requires_stdin_flag() {
+        let output = run(["messages", "send", "agent.sender", "agent.receiver"]);
+
+        assert_eq!(output.code, 2);
+        assert!(output.stderr.contains("conu messages send"));
     }
 
     #[test]
@@ -1391,5 +1907,12 @@ mod tests {
             .as_nanos();
 
         std::env::temp_dir().join(format!("conu-cli-test-{label}-{}-{nonce}", process::id()))
+    }
+
+    fn register_test_agent(home: &PathBuf, agent_id: &str) {
+        let registration =
+            AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid registration");
+        agents::submit_registration(Some(home.clone()), registration).expect("request submits");
+        agents::process_gateway_requests(Some(home.clone())).expect("request processes");
     }
 }

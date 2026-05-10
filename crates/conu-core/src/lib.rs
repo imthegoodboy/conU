@@ -1,6 +1,7 @@
 //! Core conU runtime concepts shared by binaries.
 
 pub mod agents;
+pub mod messages;
 pub mod runtime;
 pub mod state;
 

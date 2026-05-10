@@ -1,7 +1,8 @@
 //! Local conUD runtime state and heartbeat management.
 //!
-//! Phase 5 uses file-backed health and gateway state so the CLI can detect a
-//! local runtime and agents can submit metadata-only registration requests.
+//! Phase 6 uses file-backed health and gateway state so the CLI can detect a
+//! local runtime, agents can register, and local opaque message requests can be
+//! delivered between registered agents.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -12,8 +13,8 @@ use std::process;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::agents;
 use crate::state::{self, NodeIdentity, StateError, StatePaths};
+use crate::{agents, messages};
 
 const STATUS_VERSION: &str = "1";
 const STALE_AFTER_SECS: u64 = 10;
@@ -126,6 +127,8 @@ impl RuntimeLease {
             self.heartbeat()?;
             agents::process_gateway_requests_from_paths(&self.paths, &self.node.node_id)
                 .map_err(RuntimeError::Agent)?;
+            messages::process_message_requests_from_paths(&self.paths)
+                .map_err(RuntimeError::Message)?;
             thread::sleep(heartbeat_every);
         }
 
@@ -180,6 +183,7 @@ impl Drop for RuntimeLease {
 pub enum RuntimeError {
     State(StateError),
     Agent(agents::AgentError),
+    Message(messages::MessageError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -203,6 +207,7 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::State(error) => write!(formatter, "{error}"),
             Self::Agent(error) => write!(formatter, "{error}"),
+            Self::Message(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -230,6 +235,12 @@ impl From<StateError> for RuntimeError {
 impl From<agents::AgentError> for RuntimeError {
     fn from(error: agents::AgentError) -> Self {
         Self::Agent(error)
+    }
+}
+
+impl From<messages::MessageError> for RuntimeError {
+    fn from(error: messages::MessageError) -> Self {
+        Self::Message(error)
     }
 }
 
