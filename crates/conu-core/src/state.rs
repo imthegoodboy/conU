@@ -23,6 +23,7 @@ const CONFIG_FILE: &str = "config.toml";
 const TRUST_FILE: &str = "trust.toml";
 const AGENTS_DIR: &str = "agents";
 const AGENT_REGISTRY_FILE: &str = "registry.toml";
+const REMOTE_AGENT_REGISTRY_FILE: &str = "remote.toml";
 const RUNTIME_DIR: &str = "runtime";
 const IPC_DIR: &str = "ipc";
 const IPC_INBOX_DIR: &str = "inbox";
@@ -35,6 +36,7 @@ const PAIRING_DIR: &str = "pairing";
 const PAIRING_INVITES_DIR: &str = "invites";
 const PAIRING_USED_DIR: &str = "used";
 const SESSIONS_DIR: &str = "sessions";
+const SESSION_REGISTRY_FILE: &str = "registry.toml";
 const MAILBOX_DIR: &str = "mailbox";
 const LOGS_DIR: &str = "logs";
 
@@ -47,6 +49,7 @@ pub struct StatePaths {
     pub trust_store: PathBuf,
     pub agents_dir: PathBuf,
     pub agent_registry: PathBuf,
+    pub remote_agent_registry: PathBuf,
     pub runtime_dir: PathBuf,
     pub runtime_status: PathBuf,
     pub runtime_lock: PathBuf,
@@ -66,6 +69,7 @@ pub struct StatePaths {
     pub pairing_invites_dir: PathBuf,
     pub pairing_used_dir: PathBuf,
     pub sessions_dir: PathBuf,
+    pub session_registry: PathBuf,
     pub mailbox_dir: PathBuf,
     pub logs_dir: PathBuf,
 }
@@ -95,6 +99,7 @@ impl StatePaths {
             config: home.join(CONFIG_FILE),
             trust_store: home.join(TRUST_FILE),
             agent_registry: agents_dir.join(AGENT_REGISTRY_FILE),
+            remote_agent_registry: agents_dir.join(REMOTE_AGENT_REGISTRY_FILE),
             agents_dir,
             runtime_status: runtime_dir.join("status.toml"),
             runtime_lock: runtime_dir.join("conud.lock"),
@@ -115,6 +120,7 @@ impl StatePaths {
             pairing_used_dir: pairing_dir.join(PAIRING_USED_DIR),
             pairing_dir,
             sessions_dir: home.join(SESSIONS_DIR),
+            session_registry: home.join(SESSIONS_DIR).join(SESSION_REGISTRY_FILE),
             mailbox_dir: home.join(MAILBOX_DIR),
             logs_dir: home.join(LOGS_DIR),
             home,

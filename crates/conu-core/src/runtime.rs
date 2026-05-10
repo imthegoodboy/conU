@@ -1,8 +1,7 @@
 //! Local conUD runtime state and heartbeat management.
 //!
-//! Phase 6 uses file-backed health and gateway state so the CLI can detect a
-//! local runtime, agents can register, and local opaque message requests can be
-//! delivered between registered agents.
+//! Phase 9 uses file-backed health, gateway state, local messages, and remote
+//! session mirrors so the CLI can detect conUD-owned communication state.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -14,7 +13,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::state::{self, NodeIdentity, StateError, StatePaths};
-use crate::{agents, messages};
+use crate::{agents, messages, sessions};
 
 const STATUS_VERSION: &str = "1";
 const STALE_AFTER_SECS: u64 = 10;
@@ -129,6 +128,8 @@ impl RuntimeLease {
                 .map_err(RuntimeError::Agent)?;
             messages::process_message_requests_from_paths(&self.paths)
                 .map_err(RuntimeError::Message)?;
+            sessions::sync_remote_sessions_from_paths(&self.paths)
+                .map_err(RuntimeError::Session)?;
             thread::sleep(heartbeat_every);
         }
 
@@ -184,6 +185,7 @@ pub enum RuntimeError {
     State(StateError),
     Agent(agents::AgentError),
     Message(messages::MessageError),
+    Session(sessions::SessionError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -208,6 +210,7 @@ impl fmt::Display for RuntimeError {
             Self::State(error) => write!(formatter, "{error}"),
             Self::Agent(error) => write!(formatter, "{error}"),
             Self::Message(error) => write!(formatter, "{error}"),
+            Self::Session(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -241,6 +244,12 @@ impl From<agents::AgentError> for RuntimeError {
 impl From<messages::MessageError> for RuntimeError {
     fn from(error: messages::MessageError) -> Self {
         Self::Message(error)
+    }
+}
+
+impl From<sessions::SessionError> for RuntimeError {
+    fn from(error: sessions::SessionError) -> Self {
+        Self::Session(error)
     }
 }
 

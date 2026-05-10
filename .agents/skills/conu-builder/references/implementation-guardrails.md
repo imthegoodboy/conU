@@ -82,7 +82,17 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Relay server output, errors, tests, and logs must not echo auth tokens or private payload contents.
 - The relay may return `UNDELIVERED reason=peer_offline` when the target runtime is not connected; do not add mailbox storage until the encrypted mailbox phase.
 - On Windows, accepted streams from a nonblocking listener must be set back to blocking mode before frame reads.
-- conUD remote session management and remote agent discovery are not complete just because `conu-relay` exists; keep those changes in Phase 9.
+- `conu-relay` alone is not a live remote-agent connection; conUD session/discovery mirrors begin in Phase 9 and live stream routing remains later work.
+
+## Remote Session And Discovery Rules
+
+- Phase 9 remote sessions are file-backed metadata mirrors in `conu_core::sessions`.
+- conUD owns session sync; CLI commands may request sync or display the mirror but must not inspect payloads.
+- Remote session state belongs under `sessions/registry.toml`; mirrored remote agent cards belong under `agents/remote.toml`.
+- Session logs must use metadata-only lines with counts, route state, and `payload=not_observed`.
+- `conu agents` may show trusted remote agent cards from the mirror, but it must not claim live messaging/streaming before later phases wire the relay client into conUD.
+- Revoked peers must not remain visible as active remote agents after session sync.
+- Route metadata may include relay endpoint, peer id, state, and reconnect counts; it must not include message contents, tokens, or private payload bytes.
 
 ## Privacy Rules
 
