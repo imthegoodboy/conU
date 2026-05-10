@@ -114,6 +114,8 @@ Implemented controls:
 
 The audit reports readiness and key ids only. It never prints private keys, shared secrets, plaintext payloads, or decrypted payloads. See `docs/security-hardening.md` and `docs/production-readiness.md` for the hardening model and release blockers.
 
+For practical user setup, installation, and current agent integration guidance, see `docs/user-install-and-agent-guide.md`.
+
 ## Pairing And Trust
 
 Phase 7 adds local trust-store mechanics before the hosted relay exists:
