@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod messages;
+pub mod relay;
 pub mod runtime;
 pub mod state;
 pub mod trust;
@@ -36,7 +37,7 @@ pub const COMPONENTS: &[Component] = &[
     },
     Component {
         name: "conu-relay",
-        responsibility: "relay and bootstrap service scaffold for internet connectivity",
+        responsibility: "WebSocket relay service for metadata-only internet connectivity",
     },
 ];
 

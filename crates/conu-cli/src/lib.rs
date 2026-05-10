@@ -156,7 +156,7 @@ control room
   state         {state}
   local agents  {local_agents}
   remote peers  {trusted_peers} trusted
-  network       offline        relay arrives in Phase 8
+  network       relay service  available via conu-relay
 
 quick commands
   conu init
@@ -1190,7 +1190,7 @@ fn render_pair(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
   "code": "{}",
   "peerNodeId": "{}",
   "expiresAtUnix": {},
-  "relay": "phase_8",
+  "relay": "service_available",
   "contentsDisplayed": false
 }}"#,
                         invite.code,
@@ -1205,7 +1205,7 @@ status: pairing code created
 code: {}
 peer: {}
 expires at unix: {}
-relay: arrives in Phase 8
+relay: service available; pairing rendezvous still local
 
 next
   conu join {}",
@@ -1480,7 +1480,7 @@ runtime
   pid           {}
   health        {}
   local IPC     file gateway active
-  relay         not available until Phase 8
+  relay         service available via conu-relay
 
 identity
   state         {}
@@ -1537,7 +1537,7 @@ fn render_status_json(
     "heartbeatAgeSecs": {},
     "localHealth": "{}",
     "localIpc": "file_gateway",
-    "relay": "phase_8"
+    "relay": "service_available"
   }},
   "identity": {{
     "state": "{}",
@@ -1597,7 +1597,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 7 adds local pairing invitations and trusted peer records. Relay, remote discovery, and streaming arrive in later phases."
+Phase 8 adds the conu-relay WebSocket service for metadata-only relay forwarding. Remote discovery and streaming arrive in later phases."
         .to_string()
 }
 
@@ -1837,7 +1837,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_seven_commands_are_registered() {
+    fn phase_eight_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [

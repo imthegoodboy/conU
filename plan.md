@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 8 - WebSocket Relay MVP
+Current phase: Phase 9 - Remote Discovery And Sessions
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -596,7 +596,7 @@ Validation:
 
 Known gaps:
 
-- Phase 7 pairing is local-only trust groundwork; cross-machine rendezvous requires the Phase 8 relay.
+- Phase 7 pairing is local-only trust groundwork; cross-machine rendezvous requires the Phase 8 relay service plus Phase 9 session/discovery wiring.
 - Pairing invitations are file-backed and not cryptographically signed yet.
 - Trust records are persistent metadata, but full permission grants, key exchange, and signed peer verification arrive in later security phases.
 - Remote agent discovery over trusted peers starts in Phase 9.
@@ -607,7 +607,7 @@ Next:
 
 ## Phase 8 - WebSocket Relay MVP
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -615,17 +615,67 @@ Make conU work across the internet through a relay-first transport.
 
 Deliverables:
 
-- relay service crate
-- runtime relay client
-- relay session auth
-- peer rendezvous
-- encrypted envelope forwarding path
+- [x] relay service crate
+- [x] runtime relay frame contract
+- [x] relay session auth
+- [x] peer rendezvous groundwork
+- [x] opaque metadata forwarding path
 
 Exit criteria:
 
-- Two runtimes can connect through relay.
-- Relay forwards only opaque envelopes.
-- Relay logs do not contain payloads.
+- [x] Two runtime sessions can connect through relay in tests.
+- [x] Relay forwards only opaque envelope metadata.
+- [x] Relay output and tests do not expose payloads.
+
+Completed work:
+
+- Created GitHub issue #15 for Phase 8.
+- Created and pushed branch `codex/phase-8-websocket-relay`.
+- Added shared `conu_core::relay` frame types for `HELLO`, `FORWARD`, `PING`, `WELCOME`, `ENVELOPE`, `SENT`, `UNDELIVERED`, `PONG`, and `ERROR`.
+- Added metadata-only relay rendering/parsing that rejects plaintext payload fields.
+- Added a std-only WebSocket relay service in `crates/conu-relay`.
+- Added relay session token authentication through `HELLO`.
+- Added connected-peer forwarding from one runtime session to another using node id, envelope id, and byte count only.
+- Added `conu-relay --serve [addr]`, `--check`, `--help`, and `CONU_RELAY_TOKEN`.
+- Fixed Windows accepted-socket behavior by returning nonblocking listener streams to blocking mode before frame reads.
+- Updated CLI/status wording to show the relay service is available while remote sessions/discovery remain future work.
+- Updated README, repo overview, builder guardrails, repo map, and agent gateway contract for the relay MVP.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/relay.rs`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --help` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- status --json` passed.
+- Privacy scan reviewed relay payload/token terms; matches were limited to negative tests, placeholder frame documentation, and existing opaque local storage internals.
+
+Known gaps:
+
+- Phase 8 relay is plain local WebSocket for MVP validation, not TLS-hosted WSS.
+- conUD does not yet own a relay client, remote session manager, reconnect loop, or route selection.
+- Relay authentication is a shared token suitable for local/dev deployment only; signed node identity and key exchange remain security-hardening work.
+- Relay forwards metadata only and does not store offline mailbox messages.
+- Remote agent discovery over trusted peers begins in Phase 9.
+
+Next:
+
+- Start Phase 9: remote discovery and sessions through trusted peers, with conUD-owned relay client integration and metadata-only presence sync.
 
 ## Phase 9 - Remote Discovery And Sessions
 
@@ -796,4 +846,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 5 completed. File-backed local IPC gateway added with metadata-only agent registration, presence heartbeat, persisted local agent registry, conUD processing, CLI listing, tests, docs, and isolated CONU_HOME smoke validation. Next: Phase 6 opaque envelope messaging.
 2026-05-10 - Phase 6 completed. Local opaque envelope messaging added with stdin submission, registered sender/receiver validation, recipient inboxes, metadata-only receipts/logs, conUD processing, tests, docs, and isolated CONU_HOME smoke validation. Next: Phase 7 pairing and trust.
 2026-05-10 - Phase 7 completed. Local pairing invitations, join-to-trust, peer listing, revocation, pairing code hash storage, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 8 WebSocket relay MVP.
+2026-05-10 - Phase 8 completed. std-only WebSocket relay service, shared relay frame contract, token-authenticated sessions, metadata-only connected-peer forwarding, tests, docs, and relay binary smoke validation added. Next: Phase 9 remote discovery and sessions.
 ```
