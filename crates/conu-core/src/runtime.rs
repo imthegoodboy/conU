@@ -1,0 +1,595 @@
+//! Local conUD runtime state and heartbeat management.
+//!
+//! Phase 4 uses a file-backed health signal so the CLI can detect a local
+//! runtime without introducing IPC or networking before their dedicated phases.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::state::{self, NodeIdentity, StateError, StatePaths};
+
+const STATUS_VERSION: &str = "1";
+const STALE_AFTER_SECS: u64 = 10;
+const LOCAL_ENDPOINT: &str = "local-ipc:phase-5-pending";
+
+/// High-level state for the local conUD runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeState {
+    Offline,
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Stale,
+}
+
+impl RuntimeState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+            Self::Stale => "stale",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "starting" => Self::Starting,
+            "running" => Self::Running,
+            "stopping" => Self::Stopping,
+            "stopped" => Self::Stopped,
+            "stale" => Self::Stale,
+            _ => Self::Offline,
+        }
+    }
+
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Starting | Self::Running | Self::Stopping)
+    }
+}
+
+/// Runtime metadata visible to the CLI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeStatus {
+    pub state: RuntimeState,
+    pub pid: Option<u32>,
+    pub node_id: Option<String>,
+    pub started_at_unix: Option<u64>,
+    pub heartbeat_at_unix: Option<u64>,
+    pub local_endpoint: String,
+    pub status_path: PathBuf,
+    pub lock_path: PathBuf,
+}
+
+impl RuntimeStatus {
+    /// True when the runtime heartbeat is fresh enough to treat as alive.
+    pub fn is_live(&self) -> bool {
+        self.state.is_live()
+    }
+
+    /// Seconds since the latest heartbeat, if a heartbeat exists.
+    pub fn heartbeat_age_secs(&self) -> Option<u64> {
+        self.heartbeat_at_unix
+            .map(|heartbeat| current_unix_seconds().saturating_sub(heartbeat))
+    }
+}
+
+/// Result of asking conUD to stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopReport {
+    pub requested: bool,
+    pub status: RuntimeStatus,
+}
+
+/// An acquired local runtime slot.
+#[derive(Debug)]
+pub struct RuntimeLease {
+    paths: StatePaths,
+    node: NodeIdentity,
+    pid: u32,
+    started_at_unix: u64,
+    stopped: bool,
+}
+
+impl RuntimeLease {
+    /// Return the currently known status for this runtime lease.
+    pub fn status(&self) -> RuntimeStatus {
+        self.build_status(RuntimeState::Running, current_unix_seconds())
+    }
+
+    /// Refresh the heartbeat file.
+    pub fn heartbeat(&self) -> Result<RuntimeStatus, RuntimeError> {
+        let status = self.build_status(RuntimeState::Running, current_unix_seconds());
+        write_status(&self.paths, &status)?;
+        append_log(&self.paths, "heartbeat", self.pid, &self.node.node_id)?;
+        Ok(status)
+    }
+
+    /// True when the CLI has requested a graceful shutdown.
+    pub fn stop_requested(&self) -> bool {
+        self.paths.runtime_stop_request.exists()
+    }
+
+    /// Sleep and heartbeat until a stop request appears.
+    pub fn serve_until_stop(&self, heartbeat_every: Duration) -> Result<(), RuntimeError> {
+        while !self.stop_requested() {
+            self.heartbeat()?;
+            thread::sleep(heartbeat_every);
+        }
+
+        let status = self.build_status(RuntimeState::Stopping, current_unix_seconds());
+        write_status(&self.paths, &status)?;
+        append_log(&self.paths, "stop_requested", self.pid, &self.node.node_id)?;
+        Ok(())
+    }
+
+    /// Stop this runtime and clean up the process lock.
+    pub fn stop(mut self) -> Result<RuntimeStatus, RuntimeError> {
+        self.finish()
+    }
+
+    fn build_status(&self, state: RuntimeState, heartbeat_at_unix: u64) -> RuntimeStatus {
+        RuntimeStatus {
+            state,
+            pid: Some(self.pid),
+            node_id: Some(self.node.node_id.clone()),
+            started_at_unix: Some(self.started_at_unix),
+            heartbeat_at_unix: Some(heartbeat_at_unix),
+            local_endpoint: LOCAL_ENDPOINT.to_string(),
+            status_path: self.paths.runtime_status.clone(),
+            lock_path: self.paths.runtime_lock.clone(),
+        }
+    }
+
+    fn finish(&mut self) -> Result<RuntimeStatus, RuntimeError> {
+        if self.stopped {
+            return read_runtime_from_paths(&self.paths);
+        }
+
+        let status = self.build_status(RuntimeState::Stopped, current_unix_seconds());
+        write_status(&self.paths, &status)?;
+        remove_file_if_exists(&self.paths.runtime_lock)?;
+        remove_file_if_exists(&self.paths.runtime_stop_request)?;
+        append_log(&self.paths, "stopped", self.pid, &self.node.node_id)?;
+        self.stopped = true;
+
+        Ok(status)
+    }
+}
+
+impl Drop for RuntimeLease {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
+}
+
+/// Errors produced by the local runtime lifecycle.
+#[derive(Debug)]
+pub enum RuntimeError {
+    State(StateError),
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+    AlreadyRunning(RuntimeStatus),
+}
+
+impl RuntimeError {
+    fn io(action: &'static str, path: &Path, source: io::Error) -> Self {
+        Self::Io {
+            action,
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::State(error) => write!(formatter, "{error}"),
+            Self::Io {
+                action,
+                path,
+                source,
+            } => write!(formatter, "{action} at {}: {source}", path.display()),
+            Self::AlreadyRunning(status) => {
+                let pid = status
+                    .pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                write!(formatter, "conUD is already running with pid {pid}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RuntimeError {}
+
+impl From<StateError> for RuntimeError {
+    fn from(error: StateError) -> Self {
+        Self::State(error)
+    }
+}
+
+/// Read the local runtime status without changing it.
+pub fn read_runtime(home_override: Option<PathBuf>) -> Result<RuntimeStatus, RuntimeError> {
+    let paths = StatePaths::resolve(home_override)?;
+    read_runtime_from_paths(&paths)
+}
+
+/// Acquire the local conUD runtime slot.
+pub fn acquire_runtime(home_override: Option<PathBuf>) -> Result<RuntimeLease, RuntimeError> {
+    let init = state::init_state(home_override)?;
+    let paths = init.paths;
+    let existing = read_runtime_from_paths(&paths)?;
+
+    if existing.is_live() {
+        return Err(RuntimeError::AlreadyRunning(existing));
+    }
+
+    if existing.state == RuntimeState::Stale || paths.runtime_lock.exists() {
+        clear_runtime_files(&paths)?;
+    }
+
+    let pid = process::id();
+    let started_at_unix = current_unix_seconds();
+    write_lock(&paths, pid, started_at_unix)?;
+    remove_file_if_exists(&paths.runtime_stop_request)?;
+
+    let lease = RuntimeLease {
+        paths,
+        node: init.node,
+        pid,
+        started_at_unix,
+        stopped: false,
+    };
+
+    let starting = lease.build_status(RuntimeState::Starting, started_at_unix);
+    write_status(&lease.paths, &starting)?;
+    append_log(&lease.paths, "started", lease.pid, &lease.node.node_id)?;
+    lease.heartbeat()?;
+
+    Ok(lease)
+}
+
+/// Ask a running local conUD process to shut down gracefully.
+pub fn request_runtime_stop(home_override: Option<PathBuf>) -> Result<StopReport, RuntimeError> {
+    let paths = StatePaths::resolve(home_override)?;
+    fs::create_dir_all(&paths.runtime_dir)
+        .map_err(|error| RuntimeError::io("create runtime directory", &paths.runtime_dir, error))?;
+
+    let status = read_runtime_from_paths(&paths)?;
+    if status.is_live() {
+        let contents = format!("requested_at_unix = {}\n", current_unix_seconds());
+        fs::write(&paths.runtime_stop_request, contents).map_err(|error| {
+            RuntimeError::io(
+                "write runtime stop request",
+                &paths.runtime_stop_request,
+                error,
+            )
+        })?;
+        append_log(
+            &paths,
+            "stop_requested_by_cli",
+            process::id(),
+            status.node_id.as_deref().unwrap_or("unknown"),
+        )?;
+        Ok(StopReport {
+            requested: true,
+            status,
+        })
+    } else if status.state == RuntimeState::Stale {
+        let stopped = RuntimeStatus {
+            state: RuntimeState::Stopped,
+            heartbeat_at_unix: Some(current_unix_seconds()),
+            ..status
+        };
+        clear_runtime_files(&paths)?;
+        write_status(&paths, &stopped)?;
+        Ok(StopReport {
+            requested: false,
+            status: stopped,
+        })
+    } else {
+        Ok(StopReport {
+            requested: false,
+            status,
+        })
+    }
+}
+
+fn read_runtime_from_paths(paths: &StatePaths) -> Result<RuntimeStatus, RuntimeError> {
+    if !paths.runtime_status.exists() {
+        return Ok(offline_status(paths));
+    }
+
+    let contents = fs::read_to_string(&paths.runtime_status)
+        .map_err(|error| RuntimeError::io("read runtime status", &paths.runtime_status, error))?;
+    let values = parse_key_values(&contents);
+    let mut status = RuntimeStatus {
+        state: RuntimeState::from_str(value_or_empty(&values, "state")),
+        pid: parse_u32(values.get("pid")),
+        node_id: values
+            .get("node_id")
+            .cloned()
+            .filter(|value| !value.is_empty()),
+        started_at_unix: parse_u64(values.get("started_at_unix")),
+        heartbeat_at_unix: parse_u64(values.get("heartbeat_at_unix")),
+        local_endpoint: values
+            .get("local_endpoint")
+            .cloned()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| LOCAL_ENDPOINT.to_string()),
+        status_path: paths.runtime_status.clone(),
+        lock_path: paths.runtime_lock.clone(),
+    };
+
+    if status.state.is_live() && runtime_is_stale(&status) {
+        status.state = RuntimeState::Stale;
+    }
+
+    Ok(status)
+}
+
+fn write_status(paths: &StatePaths, status: &RuntimeStatus) -> Result<(), RuntimeError> {
+    let contents = format!(
+        "version = \"{}\"\nstate = \"{}\"\npid = {}\nnode_id = \"{}\"\nstarted_at_unix = {}\nheartbeat_at_unix = {}\nlocal_endpoint = \"{}\"\n",
+        STATUS_VERSION,
+        status.state.as_str(),
+        status.pid.unwrap_or_default(),
+        escape_file_value(status.node_id.as_deref().unwrap_or("")),
+        status.started_at_unix.unwrap_or_default(),
+        status.heartbeat_at_unix.unwrap_or_default(),
+        escape_file_value(&status.local_endpoint)
+    );
+
+    fs::write(&paths.runtime_status, contents)
+        .map_err(|error| RuntimeError::io("write runtime status", &paths.runtime_status, error))
+}
+
+fn write_lock(paths: &StatePaths, pid: u32, started_at_unix: u64) -> Result<(), RuntimeError> {
+    let contents = format!("pid = {pid}\nstarted_at_unix = {started_at_unix}\n");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&paths.runtime_lock)
+        .map_err(|error| RuntimeError::io("create runtime lock", &paths.runtime_lock, error))?;
+
+    file.write_all(contents.as_bytes())
+        .map_err(|error| RuntimeError::io("write runtime lock", &paths.runtime_lock, error))
+}
+
+fn append_log(
+    paths: &StatePaths,
+    event: &str,
+    pid: u32,
+    node_id: &str,
+) -> Result<(), RuntimeError> {
+    fs::create_dir_all(&paths.logs_dir)
+        .map_err(|error| RuntimeError::io("create log directory", &paths.logs_dir, error))?;
+    let log_path = paths.logs_dir.join("conud.log");
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&log_path)
+        .map_err(|error| RuntimeError::io("open runtime log", &log_path, error))?;
+
+    writeln!(
+        file,
+        "time={} event={} pid={} node={} payload=not_observed",
+        current_unix_seconds(),
+        event,
+        pid,
+        sanitize_log_value(node_id)
+    )
+    .map_err(|error| RuntimeError::io("write runtime log", &log_path, error))
+}
+
+fn runtime_is_stale(status: &RuntimeStatus) -> bool {
+    let Some(heartbeat_at_unix) = status.heartbeat_at_unix else {
+        return true;
+    };
+
+    current_unix_seconds().saturating_sub(heartbeat_at_unix) > STALE_AFTER_SECS
+}
+
+fn offline_status(paths: &StatePaths) -> RuntimeStatus {
+    RuntimeStatus {
+        state: RuntimeState::Offline,
+        pid: None,
+        node_id: None,
+        started_at_unix: None,
+        heartbeat_at_unix: None,
+        local_endpoint: LOCAL_ENDPOINT.to_string(),
+        status_path: paths.runtime_status.clone(),
+        lock_path: paths.runtime_lock.clone(),
+    }
+}
+
+fn clear_runtime_files(paths: &StatePaths) -> Result<(), RuntimeError> {
+    remove_file_if_exists(&paths.runtime_lock)?;
+    remove_file_if_exists(&paths.runtime_stop_request)
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), RuntimeError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(RuntimeError::io("remove runtime file", path, error)),
+    }
+}
+
+fn parse_key_values(contents: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+
+    for line in contents.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+
+        values.insert(key.trim().to_string(), clean_value(value));
+    }
+
+    values
+}
+
+fn clean_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
+fn value_or_empty<'a>(values: &'a HashMap<String, String>, key: &str) -> &'a str {
+    values.get(key).map(String::as_str).unwrap_or("")
+}
+
+fn parse_u32(value: Option<&String>) -> Option<u32> {
+    value.and_then(|value| value.parse::<u32>().ok())
+}
+
+fn parse_u64(value: Option<&String>) -> Option<u64> {
+    value.and_then(|value| value.parse::<u64>().ok())
+}
+
+fn escape_file_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn sanitize_log_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .collect()
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acquire_runtime_writes_live_status() {
+        let home = test_home("live");
+        let lease = acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let status = read_runtime(Some(home)).expect("runtime reads");
+
+        assert!(status.is_live());
+        assert_eq!(status.state, RuntimeState::Running);
+        assert_eq!(status.pid, Some(process::id()));
+        assert_eq!(status.node_id, Some(lease.node.node_id.clone()));
+    }
+
+    #[test]
+    fn second_runtime_cannot_start_while_heartbeat_is_fresh() {
+        let home = test_home("already-running");
+        let _lease = acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let error = acquire_runtime(Some(home)).expect_err("second runtime should fail");
+
+        assert!(matches!(error, RuntimeError::AlreadyRunning(_)));
+    }
+
+    #[test]
+    fn stop_request_creates_payload_safe_control_file() {
+        let home = test_home("stop-request");
+        let _lease = acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let report = request_runtime_stop(Some(home.clone())).expect("stop requested");
+        let request = fs::read_to_string(StatePaths::from_home(home).runtime_stop_request)
+            .expect("stop request exists");
+
+        assert!(report.requested);
+        assert!(request.contains("requested_at_unix"));
+        assert!(!request.contains("private message contents"));
+    }
+
+    #[test]
+    fn runtime_log_is_payload_safe() {
+        let home = test_home("payload-safe-log");
+        let lease = acquire_runtime(Some(home.clone())).expect("runtime starts");
+        lease.heartbeat().expect("heartbeat writes");
+        let log = fs::read_to_string(StatePaths::from_home(home).logs_dir.join("conud.log"))
+            .expect("runtime log exists");
+
+        assert!(log.contains("payload=not_observed"));
+        assert!(!log.contains("private message contents"));
+        assert!(!log.contains("Review this code"));
+    }
+
+    #[test]
+    fn stopped_runtime_removes_lock() {
+        let home = test_home("stopped");
+        let lease = acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let paths = StatePaths::from_home(home.clone());
+        let status = lease.stop().expect("runtime stops");
+        let read_back = read_runtime(Some(home)).expect("runtime reads");
+
+        assert_eq!(status.state, RuntimeState::Stopped);
+        assert_eq!(read_back.state, RuntimeState::Stopped);
+        assert!(!paths.runtime_lock.exists());
+    }
+
+    #[test]
+    fn stale_runtime_is_replaced_on_start() {
+        let home = test_home("stale");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        fs::write(&paths.runtime_lock, "pid = 123\n").expect("stale lock writes");
+        let stale_status = RuntimeStatus {
+            state: RuntimeState::Running,
+            pid: Some(123),
+            node_id: Some(init.node.node_id),
+            started_at_unix: Some(1),
+            heartbeat_at_unix: Some(1),
+            local_endpoint: LOCAL_ENDPOINT.to_string(),
+            status_path: paths.runtime_status.clone(),
+            lock_path: paths.runtime_lock.clone(),
+        };
+        write_status(&paths, &stale_status).expect("stale status writes");
+
+        let lease = acquire_runtime(Some(home.clone())).expect("runtime replaces stale state");
+        let status = read_runtime(Some(home)).expect("runtime reads");
+
+        assert_eq!(status.state, RuntimeState::Running);
+        assert_eq!(status.pid, Some(process::id()));
+        assert_eq!(status.node_id, Some(lease.node.node_id.clone()));
+    }
+
+    fn test_home(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "conu-runtime-test-{label}-{}-{}",
+            process::id(),
+            current_unix_nanos()
+        ))
+    }
+}
+
+#[cfg(test)]
+fn current_unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}

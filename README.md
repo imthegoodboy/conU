@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 3 is complete. The CLI identity/dashboard shell exists and `conu init` now creates real local state for this runtime.
+Phase 4 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, and `conu start` launches the local `conUD` runtime skeleton.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -39,12 +39,15 @@ node.toml              local node id only, not a secret or auth credential
 config.toml            local runtime config skeleton
 trust.toml             trusted/revoked peer skeleton
 agents/registry.toml   local agent registry skeleton
+runtime/status.toml    conUD heartbeat/status metadata
+runtime/conud.lock     local runtime process lock
+runtime/stop.request   graceful shutdown request file
 sessions/              future runtime sessions
 mailbox/               future encrypted mailbox storage
 logs/                  future payload-safe logs
 ```
 
-No private message payloads or secret keys are stored by Phase 3.
+No private message payloads or secret keys are stored by Phase 4. Runtime logs contain metadata only, such as event name, pid, node id, and `payload=not_observed`.
 
 ## Development
 
@@ -73,9 +76,14 @@ cargo run -p conu-cli -- pair
 cargo run -p conu-cli -- join 482913
 cargo run -p conu-cli -- connect
 cargo run -p conu-cli -- watch
+cargo run -p conu-cli -- start
+cargo run -p conu-cli -- stop
 cargo run -p conud -- --check
+cargo run -p conud -- --once
 cargo run -p conu-relay -- --check
 ```
+
+When running from a development checkout, build `conud` first or set `CONUD_EXE` to the local daemon binary before using `conu start`.
 
 ## Project Memory
 

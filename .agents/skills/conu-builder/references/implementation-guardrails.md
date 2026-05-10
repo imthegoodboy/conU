@@ -37,6 +37,14 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - The Phase 3 node id is a local runtime identifier only. It is not a secret, not an authentication credential, and not a replacement for future signed/encrypted identity.
 - conU-owned state must not store plaintext private payloads.
 
+## Local Runtime Rules
+
+- Phase 4 runtime health is file-backed: `runtime/status.toml`, `runtime/conud.lock`, and `runtime/stop.request`.
+- `conu start` should launch `conud --serve`; in development, set `CONUD_EXE` when the daemon binary is not beside the CLI binary.
+- `conu stop` requests graceful shutdown by writing a stop request; conUD owns final stopped state and lock cleanup.
+- Treat stale heartbeats as restartable runtime metadata, not proof of a live process.
+- Runtime logs must remain payload-safe and use metadata-only lines such as event, pid, node id, and `payload=not_observed`.
+
 ## Privacy Rules
 
 - Never log plaintext payloads.

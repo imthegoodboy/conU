@@ -1,13 +1,17 @@
 use std::env;
 use std::process::ExitCode;
+use std::time::Duration;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("--check") => {
-            println!("{}", conu_core::scaffold_status("conud"));
+            print_check();
             ExitCode::SUCCESS
         }
+        Some("--serve") | None => serve_runtime(),
+        Some("--once") => run_once(),
+        Some("--status") => print_status(),
         Some("--help") | Some("-h") => {
             print_help();
             ExitCode::SUCCESS
@@ -21,20 +25,111 @@ fn main() -> ExitCode {
             print_help();
             ExitCode::from(2)
         }
-        None => {
-            println!("conUD scaffold ready. Local IPC arrives in Phase 4.");
+    }
+}
+
+fn serve_runtime() -> ExitCode {
+    match conu_core::runtime::acquire_runtime(None) {
+        Ok(lease) => {
+            let status = lease.status();
+            println!(
+                "conUD runtime live; pid {}; health {}; payloads not observed",
+                status
+                    .pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                status.local_endpoint
+            );
+
+            match lease.serve_until_stop(Duration::from_secs(1)) {
+                Ok(()) => match lease.stop() {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        eprintln!("conUD shutdown failed: {error}");
+                        ExitCode::from(1)
+                    }
+                },
+                Err(error) => {
+                    eprintln!("conUD runtime failed: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Err(conu_core::runtime::RuntimeError::AlreadyRunning(status)) => {
+            println!(
+                "conUD already running; pid {}; payloads not observed",
+                status
+                    .pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            );
             ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("conUD start failed: {error}");
+            ExitCode::from(1)
         }
     }
 }
 
+fn run_once() -> ExitCode {
+    match conu_core::runtime::acquire_runtime(None) {
+        Ok(lease) => match lease.heartbeat().and_then(|_| lease.stop()) {
+            Ok(status) => {
+                println!(
+                    "conUD one-shot completed; state {}; payloads not observed",
+                    status.state.as_str()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("conUD one-shot failed: {error}");
+                ExitCode::from(1)
+            }
+        },
+        Err(error) => {
+            eprintln!("conUD one-shot failed: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn print_status() -> ExitCode {
+    match conu_core::runtime::read_runtime(None) {
+        Ok(status) => {
+            println!(
+                "conUD status: {}; pid {}; health {}; payloads not observed",
+                status.state.as_str(),
+                status
+                    .pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+                status.local_endpoint
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("conUD status failed: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn print_check() {
+    println!("{}", conu_core::scaffold_status("conud"));
+    println!("runtime: phase 4 heartbeat skeleton ready; payloads not observed");
+}
+
 fn print_help() {
     println!(
-        r"conud - conU local runtime daemon scaffold
+        r"conud - conU local runtime daemon
 
 Usage:
   conud
+  conud --serve
+  conud --once
   conud --check
+  conud --status
   conud --help
   conud --version"
     );

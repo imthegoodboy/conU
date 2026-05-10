@@ -1,5 +1,6 @@
 //! Core conU runtime concepts shared by binaries.
 
+pub mod runtime;
 pub mod state;
 
 /// The product invariant every crate should preserve.

@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 4 - conUD Daemon Skeleton
+Current phase: Phase 5 - Local IPC And Agent Registration
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -310,7 +310,7 @@ Next:
 
 ## Phase 4 - conUD Daemon Skeleton
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -326,9 +326,63 @@ Deliverables:
 
 Exit criteria:
 
-- `conu start` launches runtime.
-- `conu status` detects runtime.
-- Runtime can restart cleanly.
+- [x] `conu start` launches runtime.
+- [x] `conu status` detects runtime.
+- [x] Runtime can restart cleanly.
+
+Completed work:
+
+- Created GitHub issue #7 for Phase 4.
+- Created and pushed branch `codex/phase-4-conud-daemon`.
+- Added std-only `conu_core::runtime` lifecycle module.
+- Added runtime heartbeat/status metadata under `runtime/status.toml`.
+- Added local process lock handling with stale heartbeat replacement.
+- Added graceful shutdown request handling through `runtime/stop.request`.
+- Added payload-safe runtime log lines under `logs/conud.log`.
+- Updated `conud` with `--serve`, `--once`, `--status`, and enhanced `--check`.
+- Wired `conu start` to launch `conud --serve`.
+- Added `conu stop` for graceful shutdown.
+- Updated `conu status`, `conu status --json`, and dashboard output to detect local runtime state.
+- Added tests for runtime acquire, already-running guard, stop request, stopped cleanup, stale replacement, CLI runtime status, start already-running path, and stop request path.
+- Updated README, repo overview, and implementation guardrails.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/runtime.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conud/src/main.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu build -p conud -p conu-cli` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- init` passed with isolated `CONU_HOME`.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- start` launched `conud --serve` with isolated `CONU_HOME` and `CONUD_EXE`.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- status` detected the running daemon.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- status --json` reported running runtime metadata.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-cli -- stop` requested graceful shutdown and observed stopped state.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conud -- --once` passed.
+- Smoke log review confirmed only metadata lines with `payload=not_observed`.
+
+Known gaps:
+
+- Phase 4 health is file-backed heartbeat metadata, not real IPC.
+- `conu start` needs an installed/sibling `conud` binary or `CONUD_EXE` in development.
+- There is no local agent registration yet; that remains Phase 5.
+- There is no message routing, transport encryption session, relay, or remote discovery yet.
+- Runtime logs are std-only text metadata and do not yet have rotation or structured logging.
+
+Next:
+
+- Start Phase 5: local IPC transport and agent registration with payload-safe agent registry updates.
 
 ## Phase 5 - Local IPC And Agent Registration
 
@@ -581,4 +635,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 1 completed. Rust workspace scaffold created and validated with cargo fmt/check/test plus binary smoke commands using stable-x86_64-pc-windows-gnu. Next: Phase 2 CLI identity and dashboard.
 2026-05-10 - Phase 2 completed. CLI dashboard and command shell created with payload-safe outputs, tests, and smoke validation. Next: Phase 3 local identity and persistent state.
 2026-05-10 - Phase 3 completed. Local identity and persistent state added with idempotent init, status reads, tests, and isolated CONU_HOME smoke validation. Next: Phase 4 conUD daemon skeleton.
+2026-05-10 - Phase 4 completed. conUD daemon skeleton added with start/stop, runtime heartbeat status, stale restart handling, payload-safe logs, tests, and isolated CONU_HOME process smoke. Next: Phase 5 local IPC and agent registration.
 ```
