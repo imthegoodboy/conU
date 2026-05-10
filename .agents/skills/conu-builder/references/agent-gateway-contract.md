@@ -100,6 +100,25 @@ send_message
 
 Phase 6 intentionally does not expose remote relay delivery, discovery, streams, rooms, or pub/sub. Those start in later phases.
 
+The Phase 7 trust surface is local pairing groundwork:
+
+```txt
+pairing/invites       pending local pairing invitations
+pairing/used          consumed local pairing invitations
+trust.toml            trusted and revoked peer records
+```
+
+Supported commands:
+
+```txt
+conu pair [--json]
+conu join <code> [--json]
+conu peers [--json]
+conu peers revoke <peer-node-id> [--json]
+```
+
+Phase 7 creates trust records but does not discover remote agents or open network sessions. Raw used pairing codes must not appear in peer list output or trust records.
+
 ## Safety
 
 "Full access" means full communication access inside trust boundaries. It does not mean raw filesystem, shell, network, or secret access.

@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 7 - Pairing And Trust
+Current phase: Phase 8 - WebSocket Relay MVP
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -538,7 +538,7 @@ Next:
 
 ## Phase 7 - Pairing And Trust
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -546,16 +546,64 @@ Create the trust-forming flow between runtimes.
 
 Deliverables:
 
-- `conu pair`
-- `conu join <code>`
-- pairing code lifecycle
-- trust entry
-- peer revocation command if needed
+- [x] `conu pair`
+- [x] `conu join <code>`
+- [x] pairing code lifecycle
+- [x] trust entry
+- [x] peer revocation command if needed
 
 Exit criteria:
 
-- Pairing creates trusted peer records.
-- Trust can be listed and revoked.
+- [x] Pairing creates trusted peer records.
+- [x] Trust can be listed and revoked.
+
+Completed work:
+
+- Created GitHub issue #13 for Phase 7.
+- Created and pushed branch `codex/phase-7-pairing-trust`.
+- Added std-only `conu_core::trust` local pairing and trust store module.
+- Added local pairing invitation persistence under `pairing/invites/` and consumed invitations under `pairing/used/`.
+- Added `conu pair` to create a six-digit local pairing invitation with expiration.
+- Added `conu join <code>` to consume a local invitation and write a trusted peer record.
+- Added `conu peers` and `conu peers --json` for trust listing.
+- Added `conu peers revoke <peer-node-id>` for revocation.
+- Updated status/dashboard output to count trusted peers.
+- Stored `pairing_code_hash` in `trust.toml` instead of raw used pairing codes.
+- Derived peer ids and display names from a hash suffix instead of the raw pairing code.
+- Updated README, repo overview, builder guardrails, repo map, and agent gateway contract.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conu-core/src/trust.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu build -p conu-cli` passed.
+- Isolated `CONU_HOME` smoke passed: `conu init`, `conu pair`, `conu join <code>`, `conu peers --json`, and `conu peers revoke <peer-node-id> --json`.
+- Smoke confirmed peer output does not expose the raw used pairing code and `trust.toml` stores `pairing_code_hash`.
+
+Known gaps:
+
+- Phase 7 pairing is local-only trust groundwork; cross-machine rendezvous requires the Phase 8 relay.
+- Pairing invitations are file-backed and not cryptographically signed yet.
+- Trust records are persistent metadata, but full permission grants, key exchange, and signed peer verification arrive in later security phases.
+- Remote agent discovery over trusted peers starts in Phase 9.
+
+Next:
+
+- Start Phase 8: WebSocket relay MVP for hosted rendezvous and opaque forwarding groundwork.
 
 ## Phase 8 - WebSocket Relay MVP
 
@@ -747,4 +795,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 4 completed. conUD daemon skeleton added with start/stop, runtime heartbeat status, stale restart handling, payload-safe logs, tests, and isolated CONU_HOME process smoke. Next: Phase 5 local IPC and agent registration.
 2026-05-10 - Phase 5 completed. File-backed local IPC gateway added with metadata-only agent registration, presence heartbeat, persisted local agent registry, conUD processing, CLI listing, tests, docs, and isolated CONU_HOME smoke validation. Next: Phase 6 opaque envelope messaging.
 2026-05-10 - Phase 6 completed. Local opaque envelope messaging added with stdin submission, registered sender/receiver validation, recipient inboxes, metadata-only receipts/logs, conUD processing, tests, docs, and isolated CONU_HOME smoke validation. Next: Phase 7 pairing and trust.
+2026-05-10 - Phase 7 completed. Local pairing invitations, join-to-trust, peer listing, revocation, pairing code hash storage, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 8 WebSocket relay MVP.
 ```

@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 6 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, and registered local agents can exchange opaque message envelopes through conUD.
+Phase 7 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, registered local agents can exchange opaque message envelopes, and local pairing/trust records can be created and revoked.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -48,6 +48,8 @@ runtime/ipc/rejected/  rejected gateway requests and safe reasons
 runtime/ipc/messages/  opaque local message request queue
 messages/inbox/        delivered local opaque envelopes by recipient agent
 messages/receipts/     metadata-only local delivery receipts
+pairing/invites/       pending local pairing invitations
+pairing/used/          consumed local pairing invitations
 sessions/              future runtime sessions
 mailbox/               future encrypted mailbox storage
 logs/conud.log         runtime metadata log
@@ -87,6 +89,20 @@ conu messages receipts
 
 `conu messages send` reads bytes from stdin so payloads are not placed directly in the command line. When `conUD` is running, delivery is processed automatically. If the runtime is offline, message requests remain queued under `runtime/ipc/messages/inbox/` and can be processed with `conud --process-ipc`.
 
+## Pairing And Trust
+
+Phase 7 adds local trust-store mechanics before the hosted relay exists:
+
+```bash
+conu pair
+conu join 123456
+conu peers
+conu peers --json
+conu peers revoke peer_example
+```
+
+`conu pair` creates a short local invitation code with an expiration. `conu join <code>` consumes a local invitation and writes a trusted peer record to `trust.toml`. Peer ids and display names are derived from a hash suffix, and the trust store records `pairing_code_hash` instead of the raw used code. Relay-backed cross-machine pairing starts in Phase 8.
+
 ## Development
 
 ```bash
@@ -117,7 +133,9 @@ cargo run -p conu-cli -- messages send agent.sender agent.receiver --stdin
 cargo run -p conu-cli -- messages inbox agent.receiver --json
 cargo run -p conu-cli -- messages receipts --json
 cargo run -p conu-cli -- pair
-cargo run -p conu-cli -- join 482913
+cargo run -p conu-cli -- join 123456
+cargo run -p conu-cli -- peers --json
+cargo run -p conu-cli -- peers revoke peer_example
 cargo run -p conu-cli -- connect
 cargo run -p conu-cli -- watch
 cargo run -p conu-cli -- start

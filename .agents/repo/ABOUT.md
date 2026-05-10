@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 6.
+The repository has completed Phase 7.
 
 Implemented so far:
 
@@ -25,6 +25,9 @@ Implemented so far:
 - local recipient inbox listing through `conu messages inbox`
 - metadata-only delivery receipts through `conu messages receipts`
 - conUD processing for local message delivery
+- local pairing invitation creation through `conu pair`
+- local pairing join/trust creation through `conu join <code>`
+- trusted peer listing and revocation through `conu peers`
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs
 - payload-safe message delivery metadata logs

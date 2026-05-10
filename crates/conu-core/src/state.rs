@@ -1,9 +1,9 @@
 //! Local persistent state for conU.
 //!
 //! Phase 6 keeps this intentionally small and std-only: a locally generated
-//! node id, config, trust store skeleton, agent registry, runtime metadata,
-//! local gateway inboxes, and local opaque message inboxes. Secret keys and
-//! encrypted remote mailbox storage belong to later phases.
+//! node id, config, trust store, pairing invitations, agent registry, runtime
+//! metadata, local gateway inboxes, and local opaque message inboxes. Secret
+//! keys and encrypted remote mailbox storage belong to later phases.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -31,6 +31,9 @@ const IPC_REJECTED_DIR: &str = "rejected";
 const MESSAGES_DIR: &str = "messages";
 const MESSAGE_INBOX_DIR: &str = "inbox";
 const MESSAGE_RECEIPTS_DIR: &str = "receipts";
+const PAIRING_DIR: &str = "pairing";
+const PAIRING_INVITES_DIR: &str = "invites";
+const PAIRING_USED_DIR: &str = "used";
 const SESSIONS_DIR: &str = "sessions";
 const MAILBOX_DIR: &str = "mailbox";
 const LOGS_DIR: &str = "logs";
@@ -59,6 +62,9 @@ pub struct StatePaths {
     pub messages_dir: PathBuf,
     pub message_inbox_dir: PathBuf,
     pub message_receipts_dir: PathBuf,
+    pub pairing_dir: PathBuf,
+    pub pairing_invites_dir: PathBuf,
+    pub pairing_used_dir: PathBuf,
     pub sessions_dir: PathBuf,
     pub mailbox_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -82,6 +88,7 @@ impl StatePaths {
         let ipc_dir = runtime_dir.join(IPC_DIR);
         let message_ipc_dir = ipc_dir.join(MESSAGES_DIR);
         let messages_dir = home.join(MESSAGES_DIR);
+        let pairing_dir = home.join(PAIRING_DIR);
 
         Self {
             node_identity: home.join(NODE_FILE),
@@ -104,6 +111,9 @@ impl StatePaths {
             message_inbox_dir: messages_dir.join(MESSAGE_INBOX_DIR),
             message_receipts_dir: messages_dir.join(MESSAGE_RECEIPTS_DIR),
             messages_dir,
+            pairing_invites_dir: pairing_dir.join(PAIRING_INVITES_DIR),
+            pairing_used_dir: pairing_dir.join(PAIRING_USED_DIR),
+            pairing_dir,
             sessions_dir: home.join(SESSIONS_DIR),
             mailbox_dir: home.join(MAILBOX_DIR),
             logs_dir: home.join(LOGS_DIR),
@@ -278,6 +288,9 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.messages_dir,
         &paths.message_inbox_dir,
         &paths.message_receipts_dir,
+        &paths.pairing_dir,
+        &paths.pairing_invites_dir,
+        &paths.pairing_used_dir,
         &paths.sessions_dir,
         &paths.mailbox_dir,
         &paths.logs_dir,
@@ -513,6 +526,7 @@ mod tests {
                 .exists()
         );
         assert!(home.join(MESSAGES_DIR).join(MESSAGE_INBOX_DIR).exists());
+        assert!(home.join(PAIRING_DIR).join(PAIRING_INVITES_DIR).exists());
         assert!(
             home.join(RUNTIME_DIR)
                 .join(IPC_DIR)

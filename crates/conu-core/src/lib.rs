@@ -4,6 +4,7 @@ pub mod agents;
 pub mod messages;
 pub mod runtime;
 pub mod state;
+pub mod trust;
 
 /// The product invariant every crate should preserve.
 pub const PRODUCT_LAW: &str = "Agents own the conversation. conU owns the connection.";

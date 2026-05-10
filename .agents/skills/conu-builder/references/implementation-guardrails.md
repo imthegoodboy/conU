@@ -65,6 +65,15 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Message logs must use metadata-only lines such as envelope id, from, to, byte count, and `payload=not_observed`.
 - Do not add remote message routing, relay forwarding, discovery, streams, or rooms while completing Phase 6.
 
+## Pairing And Trust Rules
+
+- Phase 7 pairing is local trust-store groundwork only; relay-backed cross-machine rendezvous starts in Phase 8.
+- `conu pair` may display a fresh short code once, but peers listing and trust records must not expose the raw used pairing code.
+- Store `pairing_code_hash` in `trust.toml`, not `pairing_code`.
+- Trusted peer ids and display names should be derived from a hash suffix, not from the raw six-digit code.
+- `conu join <code>` should create a trusted peer only when the local invitation exists, is pending, and is not expired.
+- Revocation must preserve the peer record with `status = "revoked"` so future agents can reason about trust history.
+
 ## Privacy Rules
 
 - Never log plaintext payloads.
