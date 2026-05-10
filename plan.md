@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 10 - Streams And Watch Animation
+Current phase: Phase 11 - Encryption Hardening
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -751,7 +751,7 @@ Next:
 
 ## Phase 10 - Streams And Watch Animation
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -759,17 +759,64 @@ Add stream support and the private CLI animation showing agent traffic flow.
 
 Deliverables:
 
-- stream ids
-- stream open/write/close
-- backpressure windows
-- watch event bus
-- CLI animation
+- [x] stream ids
+- [x] stream open/write/close
+- [x] backpressure windows
+- [x] watch event bus
+- [x] CLI animation
 
 Exit criteria:
 
-- Agents can open streams.
-- `conu watch` shows traffic metadata only.
-- No payload text appears in watch output.
+- [x] Agents can open streams.
+- [x] `conu watch` shows traffic metadata only.
+- [x] No payload text appears in watch output.
+
+Completed work:
+
+- Created GitHub issue #19 for Phase 10.
+- Created and pushed branch `codex/phase-10-streams-watch`.
+- Added `conu_core::streams` for stream lifecycle metadata, opaque chunk byte counts, backpressure validation, watch events, and payload-safe stream logs.
+- Added `streams/registry.toml`, `streams/events.toml`, and `logs/streams.log` state surfaces.
+- Added `conu streams`, `conu streams --json`, `conu streams open`, `conu streams write --stdin`, and `conu streams close`.
+- Updated the CLI binary so `streams write --stdin` reads stdin like message send.
+- Updated `conu watch` to render private stream flow, route, stream id, event type, open stream count, packet count, and byte count without payload contents.
+- Updated `conu status`, `conu connect`, help text, README, repo overview, builder guardrails, repo map, CLI experience reference, and agent gateway contract.
+- Added tests for stream lifecycle, backpressure rejection, target visibility, binary stdin routing, CLI stream flow, and watch privacy.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/cli-experience.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-cli/src/main.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conu-core/src/streams.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `git diff --check` passed.
+- Isolated `CONU_HOME` smoke passed: `conu init`, two `conu agents register` calls, two `conud --process-ipc` calls, `conu streams open`, `conu streams write <stream-id> --stdin`, `conu watch`, `conu streams close`, and `conu streams --json`.
+- Privacy scan reviewed payload/token terms; matches were limited to negative tests, placeholder frame documentation, original product examples, and existing opaque local storage internals.
+
+Known gaps:
+
+- Phase 10 streams record metadata and byte counts only; they do not yet move encrypted chunk bytes over a live relay transport.
+- Stream chunks are accepted from stdin and counted, but conU-owned stream storage intentionally does not persist chunk contents.
+- Watch animation is static CLI rendering over the event bus, not a continuously refreshing TUI yet.
+- End-to-end stream encryption, signed stream peers, and replay protection begin in Phase 11.
+
+Next:
+
+- Start Phase 11: encryption hardening, signed cards, replay protection, encrypted storage, and key rotation planning.
 
 ## Phase 11 - Encryption Hardening
 
@@ -898,4 +945,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 7 completed. Local pairing invitations, join-to-trust, peer listing, revocation, pairing code hash storage, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 8 WebSocket relay MVP.
 2026-05-10 - Phase 8 completed. std-only WebSocket relay service, shared relay frame contract, token-authenticated sessions, metadata-only connected-peer forwarding, tests, docs, and relay binary smoke validation added. Next: Phase 9 remote discovery and sessions.
 2026-05-10 - Phase 9 completed. conUD-owned remote session mirror, trusted remote agent cards, `conu sessions`, remote visibility in agents/status/connect, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 10 streams and watch animation.
+2026-05-10 - Phase 10 completed. Stream lifecycle metadata, stdin-only opaque stream writes, backpressure checks, watch event bus, private watch animation, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 11 encryption hardening.
 ```

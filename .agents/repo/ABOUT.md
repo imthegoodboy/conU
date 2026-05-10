@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 9.
+The repository has completed Phase 10.
 
 Implemented so far:
 
@@ -36,10 +36,15 @@ Implemented so far:
 - remote runtime session metadata under `sessions/registry.toml`
 - trusted remote agent mirror under `agents/remote.toml`
 - remote agents visible through `conu agents`
+- stream lifecycle metadata through `conu streams`
+- stream open/write/close commands with stdin-only opaque writes
+- payload-safe watch event bus under `streams/events.toml`
+- `conu watch` private transport animation
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs
 - payload-safe message delivery metadata logs
 - payload-safe remote session metadata logs
+- payload-safe stream metadata logs
 - payload-safe protocol scaffold
 - daemon runtime skeleton and relay service binary
 

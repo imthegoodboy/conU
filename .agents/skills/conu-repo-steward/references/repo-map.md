@@ -17,13 +17,13 @@ plan.md
 
 ```txt
 crates/conu-cli
-  CLI commands, ASCII dashboard, watch animation, user control flow
+  CLI commands, ASCII dashboard, stream/watch animation, user control flow
 
 crates/conud
   daemon process, local gateway/message/session processing, session manager, runtime lifecycle
 
 crates/conu-core
-  local state, runtime lifecycle, agent registry, local message routing, trust store, relay frame contract, remote session mirror, future policy logic
+  local state, runtime lifecycle, agent registry, local message routing, stream metadata, trust store, relay frame contract, remote session mirror, future policy logic
 
 crates/conu-protocol
   envelopes, agent cards, control-plane messages, data-plane messages
