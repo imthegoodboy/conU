@@ -2,7 +2,7 @@
 
 This guide explains how a user can install the current conU app, start it on their PC, and let local agents use it.
 
-Current version status: Phase 11 is complete. conU is usable for local agent registration, local encrypted-at-rest message submission, stream metadata, trust metadata, and private CLI watch output. It is not yet a packaged consumer release, and it does not yet include the Phase 12 SDK/MCP adapter.
+Current version status: Phase 12 is complete. conU is usable for local agent registration, local encrypted-at-rest message submission, stream metadata, trust metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, and an MCP stdio adapter. It is not yet a packaged consumer release.
 
 ## What Works Today
 
@@ -14,13 +14,15 @@ Current version status: Phase 11 is complete. conU is usable for local agent reg
 - Store new conU-owned local payload files encrypted at rest.
 - List inbox, receipt, stream, peer, session, and security metadata.
 - Run a standalone `conu-relay` MVP for metadata-only relay frame tests.
+- Let Rust agents use `conu_sdk::ConuClient`.
+- Let Python agents use `sdk/python/conu_sdk`.
+- Let MCP-capable agents launch `conu-mcp` and call conU tools.
 
 ## What Does Not Work Yet
 
 - No one-click installer or signed release package.
-- No stable SDK for Python, TypeScript, or Rust agent apps yet.
-- No MCP adapter yet.
-- No CLI command that reveals message contents. This is intentional, but it also means a clean external receive API is still Phase 12 work.
+- No TypeScript SDK yet.
+- No CLI command that reveals message contents. This is intentional; use SDK or MCP explicit receive APIs when the addressed local agent needs payload bytes.
 - No live internet data-plane routing between two real conUD nodes yet.
 - Pairing and remote sessions are local metadata groundwork, not full cross-machine rendezvous.
 - `conu-relay` exists, but conUD does not yet own a live relay client for encrypted message/stream byte delivery.
@@ -54,6 +56,7 @@ Windows PowerShell:
 cargo +stable-x86_64-pc-windows-gnu install --path crates/conu-cli --locked --force
 cargo +stable-x86_64-pc-windows-gnu install --path crates/conud --locked --force
 cargo +stable-x86_64-pc-windows-gnu install --path crates/conu-relay --locked --force
+cargo +stable-x86_64-pc-windows-gnu install --path crates/conu-mcp --locked --force
 ```
 
 macOS/Linux shell, assuming the default toolchain links successfully:
@@ -62,6 +65,7 @@ macOS/Linux shell, assuming the default toolchain links successfully:
 cargo install --path crates/conu-cli --locked --force
 cargo install --path crates/conud --locked --force
 cargo install --path crates/conu-relay --locked --force
+cargo install --path crates/conu-mcp --locked --force
 ```
 
 Make sure Cargo's bin directory is on `PATH`.
@@ -85,6 +89,8 @@ conu --version
 conud --check
 conu-relay --check
 ```
+
+`conu-mcp` is a stdio server for MCP clients, so it normally waits for JSON-RPC input instead of printing a standalone check screen.
 
 ## First Run
 
@@ -161,9 +167,83 @@ conu messages receipts --json
 
 The inbox command shows metadata only: envelope id, sender, receiver, receipt id, byte count, and delivery time. It does not print the payload.
 
-## Give conU To An Agent Today
+## Give conU To An Agent
 
-Until Phase 12 SDK/MCP exists, the safest current integration is to let the agent call the CLI.
+Agents can use conU through MCP, Rust, Python, or direct CLI calls.
+
+### MCP Agent Setup
+
+Add `conu-mcp` to the agent's MCP server config:
+
+```json
+{
+  "mcpServers": {
+    "conu": {
+      "command": "conu-mcp",
+      "env": {
+        "CONU_HOME": "C:\\Users\\you\\AppData\\Roaming\\conU",
+        "CONU_AGENT_ID": "agent.mybot"
+      }
+    }
+  }
+}
+```
+
+Tell the MCP agent:
+
+```txt
+Use conU tools for communication.
+
+Rules:
+- Launch one `conu-mcp` server per agent and set `CONU_AGENT_ID`.
+- Register once with conu_register_agent.
+- Use conu_set_presence when your state changes.
+- Discover local and trusted remote metadata with conu_list_agents and conu_list_peers.
+- Send opaque bytes with conu_send_message.
+- Read inbox metadata first; request payloadHex only with conu_receive_message when you are the addressed local agent.
+- Use conu_open_stream, conu_write_stream, and conu_close_stream for stream metadata flows.
+- Treat conU as the road, not the conversation.
+```
+
+### Rust Agent Setup
+
+Inside this workspace, Rust agents can depend on:
+
+```toml
+conu-sdk = { path = "crates/conu-sdk" }
+```
+
+Minimal usage:
+
+```rust
+use conu_sdk::ConuClient;
+
+let client = ConuClient::new();
+client.init()?;
+client.register_agent("agent.mybot", "My Bot", "local-agent")?;
+client.process_queued()?;
+client.send_message_bytes("agent.mybot", "agent.other", b"opaque bytes")?;
+```
+
+### Python Agent Setup
+
+For local development:
+
+```powershell
+$env:PYTHONPATH = "$PWD\sdk\python"
+```
+
+```python
+from conu_sdk import ConuClient
+
+client = ConuClient(home=".conu-agent")
+client.init()
+client.register_agent("agent.mybot", "My Bot")
+client.process_queued()
+client.send_message("agent.mybot", "agent.other", b"opaque bytes")
+```
+
+### CLI Agent Fallback
 
 Give the agent this operating contract:
 
@@ -207,8 +287,8 @@ These are not hidden bugs; they are the honest state of the current app:
 | Installer | No packaged installer yet | Users must build from source | Use `cargo install --path` |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
-| Agent API | No SDK/MCP adapter yet | Agents need CLI calls or internal Rust integration | Use CLI/stdin and JSON metadata |
-| Receiving payloads | No stable external receive API yet | CLI lists inbox metadata only | Phase 12 should add SDK/MCP receive |
+| Agent API | Rust SDK, Python wrapper, and MCP adapter exist; TypeScript is later | Most agents can integrate now, TS apps need wrapper work | Use MCP, Rust SDK, Python SDK, or CLI/stdin |
+| Receiving payloads | CLI intentionally lists inbox metadata only | Agents needing bytes must use explicit receive APIs | Use Rust SDK `receive_message_bytes` or MCP `conu_receive_message` with `includePayload` |
 | Internet messaging | Relay is not wired into conUD data plane yet | Local messages work; real remote payload delivery does not | Use local testing only |
 | Pairing | Pair/join are local trust groundwork | Not real cross-machine pairing yet | Use for metadata/trust testing |
 | Service install | conUD is not an OS service yet | User must start/stop manually | Use `conu start` / `conu stop` |
@@ -245,10 +325,9 @@ conu messages inbox agent.b --json
 
 ## Best Next Product Work
 
-To make conU genuinely easy for users and agents, the next phase should build:
+To make conU genuinely useful over the internet, the next phase should build:
 
-- Rust SDK receive/send/register APIs.
-- Python SDK wrapper for local agents.
-- MCP adapter exposing conU tools to LLM agents.
-- A stable receive API that returns payload bytes only to the addressed local agent.
+- Direct/relay route selection owned by conUD.
+- Live encrypted relay-backed message and stream byte delivery.
+- TypeScript SDK after the protocol surface stabilizes.
 - Packaged installer and service setup after SDK behavior is stable.

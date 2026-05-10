@@ -2,8 +2,10 @@
 members = [
     "crates/conu-cli",
     "crates/conu-core",
+    "crates/conu-mcp",
     "crates/conu-protocol",
     "crates/conu-relay",
+    "crates/conu-sdk",
     "crates/conud",
 ]
 resolver = "3"
@@ -17,6 +19,7 @@ authors = ["conU contributors"]
 [workspace.dependencies]
 conu-core = { path = "crates/conu-core" }
 conu-protocol = { path = "crates/conu-protocol" }
+conu-sdk = { path = "crates/conu-sdk" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

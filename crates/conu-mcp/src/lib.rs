@@ -1,0 +1,1026 @@
+//! MCP stdio adapter for conU.
+//!
+//! The adapter exposes conU as MCP tools over newline-delimited JSON-RPC on
+//! stdin/stdout. Tool outputs are metadata-only unless an addressed local agent
+//! explicitly calls `conu_receive_message` with `includePayload: true`.
+
+use std::path::PathBuf;
+
+use conu_sdk::{Capabilities, ConuClient, Presence, SdkError, Stream};
+use serde_json::{Map, Value, json};
+
+const JSONRPC_VERSION: &str = "2.0";
+const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// Minimal MCP server that dispatches conU tools.
+#[derive(Debug, Clone)]
+pub struct McpServer {
+    client: ConuClient,
+    bound_agent_id: Option<String>,
+}
+
+impl McpServer {
+    /// Use the default conU state home.
+    pub fn new() -> Self {
+        Self {
+            client: ConuClient::new(),
+            bound_agent_id: bound_agent_from_env(),
+        }
+    }
+
+    /// Use a specific conU state home.
+    pub fn with_home(home: impl Into<PathBuf>) -> Self {
+        Self {
+            client: ConuClient::with_home(home),
+            bound_agent_id: None,
+        }
+    }
+
+    /// Use a specific conU state home and bind the server to one local agent id.
+    pub fn with_home_and_agent(home: impl Into<PathBuf>, agent_id: impl Into<String>) -> Self {
+        Self {
+            client: ConuClient::with_home(home),
+            bound_agent_id: Some(agent_id.into()),
+        }
+    }
+
+    /// Handle one newline-delimited JSON-RPC message.
+    pub fn handle_line(&self, line: &str) -> Option<String> {
+        let line = line.trim();
+        if line.is_empty() {
+            return None;
+        }
+
+        let response = match serde_json::from_str::<Value>(line) {
+            Ok(message) => self.handle_message(message),
+            Err(_) => Some(error_response(Value::Null, -32700, "parse error")),
+        }?;
+
+        Some(response.to_string())
+    }
+
+    fn handle_message(&self, message: Value) -> Option<Value> {
+        let Some(object) = message.as_object() else {
+            return Some(error_response(Value::Null, -32600, "invalid request"));
+        };
+        let id = object.get("id").cloned();
+        let Some(method) = object.get("method").and_then(Value::as_str) else {
+            return id.map(|id| error_response(id, -32600, "missing method"));
+        };
+
+        if matches!(id, Some(Value::Null)) {
+            return Some(error_response(
+                Value::Null,
+                -32600,
+                "request id must not be null",
+            ));
+        }
+        if id.is_none() {
+            return None;
+        }
+        let id = id.unwrap_or(Value::Null);
+
+        let result = match method {
+            "initialize" => Ok(self.initialize_result()),
+            "ping" => Ok(json!({})),
+            "tools/list" => Ok(json!({ "tools": self.tools() })),
+            "tools/call" => self.call_tool(object.get("params")),
+            _ => Err(jsonrpc_error(-32601, "method not found")),
+        };
+
+        Some(match result {
+            Ok(result) => json!({
+                "jsonrpc": JSONRPC_VERSION,
+                "id": id,
+                "result": result
+            }),
+            Err(error) => json!({
+                "jsonrpc": JSONRPC_VERSION,
+                "id": id,
+                "error": error
+            }),
+        })
+    }
+
+    fn initialize_result(&self) -> Value {
+        json!({
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": {
+                "tools": {}
+            },
+            "serverInfo": {
+                "name": "conu-mcp",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        })
+    }
+
+    fn call_tool(&self, params: Option<&Value>) -> Result<Value, Value> {
+        let params = params
+            .and_then(Value::as_object)
+            .ok_or_else(|| jsonrpc_error(-32602, "tools/call requires params"))?;
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| jsonrpc_error(-32602, "tools/call requires a tool name"))?;
+        let arguments_value = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let arguments = arguments_value
+            .as_object()
+            .ok_or_else(|| jsonrpc_error(-32602, "tool arguments must be an object"))?;
+
+        let result = match self.dispatch_tool(name, arguments) {
+            Ok(value) => tool_success(value),
+            Err(error) => tool_failure(error),
+        };
+
+        Ok(result)
+    }
+
+    fn dispatch_tool(&self, name: &str, args: &Map<String, Value>) -> Result<Value, String> {
+        match name {
+            "conu_status" => self.tool_status(),
+            "conu_security_audit" => self.tool_security_audit(),
+            "conu_register_agent" => self.tool_register_agent(args),
+            "conu_set_presence" => self.tool_set_presence(args),
+            "conu_process_queued" => self.tool_process_queued(),
+            "conu_list_agents" => self.tool_list_agents(args),
+            "conu_list_peers" => self.tool_list_peers(),
+            "conu_send_message" => self.tool_send_message(args),
+            "conu_receive_message" => self.tool_receive_message(args),
+            "conu_open_stream" => self.tool_open_stream(args),
+            "conu_write_stream" => self.tool_write_stream(args),
+            "conu_close_stream" => self.tool_close_stream(args),
+            _ => Err(format!("unknown conU tool: {name}")),
+        }
+    }
+
+    fn tool_status(&self) -> Result<Value, String> {
+        let snapshot = self.client.state_snapshot().map_err(safe_sdk_error)?;
+        let runtime = self.client.runtime_status().map_err(safe_sdk_error)?;
+        let agents = self
+            .client
+            .list_agents()
+            .unwrap_or_else(|_| conu_sdk::AgentDirectory {
+                local: Vec::new(),
+                remote: Vec::new(),
+            });
+
+        Ok(json!({
+            "initialized": snapshot.is_initialized(),
+            "nodeId": snapshot.node.as_ref().map(|node| node.node_id.as_str()),
+            "runtime": runtime.state.as_str(),
+            "localEndpoint": runtime.local_endpoint,
+            "localAgents": agents.local.len(),
+            "remoteAgents": agents.remote.len(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_security_audit(&self) -> Result<Value, String> {
+        let audit = self.client.security_audit().map_err(safe_sdk_error)?;
+        Ok(json!({
+            "initialized": audit.initialized,
+            "identitySigningKey": audit.identity_signing_key,
+            "identityExchangeKey": audit.identity_exchange_key,
+            "storageKey": audit.storage_key,
+            "replayCache": audit.replay_cache,
+            "keyRotationPlan": audit.key_rotation_plan,
+            "localPayloadEncryption": audit.local_payload_encryption,
+            "signedAgentCards": audit.signed_agent_cards,
+            "peerKeyExchange": audit.peer_key_exchange,
+            "contentsDisplayed": audit.contents_displayed
+        }))
+    }
+
+    fn tool_register_agent(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let agent_id = required_string(args, "agentId")?;
+        self.ensure_agent_allowed(&agent_id)?;
+        let display_name = required_string(args, "displayName")?;
+        let kind = optional_string(args, "kind")?.unwrap_or_else(|| "local-agent".to_string());
+        let capabilities = capabilities_from_args(args)?;
+        let submission = self
+            .client
+            .register_agent_with_capabilities(&agent_id, &display_name, &kind, capabilities)
+            .map_err(safe_sdk_error)?;
+        let process = if optional_bool(args, "process", true)? {
+            Some(self.client.process_queued().map_err(safe_sdk_error)?)
+        } else {
+            None
+        };
+
+        Ok(json!({
+            "status": if process.is_some() { "processed" } else { "queued" },
+            "agentId": agent_id,
+            "requestId": submission.request_id,
+            "processed": process.as_ref().map(|report| report.agents.processed),
+            "rejected": process.as_ref().map(|report| report.agents.rejected),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_set_presence(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let agent_id = required_string(args, "agentId")?;
+        self.ensure_agent_allowed(&agent_id)?;
+        let presence = presence_from_args(args)?;
+        let submission = self
+            .client
+            .set_presence(&agent_id, presence)
+            .map_err(safe_sdk_error)?;
+        let process = if optional_bool(args, "process", true)? {
+            Some(self.client.process_queued().map_err(safe_sdk_error)?)
+        } else {
+            None
+        };
+
+        Ok(json!({
+            "status": if process.is_some() { "processed" } else { "queued" },
+            "agentId": agent_id,
+            "presence": presence.as_str(),
+            "requestId": submission.request_id,
+            "processed": process.as_ref().map(|report| report.agents.processed),
+            "rejected": process.as_ref().map(|report| report.agents.rejected),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_process_queued(&self) -> Result<Value, String> {
+        let report = self.client.process_queued().map_err(safe_sdk_error)?;
+        Ok(json!({
+            "agents": {
+                "processed": report.agents.processed,
+                "rejected": report.agents.rejected,
+                "registeredAgents": report.agents.registered_agents,
+                "heartbeatAgents": report.agents.heartbeat_agents
+            },
+            "messages": {
+                "delivered": report.messages.delivered,
+                "rejected": report.messages.rejected,
+                "envelopeIds": report.messages.envelope_ids
+            },
+            "sessions": {
+                "sessionsSynced": report.sessions.sessions_synced,
+                "remoteAgentsSynced": report.sessions.remote_agents_synced,
+                "connected": report.sessions.connected,
+                "reconnecting": report.sessions.reconnecting,
+                "offline": report.sessions.offline
+            },
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_list_agents(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        if optional_bool(args, "process", false)? {
+            self.client.process_queued().map_err(safe_sdk_error)?;
+        }
+        let directory = self.client.list_agents().map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "local": directory.local.iter().map(|agent| json!({
+                "agentId": &agent.agent_id,
+                "displayName": &agent.display_name,
+                "kind": &agent.kind,
+                "presence": agent.presence.as_str(),
+                "nodeId": &agent.node_id,
+                "lastSeenUnix": agent.last_seen_unix,
+                "capabilities": capabilities_to_json(&agent.capabilities)
+            })).collect::<Vec<_>>(),
+            "remote": directory.remote.iter().map(|agent| json!({
+                "agentId": &agent.agent_id,
+                "displayName": &agent.display_name,
+                "kind": &agent.kind,
+                "presence": agent.presence.as_str(),
+                "nodeId": &agent.node_id,
+                "peerNodeId": &agent.peer_node_id,
+                "lastSeenUnix": agent.last_seen_unix,
+                "capabilities": capabilities_to_json(&agent.capabilities)
+            })).collect::<Vec<_>>(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_list_peers(&self) -> Result<Value, String> {
+        let peers = self.client.list_peers().map_err(safe_sdk_error)?;
+        Ok(json!({
+            "peers": peers.iter().map(|peer| json!({
+                "peerNodeId": &peer.peer_node_id,
+                "displayName": &peer.display_name,
+                "status": peer.status.as_str(),
+                "source": &peer.source,
+                "createdAtUnix": peer.created_at_unix,
+                "updatedAtUnix": peer.updated_at_unix
+            })).collect::<Vec<_>>(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_send_message(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let from_agent_id = required_string(args, "fromAgentId")?;
+        self.ensure_agent_allowed(&from_agent_id)?;
+        let to_agent_id = required_string(args, "toAgentId")?;
+        let payload = payload_from_args(args)?;
+        let submission = self
+            .client
+            .send_message_bytes(&from_agent_id, &to_agent_id, payload)
+            .map_err(safe_sdk_error)?;
+        let process = if optional_bool(args, "process", true)? {
+            Some(self.client.process_queued().map_err(safe_sdk_error)?)
+        } else {
+            None
+        };
+
+        Ok(json!({
+            "status": if process.is_some() { "processed" } else { "queued" },
+            "requestId": submission.request_id,
+            "fromAgentId": from_agent_id,
+            "toAgentId": to_agent_id,
+            "payloadBytes": submission.payload_bytes,
+            "delivered": process.as_ref().map(|report| report.messages.delivered),
+            "rejected": process.as_ref().map(|report| report.messages.rejected),
+            "envelopeIds": process
+                .as_ref()
+                .map(|report| report.messages.envelope_ids.clone())
+                .unwrap_or_default(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_receive_message(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let agent_id = required_string(args, "agentId")?;
+        self.ensure_agent_allowed(&agent_id)?;
+        let envelope_id = required_string(args, "envelopeId")?;
+        let include_payload = optional_bool(args, "includePayload", false)?;
+        let inbox = self
+            .client
+            .inbox_metadata(&agent_id)
+            .map_err(safe_sdk_error)?;
+        let entry = inbox
+            .iter()
+            .find(|entry| entry.envelope_id == envelope_id)
+            .ok_or_else(|| {
+                "message envelope was not found in the addressed agent inbox".to_string()
+            })?;
+        let mut result = json!({
+            "envelopeId": &entry.envelope_id,
+            "fromAgentId": &entry.from_agent_id,
+            "toAgentId": &entry.to_agent_id,
+            "receiptId": &entry.receipt_id,
+            "deliveredAtUnix": entry.delivered_at_unix,
+            "payloadBytes": entry.payload_bytes,
+            "payloadReturned": false,
+            "contentsDisplayed": false
+        });
+
+        if include_payload {
+            let payload = self
+                .client
+                .receive_message_bytes(&agent_id, &envelope_id)
+                .map_err(safe_sdk_error)?;
+            result["payloadHex"] = Value::String(hex_encode(&payload));
+            result["payloadEncoding"] = Value::String("hex".to_string());
+            result["payloadReturned"] = Value::Bool(true);
+        }
+
+        Ok(result)
+    }
+
+    fn tool_open_stream(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let from_agent_id = required_string(args, "fromAgentId")?;
+        self.ensure_agent_allowed(&from_agent_id)?;
+        let to_agent_id = required_string(args, "toAgentId")?;
+        let kind = optional_string(args, "kind")?.unwrap_or_else(|| "message".to_string());
+        let report = self
+            .client
+            .open_stream(&from_agent_id, &to_agent_id, &kind)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "stream": stream_to_json(&report.stream),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_write_stream(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let stream_id = required_string(args, "streamId")?;
+        self.ensure_stream_owned(&stream_id)?;
+        let payload = payload_from_args(args)?;
+        let report = self
+            .client
+            .write_stream_bytes(&stream_id, payload)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "stream": stream_to_json(&report.stream),
+            "event": {
+                "eventId": report.event.event_id,
+                "eventType": report.event.event_type,
+                "payloadBytes": report.event.payload_bytes,
+                "createdAtUnix": report.event.created_at_unix
+            },
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_close_stream(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let stream_id = required_string(args, "streamId")?;
+        self.ensure_stream_owned(&stream_id)?;
+        let report = self
+            .client
+            .close_stream(&stream_id)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "stream": stream_to_json(&report.stream),
+            "event": {
+                "eventId": report.event.event_id,
+                "eventType": report.event.event_type,
+                "payloadBytes": report.event.payload_bytes,
+                "createdAtUnix": report.event.created_at_unix
+            },
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tools(&self) -> Vec<Value> {
+        vec![
+            tool(
+                "conu_status",
+                "Read conU node, runtime, and agent counts.",
+                schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_security_audit",
+                "Read conU security-control status without exposing keys or payloads.",
+                schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_register_agent",
+                "Register the calling agent with conU's local gateway.",
+                schema(
+                    json!({
+                        "agentId": { "type": "string" },
+                        "displayName": { "type": "string" },
+                        "kind": { "type": "string" },
+                        "process": { "type": "boolean" },
+                        "capabilities": capability_schema()
+                    }),
+                    vec!["agentId", "displayName"],
+                ),
+            ),
+            tool(
+                "conu_set_presence",
+                "Publish a local agent presence heartbeat.",
+                schema(
+                    json!({
+                        "agentId": { "type": "string" },
+                        "presence": { "type": "string", "enum": ["ready", "busy", "idle", "offline"] },
+                        "process": { "type": "boolean" }
+                    }),
+                    vec!["agentId", "presence"],
+                ),
+            ),
+            tool(
+                "conu_process_queued",
+                "Process queued conU gateway work once.",
+                schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_list_agents",
+                "List local and trusted remote agent metadata.",
+                schema(json!({ "process": { "type": "boolean" } }), vec![]),
+            ),
+            tool(
+                "conu_list_peers",
+                "List trusted and revoked peer metadata.",
+                schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_send_message",
+                "Queue an opaque message. The response reports metadata and byte counts only.",
+                schema(
+                    json!({
+                        "fromAgentId": { "type": "string" },
+                        "toAgentId": { "type": "string" },
+                        "payloadText": { "type": "string" },
+                        "payloadHex": { "type": "string" },
+                        "process": { "type": "boolean" }
+                    }),
+                    vec!["fromAgentId", "toAgentId"],
+                ),
+            ),
+            tool(
+                "conu_receive_message",
+                "Read message metadata, and optionally return payloadHex to the addressed local agent.",
+                schema(
+                    json!({
+                        "agentId": { "type": "string" },
+                        "envelopeId": { "type": "string" },
+                        "includePayload": { "type": "boolean" }
+                    }),
+                    vec!["agentId", "envelopeId"],
+                ),
+            ),
+            tool(
+                "conu_open_stream",
+                "Open a metadata-tracked stream between visible agents.",
+                schema(
+                    json!({
+                        "fromAgentId": { "type": "string" },
+                        "toAgentId": { "type": "string" },
+                        "kind": { "type": "string" }
+                    }),
+                    vec!["fromAgentId", "toAgentId"],
+                ),
+            ),
+            tool(
+                "conu_write_stream",
+                "Record one opaque stream chunk by byte count.",
+                schema(
+                    json!({
+                        "streamId": { "type": "string" },
+                        "payloadText": { "type": "string" },
+                        "payloadHex": { "type": "string" }
+                    }),
+                    vec!["streamId"],
+                ),
+            ),
+            tool(
+                "conu_close_stream",
+                "Close a metadata-tracked stream.",
+                schema(
+                    json!({ "streamId": { "type": "string" } }),
+                    vec!["streamId"],
+                ),
+            ),
+        ]
+    }
+
+    fn ensure_agent_allowed(&self, agent_id: &str) -> Result<(), String> {
+        match self.bound_agent_id.as_deref() {
+            Some(bound) if bound != agent_id => {
+                Err("this conu-mcp server is bound to a different local agent id".to_string())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn ensure_stream_owned(&self, stream_id: &str) -> Result<(), String> {
+        let Some(bound_agent_id) = self.bound_agent_id.as_deref() else {
+            return Ok(());
+        };
+        let stream = self
+            .client
+            .list_streams()
+            .map_err(safe_sdk_error)?
+            .into_iter()
+            .find(|stream| stream.stream_id == stream_id)
+            .ok_or_else(|| "stream is not known".to_string())?;
+
+        if stream.from_agent_id == bound_agent_id {
+            Ok(())
+        } else {
+            Err(
+                "this conu-mcp server cannot write or close a stream owned by another local agent"
+                    .to_string(),
+            )
+        }
+    }
+}
+
+impl Default for McpServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn tool(name: &str, description: &str, input_schema: Value) -> Value {
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": input_schema
+    })
+}
+
+fn schema(properties: Value, required: Vec<&str>) -> Value {
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false
+    })
+}
+
+fn capability_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "messages": { "type": "boolean" },
+            "streams": { "type": "boolean" },
+            "rooms": { "type": "boolean" },
+            "files": { "type": "boolean" },
+            "presence": { "type": "boolean" }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn tool_success(result: Value) -> Value {
+    json!({
+        "content": [
+            {
+                "type": "text",
+                "text": serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+            }
+        ],
+        "isError": false
+    })
+}
+
+fn tool_failure(message: String) -> Value {
+    json!({
+        "content": [
+            {
+                "type": "text",
+                "text": message
+            }
+        ],
+        "isError": true
+    })
+}
+
+fn jsonrpc_error(code: i64, message: &str) -> Value {
+    json!({
+        "code": code,
+        "message": message
+    })
+}
+
+fn error_response(id: Value, code: i64, message: &str) -> Value {
+    json!({
+        "jsonrpc": JSONRPC_VERSION,
+        "id": id,
+        "error": jsonrpc_error(code, message)
+    })
+}
+
+fn required_string(args: &Map<String, Value>, key: &'static str) -> Result<String, String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("missing required argument: {key}"))
+}
+
+fn optional_string(args: &Map<String, Value>, key: &'static str) -> Result<Option<String>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            Ok(Some(value.trim().to_string()))
+        }
+        Some(Value::String(_)) => Ok(None),
+        Some(_) => Err(format!("{key} must be a string")),
+    }
+}
+
+fn optional_bool(
+    args: &Map<String, Value>,
+    key: &'static str,
+    default: bool,
+) -> Result<bool, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("{key} must be a boolean")),
+    }
+}
+
+fn presence_from_args(args: &Map<String, Value>) -> Result<Presence, String> {
+    match required_string(args, "presence")?.as_str() {
+        "ready" => Ok(Presence::Ready),
+        "busy" => Ok(Presence::Busy),
+        "idle" => Ok(Presence::Idle),
+        "offline" => Ok(Presence::Offline),
+        _ => Err("presence must be ready, busy, idle, or offline".to_string()),
+    }
+}
+
+fn capabilities_from_args(args: &Map<String, Value>) -> Result<Capabilities, String> {
+    let mut capabilities = Capabilities::basic();
+    let Some(value) = args.get("capabilities") else {
+        return Ok(capabilities);
+    };
+    let Some(values) = value.as_object() else {
+        return Err("capabilities must be an object".to_string());
+    };
+
+    if let Some(value) = values.get("messages").and_then(Value::as_bool) {
+        capabilities.messages = value;
+    }
+    if let Some(value) = values.get("streams").and_then(Value::as_bool) {
+        capabilities.streams = value;
+    }
+    if let Some(value) = values.get("rooms").and_then(Value::as_bool) {
+        capabilities.rooms = value;
+    }
+    if let Some(value) = values.get("files").and_then(Value::as_bool) {
+        capabilities.files = value;
+    }
+    if let Some(value) = values.get("presence").and_then(Value::as_bool) {
+        capabilities.presence = value;
+    }
+
+    Ok(capabilities)
+}
+
+fn payload_from_args(args: &Map<String, Value>) -> Result<Vec<u8>, String> {
+    let text = optional_string(args, "payloadText")?;
+    let hex = optional_string(args, "payloadHex")?;
+    match (text, hex) {
+        (Some(_), Some(_)) => Err("provide payloadText or payloadHex, not both".to_string()),
+        (Some(value), None) => Ok(value.into_bytes()),
+        (None, Some(value)) => hex_decode(&value),
+        (None, None) => Err("missing payloadText or payloadHex".to_string()),
+    }
+}
+
+fn capabilities_to_json(capabilities: &Capabilities) -> Value {
+    json!({
+        "messages": capabilities.messages,
+        "streams": capabilities.streams,
+        "rooms": capabilities.rooms,
+        "files": capabilities.files,
+        "presence": capabilities.presence
+    })
+}
+
+fn stream_to_json(stream: &Stream) -> Value {
+    json!({
+        "streamId": &stream.stream_id,
+        "fromAgentId": &stream.from_agent_id,
+        "toAgentId": &stream.to_agent_id,
+        "kind": &stream.kind,
+        "state": stream.state.as_str(),
+        "route": &stream.route,
+        "chunksWritten": stream.chunks_written,
+        "bytesWritten": stream.bytes_written,
+        "backpressureWindow": stream.backpressure_window,
+        "openedAtUnix": stream.opened_at_unix,
+        "updatedAtUnix": stream.updated_at_unix
+    })
+}
+
+fn safe_sdk_error(error: SdkError) -> String {
+    error.to_string()
+}
+
+fn bound_agent_from_env() -> Option<String> {
+    std::env::var("CONU_AGENT_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
+fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
+    let value = value.trim();
+    if value.len() % 2 != 0 {
+        return Err("payloadHex must have an even number of characters".to_string());
+    }
+
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        let high = hex_nibble(pair[0])?;
+        let low = hex_nibble(pair[1])?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err("payloadHex must contain only hex characters".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::process;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn initialize_advertises_tools_capability() {
+        let server = McpServer::with_home(test_home("init"));
+        let response = request(&server, 1, "initialize", json!({}));
+
+        assert_eq!(
+            response["result"]["protocolVersion"],
+            Value::String(MCP_PROTOCOL_VERSION.to_string())
+        );
+        assert!(response["result"]["capabilities"]["tools"].is_object());
+    }
+
+    #[test]
+    fn tools_list_includes_agent_message_and_stream_tools() {
+        let server = McpServer::with_home(test_home("tools"));
+        let response = request(&server, 1, "tools/list", json!({}));
+        let body = response.to_string();
+
+        assert!(body.contains("conu_register_agent"));
+        assert!(body.contains("conu_send_message"));
+        assert!(body.contains("conu_receive_message"));
+        assert!(body.contains("conu_open_stream"));
+    }
+
+    #[test]
+    fn message_tool_flow_keeps_send_and_metadata_reads_payload_safe() {
+        let server = McpServer::with_home(test_home("message-flow"));
+        call_tool(
+            &server,
+            1,
+            "conu_register_agent",
+            json!({
+                "agentId": "agent.sender",
+                "displayName": "Sender"
+            }),
+        );
+        call_tool(
+            &server,
+            2,
+            "conu_register_agent",
+            json!({
+                "agentId": "agent.receiver",
+                "displayName": "Receiver"
+            }),
+        );
+        let send = call_tool(
+            &server,
+            3,
+            "conu_send_message",
+            json!({
+                "fromAgentId": "agent.sender",
+                "toAgentId": "agent.receiver",
+                "payloadText": "private message contents"
+            }),
+        );
+        let send_response = send.to_string();
+        assert!(!send_response.contains("private message contents"));
+
+        let send_text = tool_text(&send);
+        let send_payload: Value = serde_json::from_str(&send_text).expect("send tool text json");
+        let envelope_id = send_payload["envelopeIds"][0]
+            .as_str()
+            .expect("envelope id")
+            .to_string();
+        let metadata = call_tool(
+            &server,
+            4,
+            "conu_receive_message",
+            json!({
+                "agentId": "agent.receiver",
+                "envelopeId": envelope_id
+            }),
+        );
+        let metadata_text = tool_text(&metadata);
+
+        assert!(metadata_text.contains("\"payloadReturned\": false"));
+        assert!(!metadata_text.contains("private message contents"));
+    }
+
+    #[test]
+    fn receive_payload_returns_hex_only_when_requested() {
+        let server = McpServer::with_home(test_home("receive-payload"));
+        call_tool(
+            &server,
+            1,
+            "conu_register_agent",
+            json!({ "agentId": "agent.sender", "displayName": "Sender" }),
+        );
+        call_tool(
+            &server,
+            2,
+            "conu_register_agent",
+            json!({ "agentId": "agent.receiver", "displayName": "Receiver" }),
+        );
+        let send = call_tool(
+            &server,
+            3,
+            "conu_send_message",
+            json!({
+                "fromAgentId": "agent.sender",
+                "toAgentId": "agent.receiver",
+                "payloadText": "private message contents"
+            }),
+        );
+        let send_payload: Value =
+            serde_json::from_str(&tool_text(&send)).expect("send text parses");
+        let envelope_id = send_payload["envelopeIds"][0]
+            .as_str()
+            .expect("envelope id");
+        let received = call_tool(
+            &server,
+            4,
+            "conu_receive_message",
+            json!({
+                "agentId": "agent.receiver",
+                "envelopeId": envelope_id,
+                "includePayload": true
+            }),
+        );
+        let text = tool_text(&received);
+
+        assert!(text.contains("\"payloadReturned\": true"));
+        assert!(text.contains("\"payloadEncoding\": \"hex\""));
+        assert!(text.contains("70726976617465206d65737361676520636f6e74656e7473"));
+        assert!(!text.contains("private message contents"));
+    }
+
+    #[test]
+    fn bound_server_cannot_act_as_another_agent() {
+        let home = test_home("bound-agent");
+        let setup = McpServer::with_home(home.clone());
+        call_tool(
+            &setup,
+            1,
+            "conu_register_agent",
+            json!({ "agentId": "agent.sender", "displayName": "Sender" }),
+        );
+        call_tool(
+            &setup,
+            2,
+            "conu_register_agent",
+            json!({ "agentId": "agent.receiver", "displayName": "Receiver" }),
+        );
+        let bound = McpServer::with_home_and_agent(home, "agent.sender");
+        let blocked = call_tool(
+            &bound,
+            3,
+            "conu_send_message",
+            json!({
+                "fromAgentId": "agent.receiver",
+                "toAgentId": "agent.sender",
+                "payloadText": "private message contents"
+            }),
+        );
+
+        assert_eq!(blocked["result"]["isError"], Value::Bool(true));
+        assert!(tool_text(&blocked).contains("bound to a different local agent id"));
+        assert!(!blocked.to_string().contains("private message contents"));
+    }
+
+    fn request(server: &McpServer, id: u64, method: &str, params: Value) -> Value {
+        let line = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params
+        })
+        .to_string();
+        let response = server.handle_line(&line).expect("response");
+        serde_json::from_str(&response).expect("response parses")
+    }
+
+    fn call_tool(server: &McpServer, id: u64, name: &str, arguments: Value) -> Value {
+        request(
+            server,
+            id,
+            "tools/call",
+            json!({
+                "name": name,
+                "arguments": arguments
+            }),
+        )
+    }
+
+    fn tool_text(response: &Value) -> String {
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool text")
+            .to_string()
+    }
+
+    fn test_home(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        env::temp_dir().join(format!("conu-mcp-test-{label}-{}-{nonce}", process::id()))
+    }
+}

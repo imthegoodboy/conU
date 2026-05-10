@@ -5,6 +5,10 @@
 **/*.rs.bk
 Cargo.lock.orig
 
+# Python/editor noise
+__pycache__/
+*.py[cod]
+
 # Local environment
 .env
 .env.*

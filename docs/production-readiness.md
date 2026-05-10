@@ -17,8 +17,11 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Remote session and remote agent metadata mirror for trusted peers.
 - Stream lifecycle metadata, backpressure counters, and private watch animation.
 - Replay protection for local message request and envelope ids.
+- Rust SDK for local agent registration, messaging, receive, peer, security, and stream calls.
+- Python stdlib wrapper SDK around installed `conu` and `conud` binaries.
+- MCP stdio adapter exposing conU as JSON-RPC tools for MCP-capable agents.
 - Payload-safe logs, receipts, watch output, and CLI JSON.
-- Phase 11 security audit command.
+- Phase 11 security audit command and Phase 12 SDK/MCP receive path.
 
 ## Still Local Or Groundwork
 
@@ -27,12 +30,15 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - The relay forwards metadata frames, but conUD does not yet own a live relay client for data-plane delivery.
 - Stream writes count bytes and emit events. They do not persist or relay chunk bytes yet.
 - Pairing is local trust-store groundwork, not full cross-machine rendezvous.
+- MCP is stdio-only. HTTP MCP transport, auth, and remote MCP hosting are intentionally not implemented.
+- TypeScript SDK remains future work.
 
 ## Release Blockers
 
 - Live relay-backed encrypted message and stream routing.
 - Remote signed agent-card exchange and verification.
 - Capability grants and user-visible permission policy.
+- SDK permission policy hardening before public package distribution.
 - OS-backed private key storage.
 - Key rotation migration tooling.
 - Installer/service setup for Windows, macOS, and Linux.
@@ -59,6 +65,8 @@ On Windows machines without Visual Studio C++ Build Tools, the default MSVC tool
 Every release candidate must confirm:
 
 - CLI output does not show message text, prompt text, reasoning, file contents, private keys, or shared secrets.
+- SDK/MCP list, send, status, receipt, and stream outputs stay metadata-only.
+- SDK/MCP receive APIs return payload bytes only to the addressed local agent by explicit request.
 - Logs use `payload=not_observed` or metadata-only equivalents.
 - Relay frames reject plaintext payload fields.
 - Message and mailbox storage use encrypted payload fields.

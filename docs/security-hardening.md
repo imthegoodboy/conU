@@ -71,6 +71,14 @@ conu security audit --json
 
 The audit reports whether local signing, exchange, storage encryption, replay cache, and key rotation plan are ready. It never displays private keys, shared secrets, plaintext payloads, or decrypted payloads.
 
+## SDK And MCP Receive Boundary
+
+Phase 12 adds agent-facing receive APIs without changing CLI privacy:
+
+- `conu_sdk::ConuClient::receive_message_bytes(agent_id, envelope_id)` returns bytes only after the envelope is found in that local agent inbox.
+- `conu-mcp` returns message metadata by default and only returns `payloadHex` when `conu_receive_message` is called with `includePayload: true`.
+- `conu-mcp` stdout is reserved for valid MCP JSON-RPC messages; send/list/status/stream tool responses do not echo payload text.
+
 ## Production Gaps
 
 Phase 11 hardens the current local product surface, but these items still need dedicated future work:
@@ -80,6 +88,7 @@ Phase 11 hardens the current local product surface, but these items still need d
 - Live relay-backed encrypted envelope routing using the peer key agreement helpers.
 - Signed remote agent-card exchange over real sessions instead of derived metadata mirrors.
 - Permission grants that bind trusted peers to specific local agent actions.
+- SDK/MCP permission hardening for multi-tenant or hosted deployments.
 - Encrypted mailbox storage and retention policy.
 - CI on Windows, macOS, and Linux with security/privacy regression scans.
 

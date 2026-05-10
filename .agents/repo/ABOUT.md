@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 11.
+The repository has completed Phase 12.
 
 Implemented so far:
 
@@ -29,6 +29,10 @@ Implemented so far:
 - local X25519 peer key agreement helpers
 - replay protection for local message request and envelope ids
 - `conu security audit` for payload-safe hardening status
+- Rust SDK crate `conu-sdk` for agent-facing registration, messaging, receive, peer, security, and stream calls
+- MCP stdio adapter crate `conu-mcp` exposing conU tools over newline-delimited JSON-RPC
+- Python stdlib wrapper SDK under `sdk/python`
+- local examples for Rust and Python agents
 - local pairing invitation creation through `conu pair`
 - local pairing join/trust creation through `conu join <code>`
 - trusted peer listing and revocation through `conu peers`
@@ -75,7 +79,8 @@ crates/
 |- conu-core/      shared runtime logic
 |- conu-protocol/  protocol types and envelopes
 |- conu-relay/     hosted WebSocket relay/bootstrap service
-`- conu-sdk/       agent-facing client libraries later
+|- conu-sdk/       Rust agent-facing client API
+`- conu-mcp/       MCP stdio adapter for agent tool use
 ```
 
 Current Rust crates:
@@ -85,6 +90,8 @@ Current Rust crates:
 - `crates/conu-core`
 - `crates/conu-protocol`
 - `crates/conu-relay`
+- `crates/conu-sdk`
+- `crates/conu-mcp`
 
 ## Non-Negotiable Product Rule
 

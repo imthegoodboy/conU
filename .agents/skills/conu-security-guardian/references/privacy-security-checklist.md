@@ -4,6 +4,7 @@
 
 - Payload content is opaque to conU runtime surfaces unless the local agent intentionally handles it.
 - CLI does not print payload text.
+- SDK and MCP list/send/status/stream outputs do not print payload text.
 - Logs do not include payload text.
 - Metrics do not include payload text.
 - Tests do not normalize leaking payload contents as expected behavior.
@@ -21,6 +22,7 @@
 - Agent actions require grants where appropriate.
 - Sending, streaming, subscribing, room joining, file transfer, and mailbox use are separately controllable.
 - "Full access" means full communication within trust boundaries, not raw system access.
+- SDK/MCP receive APIs return payload bytes only to the addressed local agent and only after an explicit receive request.
 
 ## Relay
 
@@ -48,3 +50,11 @@
 
 - Shows route, latency, bytes, packet count, stream count, presence.
 - Never shows message text, prompt text, reasoning, file contents, or tool output.
+
+## MCP Adapter
+
+- stdout contains only valid MCP JSON-RPC messages.
+- Tool schemas do not encourage plaintext payload logging.
+- `conu_receive_message` returns metadata by default.
+- `payloadHex` is returned only for explicit addressed-agent receive calls.
+- When `CONU_AGENT_ID` is set, the MCP server rejects attempts to act as another local agent.
