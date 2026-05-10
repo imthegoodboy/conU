@@ -1,8 +1,8 @@
 //! Local persistent state for conU.
 //!
-//! Phase 3 keeps this intentionally small and std-only: a locally generated
-//! node id, config, trust store skeleton, and agent registry skeleton. Secret
-//! keys and encrypted payload storage belong to later phases.
+//! Phase 4 keeps this intentionally small and std-only: a locally generated
+//! node id, config, trust store skeleton, agent registry skeleton, and runtime
+//! metadata. Secret keys and encrypted payload storage belong to later phases.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -22,6 +22,7 @@ const CONFIG_FILE: &str = "config.toml";
 const TRUST_FILE: &str = "trust.toml";
 const AGENTS_DIR: &str = "agents";
 const AGENT_REGISTRY_FILE: &str = "registry.toml";
+const RUNTIME_DIR: &str = "runtime";
 const SESSIONS_DIR: &str = "sessions";
 const MAILBOX_DIR: &str = "mailbox";
 const LOGS_DIR: &str = "logs";
@@ -35,6 +36,10 @@ pub struct StatePaths {
     pub trust_store: PathBuf,
     pub agents_dir: PathBuf,
     pub agent_registry: PathBuf,
+    pub runtime_dir: PathBuf,
+    pub runtime_status: PathBuf,
+    pub runtime_lock: PathBuf,
+    pub runtime_stop_request: PathBuf,
     pub sessions_dir: PathBuf,
     pub mailbox_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -54,6 +59,7 @@ impl StatePaths {
     /// Build state paths from an already resolved home directory.
     pub fn from_home(home: PathBuf) -> Self {
         let agents_dir = home.join(AGENTS_DIR);
+        let runtime_dir = home.join(RUNTIME_DIR);
 
         Self {
             node_identity: home.join(NODE_FILE),
@@ -61,6 +67,10 @@ impl StatePaths {
             trust_store: home.join(TRUST_FILE),
             agent_registry: agents_dir.join(AGENT_REGISTRY_FILE),
             agents_dir,
+            runtime_status: runtime_dir.join("status.toml"),
+            runtime_lock: runtime_dir.join("conud.lock"),
+            runtime_stop_request: runtime_dir.join("stop.request"),
+            runtime_dir,
             sessions_dir: home.join(SESSIONS_DIR),
             mailbox_dir: home.join(MAILBOX_DIR),
             logs_dir: home.join(LOGS_DIR),
@@ -223,6 +233,7 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
     for directory in [
         &paths.home,
         &paths.agents_dir,
+        &paths.runtime_dir,
         &paths.sessions_dir,
         &paths.mailbox_dir,
         &paths.logs_dir,
@@ -450,6 +461,7 @@ mod tests {
         assert!(home.join(CONFIG_FILE).exists());
         assert!(home.join(TRUST_FILE).exists());
         assert!(home.join(AGENTS_DIR).join(AGENT_REGISTRY_FILE).exists());
+        assert!(home.join(RUNTIME_DIR).exists());
     }
 
     #[test]

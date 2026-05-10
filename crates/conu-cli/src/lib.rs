@@ -1,10 +1,15 @@
 //! CLI rendering and command dispatch for conU.
 //!
-//! Phase 3 adds local persistent identity and state while keeping daemon, IPC,
-//! relay, and messaging features as honest previews.
+//! Phase 4 adds local persistent identity, state, and conUD runtime detection
+//! while keeping IPC, relay, and messaging features as honest previews.
 
+use std::env;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
+use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
 
 /// A rendered CLI command result.
@@ -65,7 +70,8 @@ where
         "connect" => render_connect(&args[1..]),
         "watch" => render_watch(&args[1..]),
         "components" => render_components(&args[1..]),
-        "start" => render_reserved_phase("start", "Phase 4", "conUD daemon lifecycle"),
+        "start" => render_start(&args[1..], home_override),
+        "stop" => render_stop(&args[1..], home_override),
         "--help" | "-h" | "help" => CliOutput::success(render_help()),
         "--version" | "-V" => CliOutput::success(format!("conu {}", env!("CARGO_PKG_VERSION"))),
         unknown => CliOutput::failure(
@@ -76,7 +82,8 @@ where
 }
 
 fn render_dashboard(home_override: Option<PathBuf>) -> String {
-    let snapshot = state::read_state(home_override).ok();
+    let snapshot = state::read_state(home_override.clone()).ok();
+    let runtime_status = runtime::read_runtime(home_override).ok();
     let node = snapshot
         .as_ref()
         .and_then(|snapshot| snapshot.node.as_ref())
@@ -85,6 +92,10 @@ fn render_dashboard(home_override: Option<PathBuf>) -> String {
     let state = snapshot
         .as_ref()
         .map(initialization_label)
+        .unwrap_or("unavailable");
+    let runtime_state = runtime_status
+        .as_ref()
+        .map(runtime_state_label)
         .unwrap_or("unavailable");
 
     format!(
@@ -98,7 +109,7 @@ agent-native encrypted overlay
 {}
 
 control room
-  runtime       offline        conUD starts in Phase 4
+  runtime       {runtime_state}
   node          {node}
   state         {state}
   local agents  none           registration arrives in Phase 5
@@ -129,14 +140,18 @@ fn render_init(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
 }
 
 fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
-    let snapshot = match state::read_state(home_override) {
+    let snapshot = match state::read_state(home_override.clone()) {
         Ok(snapshot) => snapshot,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
+    let runtime_status = match runtime::read_runtime(home_override) {
+        Ok(status) => status,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
 
     match json_flag(args) {
-        Ok(true) => CliOutput::success(render_status_json(&snapshot)),
-        Ok(false) => CliOutput::success(render_status_text(&snapshot)),
+        Ok(true) => CliOutput::success(render_status_json(&snapshot, &runtime_status)),
+        Ok(false) => CliOutput::success(render_status_text(&snapshot, &runtime_status)),
         Err(error) => error,
     }
 }
@@ -187,14 +202,14 @@ fn render_pair(args: &[String]) -> CliOutput {
             r#"{
   "status": "reserved",
   "phase": "Phase 7",
-  "message": "pairing code generation is not active in Phase 3"
+  "message": "pairing code generation is not active in Phase 4"
 }"#,
         ),
         Ok(false) => CliOutput::success(
             r"conU pair
 
 status: reserved for Phase 7
-code: not generated in Phase 3
+code: not generated in Phase 4
 purpose: create trust between two conUD runtimes",
         ),
         Err(error) => error,
@@ -208,7 +223,7 @@ fn render_join(args: &[String]) -> CliOutput {
                 r#"{
   "status": "reserved",
   "phase": "Phase 7",
-  "message": "join validation is not active in Phase 3"
+  "message": "join validation is not active in Phase 4"
 }"#,
             ),
             Err(error) => error,
@@ -221,7 +236,7 @@ fn render_join(args: &[String]) -> CliOutput {
 
 status: reserved for Phase 7
 code: accepted for command shape only
-action: no trust entry created in Phase 3",
+action: no trust entry created in Phase 4",
         ),
         Err(error) => error,
     }
@@ -279,10 +294,95 @@ fn render_components(args: &[String]) -> CliOutput {
     CliOutput::success(output)
 }
 
-fn render_reserved_phase(command: &str, phase: &str, owner: &str) -> CliOutput {
-    CliOutput::success(format!(
-        "conU {command}\n\nstatus: reserved for {phase}\nowner: {owner}"
-    ))
+fn render_start(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+
+    let current = match runtime::read_runtime(home_override.clone()) {
+        Ok(status) => status,
+        Err(error) => return CliOutput::failure(1, format!("conU start failed\n\n{error}")),
+    };
+    if current.is_live() {
+        return CliOutput::success(render_start_report(&current, false, json));
+    }
+
+    let daemon = resolve_conud_executable();
+    let mut command = Command::new(&daemon);
+    command
+        .arg("--serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(home) = home_override.as_ref() {
+        command.env("CONU_HOME", home);
+    }
+
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return CliOutput::failure(
+                1,
+                format!(
+                    "conU start failed\n\ncould not launch conUD at {}: {error}\nset CONUD_EXE to the conud binary path if it is not beside conu",
+                    daemon.display()
+                ),
+            );
+        }
+    };
+
+    for _ in 0..30 {
+        thread::sleep(Duration::from_millis(100));
+        match runtime::read_runtime(home_override.clone()) {
+            Ok(status) if status.is_live() => {
+                return CliOutput::success(render_start_report(&status, true, json));
+            }
+            Ok(_) => {}
+            Err(error) => return CliOutput::failure(1, format!("conU start failed\n\n{error}")),
+        }
+    }
+
+    CliOutput::failure(
+        1,
+        format!(
+            "conU start launched pid {} but no fresh conUD heartbeat was detected",
+            child.id()
+        ),
+    )
+}
+
+fn render_stop(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+
+    let report = match runtime::request_runtime_stop(home_override.clone()) {
+        Ok(report) => report,
+        Err(error) => return CliOutput::failure(1, format!("conU stop failed\n\n{error}")),
+    };
+
+    if report.requested {
+        for _ in 0..30 {
+            thread::sleep(Duration::from_millis(100));
+            match runtime::read_runtime(home_override.clone()) {
+                Ok(status) if !status.is_live() => {
+                    return CliOutput::success(render_stop_report(
+                        &StopReport {
+                            requested: true,
+                            status,
+                        },
+                        json,
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => return CliOutput::failure(1, format!("conU stop failed\n\n{error}")),
+            }
+        }
+    }
+
+    CliOutput::success(render_stop_report(&report, json))
 }
 
 fn render_init_report(report: &InitReport) -> String {
@@ -312,7 +412,7 @@ files
 
 next
   conu status
-  conu start     reserved for Phase 4",
+  conu start",
         report.node.node_id,
         report.node.display_name,
         report.paths.home.display(),
@@ -323,7 +423,7 @@ next
     )
 }
 
-fn render_status_text(snapshot: &StateSnapshot) -> String {
+fn render_status_text(snapshot: &StateSnapshot, runtime_status: &RuntimeStatus) -> String {
     let node = snapshot
         .node
         .as_ref()
@@ -339,8 +439,10 @@ fn render_status_text(snapshot: &StateSnapshot) -> String {
         r"conU status
 
 runtime
-  conUD         offline
-  local IPC     not available until Phase 4
+  conUD         {}
+  pid           {}
+  health        {}
+  local IPC     reserved for Phase 5
   relay         not available until Phase 8
 
 identity
@@ -358,6 +460,9 @@ agents
 
 privacy
   payload view  contents are not displayed by conU",
+        runtime_state_label(runtime_status),
+        runtime_pid_label(runtime_status),
+        runtime_health_label(runtime_status),
         initialization_label(snapshot),
         node,
         display_name,
@@ -368,7 +473,7 @@ privacy
     )
 }
 
-fn render_status_json(snapshot: &StateSnapshot) -> String {
+fn render_status_json(snapshot: &StateSnapshot, runtime_status: &RuntimeStatus) -> String {
     let node = snapshot
         .node
         .as_ref()
@@ -383,8 +488,11 @@ fn render_status_json(snapshot: &StateSnapshot) -> String {
     format!(
         r#"{{
   "runtime": {{
-    "conud": "offline",
-    "localIpc": "phase_4",
+    "conud": "{}",
+    "pid": {},
+    "heartbeatAgeSecs": {},
+    "localHealth": "{}",
+    "localIpc": "phase_5",
     "relay": "phase_8"
   }},
   "identity": {{
@@ -404,6 +512,10 @@ fn render_status_json(snapshot: &StateSnapshot) -> String {
     "contentsDisplayed": false
   }}
 }}"#,
+        runtime_status.state.as_str(),
+        json_u32(runtime_status.pid),
+        json_u64(runtime_status.heartbeat_age_secs()),
+        json_escape(runtime_health_label(runtime_status)),
         initialization_label(snapshot),
         json_escape(node),
         json_escape(display_name),
@@ -427,12 +539,88 @@ Usage:
   conu join <code> [--json]
   conu connect
   conu watch
+  conu start [--json]
+  conu stop [--json]
   conu components
   conu --help
   conu --version
 
-Phase 3 adds local identity and persistent state. Daemon IPC, pairing, relay, and streaming arrive in later phases."
+Phase 4 adds the conUD daemon skeleton and local runtime heartbeat. Agent IPC, pairing, relay, and streaming arrive in later phases."
         .to_string()
+}
+
+fn render_start_report(status: &RuntimeStatus, launched: bool, json: bool) -> String {
+    if json {
+        return format!(
+            r#"{{
+  "status": "{}",
+  "launched": {},
+  "pid": {},
+  "health": "{}",
+  "contentsDisplayed": false
+}}"#,
+            status.state.as_str(),
+            launched,
+            json_u32(status.pid),
+            json_escape(runtime_health_label(status))
+        );
+    }
+
+    let action = if launched {
+        "launched"
+    } else {
+        "already running"
+    };
+
+    format!(
+        r"conU start
+
+status: {action}
+conUD: {}
+pid: {}
+health: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        runtime_state_label(status),
+        runtime_pid_label(status),
+        runtime_health_label(status)
+    )
+}
+
+fn render_stop_report(report: &StopReport, json: bool) -> String {
+    if json {
+        return format!(
+            r#"{{
+  "requested": {},
+  "status": "{}",
+  "pid": {},
+  "contentsDisplayed": false
+}}"#,
+            report.requested,
+            report.status.state.as_str(),
+            json_u32(report.status.pid)
+        );
+    }
+
+    let action = if report.requested {
+        "stop requested"
+    } else {
+        "not running"
+    };
+
+    format!(
+        r"conU stop
+
+status: {action}
+conUD: {}
+pid: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        runtime_state_label(&report.status),
+        runtime_pid_label(&report.status)
+    )
 }
 
 fn initialization_label(snapshot: &StateSnapshot) -> &'static str {
@@ -449,6 +637,63 @@ fn ready_label(is_ready: bool) -> &'static str {
 
 fn created_label(created: bool) -> &'static str {
     if created { "created" } else { "kept" }
+}
+
+fn runtime_state_label(status: &RuntimeStatus) -> &'static str {
+    match status.state {
+        RuntimeState::Offline => "offline",
+        RuntimeState::Starting => "starting",
+        RuntimeState::Running => "running",
+        RuntimeState::Stopping => "stopping",
+        RuntimeState::Stopped => "stopped",
+        RuntimeState::Stale => "stale",
+    }
+}
+
+fn runtime_health_label(status: &RuntimeStatus) -> &'static str {
+    match status.state {
+        RuntimeState::Starting | RuntimeState::Running | RuntimeState::Stopping => {
+            "file heartbeat ok"
+        }
+        RuntimeState::Stale => "stale heartbeat",
+        RuntimeState::Offline | RuntimeState::Stopped => "offline",
+    }
+}
+
+fn runtime_pid_label(status: &RuntimeStatus) -> String {
+    status
+        .pid
+        .map(|pid| pid.to_string())
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn json_u32(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn json_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn resolve_conud_executable() -> PathBuf {
+    if let Ok(value) = env::var("CONUD_EXE") {
+        if !value.trim().is_empty() {
+            return PathBuf::from(value);
+        }
+    }
+
+    if let Ok(mut path) = env::current_exe() {
+        path.set_file_name(format!("conud{}", env::consts::EXE_SUFFIX));
+        if path.exists() {
+            return path;
+        }
+    }
+
+    PathBuf::from(format!("conud{}", env::consts::EXE_SUFFIX))
 }
 
 fn json_escape(value: &str) -> String {
@@ -529,10 +774,12 @@ mod tests {
     }
 
     #[test]
-    fn phase_three_commands_are_registered() {
+    fn phase_four_commands_are_registered() {
         let home = temp_home("commands");
 
-        for command in ["init", "status", "agents", "pair", "connect", "watch"] {
+        for command in [
+            "init", "status", "agents", "pair", "connect", "watch", "stop",
+        ] {
             let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
         }
@@ -554,6 +801,42 @@ mod tests {
         assert_eq!(status.code, 0, "{}", status.stderr);
         assert!(status.stdout.contains("state         initialized"));
         assert!(status.stdout.contains("trust store   ready"));
+    }
+
+    #[test]
+    fn status_detects_runtime_heartbeat() {
+        let home = temp_home("status-runtime");
+        let _lease = runtime::acquire_runtime(Some(home.clone())).expect("runtime starts");
+
+        let status = run_with_home(["status"], Some(home));
+
+        assert_eq!(status.code, 0, "{}", status.stderr);
+        assert!(status.stdout.contains("conUD         running"));
+        assert!(status.stdout.contains("health        file heartbeat ok"));
+    }
+
+    #[test]
+    fn start_reports_already_running_without_spawning() {
+        let home = temp_home("start-running");
+        let _lease = runtime::acquire_runtime(Some(home.clone())).expect("runtime starts");
+
+        let start = run_with_home(["start"], Some(home));
+
+        assert_eq!(start.code, 0, "{}", start.stderr);
+        assert!(start.stdout.contains("status: already running"));
+    }
+
+    #[test]
+    fn stop_requests_running_runtime() {
+        let home = temp_home("stop-running");
+        let _lease = runtime::acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let stop_path = state::StatePaths::from_home(home.clone()).runtime_stop_request;
+
+        let stop = run_with_home(["stop"], Some(home));
+
+        assert_eq!(stop.code, 0, "{}", stop.stderr);
+        assert!(stop.stdout.contains("status: stop requested"));
+        assert!(stop_path.exists());
     }
 
     #[test]
@@ -580,6 +863,7 @@ mod tests {
 
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("\"conud\": \"offline\""));
+        assert!(output.stdout.contains("\"localIpc\": \"phase_5\""));
         assert!(output.stdout.contains("\"state\": \"initialized\""));
         assert!(output.stdout.contains("\"node\": \"node_"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
