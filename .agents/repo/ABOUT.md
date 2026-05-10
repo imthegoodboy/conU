@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 10.
+The repository has completed Phase 11.
 
 Implemented so far:
 
@@ -20,11 +20,15 @@ Implemented so far:
 - file-backed local IPC gateway under `runtime/ipc/`
 - local agent registration through `conu agents register`
 - local presence heartbeat through `conu agents heartbeat`
-- persisted local agent registry with capability metadata
+- persisted local agent registry with capability metadata and Ed25519 signatures
 - local opaque envelope submission through `conu messages send --stdin`
 - local recipient inbox listing through `conu messages inbox`
 - metadata-only delivery receipts through `conu messages receipts`
 - conUD processing for local message delivery
+- encrypted-at-rest local message request and inbox payload storage
+- local X25519 peer key agreement helpers
+- replay protection for local message request and envelope ids
+- `conu security audit` for payload-safe hardening status
 - local pairing invitation creation through `conu pair`
 - local pairing join/trust creation through `conu join <code>`
 - trusted peer listing and revocation through `conu peers`

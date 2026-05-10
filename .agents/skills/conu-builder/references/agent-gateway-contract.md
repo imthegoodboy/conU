@@ -193,6 +193,24 @@ conu watch
 
 `conu streams write` accepts opaque bytes from stdin and records only byte counts. `conu watch` renders transport flow, route, stream id, packet count, and bytes without rendering message or chunk contents.
 
+The Phase 11 security surface hardens local payload storage and identity metadata:
+
+```txt
+security/identity-signing.key   local Ed25519 signing key
+security/identity-exchange.key  local X25519 exchange key
+security/storage.key            local XChaCha20Poly1305 storage key
+security/replay.toml            replay/idempotency cache
+security/key-rotation.md        local rotation plan
+```
+
+Supported command:
+
+```txt
+conu security audit [--json]
+```
+
+New local message request and inbox files store encrypted-at-rest payload fields instead of `payload_hex`. New or updated local agent cards are signed in `agents/registry.toml`. `conu security audit` may report readiness and key ids, but it must not display private keys, shared secrets, plaintext payloads, or decrypted payloads.
+
 ## Safety
 
 "Full access" means full communication access inside trust boundaries. It does not mean raw filesystem, shell, network, or secret access.

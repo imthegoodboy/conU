@@ -153,10 +153,10 @@ Now both agents become visible to each other.
 
 # Step 6 — Agent Communication Starts
 
-Claude sends:
+Claude sends an opaque payload:
 
 ```txt id="0cjlwm"
-"Review this code"
+<encrypted bytes>
 ```
 
 But Claude does NOT send directly.
@@ -192,7 +192,7 @@ conUD creates packet:
   "from": "claude-laptop",
   "to": "codex-desktop",
   "type": "message",
-  "payload": "Review this code"
+  "payload": "<encrypted bytes>"
 }
 ```
 

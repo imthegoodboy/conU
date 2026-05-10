@@ -1,7 +1,8 @@
 //! CLI rendering and command dispatch for conU.
 //!
-//! Phase 9 adds conUD runtime detection, metadata-only local/remote agent
-//! visibility, local opaque envelopes, and remote session mirrors.
+//! Phase 11 adds conUD runtime detection, metadata-only local/remote agent
+//! visibility, encrypted-at-rest local opaque envelopes, remote session
+//! mirrors, stream/watch metadata, and security audit output.
 
 use std::collections::HashSet;
 use std::env;
@@ -15,6 +16,7 @@ use conu_core::agents::{
 };
 use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
+use conu_core::security::{self, SecurityAudit, SecurityReport};
 use conu_core::sessions::{self, RemoteAgentRecord, RemoteSession, SessionSyncReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
 use conu_core::streams::{self, StreamEvent, StreamRecord};
@@ -100,6 +102,7 @@ where
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
         "sessions" => render_sessions(&args[1..], home_override),
+        "security" => render_security(&args[1..], home_override),
         "pair" => render_pair(&args[1..], home_override),
         "join" => render_join(&args[1..], home_override),
         "connect" => render_connect(&args[1..], home_override),
@@ -173,6 +176,7 @@ quick commands
   conu agents register <agent-id> <display-name>
   conu messages send <from-agent> <to-agent> --stdin
   conu streams open <from-agent> <to-agent>
+  conu security audit
   conu pair
   conu peers
   conu join <code>
@@ -188,7 +192,10 @@ fn render_init(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     }
 
     match state::init_state(home_override) {
-        Ok(report) => CliOutput::success(render_init_report(&report)),
+        Ok(report) => match security::ensure_security_state_from_paths(&report.paths) {
+            Ok(security) => CliOutput::success(render_init_report(&report, &security)),
+            Err(error) => CliOutput::failure(1, format!("conU init failed\n\n{error}")),
+        },
         Err(error) => CliOutput::failure(1, format!("conU init failed\n\n{error}")),
     }
 }
@@ -222,6 +229,8 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         Ok(streams) => streams,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
+    let security_audit =
+        security::security_audit(home_override).unwrap_or_else(|_| empty_security_audit());
 
     match json_flag(args) {
         Ok(true) => CliOutput::success(render_status_json(
@@ -232,6 +241,7 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
             &sessions,
             &stream_records,
             &peers,
+            &security_audit,
         )),
         Ok(false) => CliOutput::success(render_status_text(
             &snapshot,
@@ -241,6 +251,7 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
             &sessions,
             &stream_records,
             &peers,
+            &security_audit,
         )),
         Err(error) => error,
     }
@@ -1620,6 +1631,127 @@ privacy
     )
 }
 
+fn render_security(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let remaining = match args.first().map(String::as_str) {
+        None => args,
+        Some("audit") => &args[1..],
+        Some(_) => return CliOutput::failure(2, render_security_usage()),
+    };
+    let json = match json_flag(remaining) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+
+    let init = match state::init_state(home_override.clone()) {
+        Ok(init) => init,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU security audit failed\n\n{error}"));
+        }
+    };
+    let report = match security::ensure_security_state_from_paths(&init.paths) {
+        Ok(report) => report,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU security audit failed\n\n{error}"));
+        }
+    };
+    let audit = match security::security_audit(home_override) {
+        Ok(audit) => audit,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU security audit failed\n\n{error}"));
+        }
+    };
+
+    if json {
+        CliOutput::success(render_security_json(&audit, &report))
+    } else {
+        CliOutput::success(render_security_text(&audit, &report))
+    }
+}
+
+fn render_security_json(audit: &SecurityAudit, report: &SecurityReport) -> String {
+    format!(
+        r#"{{
+  "initialized": {},
+  "identitySigningKey": {},
+  "identityExchangeKey": {},
+  "storageKey": {},
+  "replayCache": {},
+  "keyRotationPlan": {},
+  "localPayloadEncryption": {},
+  "signedAgentCards": {},
+  "peerKeyExchange": {},
+  "signingKeyId": "{}",
+  "exchangeKeyId": "{}",
+  "storageKeyId": "{}",
+  "contentsDisplayed": false
+}}"#,
+        audit.initialized,
+        audit.identity_signing_key,
+        audit.identity_exchange_key,
+        audit.storage_key,
+        audit.replay_cache,
+        audit.key_rotation_plan,
+        audit.local_payload_encryption,
+        audit.signed_agent_cards,
+        audit.peer_key_exchange,
+        json_escape(&report.signing_key_id),
+        json_escape(&report.exchange_key_id),
+        json_escape(&report.storage_key_id)
+    )
+}
+
+fn render_security_text(audit: &SecurityAudit, report: &SecurityReport) -> String {
+    format!(
+        r"conU security audit
+
+status: {}
+
+keys
+  signing key   {}  {}
+  exchange key  {}  {}
+  storage key   {}  {}
+
+controls
+  local payloads  {}
+  agent cards     {}
+  peer exchange   {}
+  replay cache    {}
+  rotation plan   {}
+
+privacy
+  payload view    contents are not displayed by conU
+  key view        private keys are not displayed",
+        ready_label(audit.initialized),
+        ready_label(audit.identity_signing_key),
+        report.signing_key_id,
+        ready_label(audit.identity_exchange_key),
+        report.exchange_key_id,
+        ready_label(audit.storage_key),
+        report.storage_key_id,
+        if audit.local_payload_encryption {
+            "encrypted at rest"
+        } else {
+            "not ready"
+        },
+        if audit.signed_agent_cards {
+            "signed with Ed25519"
+        } else {
+            "not ready"
+        },
+        if audit.peer_key_exchange {
+            "X25519 ready"
+        } else {
+            "not ready"
+        },
+        ready_label(audit.replay_cache),
+        ready_label(audit.key_rotation_plan)
+    )
+}
+
+fn render_security_usage() -> String {
+    "usage: conu security audit [--json]".to_string()
+}
+
 fn inbox_ids(home_override: Option<PathBuf>, agent_id: &str) -> HashSet<String> {
     messages::list_agent_inbox(home_override, agent_id)
         .map(|entries| {
@@ -2108,7 +2240,7 @@ fn render_stop(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     CliOutput::success(render_stop_report(&report, json))
 }
 
-fn render_init_report(report: &InitReport) -> String {
+fn render_init_report(report: &InitReport, security: &SecurityReport) -> String {
     let repaired =
         report.config_created || report.trust_store_created || report.agent_registry_created;
     let status = if report.node_created {
@@ -2132,9 +2264,11 @@ files
   config         {}
   trust store    {}
   agent registry {}
+  security keys  {}
 
 next
   conu status
+  conu security audit
   conu start",
         report.node.node_id,
         report.node.display_name,
@@ -2142,7 +2276,12 @@ next
         created_label(report.node_created),
         created_label(report.config_created),
         created_label(report.trust_store_created),
-        created_label(report.agent_registry_created)
+        created_label(report.agent_registry_created),
+        created_label(
+            security.identity_signing_key_created
+                || security.identity_exchange_key_created
+                || security.storage_key_created
+        )
     )
 }
 
@@ -2154,6 +2293,7 @@ fn render_status_text(
     sessions: &[RemoteSession],
     stream_records: &[StreamRecord],
     peers: &[TrustedPeer],
+    security: &SecurityAudit,
 ) -> String {
     let node = snapshot
         .node
@@ -2183,6 +2323,7 @@ identity
   state path    {}
   config        {}
   trust store   {}
+  security      {}
 
 agents
   local         {} registered
@@ -2193,6 +2334,9 @@ agents
   streams       {}
 
 privacy
+  local storage encrypted at rest: {}
+  agent cards   signed: {}
+  replay guard  active: {}
   payload view  contents are not displayed by conU",
         runtime_state_label(runtime_status),
         runtime_pid_label(runtime_status),
@@ -2203,12 +2347,16 @@ privacy
         snapshot.paths.home.display(),
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
+        ready_label(security.initialized),
         local_agents.len(),
         remote_agents.len(),
         ready_label(snapshot.agent_registry_exists),
         trusted_peer_count(peers),
         sessions.len(),
-        stream_records.len()
+        stream_records.len(),
+        yes_no(security.local_payload_encryption),
+        yes_no(security.signed_agent_cards),
+        yes_no(security.replay_cache)
     )
 }
 
@@ -2220,6 +2368,7 @@ fn render_status_json(
     sessions: &[RemoteSession],
     stream_records: &[StreamRecord],
     peers: &[TrustedPeer],
+    security: &SecurityAudit,
 ) -> String {
     let node = snapshot
         .node
@@ -2258,6 +2407,14 @@ fn render_status_json(
     "sessions": {},
     "streams": {}
   }},
+  "security": {{
+    "initialized": {},
+    "localPayloadEncryption": {},
+    "signedAgentCards": {},
+    "peerKeyExchange": {},
+    "replayCache": {},
+    "keyRotationPlan": {}
+  }},
   "privacy": {{
     "contentsDisplayed": false
   }}
@@ -2277,7 +2434,13 @@ fn render_status_json(
         ready_label(snapshot.agent_registry_exists),
         trusted_peer_count(peers),
         sessions.len(),
-        stream_records.len()
+        stream_records.len(),
+        security.initialized,
+        security.local_payload_encryption,
+        security.signed_agent_cards,
+        security.peer_key_exchange,
+        security.replay_cache,
+        security.key_rotation_plan
     )
 }
 
@@ -2300,6 +2463,7 @@ Usage:
   conu streams close <stream-id> [--json]
   conu sessions [--json]
   conu sessions sync [--json]
+  conu security audit [--json]
   conu peers [--json]
   conu peers revoke <peer-node-id> [--json]
   conu pair [--json]
@@ -2312,7 +2476,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 10 adds stream lifecycle metadata and private watch flow. Payload contents remain hidden."
+Phase 11 adds encrypted local payload storage, signed agent cards, replay protection, and peer key agreement helpers. Payload contents remain hidden."
         .to_string()
 }
 
@@ -2400,6 +2564,25 @@ fn initialization_label(snapshot: &StateSnapshot) -> &'static str {
 
 fn ready_label(is_ready: bool) -> &'static str {
     if is_ready { "ready" } else { "not_initialized" }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn empty_security_audit() -> SecurityAudit {
+    SecurityAudit {
+        initialized: false,
+        identity_signing_key: false,
+        identity_exchange_key: false,
+        storage_key: false,
+        replay_cache: false,
+        key_rotation_plan: false,
+        local_payload_encryption: false,
+        signed_agent_cards: false,
+        peer_key_exchange: false,
+        contents_displayed: false,
+    }
 }
 
 fn created_label(created: bool) -> &'static str {
@@ -2552,12 +2735,12 @@ mod tests {
     }
 
     #[test]
-    fn phase_ten_commands_are_registered() {
+    fn phase_eleven_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [
-            "init", "status", "agents", "streams", "sessions", "pair", "peers", "connect", "watch",
-            "stop",
+            "init", "status", "agents", "streams", "sessions", "security", "pair", "peers",
+            "connect", "watch", "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
@@ -2656,6 +2839,21 @@ mod tests {
         assert!(listed.stdout.contains("\"state\": \"closed\""));
         assert!(!watch.stdout.contains("private message contents"));
         assert!(!listed.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn security_audit_reports_hardened_controls_without_keys_or_payloads() {
+        let home = temp_home("security-audit");
+        let output = run_with_home(["security", "audit", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"localPayloadEncryption\": true"));
+        assert!(output.stdout.contains("\"signedAgentCards\": true"));
+        assert!(output.stdout.contains("\"peerKeyExchange\": true"));
+        assert!(output.stdout.contains("\"replayCache\": true"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("secret_key_hex"));
+        assert!(!output.stdout.contains("private message contents"));
     }
 
     #[test]
@@ -2763,6 +2961,9 @@ mod tests {
         assert!(output.stdout.contains("bytes: 24"));
         assert!(!output.stdout.contains("private message contents"));
         assert!(request_text.contains("payload_len = 24"));
+        assert!(request_text.contains("payload_privacy = \"encrypted_at_rest\""));
+        assert!(request_text.contains("payload_ciphertext_hex"));
+        assert!(!request_text.contains("payload_hex"));
         assert!(!request_text.contains("private message contents"));
     }
 

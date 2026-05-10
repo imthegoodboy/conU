@@ -32,9 +32,17 @@
 ## Storage
 
 - Trust store avoids plaintext secrets when possible.
-- Mailbox stores encrypted envelopes.
+- Message request and inbox files use encrypted-at-rest payload fields.
+- Mailbox stores encrypted envelopes when mailbox delivery is implemented.
 - Logs are payload-safe.
-- Config does not store private keys in unsafe format without explicit design.
+- Config does not store private keys.
+- Security key files remain local-only and must not appear in CLI output, logs, docs examples, or tests except artificial field-name checks.
+
+## Replay And Signatures
+
+- Local agent cards are signed and signature verification fails on tampering.
+- Replay cache rejects duplicate message request and envelope ids before duplicate delivery.
+- Revoked peers must not remain visible or routeable.
 
 ## CLI Watch
 
