@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use conu_protocol::AgentCapabilities;
 
+use crate::security::{self, SecurityError};
 use crate::state::{self, StateError, StatePaths};
 
 const REQUEST_VERSION: &str = "1";
@@ -101,6 +102,10 @@ pub struct LocalAgentRecord {
     pub presence: AgentPresence,
     pub last_seen_unix: u64,
     pub capabilities: AgentCapabilities,
+    pub signature_algorithm: Option<String>,
+    pub signature_key_id: Option<String>,
+    pub signing_public_key_hex: Option<String>,
+    pub signature_hex: Option<String>,
 }
 
 /// Result of submitting an IPC-style request.
@@ -123,6 +128,7 @@ pub struct GatewayProcessReport {
 #[derive(Debug)]
 pub enum AgentError {
     State(StateError),
+    Security(SecurityError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -147,6 +153,7 @@ impl fmt::Display for AgentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::State(error) => write!(formatter, "{error}"),
+            Self::Security(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -162,6 +169,12 @@ impl std::error::Error for AgentError {}
 impl From<StateError> for AgentError {
     fn from(error: StateError) -> Self {
         Self::State(error)
+    }
+}
+
+impl From<SecurityError> for AgentError {
+    fn from(error: SecurityError) -> Self {
+        Self::Security(error)
     }
 }
 
@@ -273,6 +286,22 @@ pub fn agent_exists(home_override: Option<PathBuf>, agent_id: &str) -> Result<bo
         .any(|agent| agent.agent_id == agent_id))
 }
 
+/// Verify the persisted local agent-card signature.
+pub fn verify_local_agent_record(agent: &LocalAgentRecord) -> Result<bool, AgentError> {
+    let Some(public_key_hex) = agent.signing_public_key_hex.as_deref() else {
+        return Ok(false);
+    };
+    let Some(signature_hex) = agent.signature_hex.as_deref() else {
+        return Ok(false);
+    };
+
+    Ok(security::verify_agent_card_signature(
+        &canonical_agent_card(agent),
+        public_key_hex,
+        signature_hex,
+    )?)
+}
+
 enum ProcessedRequest {
     Registered(String),
     Presence(String),
@@ -324,13 +353,14 @@ fn upsert_agent(
             agent.presence = AgentPresence::Ready;
             agent.last_seen_unix = now;
             agent.capabilities = registration.capabilities.clone();
+            sign_agent_record(paths, agent)?;
             updated = true;
             break;
         }
     }
 
     if !updated {
-        agents.push(LocalAgentRecord {
+        let mut record = LocalAgentRecord {
             agent_id: registration.agent_id.clone(),
             display_name: registration.display_name,
             node_id: node_id.to_string(),
@@ -338,7 +368,13 @@ fn upsert_agent(
             presence: AgentPresence::Ready,
             last_seen_unix: now,
             capabilities: registration.capabilities,
-        });
+            signature_algorithm: None,
+            signature_key_id: None,
+            signing_public_key_hex: None,
+            signature_hex: None,
+        };
+        sign_agent_record(paths, &mut record)?;
+        agents.push(record);
     }
 
     write_registry(paths, &agents)?;
@@ -371,6 +407,31 @@ fn update_presence(paths: &StatePaths, heartbeat: PresenceHeartbeat) -> Result<S
     append_agent_log(paths, "agent_presence", &heartbeat.agent_id)?;
 
     Ok(heartbeat.agent_id)
+}
+
+fn sign_agent_record(paths: &StatePaths, agent: &mut LocalAgentRecord) -> Result<(), AgentError> {
+    let signature = security::sign_agent_card_from_paths(paths, &canonical_agent_card(agent))?;
+    agent.signature_algorithm = Some(signature.algorithm);
+    agent.signature_key_id = Some(signature.key_id);
+    agent.signing_public_key_hex = Some(signature.public_key_hex);
+    agent.signature_hex = Some(signature.signature_hex);
+
+    Ok(())
+}
+
+fn canonical_agent_card(agent: &LocalAgentRecord) -> String {
+    format!(
+        "conu-agent-card-v1\nagent_id={}\ndisplay_name={}\nnode_id={}\nkind={}\ncap_messages={}\ncap_streams={}\ncap_rooms={}\ncap_files={}\ncap_presence={}\n",
+        agent.agent_id,
+        agent.display_name,
+        agent.node_id,
+        agent.kind,
+        agent.capabilities.messages,
+        agent.capabilities.streams,
+        agent.capabilities.rooms,
+        agent.capabilities.files,
+        agent.capabilities.presence
+    )
 }
 
 fn read_registry(paths: &StatePaths) -> Result<Vec<LocalAgentRecord>, AgentError> {
@@ -410,6 +471,30 @@ fn write_registry(paths: &StatePaths, agents: &[LocalAgentRecord]) -> Result<(),
         contents.push_str(&format!("cap_rooms = {}\n", agent.capabilities.rooms));
         contents.push_str(&format!("cap_files = {}\n", agent.capabilities.files));
         contents.push_str(&format!("cap_presence = {}\n", agent.capabilities.presence));
+        if let Some(value) = &agent.signature_algorithm {
+            contents.push_str(&format!(
+                "signature_algorithm = \"{}\"\n",
+                escape_file_value(value)
+            ));
+        }
+        if let Some(value) = &agent.signature_key_id {
+            contents.push_str(&format!(
+                "signature_key_id = \"{}\"\n",
+                escape_file_value(value)
+            ));
+        }
+        if let Some(value) = &agent.signing_public_key_hex {
+            contents.push_str(&format!(
+                "signing_public_key_hex = \"{}\"\n",
+                escape_file_value(value)
+            ));
+        }
+        if let Some(value) = &agent.signature_hex {
+            contents.push_str(&format!(
+                "signature_hex = \"{}\"\n",
+                escape_file_value(value)
+            ));
+        }
     }
 
     fs::write(&paths.agent_registry, contents)
@@ -481,6 +566,10 @@ fn record_from_values(values: &HashMap<String, String>) -> Result<LocalAgentReco
             files: parse_bool(values.get("cap_files")).unwrap_or(false),
             presence: parse_bool(values.get("cap_presence")).unwrap_or(true),
         },
+        signature_algorithm: optional_clean(values.get("signature_algorithm")),
+        signature_key_id: optional_clean(values.get("signature_key_id")),
+        signing_public_key_hex: optional_clean(values.get("signing_public_key_hex")),
+        signature_hex: optional_clean(values.get("signature_hex")),
     })
 }
 
@@ -722,6 +811,12 @@ fn parse_bool(value: Option<&String>) -> Option<bool> {
     })
 }
 
+fn optional_clean(value: Option<&String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn request_id(prefix: &str) -> String {
     format!("{}_{}_{}", prefix, process::id(), current_unix_nanos())
 }
@@ -786,6 +881,28 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].agent_id, "agent.codex");
         assert_eq!(agents[0].presence, AgentPresence::Ready);
+        assert_eq!(
+            agents[0].signature_algorithm.as_deref(),
+            Some(security::AGENT_CARD_SIGNATURE_ALGORITHM)
+        );
+        assert!(verify_local_agent_record(&agents[0]).expect("signature verifies"));
+    }
+
+    #[test]
+    fn agent_card_signature_detects_tampering() {
+        let home = test_home("signature-tamper");
+        let registration = AgentRegistration::new("agent.codex", "Codex Desktop", "coding-agent")
+            .expect("valid registration");
+        submit_registration(Some(home.clone()), registration).expect("request submits");
+        process_gateway_requests(Some(home.clone())).expect("request processes");
+        let mut agent = list_local_agents(Some(home))
+            .expect("agents read")
+            .pop()
+            .expect("agent exists");
+
+        assert!(verify_local_agent_record(&agent).expect("signature verifies"));
+        agent.display_name = "Tampered Agent".to_string();
+        assert!(!verify_local_agent_record(&agent).expect("tamper returns false"));
     }
 
     #[test]

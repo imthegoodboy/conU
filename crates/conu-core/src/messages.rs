@@ -1,8 +1,8 @@
 //! Local opaque message routing.
 //!
-//! Phase 6 delivers local-only opaque envelopes between registered agents. The
-//! runtime validates identities and stores byte payloads as opaque transport
-//! data, but CLI/log/receipt surfaces expose metadata only.
+//! Phase 11 delivers local-only opaque envelopes between registered agents. The
+//! runtime validates identities and encrypts conU-owned payload storage, while
+//! CLI/log/receipt surfaces expose metadata only.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -17,6 +17,7 @@ use conu_protocol::{
 };
 
 use crate::agents::{self, AgentError};
+use crate::security::{self, EncryptedPayload, SecurityError};
 use crate::state::{self, StateError, StatePaths};
 
 const REQUEST_VERSION: &str = "1";
@@ -103,6 +104,7 @@ pub enum MessageError {
     State(StateError),
     Agent(AgentError),
     Protocol(ProtocolError),
+    Security(SecurityError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -129,6 +131,7 @@ impl fmt::Display for MessageError {
             Self::State(error) => write!(formatter, "{error}"),
             Self::Agent(error) => write!(formatter, "{error}"),
             Self::Protocol(error) => write!(formatter, "{error}"),
+            Self::Security(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -161,6 +164,12 @@ impl From<ProtocolError> for MessageError {
     }
 }
 
+impl From<SecurityError> for MessageError {
+    fn from(error: SecurityError) -> Self {
+        Self::Security(error)
+    }
+}
+
 /// Submit a local opaque message into the message gateway inbox.
 pub fn submit_local_message(
     home_override: Option<PathBuf>,
@@ -172,7 +181,12 @@ pub fn submit_local_message(
         .paths
         .message_ipc_inbox_dir
         .join(format!("{request_id}.msg"));
-    let contents = render_message_request(&request_id, &message);
+    let encrypted = security::encrypt_for_storage_from_paths(
+        &init.paths,
+        message.payload.as_bytes(),
+        &message_request_aad(&request_id, &message.from_agent_id, &message.to_agent_id),
+    )?;
+    let contents = render_message_request(&request_id, &message, &encrypted);
     write_new_file(&request_path, &contents)?;
 
     Ok(MessageSubmission {
@@ -265,7 +279,8 @@ pub fn read_message_payload(
     let contents = fs::read_to_string(&path)
         .map_err(|error| MessageError::io("read local message", &path, error))?;
     let values = parse_key_values(&contents);
-    let payload = hex_decode(&required(&values, "payload_hex")?)?;
+    let payload =
+        payload_from_values(&paths, &values, &message_envelope_aad_from_values(&values)?)?;
 
     Ok(OpaquePayload::from_bytes(payload))
 }
@@ -321,12 +336,16 @@ fn process_one_message_request(
         });
     }
 
-    let payload = OpaquePayload::from_bytes(hex_decode(&required(&values, "payload_hex")?)?);
-    let message = LocalMessage::new(
-        required(&values, "from_agent_id")?,
-        required(&values, "to_agent_id")?,
-        payload,
-    )?;
+    let request_id_value = validate_identifier(required(&values, "request_id")?, "request id")?;
+    security::record_replay_id_from_paths(paths, &request_id_value, "message_request")?;
+    let from_agent_id = required(&values, "from_agent_id")?;
+    let to_agent_id = required(&values, "to_agent_id")?;
+    let payload = OpaquePayload::from_bytes(payload_from_values(
+        paths,
+        &values,
+        &message_request_aad(&request_id_value, &from_agent_id, &to_agent_id),
+    )?);
+    let message = LocalMessage::new(from_agent_id, to_agent_id, payload)?;
 
     validate_agents_can_message(paths, &message.from_agent_id, &message.to_agent_id)?;
 
@@ -339,6 +358,7 @@ fn process_one_message_request(
         message.payload,
     )?;
 
+    security::record_replay_id_from_paths(paths, &envelope_id, "message_envelope")?;
     deliver_envelope(paths, envelope)
 }
 
@@ -397,8 +417,13 @@ fn deliver_envelope(paths: &StatePaths, envelope: Envelope) -> Result<InboxEntry
         delivered_at_unix: now,
         payload_bytes: envelope.payload.len(),
     };
+    let encrypted = security::encrypt_for_storage_from_paths(
+        paths,
+        envelope.payload.as_bytes(),
+        &message_envelope_aad(&entry.envelope_id, &entry.from_agent_id, &entry.to_agent_id),
+    )?;
     let envelope_path = inbox_dir.join(format!("{}.env", entry.envelope_id));
-    write_new_file(&envelope_path, &render_envelope_file(&entry, &envelope))?;
+    write_new_file(&envelope_path, &render_envelope_file(&entry, &encrypted))?;
 
     let receipt = DeliveryReceipt {
         receipt_id: entry.receipt_id.clone(),
@@ -544,21 +569,70 @@ fn read_receipt(path: &Path) -> Result<DeliveryReceipt, MessageError> {
     })
 }
 
-fn render_message_request(request_id: &str, message: &LocalMessage) -> String {
+fn payload_from_values(
+    paths: &StatePaths,
+    values: &HashMap<String, String>,
+    aad: &[u8],
+) -> Result<Vec<u8>, MessageError> {
+    if values.contains_key("payload_ciphertext_hex") {
+        let encrypted = EncryptedPayload {
+            algorithm: required(values, "payload_cipher")?,
+            key_id: required(values, "payload_key_id")?,
+            nonce_hex: required(values, "payload_nonce_hex")?,
+            ciphertext_hex: required(values, "payload_ciphertext_hex")?,
+            plaintext_len: parse_usize(&required(values, "payload_len")?)?,
+        };
+        validate_payload_size(encrypted.plaintext_len)?;
+        let plaintext = security::decrypt_from_storage_from_paths(paths, &encrypted, aad)?;
+        validate_payload_size(plaintext.len())?;
+        return Ok(plaintext);
+    }
+
+    // Backward-compatible read for pre-Phase-11 local test/state files. New
+    // writes always use payload_ciphertext_hex and encrypted-at-rest metadata.
+    hex_decode(&required(values, "payload_hex")?)
+}
+
+fn message_request_aad(request_id: &str, from_agent_id: &str, to_agent_id: &str) -> Vec<u8> {
+    format!("conu:message-request:v1:{request_id}:{from_agent_id}:{to_agent_id}").into_bytes()
+}
+
+fn message_envelope_aad(envelope_id: &str, from_agent_id: &str, to_agent_id: &str) -> Vec<u8> {
+    format!("conu:message-envelope:v1:{envelope_id}:{from_agent_id}:{to_agent_id}").into_bytes()
+}
+
+fn message_envelope_aad_from_values(
+    values: &HashMap<String, String>,
+) -> Result<Vec<u8>, MessageError> {
+    Ok(message_envelope_aad(
+        &required(values, "envelope_id")?,
+        &required(values, "from_agent_id")?,
+        &required(values, "to_agent_id")?,
+    ))
+}
+
+fn render_message_request(
+    request_id: &str,
+    message: &LocalMessage,
+    encrypted: &EncryptedPayload,
+) -> String {
     format!(
-        "version = \"{}\"\ntype = \"send_message\"\nrequest_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\npayload_len = {}\npayload_hex = \"{}\"\n",
+        "version = \"{}\"\ntype = \"send_message\"\nrequest_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\npayload_len = {}\npayload_privacy = \"encrypted_at_rest\"\npayload_cipher = \"{}\"\npayload_key_id = \"{}\"\npayload_nonce_hex = \"{}\"\npayload_ciphertext_hex = \"{}\"\n",
         REQUEST_VERSION,
         escape_file_value(request_id),
         escape_file_value(&message.from_agent_id),
         escape_file_value(&message.to_agent_id),
         message.payload.len(),
-        hex_encode(message.payload.as_bytes())
+        escape_file_value(&encrypted.algorithm),
+        escape_file_value(&encrypted.key_id),
+        escape_file_value(&encrypted.nonce_hex),
+        escape_file_value(&encrypted.ciphertext_hex)
     )
 }
 
-fn render_envelope_file(entry: &InboxEntry, envelope: &Envelope) -> String {
+fn render_envelope_file(entry: &InboxEntry, encrypted: &EncryptedPayload) -> String {
     format!(
-        "version = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nkind = \"message\"\nreceipt_id = \"{}\"\ndelivered_at_unix = {}\npayload_len = {}\npayload_privacy = \"opaque\"\npayload_hex = \"{}\"\n",
+        "version = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nkind = \"message\"\nreceipt_id = \"{}\"\ndelivered_at_unix = {}\npayload_len = {}\npayload_privacy = \"encrypted_at_rest\"\npayload_cipher = \"{}\"\npayload_key_id = \"{}\"\npayload_nonce_hex = \"{}\"\npayload_ciphertext_hex = \"{}\"\n",
         PROTOCOL_VERSION,
         escape_file_value(&entry.envelope_id),
         escape_file_value(&entry.from_agent_id),
@@ -566,7 +640,10 @@ fn render_envelope_file(entry: &InboxEntry, envelope: &Envelope) -> String {
         escape_file_value(&entry.receipt_id),
         entry.delivered_at_unix,
         entry.payload_bytes,
-        hex_encode(envelope.payload.as_bytes())
+        escape_file_value(&encrypted.algorithm),
+        escape_file_value(&encrypted.key_id),
+        escape_file_value(&encrypted.nonce_hex),
+        escape_file_value(&encrypted.ciphertext_hex)
     )
 }
 
@@ -732,18 +809,6 @@ fn request_id(prefix: &str) -> String {
     format!("{}_{}_{}", prefix, process::id(), current_unix_nanos())
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-
-    for byte in bytes {
-        encoded.push(HEX[(byte >> 4) as usize] as char);
-        encoded.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-
-    encoded
-}
-
 fn hex_decode(value: &str) -> Result<Vec<u8>, MessageError> {
     let value = value.trim();
     if value.len() % 2 != 0 {
@@ -822,6 +887,9 @@ mod tests {
 
         assert!(contents.contains("type = \"send_message\""));
         assert!(contents.contains("payload_len = 24"));
+        assert!(contents.contains("payload_privacy = \"encrypted_at_rest\""));
+        assert!(contents.contains("payload_ciphertext_hex"));
+        assert!(!contents.contains("payload_hex"));
         assert!(!contents.contains("private message contents"));
         assert!(!contents.contains("Review this code"));
     }
@@ -838,14 +906,50 @@ mod tests {
 
         let report = process_message_requests(Some(home.clone())).expect("message processes");
         let inbox = list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
-        let received = read_message_payload(Some(home), "agent.receiver", &inbox[0].envelope_id)
-            .expect("payload reads");
+        let received =
+            read_message_payload(Some(home.clone()), "agent.receiver", &inbox[0].envelope_id)
+                .expect("payload reads");
 
         assert_eq!(report.delivered, 1);
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].from_agent_id, "agent.sender");
         assert_eq!(inbox[0].payload_bytes, 4);
         assert_eq!(received.as_bytes(), &[1, 2, 3, 4]);
+        let paths = StatePaths::from_home(home);
+        let envelope_file = fs::read_to_string(
+            paths
+                .message_inbox_dir
+                .join("agent.receiver")
+                .join(format!("{}.env", inbox[0].envelope_id)),
+        )
+        .expect("envelope file reads");
+        assert!(envelope_file.contains("payload_privacy = \"encrypted_at_rest\""));
+        assert!(envelope_file.contains("payload_ciphertext_hex"));
+        assert!(!envelope_file.contains("payload_hex"));
+    }
+
+    #[test]
+    fn duplicate_message_request_id_is_rejected_by_replay_cache() {
+        let home = test_home("replay");
+        register_agent(&home, "agent.sender");
+        register_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        let first =
+            submit_local_message(Some(home.clone()), message.clone()).expect("first request");
+        let second = submit_local_message(Some(home.clone()), message).expect("second request");
+        let second_text = fs::read_to_string(&second.request_path).expect("second request reads");
+        let rewritten = second_text.replace(&second.request_id, &first.request_id);
+        fs::write(&second.request_path, rewritten).expect("duplicate request writes");
+
+        let report = process_message_requests(Some(home)).expect("requests process");
+
+        assert_eq!(report.delivered, 1);
+        assert_eq!(report.rejected, 1);
     }
 
     #[test]

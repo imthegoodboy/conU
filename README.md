@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 10 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, registered local agents can exchange opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, and streams now produce payload-safe watch events.
+Phase 11 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, streams produce payload-safe watch events, and `conu security audit` reports hardened controls without showing secrets.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -21,7 +21,7 @@ The repository currently contains compile-ready crate boundaries for:
 - `conu-protocol`: protocol identities, agent cards, and opaque envelopes.
 - `conu-relay`: std-only WebSocket relay MVP.
 
-This phase is intentionally std-only so the workspace validates on Windows machines that have Rust installed but do not yet have the Visual Studio C++ linker/Windows SDK configured. Production dependencies such as clap, Tokio, tracing, and serde should be introduced in the relevant future phases once linker support is available locally or in CI.
+The runtime code still favors small std-first modules, but Phase 11 introduces audited crypto crates for encryption, signatures, hashing, randomness, and key agreement. On this Windows workstation, those dependencies require the GNU Rust toolchain for commands that compile build scripts or link tests until Visual Studio C++ Build Tools or CI are configured.
 
 ## Local State
 
@@ -40,6 +40,7 @@ config.toml            local runtime config skeleton
 trust.toml             trusted/revoked peer skeleton
 agents/registry.toml   local agent registry skeleton
 agents/remote.toml     mirrored trusted remote agent cards
+security/              local signing, exchange, storage, replay, and rotation files
 runtime/status.toml    conUD heartbeat/status metadata
 runtime/conud.lock     local runtime process lock
 runtime/stop.request   graceful shutdown request file
@@ -62,7 +63,7 @@ logs/sessions.log      remote session sync metadata log
 logs/streams.log       stream lifecycle metadata log
 ```
 
-Runtime, agent, and message logs contain metadata only, such as event name, pid, node id, agent id, envelope id, byte count, and `payload=not_observed`. Phase 6 local message payload bytes are stored only as opaque recipient-inbox envelope data; CLI output, receipts, processed markers, rejected markers, and logs do not display message contents. Until encryption hardening lands in Phase 11, agents should prefer already-encrypted payload bytes for sensitive local messages.
+Runtime, agent, and message logs contain metadata only, such as event name, pid, node id, agent id, envelope id, byte count, and `payload=not_observed`. New local message request and recipient-inbox envelope files store conU-owned payload bytes with XChaCha20Poly1305 encrypted-at-rest fields. CLI output, receipts, processed markers, rejected markers, and logs do not display message contents.
 
 ## Local Agent Gateway
 
@@ -83,7 +84,7 @@ conud --process-ipc
 
 ## Local Opaque Messages
 
-Phase 6 adds local-only message delivery between registered agents:
+Phase 6 added local-only message delivery between registered agents, and Phase 11 encrypts new conU-owned local payload storage:
 
 ```bash
 conu messages send agent.sender agent.receiver --stdin
@@ -92,7 +93,26 @@ conu messages inbox agent.receiver --json
 conu messages receipts
 ```
 
-`conu messages send` reads bytes from stdin so payloads are not placed directly in the command line. When `conUD` is running, delivery is processed automatically. If the runtime is offline, message requests remain queued under `runtime/ipc/messages/inbox/` and can be processed with `conud --process-ipc`.
+`conu messages send` reads bytes from stdin so payloads are not placed directly in the command line. When `conUD` is running, delivery is processed automatically. If the runtime is offline, encrypted message requests remain queued under `runtime/ipc/messages/inbox/` and can be processed with `conud --process-ipc`.
+
+## Security Hardening
+
+Phase 11 adds the first production-facing security layer:
+
+```bash
+conu security audit
+conu security audit --json
+```
+
+Implemented controls:
+
+- Ed25519 node signing key for local agent-card signatures.
+- X25519 node exchange key and peer key agreement helpers.
+- XChaCha20Poly1305 local payload storage encryption.
+- Replay cache for local message request and envelope ids.
+- Local key rotation plan under `security/key-rotation.md`.
+
+The audit reports readiness and key ids only. It never prints private keys, shared secrets, plaintext payloads, or decrypted payloads. See `docs/security-hardening.md` and `docs/production-readiness.md` for the hardening model and release blockers.
 
 ## Pairing And Trust
 
@@ -187,6 +207,8 @@ cargo run -p conu-cli -- streams close stream_example
 cargo run -p conu-cli -- watch
 cargo run -p conu-cli -- sessions sync
 cargo run -p conu-cli -- sessions --json
+cargo run -p conu-cli -- security audit
+cargo run -p conu-cli -- security audit --json
 cargo run -p conu-cli -- pair
 cargo run -p conu-cli -- join 123456
 cargo run -p conu-cli -- peers --json

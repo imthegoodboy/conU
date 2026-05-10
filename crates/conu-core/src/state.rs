@@ -1,9 +1,8 @@
 //! Local persistent state for conU.
 //!
-//! Phase 6 keeps this intentionally small and std-only: a locally generated
-//! node id, config, trust store, pairing invitations, agent registry, runtime
-//! metadata, local gateway inboxes, and local opaque message inboxes. Secret
-//! keys and encrypted remote mailbox storage belong to later phases.
+//! Phase 11 keeps this local-first: a locally generated node id, security key
+//! material, config, trust store, pairing invitations, agent registry, runtime
+//! metadata, gateway inboxes, encrypted local message inboxes, and streams.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -42,6 +41,12 @@ const SESSIONS_DIR: &str = "sessions";
 const SESSION_REGISTRY_FILE: &str = "registry.toml";
 const MAILBOX_DIR: &str = "mailbox";
 const LOGS_DIR: &str = "logs";
+const SECURITY_DIR: &str = "security";
+const IDENTITY_SIGNING_KEY_FILE: &str = "identity-signing.key";
+const IDENTITY_EXCHANGE_KEY_FILE: &str = "identity-exchange.key";
+const STORAGE_KEY_FILE: &str = "storage.key";
+const REPLAY_CACHE_FILE: &str = "replay.toml";
+const KEY_ROTATION_PLAN_FILE: &str = "key-rotation.md";
 
 /// Files and folders used by the local conU state store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +83,12 @@ pub struct StatePaths {
     pub session_registry: PathBuf,
     pub mailbox_dir: PathBuf,
     pub logs_dir: PathBuf,
+    pub security_dir: PathBuf,
+    pub identity_signing_key: PathBuf,
+    pub identity_exchange_key: PathBuf,
+    pub storage_key: PathBuf,
+    pub replay_cache: PathBuf,
+    pub key_rotation_plan: PathBuf,
 }
 
 impl StatePaths {
@@ -100,6 +111,7 @@ impl StatePaths {
         let messages_dir = home.join(MESSAGES_DIR);
         let streams_dir = home.join(STREAMS_DIR);
         let pairing_dir = home.join(PAIRING_DIR);
+        let security_dir = home.join(SECURITY_DIR);
 
         Self {
             node_identity: home.join(NODE_FILE),
@@ -133,6 +145,12 @@ impl StatePaths {
             session_registry: home.join(SESSIONS_DIR).join(SESSION_REGISTRY_FILE),
             mailbox_dir: home.join(MAILBOX_DIR),
             logs_dir: home.join(LOGS_DIR),
+            identity_signing_key: security_dir.join(IDENTITY_SIGNING_KEY_FILE),
+            identity_exchange_key: security_dir.join(IDENTITY_EXCHANGE_KEY_FILE),
+            storage_key: security_dir.join(STORAGE_KEY_FILE),
+            replay_cache: security_dir.join(REPLAY_CACHE_FILE),
+            key_rotation_plan: security_dir.join(KEY_ROTATION_PLAN_FILE),
+            security_dir,
             home,
         }
     }
@@ -311,6 +329,7 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.sessions_dir,
         &paths.mailbox_dir,
         &paths.logs_dir,
+        &paths.security_dir,
     ] {
         fs::create_dir_all(directory)
             .map_err(|error| StateError::io("create state directory", directory, error))?;

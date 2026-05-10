@@ -105,6 +105,19 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Backpressure checks should reject oversized chunks before writing stream metadata.
 - Do not claim live relay-backed byte streaming until the transport/encryption phases actually move encrypted chunks over the relay.
 
+## Security Hardening Rules
+
+- Phase 11 local security state belongs under `security/`.
+- `identity-signing.key` stores the local Ed25519 signing key for agent-card signatures.
+- `identity-exchange.key` stores the local X25519 exchange key for explicit peer key agreement.
+- `storage.key` stores the local XChaCha20Poly1305 key for conU-owned encrypted-at-rest payload storage.
+- `replay.toml` records message request and envelope ids so duplicates are rejected before delivery.
+- `key-rotation.md` records the local rotation plan; do not mark production release ready until automated rotation and OS-backed key storage exist.
+- New message request and inbox files must use `payload_ciphertext_hex`, not `payload_hex`.
+- Agent registry records should include signature metadata for new/updated local agents.
+- CLI security output may show readiness booleans and key ids, but must never show private keys, shared secrets, plaintext payloads, or decrypted payloads.
+- Peer key agreement helpers are available for later live relay-backed encrypted delivery, but current remote sessions are still metadata mirrors.
+
 ## Privacy Rules
 
 - Never log plaintext payloads.

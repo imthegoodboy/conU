@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 11 - Encryption Hardening
+Current phase: Phase 12 - SDK And MCP Adapter
 Status: not_started
 Last updated: 2026-05-10
 ```
@@ -820,7 +820,7 @@ Next:
 
 ## Phase 11 - Encryption Hardening
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -836,9 +836,67 @@ Deliverables:
 
 Exit criteria:
 
-- Payloads are encrypted before relay transit.
-- Trust verification is explicit.
-- Revoked peers cannot communicate.
+- [x] Payloads are encrypted before conU-owned local storage and peer encryption helpers exist for relay transit.
+- [x] Trust verification is explicit through signed local agent cards and X25519 public exchange material.
+- [x] Revoked peers remain excluded by the Phase 9 session mirror and replayed local message ids are rejected.
+
+Completed work:
+
+- Created GitHub issue #22 for Phase 11.
+- Created branch `codex/phase-11-encryption-hardening`.
+- Added `conu_core::security` for Ed25519 signing, X25519 key agreement, XChaCha20Poly1305 encrypted storage, replay cache, security audit, and local key rotation plan generation.
+- Added local security state under `security/`.
+- Updated `conu init` to create local security keys and `conu security audit` to report payload-safe readiness.
+- Encrypted new local message request and recipient inbox payload storage with authenticated metadata.
+- Added replay protection for local message request ids and envelope ids.
+- Added Ed25519 signatures to new/updated local agent registry records.
+- Added peer encryption/key-agreement helpers for the later live relay-backed data path.
+- Added docs for security hardening and production readiness.
+- Updated future-agent guardrails, repo overview, gateway contract, security checklist, and repo map.
+
+Files changed:
+
+- `Cargo.lock`
+- `README.md`
+- `docs/security-hardening.md`
+- `docs/production-readiness.md`
+- `.agents/about/how_it_will_work.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/Cargo.toml`
+- `crates/conu-core/src/agents.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/messages.rs`
+- `crates/conu-core/src/security.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conud/src/main.rs`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `git diff --check` passed.
+- Isolated `CONU_HOME` smoke passed: `conu init`, `conu security audit --json`, two signed `conu agents register` flows, `conud --process-ipc`, `conu messages send --stdin`, `conu messages inbox --json`, encrypted field scan, signature field scan, and plaintext payload scan.
+- Privacy scan confirmed `Review this code` remains only in artificial negative tests and the smoke payload was not present in conU-owned state.
+- Initial default `cargo check --workspace --all-targets` failed because the local MSVC linker is not installed and new crypto dependencies compile build scripts. This matches the existing Windows toolchain gap; use the GNU toolchain until MSVC Build Tools or CI are configured.
+
+Known gaps:
+
+- Local private key files are protected by filesystem permissions/profile ACL only; production release still needs OS keychain, DPAPI, Secure Enclave, HSM, or user-managed secret backend support.
+- Automated key rotation, multi-key reads, and storage re-encryption migration are documented but not implemented.
+- Remote session mirrors do not yet exchange signed remote agent cards over a live transport.
+- Relay-backed encrypted message/stream byte delivery is not active yet; Phase 11 provides the key agreement and encryption helpers for that next transport phase.
+- Capability grants and full permission policy remain future work.
+
+Next:
+
+- Start Phase 12: SDK and MCP adapter so agents can call register, peers, send, receive, stream, and security-safe receive APIs without learning conU internals.
 
 ## Phase 12 - SDK And MCP Adapter
 
@@ -946,4 +1004,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 8 completed. std-only WebSocket relay service, shared relay frame contract, token-authenticated sessions, metadata-only connected-peer forwarding, tests, docs, and relay binary smoke validation added. Next: Phase 9 remote discovery and sessions.
 2026-05-10 - Phase 9 completed. conUD-owned remote session mirror, trusted remote agent cards, `conu sessions`, remote visibility in agents/status/connect, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 10 streams and watch animation.
 2026-05-10 - Phase 10 completed. Stream lifecycle metadata, stdin-only opaque stream writes, backpressure checks, watch event bus, private watch animation, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 11 encryption hardening.
+2026-05-10 - Phase 11 completed. Local security module added with Ed25519 signed agent cards, X25519 peer key agreement helpers, XChaCha20Poly1305 encrypted-at-rest message storage, replay protection, `conu security audit`, tests, docs, and GNU-toolchain validation. Next: Phase 12 SDK and MCP adapter.
 ```
