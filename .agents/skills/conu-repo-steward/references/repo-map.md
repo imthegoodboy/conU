@@ -23,13 +23,13 @@ crates/conud
   daemon process, local gateway/message processing, session manager, runtime lifecycle
 
 crates/conu-core
-  local state, runtime lifecycle, agent registry, local message routing, trust store, future policy logic
+  local state, runtime lifecycle, agent registry, local message routing, trust store, relay frame contract, future policy logic
 
 crates/conu-protocol
   envelopes, agent cards, control-plane messages, data-plane messages
 
 crates/conu-relay
-  hosted relay/bootstrap service, pairing rendezvous, encrypted forwarding
+  std-only WebSocket relay service, session auth, metadata-only forwarding, relay/bootstrap groundwork
 
 crates/conu-sdk
   agent gateway clients later

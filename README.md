@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 7 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, registered local agents can exchange opaque message envelopes, and local pairing/trust records can be created and revoked.
+Phase 8 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state, `conu start` launches the local `conUD` runtime skeleton, local agents can register metadata and presence, registered local agents can exchange opaque message envelopes, local pairing/trust records can be created and revoked, and `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -19,7 +19,7 @@ The repository currently contains compile-ready crate boundaries for:
 - `conud`: local daemon/runtime scaffold.
 - `conu-core`: shared runtime primitives and project invariants.
 - `conu-protocol`: protocol identities, agent cards, and opaque envelopes.
-- `conu-relay`: relay/bootstrap scaffold.
+- `conu-relay`: std-only WebSocket relay MVP.
 
 This phase is intentionally std-only so the workspace validates on Windows machines that have Rust installed but do not yet have the Visual Studio C++ linker/Windows SDK configured. Production dependencies such as clap, Tokio, tracing, and serde should be introduced in the relevant future phases once linker support is available locally or in CI.
 
@@ -101,7 +101,20 @@ conu peers --json
 conu peers revoke peer_example
 ```
 
-`conu pair` creates a short local invitation code with an expiration. `conu join <code>` consumes a local invitation and writes a trusted peer record to `trust.toml`. Peer ids and display names are derived from a hash suffix, and the trust store records `pairing_code_hash` instead of the raw used code. Relay-backed cross-machine pairing starts in Phase 8.
+`conu pair` creates a short local invitation code with an expiration. `conu join <code>` consumes a local invitation and writes a trusted peer record to `trust.toml`. Peer ids and display names are derived from a hash suffix, and the trust store records `pairing_code_hash` instead of the raw used code. Cross-machine pairing remains local-trust groundwork until remote sessions and discovery are wired into conUD.
+
+## WebSocket Relay
+
+Phase 8 adds the `conu-relay` service and the shared relay frame contract in `conu-core`:
+
+```bash
+set CONU_RELAY_TOKEN=local-dev-token
+cargo run -p conu-relay -- --serve 127.0.0.1:8787
+```
+
+Connected runtimes send `HELLO`, `FORWARD`, and `PING` frames. The relay answers with `WELCOME`, `ENVELOPE`, `SENT`, `UNDELIVERED`, `PONG`, or `ERROR` frames. Forwarding is metadata-only: the relay sees target node id, envelope id, and byte count, while payload fields are rejected and logs/output use `payload=not_observed` or `payload=opaque`.
+
+The relay is available now as a standalone service. conUD remote session management, remote agent discovery, reconnect loops, and encrypted payload hardening land in later phases.
 
 ## Development
 
@@ -144,6 +157,7 @@ cargo run -p conud -- --check
 cargo run -p conud -- --once
 cargo run -p conud -- --process-ipc
 cargo run -p conu-relay -- --check
+cargo run -p conu-relay -- --serve 127.0.0.1:8787
 ```
 
 When running from a development checkout, build `conud` first or set `CONUD_EXE` to the local daemon binary before using `conu start`.

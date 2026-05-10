@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 7.
+The repository has completed Phase 8.
 
 Implemented so far:
 
@@ -28,11 +28,15 @@ Implemented so far:
 - local pairing invitation creation through `conu pair`
 - local pairing join/trust creation through `conu join <code>`
 - trusted peer listing and revocation through `conu peers`
+- shared relay frame contract in `conu-core`
+- std-only `conu-relay` WebSocket service
+- relay session authentication with a shared token
+- connected-runtime metadata forwarding with `WELCOME`, `ENVELOPE`, `SENT`, and `UNDELIVERED` frames
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs
 - payload-safe message delivery metadata logs
 - payload-safe protocol scaffold
-- daemon and relay placeholder binaries
+- daemon runtime skeleton and relay service binary
 
 Current important files:
 
@@ -56,7 +60,7 @@ crates/
 |- conud/          local daemon/runtime
 |- conu-core/      shared runtime logic
 |- conu-protocol/  protocol types and envelopes
-|- conu-relay/     hosted relay/bootstrap service
+|- conu-relay/     hosted WebSocket relay/bootstrap service
 `- conu-sdk/       agent-facing client libraries later
 ```
 

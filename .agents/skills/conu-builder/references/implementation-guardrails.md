@@ -67,12 +67,22 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 
 ## Pairing And Trust Rules
 
-- Phase 7 pairing is local trust-store groundwork only; relay-backed cross-machine rendezvous starts in Phase 8.
+- Phase 7 pairing is local trust-store groundwork only; Phase 8 adds the relay service, while conUD-backed cross-machine pairing/session wiring remains later work.
 - `conu pair` may display a fresh short code once, but peers listing and trust records must not expose the raw used pairing code.
 - Store `pairing_code_hash` in `trust.toml`, not `pairing_code`.
 - Trusted peer ids and display names should be derived from a hash suffix, not from the raw six-digit code.
 - `conu join <code>` should create a trusted peer only when the local invitation exists, is pending, and is not expired.
 - Revocation must preserve the peer record with `status = "revoked"` so future agents can reason about trust history.
+
+## Relay Rules
+
+- Phase 8 relay is a std-only WebSocket MVP in `crates/conu-relay` with its frame contract in `conu_core::relay`.
+- Runtime clients must authenticate with `HELLO node=<id> token=<token> payload=not_observed` before forwarding.
+- `FORWARD` frames may include target node id, envelope id, byte count, and `payload=opaque`; they must not include plaintext payload fields.
+- Relay server output, errors, tests, and logs must not echo auth tokens or private payload contents.
+- The relay may return `UNDELIVERED reason=peer_offline` when the target runtime is not connected; do not add mailbox storage until the encrypted mailbox phase.
+- On Windows, accepted streams from a nonblocking listener must be set back to blocking mode before frame reads.
+- conUD remote session management and remote agent discovery are not complete just because `conu-relay` exists; keep those changes in Phase 9.
 
 ## Privacy Rules
 

@@ -119,6 +119,41 @@ conu peers revoke <peer-node-id> [--json]
 
 Phase 7 creates trust records but does not discover remote agents or open network sessions. Raw used pairing codes must not appear in peer list output or trust records.
 
+The Phase 8 relay surface is a standalone WebSocket service for runtime sessions:
+
+```txt
+conu_core::relay      shared HELLO/FORWARD/PING frame contract
+crates/conu-relay     WebSocket listener and metadata-only forwarding hub
+CONU_RELAY_TOKEN      shared relay session token for local/dev deployment
+```
+
+Supported relay command:
+
+```txt
+conu-relay --serve [addr]
+```
+
+Supported runtime-to-relay frames:
+
+```txt
+HELLO node=<node-id> token=<token> payload=not_observed
+FORWARD to=<node-id> envelope=<envelope-id> bytes=<count> payload=opaque
+PING payload=not_observed
+```
+
+Supported relay-to-runtime frames:
+
+```txt
+WELCOME session=<session-id> payload=not_observed
+ENVELOPE from=<node-id> to=<node-id> envelope=<envelope-id> bytes=<count> payload=opaque
+SENT to=<node-id> envelope=<envelope-id> bytes=<count> payload=not_observed
+UNDELIVERED to=<node-id> envelope=<envelope-id> reason=<safe-reason> payload=not_observed
+PONG payload=not_observed
+ERROR reason=<safe-reason> payload=not_observed
+```
+
+Phase 8 does not yet expose this relay through the local agent gateway. conUD remote session management, remote agent discovery, reconnects, and relay-backed local commands begin in later phases.
+
 ## Safety
 
 "Full access" means full communication access inside trust boundaries. It does not mean raw filesystem, shell, network, or secret access.
