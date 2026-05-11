@@ -2,11 +2,11 @@
 
 This guide explains how a user can install the current conU app, start it on their PC, and let local agents use it.
 
-Current version status: Phase 13 is complete. conU is usable for local agent registration, local encrypted-at-rest message submission, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, and an MCP stdio adapter. It is not yet a packaged consumer release.
+Current version status: Phase 15 is complete for the current local-first app. conU is usable for local agent registration, local encrypted-at-rest message submission, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, an MCP stdio adapter, repeatable release builds, service templates, and `conu doctor` readiness checks. It is not yet a public hosted internet release.
 
 ## What Works Today
 
-- Install from source with Rust.
+- Install from source with Rust or from a Phase 15 release artifact.
 - Initialize local conU state and security keys.
 - Start and stop the local `conUD` runtime.
 - Register local agents by id.
@@ -18,17 +18,19 @@ Current version status: Phase 13 is complete. conU is usable for local agent reg
 - Let Rust agents use `conu_sdk::ConuClient`.
 - Let Python agents use `sdk/python/conu_sdk`.
 - Let MCP-capable agents launch `conu-mcp` and call conU tools.
+- Run `conu doctor` to check local install readiness and payload-safe logs.
+- Use Windows, systemd, and launchd service templates.
 
 ## What Does Not Work Yet
 
-- No one-click installer or signed release package.
+- No signed one-click installer yet.
 - No TypeScript SDK yet.
 - No CLI command that reveals message contents. This is intentional; use SDK or MCP explicit receive APIs when the addressed local agent needs payload bytes.
 - No live internet data-plane routing between two real conUD nodes yet.
 - No real QUIC socket or NAT hole punching yet; Phase 13 selects configured direct route candidates and relay fallback metadata.
 - Pairing and remote sessions are local metadata groundwork, not full cross-machine rendezvous.
 - `conu-relay` exists, but conUD does not yet own a live relay client for encrypted message/stream byte delivery.
-- conUD is not installed as a Windows/macOS/Linux service yet.
+- Service templates exist, but users still need to install/register them for their platform.
 - Local private keys are file-backed today; OS keychain/DPAPI/HSM support is still a release blocker.
 
 ## Install From Source
@@ -90,9 +92,52 @@ Check the install:
 conu --version
 conud --check
 conu-relay --check
+conu doctor
 ```
 
 `conu-mcp` is a stdio server for MCP clients, so it normally waits for JSON-RPC input instead of printing a standalone check screen.
+
+## Install From A Release Artifact
+
+Build or unpack a release artifact, then use the package scripts.
+
+On Windows without Visual Studio C++ Build Tools, build artifacts with the GNU toolchain:
+
+```powershell
+.\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+```
+
+Windows current-user install:
+
+```powershell
+.\packaging\windows\install.ps1 -SourceBin .\bin
+```
+
+Optional Windows service install from an elevated shell:
+
+```powershell
+.\packaging\windows\install.ps1 -SourceBin .\bin -InstallService
+```
+
+Linux systemd:
+
+```bash
+sudo cp bin/conu bin/conud bin/conu-relay bin/conu-mcp /usr/local/bin/
+sudo cp packaging/linux/conud.service /etc/systemd/system/conud.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now conud
+```
+
+macOS launchd:
+
+```bash
+sudo cp bin/conu bin/conud bin/conu-relay bin/conu-mcp /usr/local/bin/
+# Edit packaging/macos/com.conu.conud.plist and replace /Users/YOU first.
+cp packaging/macos/com.conu.conud.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.conu.conud.plist
+```
+
+Edit the service template paths and user/state location before enabling a machine-wide service.
 
 ## First Run
 
@@ -102,6 +147,7 @@ Initialize local state and local security keys:
 conu init
 conu security audit
 conu status
+conu doctor
 ```
 
 Start conUD:
@@ -316,7 +362,7 @@ These are not hidden bugs; they are the honest state of the current app:
 
 | Area | Current issue | User impact | Workaround today |
 | --- | --- | --- | --- |
-| Installer | No packaged installer yet | Users must build from source | Use `cargo install --path` |
+| Installer | Release artifact scripts exist, but packages are not signed | Users must trust a source build or unsigned artifact | Use `cargo install --path` or inspect/build artifacts locally |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
 | Agent API | Rust SDK, Python wrapper, and MCP adapter exist; TypeScript is later | Most agents can integrate now, TS apps need wrapper work | Use MCP, Rust SDK, Python SDK, or CLI/stdin |
@@ -324,7 +370,7 @@ These are not hidden bugs; they are the honest state of the current app:
 | Internet messaging | Relay is not wired into conUD data plane yet | Local messages work; real remote payload delivery does not | Use local testing only |
 | Direct transport | Route selection exists, but real QUIC sockets and NAT hole punching do not | Direct routes show as metadata only | Configure direct endpoints for route scoring tests |
 | Pairing | Pair/join are local trust groundwork | Not real cross-machine pairing yet | Use for metadata/trust testing |
-| Service install | conUD is not an OS service yet | User must start/stop manually | Use `conu start` / `conu stop` |
+| Service install | Service templates exist but need local edits/admin steps | User must choose service path/user | Use `packaging/windows`, `packaging/linux`, or `packaging/macos` templates |
 | Key storage | Keys are local files | Not ready for high-security public release | Keep user profile protected; future OS keychain work required |
 | IPC | File-backed queues | Good for development, not final hot path | Use current gateway until named pipe/socket IPC lands |
 
@@ -335,6 +381,7 @@ For a developer testing conU locally:
 ```powershell
 conu init
 conu security audit
+conu doctor
 conu start
 conu agents register agent.a "Agent A" --kind test-agent
 conu agents register agent.b "Agent B" --kind test-agent
@@ -366,4 +413,4 @@ To make conU genuinely useful over the internet, the next phase should build:
 - Live encrypted relay-backed message and stream byte delivery.
 - Real QUIC socket transport and NAT candidate exchange after the room/session model is stable.
 - TypeScript SDK after the protocol surface stabilizes.
-- Packaged installer and service setup after SDK behavior is stable.
+- Signed installers and OS keychain-backed secret storage after local packaging stabilizes.

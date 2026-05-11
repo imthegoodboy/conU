@@ -1,0 +1,21 @@
+[Unit]
+Description=conU local runtime daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/conud --serve
+Restart=on-failure
+RestartSec=5
+Environment=CONU_HOME=/var/lib/conu
+User=conu
+Group=conu
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/conu
+
+[Install]
+WantedBy=multi-user.target

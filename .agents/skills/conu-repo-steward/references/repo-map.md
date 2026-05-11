@@ -42,6 +42,15 @@ sdk/python/conu_sdk
 
 examples/python
   Python local-agent integration examples
+
+scripts
+  release build and local smoke scripts
+
+packaging
+  Windows install scripts plus Linux systemd and macOS launchd service templates
+
+.github/workflows
+  CI and release artifact workflows
 ```
 
 ## Placement Rule

@@ -1,0 +1,39 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            script: powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1
+            artifact: dist/*.zip
+          - name: linux
+            os: ubuntu-latest
+            script: sh scripts/build-release.sh
+            artifact: dist/*.tar.gz
+          - name: macos
+            os: macos-latest
+            script: sh scripts/build-release.sh
+            artifact: dist/*.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build package
+        run: ${{ matrix.script }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conu-${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error

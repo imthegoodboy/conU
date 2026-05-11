@@ -143,6 +143,15 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Python SDK wrappers should pass payload bytes through stdin and avoid printing/logging payloads.
 - TypeScript SDK is intentionally later; do not mark it complete until implemented and validated.
 
+## Packaging And Release Rules
+
+- Phase 15 packaging artifacts must include binaries, docs, packaging templates, and manifest metadata only.
+- Release artifacts must not include local conU state, `CONU_HOME`, `.conu`, private keys, logs, inboxes, route registries, message stores, or test payload output.
+- `conu doctor` may report binary paths, readiness booleans, runtime health, and payload-safe log scan counts; it must not print log contents, private keys, payload text, or secrets.
+- Windows service, Linux systemd, and macOS launchd files are templates until a signed installer configures platform-specific users and paths.
+- A local release may be marked ready only with documented limits. Do not claim public hosted internet readiness until live encrypted remote data-plane delivery, capability policy, signed remote cards, and OS-backed key storage are implemented.
+- CI/release workflows must run metadata-only checks and must not upload conU state directories or logs as artifacts.
+
 ## Privacy Rules
 
 - Never log plaintext payloads.

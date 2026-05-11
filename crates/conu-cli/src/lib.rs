@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -109,6 +110,7 @@ where
         "join" => render_join(&args[1..], home_override),
         "connect" => render_connect(&args[1..], home_override),
         "watch" => render_watch(&args[1..], home_override),
+        "doctor" => render_doctor(&args[1..], home_override),
         "components" => render_components(&args[1..]),
         "start" => render_start(&args[1..], home_override),
         "stop" => render_stop(&args[1..], home_override),
@@ -182,6 +184,7 @@ quick commands
   conu streams open <from-agent> <to-agent>
   conu routes sync
   conu security audit
+  conu doctor
   conu pair
   conu peers
   conu join <code>
@@ -2501,6 +2504,364 @@ fn render_components(args: &[String]) -> CliOutput {
     CliOutput::success(output)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorBinary {
+    name: &'static str,
+    path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorLogScan {
+    payload_safe: bool,
+    scanned_files: usize,
+    issues: usize,
+}
+
+fn render_doctor(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+
+    let snapshot = match state::read_state(home_override.clone()) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return CliOutput::failure(1, format!("conU doctor failed\n\n{error}")),
+    };
+    let runtime_status = match runtime::read_runtime(home_override.clone()) {
+        Ok(status) => status,
+        Err(error) => return CliOutput::failure(1, format!("conU doctor failed\n\n{error}")),
+    };
+    let security_audit =
+        security::security_audit(home_override).unwrap_or_else(|_| empty_security_audit());
+    let binaries = release_binaries();
+    let log_scan = scan_payload_safe_logs(&snapshot);
+    let status = doctor_status(&snapshot, &security_audit, &binaries, &log_scan);
+
+    if json {
+        CliOutput::success(render_doctor_json(
+            status,
+            &snapshot,
+            &runtime_status,
+            &security_audit,
+            &binaries,
+            &log_scan,
+        ))
+    } else {
+        CliOutput::success(render_doctor_text(
+            status,
+            &snapshot,
+            &runtime_status,
+            &security_audit,
+            &binaries,
+            &log_scan,
+        ))
+    }
+}
+
+fn render_doctor_json(
+    status: &str,
+    snapshot: &StateSnapshot,
+    runtime_status: &RuntimeStatus,
+    security: &SecurityAudit,
+    binaries: &[DoctorBinary],
+    log_scan: &DoctorLogScan,
+) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "statePath": "{}",
+  "initialized": {},
+  "runtime": {{
+    "state": "{}",
+    "health": "{}",
+    "pid": {}
+  }},
+  "binaries": {{
+    "conu": {},
+    "conud": {},
+    "conuRelay": {},
+    "conuMcp": {}
+  }},
+  "security": {{
+    "initialized": {},
+    "localPayloadEncryption": {},
+    "signedAgentCards": {},
+    "peerKeyExchange": {},
+    "replayCache": {},
+    "keyRotationPlan": {}
+  }},
+  "logs": {{
+    "payloadSafe": {},
+    "scannedFiles": {},
+    "issues": {}
+  }},
+  "releaseGates": {{
+    "localInstallReady": {},
+    "publicInternetReady": false,
+    "knownLimitsDocumented": true
+  }},
+  "privacy": {{
+    "contentsDisplayed": false
+  }}
+}}"#,
+        json_escape(status),
+        json_escape(&snapshot.paths.home.display().to_string()),
+        snapshot.is_initialized(),
+        runtime_status.state.as_str(),
+        json_escape(runtime_health_label(runtime_status)),
+        json_u32(runtime_status.pid),
+        doctor_binary_json(binaries, "conu"),
+        doctor_binary_json(binaries, "conud"),
+        doctor_binary_json(binaries, "conu-relay"),
+        doctor_binary_json(binaries, "conu-mcp"),
+        security.initialized,
+        security.local_payload_encryption,
+        security.signed_agent_cards,
+        security.peer_key_exchange,
+        security.replay_cache,
+        security.key_rotation_plan,
+        log_scan.payload_safe,
+        log_scan.scanned_files,
+        log_scan.issues,
+        local_install_ready(snapshot, security, binaries, log_scan)
+    )
+}
+
+fn render_doctor_text(
+    status: &str,
+    snapshot: &StateSnapshot,
+    runtime_status: &RuntimeStatus,
+    security: &SecurityAudit,
+    binaries: &[DoctorBinary],
+    log_scan: &DoctorLogScan,
+) -> String {
+    format!(
+        r"conU doctor
+
+status: {status}
+state path: {}
+
+runtime
+  conUD       {}
+  health      {}
+  pid         {}
+
+binaries
+{}
+
+security
+  initialized        {}
+  local payloads     {}
+  signed agents      {}
+  peer exchange      {}
+  replay guard       {}
+  key rotation plan  {}
+
+logs
+  payload safe       {}
+  scanned files      {}
+  issues             {}
+
+release gates
+  local install      {}
+  public internet    not ready; live remote data plane remains future work
+  known limits       documented
+
+privacy
+  payload view       contents are not displayed by conU",
+        snapshot.paths.home.display(),
+        runtime_state_label(runtime_status),
+        runtime_health_label(runtime_status),
+        runtime_pid_label(runtime_status),
+        doctor_binaries_text(binaries),
+        ready_label(security.initialized),
+        if security.local_payload_encryption {
+            "encrypted at rest"
+        } else {
+            "not ready"
+        },
+        ready_label(security.signed_agent_cards),
+        ready_label(security.peer_key_exchange),
+        ready_label(security.replay_cache),
+        ready_label(security.key_rotation_plan),
+        yes_no(log_scan.payload_safe),
+        log_scan.scanned_files,
+        log_scan.issues,
+        yes_no(local_install_ready(snapshot, security, binaries, log_scan))
+    )
+}
+
+fn doctor_status(
+    snapshot: &StateSnapshot,
+    security: &SecurityAudit,
+    binaries: &[DoctorBinary],
+    log_scan: &DoctorLogScan,
+) -> &'static str {
+    if !snapshot.is_initialized() {
+        "needs_init"
+    } else if !log_scan.payload_safe {
+        "privacy_attention"
+    } else if !security_controls_ready(security) {
+        "needs_security_audit"
+    } else if !all_required_binaries_present(binaries) {
+        "missing_binaries"
+    } else {
+        "ready_for_local_use"
+    }
+}
+
+fn local_install_ready(
+    snapshot: &StateSnapshot,
+    security: &SecurityAudit,
+    binaries: &[DoctorBinary],
+    log_scan: &DoctorLogScan,
+) -> bool {
+    snapshot.is_initialized()
+        && security_controls_ready(security)
+        && all_required_binaries_present(binaries)
+        && log_scan.payload_safe
+}
+
+fn security_controls_ready(security: &SecurityAudit) -> bool {
+    security.initialized
+        && security.local_payload_encryption
+        && security.signed_agent_cards
+        && security.peer_key_exchange
+        && security.replay_cache
+        && security.key_rotation_plan
+}
+
+fn all_required_binaries_present(binaries: &[DoctorBinary]) -> bool {
+    ["conu", "conud", "conu-relay", "conu-mcp"]
+        .iter()
+        .all(|name| doctor_binary_present(binaries, name))
+}
+
+fn release_binaries() -> Vec<DoctorBinary> {
+    vec![
+        DoctorBinary {
+            name: "conu",
+            path: env::current_exe().ok(),
+        },
+        DoctorBinary {
+            name: "conud",
+            path: resolve_companion_executable("conud", "CONUD_EXE"),
+        },
+        DoctorBinary {
+            name: "conu-relay",
+            path: resolve_companion_executable("conu-relay", "CONU_RELAY_EXE"),
+        },
+        DoctorBinary {
+            name: "conu-mcp",
+            path: resolve_companion_executable("conu-mcp", "CONU_MCP_EXE"),
+        },
+    ]
+}
+
+fn doctor_binary_present(binaries: &[DoctorBinary], name: &str) -> bool {
+    binaries
+        .iter()
+        .any(|binary| binary.name == name && binary.path.is_some())
+}
+
+fn doctor_binary_json(binaries: &[DoctorBinary], name: &str) -> String {
+    binaries
+        .iter()
+        .find(|binary| binary.name == name)
+        .and_then(|binary| binary.path.as_ref())
+        .map(|path| json_string(&path.display().to_string()))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn doctor_binaries_text(binaries: &[DoctorBinary]) -> String {
+    binaries
+        .iter()
+        .map(|binary| {
+            let path = binary
+                .path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "not found".to_string());
+            format!("  {:<11} {}", binary.name, path)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn resolve_companion_executable(binary_name: &str, env_var: &str) -> Option<PathBuf> {
+    if let Ok(value) = env::var(env_var) {
+        let path = PathBuf::from(value);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let executable_name = format!("{binary_name}{}", env::consts::EXE_SUFFIX);
+    if let Ok(mut path) = env::current_exe() {
+        path.set_file_name(&executable_name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let path_value = env::var_os("PATH")?;
+    for directory in env::split_paths(&path_value) {
+        let candidate = directory.join(&executable_name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn scan_payload_safe_logs(snapshot: &StateSnapshot) -> DoctorLogScan {
+    let log_dir = &snapshot.paths.logs_dir;
+    if !log_dir.exists() {
+        return DoctorLogScan {
+            payload_safe: true,
+            scanned_files: 0,
+            issues: 0,
+        };
+    }
+
+    let mut scanned_files = 0;
+    let mut issues = 0;
+    if let Ok(entries) = fs::read_dir(log_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("log") {
+                continue;
+            }
+            scanned_files += 1;
+            let Ok(contents) = fs::read_to_string(&path) else {
+                issues += 1;
+                continue;
+            };
+            if FORBIDDEN_LOG_TERMS
+                .iter()
+                .any(|term| contents.contains(term))
+            {
+                issues += 1;
+            }
+        }
+    }
+
+    DoctorLogScan {
+        payload_safe: issues == 0,
+        scanned_files,
+        issues,
+    }
+}
+
+const FORBIDDEN_LOG_TERMS: &[&str] = &[
+    "private message contents",
+    "Review this code",
+    "payload_text",
+    "payload_hex",
+    "secret_key_hex",
+];
+
 fn render_start(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let json = match json_flag(args) {
         Ok(json) => json,
@@ -2841,13 +3202,14 @@ Usage:
   conu join <code> [--json]
   conu connect
   conu watch
+  conu doctor [--json]
   conu start [--json]
   conu stop [--json]
   conu components
   conu --help
   conu --version
 
-Phase 13 adds direct QUIC route candidates, NAT-aware scoring, relay fallback selection, and metadata-only route probes. Payload contents remain hidden."
+Phase 15 adds release readiness checks, packaging paths, and service templates while payload contents remain hidden."
         .to_string()
 }
 
@@ -3144,7 +3506,7 @@ mod tests {
 
         for command in [
             "init", "status", "agents", "streams", "sessions", "security", "pair", "peers",
-            "routes", "connect", "watch", "stop",
+            "routes", "connect", "watch", "doctor", "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
@@ -3319,6 +3681,50 @@ mod tests {
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
         assert!(!output.stdout.contains("secret_key_hex"));
         assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn doctor_reports_setup_and_privacy_without_payloads() {
+        let home = temp_home("doctor");
+        let before_init = run_with_home(["doctor", "--json"], Some(home.clone()));
+        let init = run_with_home(["init"], Some(home.clone()));
+        let after_init = run_with_home(["doctor"], Some(home.clone()));
+
+        assert_eq!(before_init.code, 0, "{}", before_init.stderr);
+        assert!(before_init.stdout.contains("\"status\": \"needs_init\""));
+        assert_eq!(init.code, 0, "{}", init.stderr);
+        assert_eq!(after_init.code, 0, "{}", after_init.stderr);
+        assert!(after_init.stdout.contains("conU doctor"));
+        assert!(
+            after_init
+                .stdout
+                .contains("payload view       contents are not displayed")
+        );
+        assert!(!after_init.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn doctor_detects_payload_text_in_logs() {
+        let home = temp_home("doctor-logs");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = state::StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        fs::write(
+            paths.logs_dir.join("bad.log"),
+            "event=test private message contents\n",
+        )
+        .expect("log writes");
+
+        let output = run_with_home(["doctor", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"privacy_attention\""));
+        assert!(output.stdout.contains("\"payloadSafe\": false"));
+        assert!(
+            !output
+                .stdout
+                .contains("event=test private message contents")
+        );
     }
 
     #[test]
