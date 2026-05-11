@@ -20,7 +20,7 @@ crates/conu-cli
   CLI commands, ASCII dashboard, stream/watch animation, user control flow
 
 crates/conud
-  daemon process, local gateway/message/session processing, session manager, runtime lifecycle
+  daemon process, local gateway/message/session processing, relay pump, session manager, runtime lifecycle
 
 crates/conu-core
   local state, security keys/encryption/signatures/replay, runtime lifecycle, agent registry, local message routing, relay-backed remote message delivery, stream metadata, route selection, trust store, relay frame contract, remote session mirror, future policy logic
@@ -32,7 +32,7 @@ crates/conu-relay
   std-only WebSocket relay service, session auth, blind ciphertext forwarding, relay/bootstrap groundwork
 
 crates/conu-sdk
-  Rust agent-facing SDK over registration, presence, peers, peer cards, routes, local/remote messages, relay sync, receive, streams, and security audit
+  Rust agent-facing SDK over registration, presence, peers, peer cards, routes, local/remote messages, optional relay sync, receive, streams, and security audit
 
 crates/conu-mcp
   MCP stdio adapter exposing conU tools over newline-delimited JSON-RPC
@@ -44,7 +44,7 @@ examples/python
   Python local-agent integration examples
 
 scripts
-  release build and local smoke scripts
+  release build, local smoke, and relay-daemon smoke scripts
 
 packaging
   Windows install scripts plus Linux systemd and macOS launchd service templates

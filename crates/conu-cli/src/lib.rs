@@ -7,8 +7,9 @@
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -180,6 +181,7 @@ control room
 
 quick commands
   conu init
+  conu start
   conu status
   conu agents
   conu agents register <agent-id> <display-name>
@@ -921,7 +923,8 @@ bytes: {}
 route: relay-websocket
 
 next
-  conu relay sync --wait-ms 3000
+  conu start
+  optional manual flush: conu relay sync --wait-ms 3000
 
 privacy
   payload view  contents are not displayed by conU",
@@ -2129,7 +2132,10 @@ flow
 
 privacy
   payload view  contents are not displayed by conU
-  relay view    encrypted body plus route metadata only",
+  relay view    encrypted body plus route metadata only
+
+note
+  conUD runs this relay pump automatically when a relay or trusted relay peer is configured",
         report.endpoint,
         yes_no(report.connected),
         report.queued,
@@ -2460,7 +2466,8 @@ exchange key: trusted
 relay: {}
 
 next
-  conu relay sync --wait-ms 3000
+  conu start
+  optional manual sync: conu relay sync --wait-ms 3000
 
 privacy
   payload view  contents are not displayed by conU",
@@ -2871,6 +2878,7 @@ private transport view
   |  agent A  | ---> | conUD  | ===> | blind relay | ===> | agent B |
   '-----------'      '--------'      '------------'      '---------'
                          peer-encrypted envelopes
+                         daemon pump when configured
 
 live counters
   route         {route}
@@ -3066,7 +3074,7 @@ logs
 
 release gates
   local install      {}
-  public internet    not ready; live remote data plane remains future work
+  public internet    not ready; hosted relay auth/TLS and streams remain future work
   known limits       documented
 
 privacy
@@ -3279,17 +3287,7 @@ fn render_start(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     }
 
     let daemon = resolve_conud_executable();
-    let mut command = Command::new(&daemon);
-    command
-        .arg("--serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(home) = home_override.as_ref() {
-        command.env("CONU_HOME", home);
-    }
-
-    let child = match command.spawn() {
+    let child = match spawn_conud_daemon(&daemon, home_override.as_ref()) {
         Ok(child) => child,
         Err(error) => {
             return CliOutput::failure(
@@ -3435,7 +3433,7 @@ runtime
   pid           {}
   health        {}
   local IPC     file gateway active
-  relay         service available via conu-relay
+  relay         daemon pump when configured; service via conu-relay
   routes        direct {} relay {} fallback {}
 
 identity
@@ -3510,7 +3508,7 @@ fn render_status_json(view: &StatusView<'_>) -> String {
     "heartbeatAgeSecs": {},
     "localHealth": "{}",
     "localIpc": "file_gateway",
-    "relay": "service_available",
+    "relay": "daemon_pump_when_configured",
     "selectedDirectRoutes": {},
     "selectedRelayRoutes": {},
     "relayFallbacks": {}
@@ -3613,7 +3611,7 @@ Usage:
   conu --help
   conu --version
 
-conU carries local and relay-backed peer-encrypted messages while payload contents remain hidden."
+conU carries local and relay-backed peer-encrypted messages while payload contents remain hidden. conUD pumps configured relay routes automatically."
         .to_string()
 }
 
@@ -3625,6 +3623,7 @@ fn render_start_report(status: &RuntimeStatus, launched: bool, json: bool) -> St
   "launched": {},
   "pid": {},
   "health": "{}",
+  "relayPump": "auto_when_configured",
   "contentsDisplayed": false
 }}"#,
             status.state.as_str(),
@@ -3647,6 +3646,7 @@ status: {action}
 conUD: {}
 pid: {}
 health: {}
+relay pump: auto when configured
 
 privacy
   payload view  contents are not displayed by conU",
@@ -3654,6 +3654,49 @@ privacy
         runtime_pid_label(status),
         runtime_health_label(status)
     )
+}
+
+fn spawn_conud_daemon(daemon: &Path, home_override: Option<&PathBuf>) -> io::Result<Child> {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "Start-Process -FilePath {} -ArgumentList '--serve' -WindowStyle Hidden",
+            powershell_quote(&daemon.display().to_string())
+        );
+        let mut command = Command::new("powershell");
+        command
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-Command")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(home) = home_override {
+            command.env("CONU_HOME", home);
+        }
+        command.spawn()
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new(daemon);
+        command
+            .arg("--serve")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(home) = home_override {
+            command.env("CONU_HOME", home);
+        }
+        command.spawn()
+    }
+}
+
+#[cfg(windows)]
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn render_stop_report(report: &StopReport, json: bool) -> String {

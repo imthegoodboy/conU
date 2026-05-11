@@ -154,7 +154,7 @@ PONG payload=not_observed
 ERROR reason=<safe-reason> payload=not_observed
 ```
 
-The current relay data-plane MVP exposes peer-encrypted one-shot messages through `conu messages send --peer` and `conu relay sync`. Live stream byte routing, reconnect loops, hosted relay auth hardening, and offline mailbox delivery land later.
+The current relay data-plane exposes peer-encrypted one-shot messages through `conu messages send --peer`. Running conUD automatically pumps configured relay send/receive windows; `conu relay sync` remains an explicit manual/debug command. Live stream byte routing, persistent relay sessions, hosted relay auth hardening, and offline mailbox delivery land later.
 
 The Phase 9 remote session surface is conUD-owned metadata sync:
 

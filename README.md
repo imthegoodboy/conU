@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 15 is complete for the current local-first app, and this branch adds the first live relay-backed internet data-plane slice. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, users can exchange public peer cards, trusted peers can send peer-encrypted messages through `conu-relay`, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist.
+Phase 15 is complete for the current local-first app, with a hardened relay message path beyond the original MVP. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, users can exchange public peer cards, trusted peers can send peer-encrypted messages through `conu-relay`, conUD can automatically pump configured relay routes, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -111,11 +111,11 @@ conU can now move peer-encrypted message envelopes between two trusted nodes thr
 ```bash
 conu identity export --json
 conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay ws://relay-host:8787
+conu start
 conu messages send agent.sender agent.remote --peer <peer-node-id> --stdin
-conu relay sync --wait-ms 3000
 ```
 
-Run `conu relay sync --wait-ms 10000` on the receiving node while the sender syncs. The relay sees node ids, agent ids, envelope id, byte count, public exchange key material, and ciphertext only. It does not receive plaintext message contents. See `docs/internet-relay-test.md` for a local two-node smoke and an internet test checklist.
+Run `conu start` on both nodes after `default_relay` or trusted peer relay endpoints are configured. conUD will connect in bounded sync windows, retry on failures, flush pending outbound envelopes, and receive inbound peer-encrypted envelopes. `conu relay sync --wait-ms 3000` remains available as an explicit manual flush/debug command. The relay sees node ids, agent ids, envelope id, byte count, public exchange key material, and ciphertext only. It does not receive plaintext message contents. See `docs/internet-relay-test.md` and `scripts/smoke-relay-daemon.ps1` for local two-node smoke coverage and an internet test checklist.
 
 ## Security Hardening
 
@@ -192,7 +192,7 @@ cargo run -p conu-relay -- --serve 127.0.0.1:8787
 
 Connected runtimes send `HELLO`, `FORWARD`, and `PING` frames. The relay answers with `WELCOME`, `ENVELOPE`, `SENT`, `UNDELIVERED`, `PONG`, or `ERROR` frames. Relay `FORWARD` can carry a peer-encrypted opaque body for message delivery, but plaintext payload fields are rejected and logs/output use `payload=not_observed`, `payload=opaque`, or `payload=peer_encrypted`.
 
-The relay is available now as a standalone service for encrypted message sync. Full live stream byte routing, hosted relay auth hardening, offline relay mailbox storage, reconnect networking, and direct QUIC still land in later transport phases.
+The relay is available now as a standalone service for encrypted message sync, and conUD owns the local relay pump when a relay or trusted relay peer is configured. Full live stream byte routing, hosted relay auth hardening, offline relay mailbox storage, persistent relay sessions, and direct QUIC still land in later transport phases.
 
 ## Remote Sessions And Discovery
 
@@ -249,7 +249,7 @@ cargo run -p conu-sdk --example local_agents
 cargo run -p conu-mcp
 ```
 
-Rust agents can use `conu_sdk::ConuClient` to register, update presence, list agents/peers, exchange peer cards, send local opaque bytes, queue remote relay messages, run relay sync, receive payload bytes for the addressed local agent, and open/write/close streams. Python agents can use the stdlib wrapper under `sdk/python`.
+Rust agents can use `conu_sdk::ConuClient` to register, update presence, list agents/peers, exchange peer cards, send local opaque bytes, queue remote relay messages, optionally run relay sync, receive payload bytes for the addressed local agent, and open/write/close streams. Python agents can use the stdlib wrapper under `sdk/python`.
 
 MCP-capable agents can launch `conu-mcp` as a stdio server. It exposes tools such as `conu_register_agent`, `conu_export_identity`, `conu_trust_peer`, `conu_send_message`, `conu_send_remote_message`, `conu_relay_sync`, `conu_receive_message`, `conu_open_stream`, and `conu_security_audit`. The adapter follows the current MCP stdio transport shape: newline-delimited JSON-RPC 2.0 messages on stdin/stdout. Tool list/send/status outputs remain metadata-only. Set `CONU_AGENT_ID` when launching one MCP server for one agent; then the adapter rejects attempts to act as another local agent. `conu_receive_message` returns payload bytes as `payloadHex` only when the addressed local agent explicitly passes `includePayload: true`.
 
@@ -270,6 +270,7 @@ On Windows machines without Visual Studio C++ Build Tools, use the GNU Rust tool
 rustup toolchain install stable-x86_64-pc-windows-gnu
 cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
+powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 ```
 
 Useful CLI commands:

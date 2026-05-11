@@ -1,6 +1,6 @@
 # conU Internet Relay Test
 
-This is the practical smoke test for the current relay-backed message MVP. It proves that two conU nodes can exchange public peer cards, trust each other, and move a peer-encrypted message through a WebSocket relay without showing the payload in CLI output or relay logs.
+This is the practical smoke test for the current relay-backed message path. It proves that two conU nodes can exchange public peer cards, trust each other, keep conUD running, and move a peer-encrypted message through a WebSocket relay without showing the payload in CLI output or relay logs.
 
 Current limit: the built-in client supports `ws://` endpoints. For a real internet test, expose the relay port directly or use a tunnel/reverse proxy that accepts TLS publicly and forwards plain WebSocket traffic to `conu-relay`.
 
@@ -29,6 +29,7 @@ Set `default_relay` in each node's `config.toml`:
 ```toml
 version = "1"
 default_relay = "ws://<relay-host>:8787"
+relay_auto_sync = true
 ```
 
 ## 3. Exchange Public Cards
@@ -61,33 +62,30 @@ conu peers trust <node-a-id> "<node-a-name>" --exchange-key <node-a-exchange-key
 
 ## 4. Register Agents
 
+Start conUD on both nodes so the runtime owns local IPC plus relay send/receive:
+
+```powershell
+conu start
+```
+
 On Node A:
 
 ```powershell
 conu agents register agent.a "Agent A" --kind test-agent
-conud --process-ipc
 ```
 
 On Node B:
 
 ```powershell
 conu agents register agent.b "Agent B" --kind test-agent
-conud --process-ipc
 ```
 
 ## 5. Send Through The Relay
 
-On Node B, start a receive sync and keep it open:
-
-```powershell
-conu relay sync --wait-ms 10000
-```
-
-On Node A, queue and flush the message:
+On Node A, queue the message. The running conUD relay pump flushes it and the running Node B conUD receives it:
 
 ```powershell
 "hello over encrypted relay" | conu messages send agent.a agent.b --peer <node-b-id> --stdin
-conu relay sync --wait-ms 3000
 ```
 
 On Node B, inspect the addressed inbox metadata:
@@ -97,6 +95,14 @@ conu messages inbox agent.b --json
 ```
 
 The inbox should show an envelope from `agent.a` to `agent.b` with a byte count and `contentsDisplayed: false`.
+
+If you are testing without a long-running daemon, use the manual fallback: run `conu relay sync --wait-ms 10000` on the receiver while the sender runs `conu relay sync --wait-ms 3000`.
+
+For same-machine validation of the daemon-owned path:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+```
 
 ## Privacy Checks
 
@@ -112,6 +118,7 @@ Files/logs to spot-check:
 ```powershell
 conu watch
 conu messages receipts --json
+conu relay sync --wait-ms 1000 --json
 ```
 
 The relay and CLI may show node ids, agent ids, envelope ids, byte counts, route labels, and encrypted-body state. They must not show message text, private keys, shared secrets, prompt text, reasoning, files, or tool output.

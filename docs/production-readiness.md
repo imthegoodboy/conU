@@ -14,7 +14,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Signed local agent cards.
 - Local pairing/trust records with revocation.
 - Metadata-only relay frame contract and standalone WebSocket relay MVP.
-- Peer-card exchange and relay-backed peer-encrypted one-shot message delivery.
+- Peer-card exchange and daemon-pumped relay-backed peer-encrypted one-shot message delivery.
 - Remote session and remote agent metadata mirror for trusted peers.
 - Stream lifecycle metadata, backpressure counters, and private watch animation.
 - Direct QUIC candidate scoring, NAT profile labels, route probes, and relay fallback selection.
@@ -35,7 +35,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 
 - File-backed IPC is reliable for development, but not yet a production named-pipe/socket transport.
 - Remote sessions are still metadata mirrors; manual peer-card exchange is the current cross-machine trust path.
-- The relay-backed data plane currently supports one-shot peer-encrypted messages through explicit `conu relay sync`; stream byte routing, reconnect loops, and offline mailbox delivery are not active yet.
+- The relay-backed data plane supports one-shot peer-encrypted messages through the conUD relay pump when a relay or trusted relay peer is configured. Explicit `conu relay sync` remains for manual flush/debug flows. Stream byte routing, persistent relay sessions, hosted relay auth/TLS, and offline mailbox delivery are not active yet.
 - Direct transport is route metadata only. Real QUIC sockets, ICE-style candidate exchange, and NAT hole punching are not active yet.
 - Stream writes count bytes and emit events. They do not persist or relay chunk bytes yet.
 - Pairing is local trust-store groundwork, not full cross-machine rendezvous.
@@ -45,7 +45,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 
 ## Release Blockers
 
-- Live relay-backed encrypted stream routing, reconnect loops, and offline mailbox delivery.
+- Live relay-backed encrypted stream routing, persistent relay sessions, hosted retry policy, and offline mailbox delivery.
 - Real direct QUIC transport with peer authentication and NAT traversal.
 - Remote signed agent-card exchange and verification.
 - Capability grants and user-visible permission policy.
@@ -67,6 +67,7 @@ cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
 cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py
+powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 conu doctor --json
 git diff --check
 ```
@@ -107,6 +108,6 @@ Each artifact must include only binaries, docs, packaging templates, and `manife
 
 ## Local Release Decision
 
-Current status is `relay_message_mvp_ready_with_known_limits`.
+Current status is `daemon_relay_message_ready_with_known_limits`.
 
-This means a developer can install, initialize, start, pair locally, exchange public peer cards, send a peer-encrypted one-shot message through a reachable `ws://` relay, run readiness checks, and inspect payload-safe logs. It does not mean conU is ready as a hosted public internet network with managed auth, TLS, offline mailbox storage, stream byte routing, or direct QUIC.
+This means a developer can install, initialize, start conUD, pair locally, exchange public peer cards, send a peer-encrypted one-shot message through a reachable `ws://` relay without manual per-message sync, run readiness checks, and inspect payload-safe logs. It does not mean conU is ready as a hosted public internet network with managed auth, TLS, offline mailbox storage, stream byte routing, persistent relay sessions, or direct QUIC.

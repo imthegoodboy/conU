@@ -7,7 +7,7 @@ Use this checklist before publishing any conU build.
 - Confirm the release version in all Cargo packages.
 - Confirm `plan.md` reflects the completed phase and known gaps.
 - Confirm Phase 14 rooms are not claimed unless implemented.
-- Confirm public internet claims are limited to the current relay message MVP unless hosted relay auth/TLS, reconnect loops, stream byte routing, and direct transport are implemented.
+- Confirm public internet claims are limited to the current daemon-pumped relay message path unless hosted relay auth/TLS, persistent relay sessions, stream byte routing, and direct transport are implemented.
 
 ## Build
 
@@ -35,6 +35,7 @@ cargo test --workspace
 
 ```powershell
 .\scripts\smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+.\scripts\smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 ```
 
 Manual installed smoke:
@@ -49,7 +50,6 @@ conu pair
 conu join <code>
 conu routes sync
 conu identity export
-conu relay sync --wait-ms 1000
 conu connect
 conu stop
 ```
@@ -91,4 +91,4 @@ needs_fix
 blocked
 ```
 
-Current decision target is `relay_message_mvp_ready`. Public hosted/internet release remains blocked until hosted relay auth/TLS, reconnect loops, stream byte routing, direct QUIC, OS-backed key storage, capability policy, and remote signed agent-card exchange are finished.
+Current decision target is `daemon_relay_message_ready`. Public hosted/internet release remains blocked until hosted relay auth/TLS, persistent relay sessions, stream byte routing, direct QUIC, OS-backed key storage, capability policy, and remote signed agent-card exchange are finished.

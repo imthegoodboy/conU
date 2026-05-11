@@ -75,23 +75,43 @@ fn serve_runtime() -> ExitCode {
 
 fn run_once() -> ExitCode {
     match conu_core::runtime::acquire_runtime(None) {
-        Ok(lease) => match lease.heartbeat().and_then(|_| {
-            conu_core::agents::process_gateway_requests(None)
-                .map_err(conu_core::runtime::RuntimeError::from)?;
-            conu_core::messages::process_message_requests(None)
-                .map_err(conu_core::runtime::RuntimeError::from)?;
-            conu_core::sessions::sync_remote_sessions(None)
-                .map_err(conu_core::runtime::RuntimeError::from)?;
-            lease.stop()
-        }) {
-            Ok(status) => {
-                println!(
-                    "conUD one-shot completed; state {}; payloads not observed",
-                    status.state.as_str()
-                );
-                ExitCode::SUCCESS
-            }
+        Ok(lease) => match lease
+            .heartbeat()
+            .and_then(|_| lease.process_once(Duration::from_millis(250)))
+        {
+            Ok(report) => match lease.stop() {
+                Ok(status) => {
+                    let relay_state = if report.relay_attempted {
+                        if report.relay_error {
+                            "retry_scheduled"
+                        } else if report.relay_connected {
+                            "connected"
+                        } else {
+                            "attempted"
+                        }
+                    } else {
+                        "idle"
+                    };
+
+                    println!(
+                        "conUD one-shot completed; state {}; agents processed {}; messages delivered {}; sessions synced {}; relay {}; relay sent {}; relay received {}; payloads not observed",
+                        status.state.as_str(),
+                        report.agents_processed,
+                        report.messages_delivered,
+                        report.sessions_synced,
+                        relay_state,
+                        report.relay_sent,
+                        report.relay_received
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("conUD one-shot failed: {error}");
+                    ExitCode::from(1)
+                }
+            },
             Err(error) => {
+                println!("conUD one-shot failed before shutdown; payloads not observed");
                 eprintln!("conUD one-shot failed: {error}");
                 ExitCode::from(1)
             }
@@ -159,7 +179,7 @@ fn print_status() -> ExitCode {
 
 fn print_check() {
     println!("{}", conu_core::scaffold_status("conud"));
-    println!("runtime: phase 15 packaging-ready daemon; payloads not observed");
+    println!("runtime: daemon-owned local IPC, sessions, and relay pump; payloads not observed");
 }
 
 fn print_help() {

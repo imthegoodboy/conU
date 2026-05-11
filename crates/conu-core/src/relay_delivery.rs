@@ -247,15 +247,24 @@ pub fn sync_relay_once(
     wait: Duration,
 ) -> Result<RelaySyncReport, RelayDeliveryError> {
     let init = state::init_state(home_override)?;
-    ensure_relay_dirs(&init.paths)?;
+    sync_relay_once_from_paths(&init.paths, &init.node.node_id, wait)
+}
 
-    let queued_paths = pending_relay_requests(&init.paths)?;
-    let endpoint = relay_endpoint_for_sync(&init.paths, &queued_paths)?;
+/// Connect to the configured relay from already resolved runtime state.
+pub fn sync_relay_once_from_paths(
+    paths: &StatePaths,
+    node_id: &str,
+    wait: Duration,
+) -> Result<RelaySyncReport, RelayDeliveryError> {
+    ensure_relay_dirs(paths)?;
+
+    let queued_paths = pending_relay_requests(paths)?;
+    let endpoint = relay_endpoint_for_sync(paths, &queued_paths)?;
     let token = relay_token();
     let timeout = Duration::from_millis(500);
     let mut client = RelayWebSocketClient::connect(&endpoint, timeout)?;
     client.send(&RelayClientFrame::Hello(RelayHello::new(
-        init.node.node_id.clone(),
+        node_id.to_string(),
         token,
     )?))?;
 
@@ -287,21 +296,16 @@ pub fn sync_relay_once(
             Ok(request) => request,
             Err(error) => {
                 report.rejected += 1;
-                move_relay_request(&init.paths.relay_rejected_dir, &request_path, "rejected")?;
-                append_relay_log(&init.paths, "outbox_rejected", "", "", 0)?;
+                move_relay_request(&paths.relay_rejected_dir, &request_path, "rejected")?;
+                append_relay_log(paths, "outbox_rejected", "", "", 0)?;
                 return Err(error);
             }
         };
         client.send(&RelayClientFrame::Forward(request.to_forward_frame()?))?;
-        drain_relay_frames(
-            &mut client,
-            &init.paths,
-            &mut report,
-            Duration::from_millis(600),
-        )?;
+        drain_relay_frames(&mut client, paths, &mut report, Duration::from_millis(600))?;
     }
 
-    drain_relay_frames(&mut client, &init.paths, &mut report, wait)?;
+    drain_relay_frames(&mut client, paths, &mut report, wait)?;
     Ok(report)
 }
 
@@ -315,6 +319,29 @@ pub fn relay_queue_summary(
         sent: count_files_with_extension(&paths.relay_sent_dir, "sent")?,
         rejected: count_files_with_extension(&paths.relay_rejected_dir, "rejected")?,
     })
+}
+
+/// True when conUD should run the background relay pump.
+pub fn relay_runtime_should_sync_from_paths(
+    paths: &StatePaths,
+) -> Result<bool, RelayDeliveryError> {
+    if !relay_auto_sync_enabled(paths)? {
+        return Ok(false);
+    }
+    if !pending_relay_requests(paths)?.is_empty() {
+        return Ok(true);
+    }
+    if configured_default_relay(paths)?.is_some() {
+        return Ok(true);
+    }
+
+    Ok(trust::list_peers(Some(paths.home.clone()))?
+        .into_iter()
+        .any(|peer| {
+            peer.status == TrustStatus::Trusted
+                && peer.exchange_public_key_hex.is_some()
+                && peer.relay_endpoint.is_some()
+        }))
 }
 
 fn drain_relay_frames(
@@ -670,10 +697,18 @@ fn relay_endpoint_for_sync(
 }
 
 fn configured_relay_endpoint(paths: &StatePaths) -> Result<String, RelayDeliveryError> {
+    if let Some(endpoint) = configured_default_relay(paths)? {
+        return validate_endpoint(endpoint);
+    }
+
+    Ok(DEFAULT_RELAY_ENDPOINT.to_string())
+}
+
+fn configured_default_relay(paths: &StatePaths) -> Result<Option<String>, RelayDeliveryError> {
     let contents = match fs::read_to_string(&paths.config) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(DEFAULT_RELAY_ENDPOINT.to_string());
+            return Ok(None);
         }
         Err(error) => {
             return Err(RelayDeliveryError::io(
@@ -684,13 +719,31 @@ fn configured_relay_endpoint(paths: &StatePaths) -> Result<String, RelayDelivery
         }
     };
     let values = parse_key_values(&contents);
-    validate_endpoint(
-        values
-            .get("default_relay")
-            .filter(|value| !value.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_RELAY_ENDPOINT.to_string()),
-    )
+    Ok(values
+        .get("default_relay")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty()))
+}
+
+fn relay_auto_sync_enabled(paths: &StatePaths) -> Result<bool, RelayDeliveryError> {
+    let contents = match fs::read_to_string(&paths.config) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => {
+            return Err(RelayDeliveryError::io(
+                "read conU config",
+                &paths.config,
+                error,
+            ));
+        }
+    };
+    let values = parse_key_values(&contents);
+    let value = values
+        .get("relay_auto_sync")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "true".to_string());
+
+    Ok(!matches!(value.as_str(), "false" | "0" | "no" | "off"))
 }
 
 fn relay_token() -> String {
@@ -998,6 +1051,49 @@ mod tests {
             .node
             .expect("node exists")
             .node_id
+    }
+
+    #[test]
+    fn runtime_relay_pump_is_idle_without_relay_or_trusted_peer() {
+        let home = test_home("runtime-idle");
+        let init = state::init_state(Some(home)).expect("state initializes");
+
+        let should_sync =
+            relay_runtime_should_sync_from_paths(&init.paths).expect("relay decision succeeds");
+
+        assert!(!should_sync);
+    }
+
+    #[test]
+    fn runtime_relay_pump_runs_for_configured_relay() {
+        let home = test_home("runtime-configured");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        fs::write(
+            &init.paths.config,
+            "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\nrelay_auto_sync = true\n",
+        )
+        .expect("config writes");
+
+        let should_sync =
+            relay_runtime_should_sync_from_paths(&init.paths).expect("relay decision succeeds");
+
+        assert!(should_sync);
+    }
+
+    #[test]
+    fn runtime_relay_pump_respects_auto_sync_disable() {
+        let home = test_home("runtime-disabled");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        fs::write(
+            &init.paths.config,
+            "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\nrelay_auto_sync = false\n",
+        )
+        .expect("config writes");
+
+        let should_sync =
+            relay_runtime_should_sync_from_paths(&init.paths).expect("relay decision succeeds");
+
+        assert!(!should_sync);
     }
 
     fn test_home(label: &str) -> PathBuf {

@@ -472,7 +472,7 @@ fn render_node_identity(node: &NodeIdentity) -> String {
 
 fn render_config(node: &NodeIdentity) -> String {
     format!(
-        "# conU local config\nversion = \"1\"\nruntime_name = \"{}\"\ndefault_relay = \"\"\n",
+        "# conU local config\nversion = \"1\"\nruntime_name = \"{}\"\ndefault_relay = \"\"\nrelay_auto_sync = true\n",
         escape_file_value(&node.display_name)
     )
 }

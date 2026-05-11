@@ -10,14 +10,16 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::state::{self, NodeIdentity, StateError, StatePaths};
-use crate::{agents, messages, sessions};
+use crate::{agents, messages, relay_delivery, sessions};
 
 const STATUS_VERSION: &str = "1";
 const STALE_AFTER_SECS: u64 = 10;
 const LOCAL_ENDPOINT: &str = "file-ipc:runtime/ipc/inbox";
+const RELAY_PUMP_WAIT_MS: u64 = 850;
+const RELAY_PUMP_ERROR_BACKOFF_SECS: u64 = 5;
 
 /// High-level state for the local conUD runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +93,24 @@ pub struct StopReport {
     pub status: RuntimeStatus,
 }
 
+/// Metadata-only summary for one conUD processing tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeProcessReport {
+    pub agents_processed: usize,
+    pub agents_rejected: usize,
+    pub messages_delivered: usize,
+    pub messages_rejected: usize,
+    pub sessions_synced: usize,
+    pub remote_agents_synced: usize,
+    pub relay_attempted: bool,
+    pub relay_connected: bool,
+    pub relay_sent: usize,
+    pub relay_received: usize,
+    pub relay_undelivered: usize,
+    pub relay_rejected: usize,
+    pub relay_error: bool,
+}
+
 /// An acquired local runtime slot.
 #[derive(Debug)]
 pub struct RuntimeLease {
@@ -120,16 +140,50 @@ impl RuntimeLease {
         self.paths.runtime_stop_request.exists()
     }
 
-    /// Sleep and heartbeat until a stop request appears.
-    pub fn serve_until_stop(&self, heartbeat_every: Duration) -> Result<(), RuntimeError> {
-        while !self.stop_requested() {
-            self.heartbeat()?;
+    /// Process local IPC, route/session mirrors, and one bounded relay pump.
+    pub fn process_once(&self, relay_wait: Duration) -> Result<RuntimeProcessReport, RuntimeError> {
+        let agent_report =
             agents::process_gateway_requests_from_paths(&self.paths, &self.node.node_id)
                 .map_err(RuntimeError::Agent)?;
-            messages::process_message_requests_from_paths(&self.paths)
-                .map_err(RuntimeError::Message)?;
-            sessions::sync_remote_sessions_from_paths(&self.paths)
-                .map_err(RuntimeError::Session)?;
+        let message_report = messages::process_message_requests_from_paths(&self.paths)
+            .map_err(RuntimeError::Message)?;
+        let session_report = sessions::sync_remote_sessions_from_paths(&self.paths)
+            .map_err(RuntimeError::Session)?;
+        let mut report = RuntimeProcessReport {
+            agents_processed: agent_report.processed,
+            agents_rejected: agent_report.rejected,
+            messages_delivered: message_report.delivered,
+            messages_rejected: message_report.rejected,
+            sessions_synced: session_report.sessions_synced,
+            remote_agents_synced: session_report.remote_agents_synced,
+            relay_attempted: false,
+            relay_connected: false,
+            relay_sent: 0,
+            relay_received: 0,
+            relay_undelivered: 0,
+            relay_rejected: 0,
+            relay_error: false,
+        };
+
+        self.pump_relay_once(&mut report, relay_wait)?;
+        Ok(report)
+    }
+
+    /// Sleep and heartbeat until a stop request appears.
+    pub fn serve_until_stop(&self, heartbeat_every: Duration) -> Result<(), RuntimeError> {
+        let mut next_relay_attempt = Instant::now();
+
+        while !self.stop_requested() {
+            self.heartbeat()?;
+            if Instant::now() >= next_relay_attempt {
+                let report = self.process_once(Duration::from_millis(RELAY_PUMP_WAIT_MS))?;
+                if report.relay_error {
+                    next_relay_attempt =
+                        Instant::now() + Duration::from_secs(RELAY_PUMP_ERROR_BACKOFF_SECS);
+                }
+            } else {
+                self.process_local_once()?;
+            }
             thread::sleep(heartbeat_every);
         }
 
@@ -170,6 +224,73 @@ impl RuntimeLease {
         self.stopped = true;
 
         Ok(status)
+    }
+
+    fn process_local_once(&self) -> Result<(), RuntimeError> {
+        agents::process_gateway_requests_from_paths(&self.paths, &self.node.node_id)
+            .map_err(RuntimeError::Agent)?;
+        messages::process_message_requests_from_paths(&self.paths)
+            .map_err(RuntimeError::Message)?;
+        sessions::sync_remote_sessions_from_paths(&self.paths).map_err(RuntimeError::Session)?;
+        Ok(())
+    }
+
+    fn pump_relay_once(
+        &self,
+        report: &mut RuntimeProcessReport,
+        wait: Duration,
+    ) -> Result<(), RuntimeError> {
+        match relay_delivery::relay_runtime_should_sync_from_paths(&self.paths) {
+            Ok(true) => {
+                report.relay_attempted = true;
+                match relay_delivery::sync_relay_once_from_paths(
+                    &self.paths,
+                    &self.node.node_id,
+                    wait,
+                ) {
+                    Ok(relay_report) => {
+                        report.relay_connected = relay_report.connected;
+                        report.relay_sent = relay_report.sent;
+                        report.relay_received = relay_report.received;
+                        report.relay_undelivered = relay_report.undelivered;
+                        report.relay_rejected = relay_report.rejected;
+                        if relay_report.sent > 0
+                            || relay_report.received > 0
+                            || relay_report.undelivered > 0
+                            || relay_report.rejected > 0
+                        {
+                            append_log(
+                                &self.paths,
+                                "relay_pump_activity",
+                                self.pid,
+                                &self.node.node_id,
+                            )?;
+                        }
+                    }
+                    Err(_) => {
+                        report.relay_error = true;
+                        append_log(
+                            &self.paths,
+                            "relay_pump_retry",
+                            self.pid,
+                            &self.node.node_id,
+                        )?;
+                    }
+                }
+            }
+            Ok(false) => {}
+            Err(_) => {
+                report.relay_error = true;
+                append_log(
+                    &self.paths,
+                    "relay_pump_retry",
+                    self.pid,
+                    &self.node.node_id,
+                )?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -575,6 +696,19 @@ mod tests {
         assert!(log.contains("payload=not_observed"));
         assert!(!log.contains("private message contents"));
         assert!(!log.contains("Review this code"));
+    }
+
+    #[test]
+    fn process_once_keeps_relay_idle_without_relay_config() {
+        let home = test_home("process-once-relay-idle");
+        let lease = acquire_runtime(Some(home)).expect("runtime starts");
+
+        let report = lease
+            .process_once(Duration::from_millis(1))
+            .expect("runtime tick succeeds");
+
+        assert!(!report.relay_attempted);
+        assert!(!report.relay_error);
     }
 
     #[test]

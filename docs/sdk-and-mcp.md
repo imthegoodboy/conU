@@ -92,7 +92,7 @@ The wrapper passes send/stream payload bytes through stdin and returns command o
 
 Route helpers are available as `sync_routes()`, `routes()`, and `route_probes()`. They return route metadata only.
 
-Remote relay helpers are available as `identity_export()`, `trust_peer()`, `send_remote_message()`, and `relay_sync()`. They exchange public peer-card metadata and queue peer-encrypted message bytes without printing payload contents.
+Remote relay helpers are available as `identity_export()`, `trust_peer()`, `send_remote_message()`, and `relay_sync()`. They exchange public peer-card metadata and queue peer-encrypted message bytes without printing payload contents. When conUD is running with relay config, queued remote messages are pumped by the daemon; `relay_sync()` remains useful for manual flush/debug flows.
 
 ## MCP Adapter
 
@@ -154,7 +154,7 @@ Reference: [MCP 2025-11-25 Transports](https://modelcontextprotocol.io/specifica
 ## Current Boundaries
 
 - TypeScript SDK remains future work.
-- Remote relay-backed one-shot message delivery is active through explicit relay sync. Stream byte routing, reconnect loops, offline relay mailbox delivery, and hosted relay auth hardening remain future work.
+- Remote relay-backed one-shot message delivery is active through the conUD relay pump when relay config is present; explicit relay sync remains a manual/debug tool. Stream byte routing, persistent relay sessions, offline relay mailbox delivery, and hosted relay auth hardening remain future work.
 - Route sync selects configured direct QUIC candidates and relay fallback metadata; it does not open a real QUIC socket yet.
 - MCP uses local stdio only; HTTP MCP transport is not implemented.
 - `conu_receive_message` is intentionally explicit because normal CLI and tool metadata views must not display payload contents.

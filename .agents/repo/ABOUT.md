@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 15 as a directed skip-ahead, and now includes a relay-backed one-shot message MVP. Phase 14 rooms/pub-sub remain not started.
+The repository has completed Phase 15 as a directed skip-ahead, and now includes daemon-pumped relay-backed one-shot message delivery. Phase 14 rooms/pub-sub remain not started.
 
 Implemented so far:
 
@@ -29,7 +29,8 @@ Implemented so far:
 - local X25519 peer key agreement helpers
 - manual public peer-card export/import through `conu identity export` and `conu peers trust`
 - relay-backed peer-encrypted remote message queueing through `conu messages send --peer`
-- explicit relay send/receive sync through `conu relay sync`
+- daemon-owned relay send/receive pump when relay config or trusted relay peer endpoints exist
+- explicit manual relay send/receive sync through `conu relay sync`
 - replay protection for local message request and envelope ids
 - `conu security audit` for payload-safe hardening status
 - Rust SDK crate `conu-sdk` for agent-facing registration, messaging, receive, peer, security, and stream calls
@@ -52,6 +53,7 @@ Implemented so far:
 - payload-safe watch event bus under `streams/events.toml`
 - `conu watch` private transport animation
 - conUD-owned direct/relay route manager through `conu routes`
+- conUD-owned relay pump for peer-encrypted one-shot remote message delivery
 - metadata-only route registry under `routes/registry.toml`
 - metadata-only route probes under `routes/probes.toml`
 - route sync integration with remote sessions, streams, Rust SDK, Python wrapper SDK, and MCP
