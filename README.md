@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 13 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, and conUD now owns metadata-only direct/relay route selection.
+Phase 15 is complete for the current local-first app. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -120,6 +120,33 @@ Implemented controls:
 The audit reports readiness and key ids only. It never prints private keys, shared secrets, plaintext payloads, or decrypted payloads. See `docs/security-hardening.md` and `docs/production-readiness.md` for the hardening model and release blockers.
 
 For practical user setup, installation, and current agent integration guidance, see `docs/user-install-and-agent-guide.md`.
+
+## Release Readiness
+
+Phase 15 adds packaging and local release checks:
+
+```bash
+conu doctor
+conu doctor --json
+```
+
+Build local release artifacts:
+
+Windows:
+
+```powershell
+.\scripts\build-release.ps1
+# If MSVC Build Tools are not installed:
+.\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+```
+
+macOS/Linux:
+
+```bash
+./scripts/build-release.sh
+```
+
+The release artifact includes `conu`, `conud`, `conu-relay`, `conu-mcp`, docs, packaging templates, and a manifest that states `payload_contents_included = false`. Service templates live under `packaging/` for Windows, Linux systemd, and macOS launchd. See `docs/release-checklist.md`, `docs/observability.md`, and `packaging/README.md`.
 
 ## Pairing And Trust
 
@@ -249,6 +276,8 @@ cargo run -p conu-cli -- routes --json
 cargo run -p conu-cli -- routes probes
 cargo run -p conu-cli -- security audit
 cargo run -p conu-cli -- security audit --json
+cargo run -p conu-cli -- doctor
+cargo run -p conu-cli -- doctor --json
 cargo run -p conu-cli -- pair
 cargo run -p conu-cli -- join 123456
 cargo run -p conu-cli -- peers --json

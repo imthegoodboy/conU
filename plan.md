@@ -31,6 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: not_started
 Last updated: 2026-05-11
+Note: Phase 15 was completed as a user-directed skip-ahead; Phase 14 remains not started.
 ```
 
 ## Phase 0 - Project Memory
@@ -967,10 +968,6 @@ Validation:
 - `cargo +stable-x86_64-pc-windows-gnu check --workspace` passed.
 - `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
 - `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
-- Python wrapper route smoke passed with local `target/debug/conu.exe`.
-- Isolated CLI smoke passed with `CONU_HOME` under `%TEMP%`: `conu init`, `conu pair`, `conu join`, `conu routes sync --json`, `conu routes --json`, and `conu status --json`.
-- `git diff --check` passed.
-- Privacy scan reviewed payload-looking strings; new route files, logs, CLI, SDK, MCP, and docs remain metadata-only.
 - `cargo +stable-x86_64-pc-windows-gnu run -p conu-sdk --example local_agents` passed.
 - `cargo +stable-x86_64-pc-windows-gnu run -p conu-mcp` stdio `tools/list` smoke passed.
 - `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
@@ -1051,6 +1048,11 @@ Validation:
 - `cargo fmt` passed.
 - `cargo +stable-x86_64-pc-windows-gnu check --workspace` passed.
 - `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- Python wrapper route smoke passed with local `target/debug/conu.exe`.
+- Isolated CLI smoke passed with `CONU_HOME` under `%TEMP%`: `conu init`, `conu pair`, `conu join`, `conu routes sync --json`, `conu routes --json`, and `conu status --json`.
+- `git diff --check` passed.
+- Privacy scan reviewed payload-looking strings; new route files, logs, CLI, SDK, MCP, and docs remained metadata-only.
 
 Known gaps:
 
@@ -1088,7 +1090,7 @@ Exit criteria:
 
 ## Phase 15 - Packaging And Production Readiness
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -1096,20 +1098,82 @@ Prepare conU for real users.
 
 Deliverables:
 
-- Windows build
-- macOS build path
-- Linux build path
-- installer strategy
-- service installation
-- config docs
-- security review checklist
-- observability setup
+- [x] Windows build
+- [x] macOS build path
+- [x] Linux build path
+- [x] installer strategy
+- [x] service installation templates
+- [x] config docs
+- [x] security review checklist
+- [x] observability setup
 
 Exit criteria:
 
-- User can install, start, pair, and connect agents.
-- Logs and telemetry are payload-safe.
-- Release checklist exists.
+- [x] User can install, start, pair, and connect agents for local-first usage.
+- [x] Logs and telemetry guidance are payload-safe.
+- [x] Release checklist exists.
+
+Completed work:
+
+- Created GitHub issue #30 for Phase 15 and worked on `codex/phase-15-production-readiness`.
+- Added `conu doctor` and `conu doctor --json` for local readiness, companion-binary discovery, security readiness, runtime health, release gates, and payload-safe log scanning.
+- Added toolchain-aware release build scripts for Windows PowerShell and macOS/Linux shell workflows.
+- Added local smoke script for install/start/message/route/doctor validation, including native exit-code checks and a `localInstallReady=true` doctor gate.
+- Added packaging templates for Windows current-user install/uninstall plus optional service creation, Linux systemd, and macOS launchd.
+- Added GitHub CI and release artifact workflows.
+- Added release checklist and observability docs.
+- Updated README, user install guide, production readiness docs, repo memory, guardrails, repo map, and security checklist.
+- Kept Phase 14 rooms/pub-sub explicitly not started.
+
+Files changed:
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `.gitignore`
+- `README.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conud/src/main.rs`
+- `docs/observability.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/linux/conud.service`
+- `packaging/macos/com.conu.conud.plist`
+- `packaging/windows/install.ps1`
+- `packaging/windows/uninstall.ps1`
+- `scripts/build-release.ps1`
+- `scripts/build-release.sh`
+- `scripts/smoke-local.ps1`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `cargo fmt` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed and asserted `conu doctor --json` reported `releaseGates.localInstallReady = true` in an isolated `CONU_HOME`.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu` passed and created `dist/conu-0.1.0-host.zip`.
+- `target\release\conu.exe doctor --json` passed and reported shipped companion binaries without displaying payload contents.
+- `git diff --check` passed.
+- Privacy scan reviewed payload-looking terms; matches are existing negative tests, storage field names, and SDK/MCP input contracts, not Phase 15 runtime output, logs, docs, or release artifacts.
+
+Known gaps:
+
+- Phase 14 rooms/pub-sub remains not started.
+- Release artifacts are unsigned and not notarized.
+- Windows service script requires an elevated shell for service creation.
+- Linux/macOS service templates require user/path edits before installation.
+- Public hosted internet readiness remains blocked by live encrypted remote data-plane delivery, real direct QUIC transport, remote signed agent-card exchange, capability policy, and OS-backed key storage.
+
+Next:
+
+- Return to Phase 14 rooms, pub/sub, and multi-agent sessions, or harden signed installers/OS key storage if the product priority stays packaging.
 
 ## Phase Completion Log
 
@@ -1131,4 +1195,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 11 completed. Local security module added with Ed25519 signed agent cards, X25519 peer key agreement helpers, XChaCha20Poly1305 encrypted-at-rest message storage, replay protection, `conu security audit`, tests, docs, and GNU-toolchain validation. Next: Phase 12 SDK and MCP adapter.
 2026-05-11 - Phase 12 completed. Rust SDK, MCP stdio adapter, Python wrapper SDK, local agent examples, explicit addressed-agent receive API, tests, docs, and GNU-toolchain validation added. Next: Phase 13 direct transport and NAT upgrade.
 2026-05-11 - Phase 13 completed. conUD-owned direct/relay route manager, NAT-profile scoring, relay fallback selection, route probes/logs, CLI route commands, SDK/Python/MCP route tools, docs, skills, and GNU-toolchain validation added. Next: Phase 14 rooms, pub/sub, and multi-agent sessions.
+2026-05-11 - Phase 15 completed as a user-directed skip-ahead. Added doctor readiness checks, release/smoke scripts, packaging templates, CI/release workflows, release checklist, observability docs, strict local-install smoke validation, and GNU-toolchain release validation. Phase 14 remains not started.
 ```

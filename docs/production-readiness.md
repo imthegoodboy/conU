@@ -21,8 +21,14 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Rust SDK for local agent registration, messaging, receive, peer, security, and stream calls.
 - Python stdlib wrapper SDK around installed `conu` and `conud` binaries.
 - MCP stdio adapter exposing conU as JSON-RPC tools for MCP-capable agents.
+- `conu doctor` local readiness and payload-safe log scanner.
+- Cross-platform release build scripts under `scripts/`.
+- Windows install/uninstall scripts and Windows service creation path.
+- Linux systemd and macOS launchd service templates.
+- GitHub CI and release artifact workflows.
+- Release checklist and observability docs.
 - Payload-safe logs, receipts, watch output, and CLI JSON.
-- Phase 11 security audit command, Phase 12 SDK/MCP receive path, and Phase 13 route manager.
+- Phase 11 security audit command, Phase 12 SDK/MCP receive path, Phase 13 route manager, and Phase 15 packaging layer.
 
 ## Still Local Or Groundwork
 
@@ -33,6 +39,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Stream writes count bytes and emit events. They do not persist or relay chunk bytes yet.
 - Pairing is local trust-store groundwork, not full cross-machine rendezvous.
 - MCP is stdio-only. HTTP MCP transport, auth, and remote MCP hosting are intentionally not implemented.
+- Packaging is unsigned and local-first. Code signing, notarization, package-manager publishing, and auto-update are not implemented.
 - TypeScript SDK remains future work.
 
 ## Release Blockers
@@ -44,9 +51,8 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - SDK permission policy hardening before public package distribution.
 - OS-backed private key storage.
 - Key rotation migration tooling.
-- Installer/service setup for Windows, macOS, and Linux.
-- CI validation across supported platforms.
-- Log rotation and structured observability with payload-safe fields only.
+- Signed installer/package publishing for Windows, macOS, and Linux.
+- Log rotation and structured telemetry exporter with payload-safe field allowlists only.
 - Rate limits and bounded queues for public relay operation.
 - Security review of relay auth, replay cache behavior, and storage migration.
 
@@ -58,6 +64,8 @@ Before merging production-affecting work, run:
 cargo fmt --all -- --check
 cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
 cargo +stable-x86_64-pc-windows-gnu test --workspace
+python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py
+conu doctor --json
 git diff --check
 ```
 
@@ -75,3 +83,27 @@ Every release candidate must confirm:
 - Relay frames reject plaintext payload fields.
 - Message and mailbox storage use encrypted payload fields.
 - Tests use artificial negative strings only to prove they do not leak.
+
+## Release Artifacts
+
+Build artifacts with:
+
+```powershell
+.\scripts\build-release.ps1
+# On Windows without MSVC Build Tools:
+.\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+```
+
+or:
+
+```sh
+./scripts/build-release.sh
+```
+
+Each artifact must include only binaries, docs, packaging templates, and `manifest.toml`. It must not include developer state directories, keys, logs, inboxes, route files, or payload-bearing test output.
+
+## Local Release Decision
+
+Current Phase 15 status is `local_release_ready_with_known_limits`.
+
+This means a developer can install, initialize, start, pair locally, connect visible agents, run readiness checks, and inspect payload-safe logs. It does not mean conU is ready as a hosted public internet network.

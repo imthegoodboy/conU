@@ -1,5 +1,6 @@
 /target/
 /.conu/
+/dist/
 
 # Rust/editor noise
 **/*.rs.bk

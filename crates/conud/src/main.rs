@@ -159,7 +159,7 @@ fn print_status() -> ExitCode {
 
 fn print_check() {
     println!("{}", conu_core::scaffold_status("conud"));
-    println!("runtime: phase 13 route manager ready; payloads not observed");
+    println!("runtime: phase 15 packaging-ready daemon; payloads not observed");
 }
 
 fn print_help() {

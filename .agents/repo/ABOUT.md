@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 13.
+The repository has completed Phase 15 as a directed skip-ahead. Phase 14 rooms/pub-sub remain not started.
 
 Implemented so far:
 
@@ -52,6 +52,11 @@ Implemented so far:
 - metadata-only route registry under `routes/registry.toml`
 - metadata-only route probes under `routes/probes.toml`
 - route sync integration with remote sessions, streams, Rust SDK, Python wrapper SDK, and MCP
+- `conu doctor` local install/readiness check with payload-safe log scanning
+- release build scripts under `scripts/`
+- packaging templates under `packaging/`
+- GitHub CI and release artifact workflows
+- release checklist and observability docs
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs
 - payload-safe message delivery metadata logs
@@ -66,6 +71,9 @@ Current important files:
 - `architecture.md`: production architecture and protocol direction.
 - `plan.md`: phase-by-phase execution plan.
 - `docs/direct-transport-and-routes.md`: Phase 13 route manager, config, and privacy boundary.
+- `docs/release-checklist.md`: Phase 15 release gate.
+- `docs/observability.md`: payload-safe observability policy.
+- `packaging/README.md`: install and service templates.
 - `.agents/AGENTS.md`: future-agent onboarding.
 - `.agents/about/`: original product vision.
 - `.agents/Rules/SKILL.MD`: hard project rules.

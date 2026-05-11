@@ -54,6 +54,13 @@
 - Direct endpoint config must not contain tokens, private keys, or payload material.
 - Route failure reasons stay generic and must not echo arbitrary payload-bearing input.
 
+## Packaging And Doctor
+
+- Release archives do not include local state, private keys, logs, inboxes, message stores, routes, or payload-bearing files.
+- `conu doctor` reports readiness and scan counts only; it must not print log contents.
+- CI and release workflows upload binaries/docs/templates only.
+- Service templates must not bake in developer-specific secrets, tokens, or private paths beyond editable placeholders.
+
 ## CLI Watch
 
 - Shows route, latency, bytes, packet count, stream count, presence.
