@@ -1,6 +1,9 @@
 /target/
 /.conu/
 /dist/
+/packaging/npm/conu-cli/node_modules/
+/packaging/npm/conu-cli/vendor/
+/packaging/npm/conu-cli/*.tgz
 
 # Rust/editor noise
 **/*.rs.bk

@@ -36,6 +36,47 @@ manifest.toml
 
 `manifest.toml` records `payload_contents_included = false`; release archives must not contain local conU state, private keys, logs, inboxes, or message payload files.
 
+Release archives intended for npm installation should be named by platform:
+
+```txt
+conu-<version>-windows-x64.zip
+conu-<version>-linux-x64.tar.gz
+conu-<version>-linux-arm64.tar.gz
+conu-<version>-macos-x64.tar.gz
+conu-<version>-macos-arm64.tar.gz
+```
+
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically.
+
+## npm Launcher Package
+
+The `npm/conu-cli` package is the intended one-command install wrapper:
+
+```sh
+npm install -g @conu/cli
+```
+
+It downloads the native release archive from GitHub Releases, verifies the checksum, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp`.
+
+Local package test:
+
+```sh
+CONU_NPM_BINARY_DIR=/absolute/path/to/bin npm install -g ./packaging/npm/conu-cli
+```
+
+See `docs/distribution-and-hosting.md` for the publish flow.
+
+## Relay Docker Template
+
+Build and run the current relay:
+
+```sh
+docker build -f packaging/docker/relay.Dockerfile -t conu-relay .
+docker run --rm -p 8787:8787 -e CONU_RELAY_TOKEN=replace-me conu-relay
+```
+
+The current client accepts `ws://` relay endpoints. Do not market this template as a managed public relay until `wss://`, hosted auth, rate limits, persistent sessions, stream routing, and offline mailbox delivery are implemented.
+
 ## Windows Current-User Install
 
 From an unpacked artifact:

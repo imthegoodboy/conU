@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 15 is complete for the current local-first app, with a hardened relay message path beyond the original MVP. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, users can exchange public peer cards, trusted peers can send peer-encrypted messages through `conu-relay`, conUD can automatically pump configured relay routes, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist.
+Phase 15 is complete for the current local-first app, with a hardened relay message path beyond the original MVP. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, users can exchange public peer cards, trusted peers can send peer-encrypted messages through `conu-relay`, conUD can automatically pump configured relay routes, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist. The repo also contains an npm launcher package template and relay hosting docs for the first public distribution path.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -136,7 +136,7 @@ Implemented controls:
 
 The audit reports readiness and key ids only. It never prints private keys, shared secrets, plaintext payloads, or decrypted payloads. See `docs/security-hardening.md` and `docs/production-readiness.md` for the hardening model and release blockers.
 
-For practical user setup, installation, and current agent integration guidance, see `docs/user-install-and-agent-guide.md`.
+For practical user setup, installation, hosting, and current agent integration guidance, see `docs/user-install-and-agent-guide.md` and `docs/distribution-and-hosting.md`.
 
 ## Release Readiness
 
@@ -163,7 +163,16 @@ macOS/Linux:
 ./scripts/build-release.sh
 ```
 
-The release artifact includes `conu`, `conud`, `conu-relay`, `conu-mcp`, docs, packaging templates, and a manifest that states `payload_contents_included = false`. Service templates live under `packaging/` for Windows, Linux systemd, and macOS launchd. See `docs/release-checklist.md`, `docs/observability.md`, and `packaging/README.md`.
+The release artifact includes `conu`, `conud`, `conu-relay`, `conu-mcp`, docs, packaging templates, checksum files, and a manifest that states `payload_contents_included = false`. Service templates live under `packaging/` for Windows, Linux systemd, macOS launchd, Docker relay hosting, and the npm launcher package. See `docs/release-checklist.md`, `docs/observability.md`, `docs/distribution-and-hosting.md`, and `packaging/README.md`.
+
+The intended public one-command install path is:
+
+```bash
+npm install -g @conu/cli
+conu doctor
+```
+
+That npm package is a thin native-binary launcher. Rust remains the product; npm only downloads the matching checksummed release asset and exposes the commands on `PATH`.
 
 ## Pairing And Trust
 

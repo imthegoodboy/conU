@@ -65,6 +65,8 @@
 - `conu doctor` reports readiness and scan counts only; it must not print log contents.
 - CI and release workflows upload binaries/docs/templates only.
 - Service templates must not bake in developer-specific secrets, tokens, or private paths beyond editable placeholders.
+- npm packaging must verify release checksums by default and must not package or inspect local `CONU_HOME` state.
+- Docker relay templates must keep relay tokens in environment/configuration, not committed files.
 
 ## CLI Watch
 

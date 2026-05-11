@@ -4,6 +4,7 @@ set -eu
 TARGET="${TARGET:-}"
 PROFILE="${PROFILE:-release}"
 OUT_DIR="${OUT_DIR:-dist}"
+PACKAGE_SUFFIX="${PACKAGE_SUFFIX:-}"
 
 REPO="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -17,6 +18,9 @@ TARGET_SUFFIX="host"
 if [ -n "$TARGET" ]; then
   TARGET_ARGS="--target $TARGET"
   TARGET_SUFFIX="$TARGET"
+fi
+if [ -n "$PACKAGE_SUFFIX" ]; then
+  TARGET_SUFFIX="$PACKAGE_SUFFIX"
 fi
 
 PROFILE_ARGS=""
@@ -52,6 +56,7 @@ cp docs/user-install-and-agent-guide.md "$DOC_DIR/"
 cp docs/production-readiness.md "$DOC_DIR/"
 cp docs/release-checklist.md "$DOC_DIR/"
 cp docs/observability.md "$DOC_DIR/"
+cp docs/distribution-and-hosting.md "$DOC_DIR/"
 cp -R packaging "$PACKAGE_ROOT/"
 
 cat > "$PACKAGE_ROOT/manifest.toml" <<EOF
@@ -63,8 +68,16 @@ payload_contents_included = false
 EOF
 
 if command -v tar >/dev/null 2>&1; then
-  tar -C "$REPO/$OUT_DIR" -czf "$PACKAGE_ROOT.tar.gz" "$(basename "$PACKAGE_ROOT")"
-  echo "created $PACKAGE_ROOT.tar.gz"
+  ARCHIVE="$PACKAGE_ROOT.tar.gz"
+  tar -C "$REPO/$OUT_DIR" -czf "$ARCHIVE" "$(basename "$PACKAGE_ROOT")"
+  if command -v sha256sum >/dev/null 2>&1; then
+    HASH="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+  else
+    HASH="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
+  fi
+  printf '%s  %s\n' "$HASH" "$(basename "$ARCHIVE")" > "$ARCHIVE.sha256"
+  echo "created $ARCHIVE"
+  echo "created $ARCHIVE.sha256"
 else
   echo "created $PACKAGE_ROOT"
 fi

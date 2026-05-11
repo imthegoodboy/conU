@@ -2,6 +2,7 @@ param(
     [string]$Target = "",
     [string]$Profile = "release",
     [string]$OutDir = "dist",
+    [string]$PackageSuffix = "",
     [string]$Toolchain = $env:CONU_RUST_TOOLCHAIN
 )
 
@@ -46,6 +47,9 @@ if ($Target.Trim().Length -gt 0) {
     $targetArgs = @("--target", $Target)
     $targetSuffix = $Target
 }
+if ($PackageSuffix.Trim().Length -gt 0) {
+    $targetSuffix = $PackageSuffix
+}
 
 $profileArgs = if ($Profile -eq "release") { @("--release") } else { @() }
 
@@ -81,6 +85,7 @@ try {
     Copy-Item docs\production-readiness.md -Destination $docDir -Force
     Copy-Item docs\release-checklist.md -Destination $docDir -Force
     Copy-Item docs\observability.md -Destination $docDir -Force
+    Copy-Item docs\distribution-and-hosting.md -Destination $docDir -Force
     Copy-Item -Recurse packaging -Destination $packageRoot -Force
 
     $manifest = @"
@@ -98,7 +103,10 @@ payload_contents_included = false
             Remove-Item $archive -Force
         }
         Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $archive
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+        Set-Content -Path "$archive.sha256" -Value "$hash  $(Split-Path -Leaf $archive)" -Encoding ASCII
         Write-Host "created $archive"
+        Write-Host "created $archive.sha256"
     } else {
         Write-Host "created $packageRoot"
     }

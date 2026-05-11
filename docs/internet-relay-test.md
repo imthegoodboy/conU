@@ -2,7 +2,7 @@
 
 This is the practical smoke test for the current relay-backed message path. It proves that two conU nodes can exchange public peer cards, trust each other, keep conUD running, and move a peer-encrypted message through a WebSocket relay without showing the payload in CLI output or relay logs.
 
-Current limit: the built-in client supports `ws://` endpoints. For a real internet test, expose the relay port directly or use a tunnel/reverse proxy that accepts TLS publicly and forwards plain WebSocket traffic to `conu-relay`.
+Current limit: the built-in client supports `ws://` endpoints. For a real internet test, expose the relay port directly on a trusted test host or use a private network path that preserves the `ws://` endpoint seen by conU. See `docs/distribution-and-hosting.md` for the hosting and public-release path.
 
 ## 1. Start The Relay
 

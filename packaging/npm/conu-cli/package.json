@@ -1,0 +1,43 @@
+{
+  "name": "@conu/cli",
+  "version": "0.1.0",
+  "description": "conU native Rust CLI, daemon, relay, and MCP adapter launcher.",
+  "keywords": [
+    "conu",
+    "agent",
+    "cli",
+    "relay",
+    "mcp"
+  ],
+  "homepage": "https://github.com/imthegoodboy/conU#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imthegoodboy/conU.git",
+    "directory": "packaging/npm/conu-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/imthegoodboy/conU/issues"
+  },
+  "bin": {
+    "conu": "bin/conu.js",
+    "conud": "bin/conud.js",
+    "conu-relay": "bin/conu-relay.js",
+    "conu-mcp": "bin/conu-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "check": "node scripts/install.js --check-only"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
