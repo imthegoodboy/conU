@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: not_started
 Last updated: 2026-05-11
-Note: Phase 15 was completed as a user-directed skip-ahead; a post-Phase-15 relay message MVP and CLI polish pass is complete; Phase 14 remains not started.
+Note: Phase 15 was completed as a user-directed skip-ahead; post-Phase-15 relay data-plane, CLI polish, and daemon relay hardening passes are complete; Phase 14 remains not started.
 ```
 
 ## Phase 0 - Project Memory
@@ -1278,7 +1278,7 @@ Validation:
 Known gaps:
 
 - The relay client supports `ws://`; public `wss://` requires a TLS terminator/reverse proxy in front of `conu-relay`.
-- Relay sync is explicit/one-shot today; no long-running reconnect loop or service-owned relay pump is active.
+- Superseded by the daemon relay production hardening pass below: conUD now owns bounded relay sync windows when configured.
 - Relay-backed stream byte routing, offline mailbox delivery, hosted relay auth/rate limits, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
 - Phase 14 rooms/pub-sub remains not started.
 
@@ -1286,6 +1286,70 @@ Next recommendation:
 
 - For user testing, run `docs/internet-relay-test.md` locally or over a reachable `ws://` relay.
 - For product hardening, add a conUD-owned relay pump with reconnect/backoff, then stream byte routing and hosted relay auth/TLS strategy.
+
+## Post Phase 15 Daemon Relay Production Hardening
+
+Status: completed
+
+Goal:
+
+Move the relay message path beyond manual MVP sync by letting conUD own bounded relay send/receive windows while preserving payload opacity and adding daemon-level end-to-end smoke coverage.
+
+Completed work:
+
+- Created GitHub issue #36 and branch `codex/relay-daemon-production-hardening`.
+- Added `relay_auto_sync = true` to new local config files.
+- Added conUD runtime processing reports and a daemon relay pump that runs when a relay endpoint or trusted relay peer is configured.
+- Added relay pump retry/backoff behavior so relay connection failures do not crash conUD or block local IPC forever.
+- Kept relay pump logs metadata-only with `payload=not_observed` in runtime logs and encrypted-body-only relay delivery logs.
+- Added `scripts/smoke-relay-daemon.ps1`, which starts a local relay, two isolated conUD runtimes, registers two agents, sends a peer-encrypted remote message without manual `conu relay sync`, waits for delivery, and scans conU-owned state for payload leaks.
+- Hardened Windows daemon launching by routing `conu start` through a no-window background start path.
+- Updated README, user guide, internet relay test, production readiness, SDK/MCP docs, release checklist, observability docs, repo memory, guardrails, repo map, agent gateway contract, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `docs/internet-relay-test.md`
+- `docs/user-install-and-agent-guide.md`
+- `docs/sdk-and-mcp.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/observability.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/runtime.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conud/src/main.rs`
+- `scripts/smoke-relay-daemon.ps1`
+- `plan.md`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed and confirmed daemon-owned relay delivery without manual sync.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu` passed and created `dist/conu-0.1.0-host.zip`.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Relay pump uses bounded reconnect/sync windows, not a single long-lived persistent relay session.
+- Public `wss://` still requires a TLS terminator/reverse proxy in front of `conu-relay`.
+- Relay-backed stream byte routing, offline mailbox delivery, hosted relay auth/rate limits, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
+- Phase 14 rooms/pub-sub remains not started.
+
+Next recommendation:
+
+- Run full validation, merge the daemon relay hardening branch, then choose between Phase 14 rooms/pub-sub or deeper hosted relay auth/TLS plus persistent relay session work.
 
 ## Phase Completion Log
 
@@ -1310,4 +1374,5 @@ Add entries here when a phase is completed.
 2026-05-11 - Phase 15 completed as a user-directed skip-ahead. Added doctor readiness checks, release/smoke scripts, packaging templates, CI/release workflows, release checklist, observability docs, strict local-install smoke validation, and GNU-toolchain release validation. Phase 14 remains not started.
 2026-05-11 - Post Phase 15 audit completed. Added clippy-clean polish across runtime, CLI, MCP, CI, and docs while preserving payload privacy and leaving Phase 14 not started.
 2026-05-11 - Post Phase 15 internet data-plane and CLI polish completed. Added public peer-card trust, peer-encrypted relay message queueing, explicit relay sync, richer watch animation, SDK/Python/MCP remote helpers, relay E2E tests, and internet relay test docs. Phase 14 remains not started.
+2026-05-11 - Post Phase 15 daemon relay production hardening completed. Added conUD-owned relay pump, retry/backoff, relay daemon smoke script, Windows start hardening, docs/skill updates, and daemon-owned remote message validation. Phase 14 remains not started.
 ```

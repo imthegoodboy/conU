@@ -34,6 +34,7 @@
 - Relay fallback does not weaken trust checks.
 - Relay message delivery must decrypt only after the sender exchange public key matches the trusted peer card.
 - Relay frames may carry ciphertext bodies, never plaintext payload fields.
+- The conUD relay pump may retry, count, and route envelopes, but runtime logs must stay metadata-only and must not include relay tokens or plaintext payloads.
 
 ## Storage
 

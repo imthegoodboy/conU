@@ -55,6 +55,7 @@ logs/messages.log    local delivery events
 logs/sessions.log    remote session sync events
 logs/streams.log     stream lifecycle events
 logs/routes.log      route sync events
+logs/relay-delivery.log relay send/receive events
 ```
 
 All current log files are local text metadata logs. They do not include payload contents.
