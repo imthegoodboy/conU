@@ -24,8 +24,11 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - MCP stdio adapter exposing conU as JSON-RPC tools for MCP-capable agents.
 - `conu doctor` local readiness and payload-safe log scanner.
 - Cross-platform release build scripts under `scripts/`.
+- Platform-named release artifacts with SHA-256 checksum files.
 - Windows install/uninstall scripts and Windows service creation path.
 - Linux systemd and macOS launchd service templates.
+- Docker relay hosting template.
+- npm native launcher package template under `packaging/npm/conu-cli`.
 - GitHub CI and release artifact workflows.
 - Release checklist and observability docs.
 - Payload-safe logs, receipts, watch output, and CLI JSON.
@@ -41,6 +44,8 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Pairing is local trust-store groundwork, not full cross-machine rendezvous.
 - MCP is stdio-only. HTTP MCP transport, auth, and remote MCP hosting are intentionally not implemented.
 - Packaging is unsigned and local-first. Code signing, notarization, package-manager publishing, and auto-update are not implemented.
+- The npm launcher template is present, but `@conu/cli` should only be published after GitHub Release archives and checksum files exist for the supported platforms.
+- The Docker relay template runs the current relay, but public hosted operation remains limited by `ws://` client support and missing hosted auth/rate limits.
 - TypeScript SDK remains future work.
 
 ## Release Blockers
@@ -53,6 +58,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - OS-backed private key storage.
 - Key rotation migration tooling.
 - Signed installer/package publishing for Windows, macOS, and Linux.
+- Published npm package backed by verified release checksums.
 - Log rotation and structured telemetry exporter with payload-safe field allowlists only.
 - Rate limits and bounded queues for public relay operation.
 - Security review of relay auth, replay cache behavior, and storage migration.
@@ -105,6 +111,8 @@ or:
 ```
 
 Each artifact must include only binaries, docs, packaging templates, and `manifest.toml`. It must not include developer state directories, keys, logs, inboxes, route files, or payload-bearing test output.
+
+Archives intended for npm installation must use platform suffixes such as `windows-x64`, `linux-x64`, `linux-arm64`, `macos-x64`, and `macos-arm64`, and each archive must have a sibling `.sha256` file.
 
 ## Local Release Decision
 

@@ -5,6 +5,7 @@ Use this checklist before publishing any conU build.
 ## Version And Scope
 
 - Confirm the release version in all Cargo packages.
+- Confirm `packaging/npm/conu-cli/package.json` has the same version.
 - Confirm `plan.md` reflects the completed phase and known gaps.
 - Confirm Phase 14 rooms are not claimed unless implemented.
 - Confirm public internet claims are limited to the current daemon-pumped relay message path unless hosted relay auth/TLS, persistent relay sessions, stream byte routing, and direct transport are implemented.
@@ -19,6 +20,7 @@ cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
 cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+.\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64
 ```
 
 macOS/Linux:
@@ -29,6 +31,8 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ./scripts/build-release.sh
+PACKAGE_SUFFIX=linux-x64 ./scripts/build-release.sh
+PACKAGE_SUFFIX=macos-arm64 ./scripts/build-release.sh
 ```
 
 ## Smoke
@@ -70,14 +74,19 @@ conu stop
 - Release archive includes `bin/conu`, `bin/conud`, `bin/conu-relay`, and `bin/conu-mcp`.
 - Release archive includes docs and packaging templates.
 - `manifest.toml` contains `payload_contents_included = false`.
+- Release archive has a matching `.sha256` checksum file.
 - Windows install script copies binaries to a current-user install directory.
 - Linux systemd template is present and documents the required user/state path edits.
 - macOS launchd template is present and documents the required user/state path edits.
+- Docker relay template is present and documents current relay limits.
+- npm launcher package passes `npm run check` from `packaging/npm/conu-cli`.
 
 ## GitHub
 
 - CI passed on pull request or equivalent local validation is recorded.
 - PR body lists validation commands.
+- GitHub Release has platform-named archives plus matching `.sha256` files before npm publishing.
+- `@conu/cli` is published only after the matching GitHub Release assets are available.
 - `plan.md` completion log is updated.
 - Issue is closed by PR merge.
 

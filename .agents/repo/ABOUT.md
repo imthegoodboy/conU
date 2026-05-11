@@ -59,7 +59,8 @@ Implemented so far:
 - route sync integration with remote sessions, streams, Rust SDK, Python wrapper SDK, and MCP
 - `conu doctor` local install/readiness check with payload-safe log scanning
 - release build scripts under `scripts/`
-- packaging templates under `packaging/`
+- packaging templates under `packaging/`, including Windows install, Linux systemd, macOS launchd, Docker relay, and npm launcher templates
+- platform-named release artifacts with SHA-256 checksum support
 - GitHub CI and release artifact workflows
 - release checklist and observability docs
 - payload-safe status and agent registry reporting
@@ -77,9 +78,10 @@ Current important files:
 - `plan.md`: phase-by-phase execution plan.
 - `docs/direct-transport-and-routes.md`: Phase 13 route manager, config, and privacy boundary.
 - `docs/internet-relay-test.md`: current relay-backed remote message smoke test.
+- `docs/distribution-and-hosting.md`: how users install conU, how npm packaging should publish native binaries, and how to self-host the current relay.
 - `docs/release-checklist.md`: Phase 15 release gate.
 - `docs/observability.md`: payload-safe observability policy.
-- `packaging/README.md`: install and service templates.
+- `packaging/README.md`: install, npm launcher, Docker relay, and service templates.
 - `.agents/AGENTS.md`: future-agent onboarding.
 - `.agents/about/`: original product vision.
 - `.agents/Rules/SKILL.MD`: hard project rules.

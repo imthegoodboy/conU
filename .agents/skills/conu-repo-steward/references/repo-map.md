@@ -47,7 +47,7 @@ scripts
   release build, local smoke, and relay-daemon smoke scripts
 
 packaging
-  Windows install scripts plus Linux systemd and macOS launchd service templates
+  Windows install scripts, Linux systemd and macOS launchd service templates, Docker relay template, and npm native launcher package
 
 .github/workflows
   CI and release artifact workflows

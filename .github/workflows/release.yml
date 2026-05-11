@@ -14,18 +14,36 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: windows
+          - name: windows-x64
             os: windows-latest
-            script: powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1
-            artifact: dist/*.zip
-          - name: linux
+            script: powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -PackageSuffix windows-x64
+            artifact: |
+              dist/*.zip
+              dist/*.zip.sha256
+          - name: linux-x64
             os: ubuntu-latest
-            script: sh scripts/build-release.sh
-            artifact: dist/*.tar.gz
-          - name: macos
+            script: PACKAGE_SUFFIX=linux-x64 sh scripts/build-release.sh
+            artifact: |
+              dist/*.tar.gz
+              dist/*.tar.gz.sha256
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            script: PACKAGE_SUFFIX=linux-arm64 sh scripts/build-release.sh
+            artifact: |
+              dist/*.tar.gz
+              dist/*.tar.gz.sha256
+          - name: macos-arm64
             os: macos-latest
-            script: sh scripts/build-release.sh
-            artifact: dist/*.tar.gz
+            script: PACKAGE_SUFFIX=macos-arm64 sh scripts/build-release.sh
+            artifact: |
+              dist/*.tar.gz
+              dist/*.tar.gz.sha256
+          - name: macos-x64
+            os: macos-15-intel
+            script: PACKAGE_SUFFIX=macos-x64 sh scripts/build-release.sh
+            artifact: |
+              dist/*.tar.gz
+              dist/*.tar.gz.sha256
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

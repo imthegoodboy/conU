@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: not_started
 Last updated: 2026-05-11
-Note: Phase 15 was completed as a user-directed skip-ahead; post-Phase-15 relay data-plane, CLI polish, and daemon relay hardening passes are complete; Phase 14 remains not started.
+Note: Phase 15 was completed as a user-directed skip-ahead; post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, and distribution/hosting passes are complete; Phase 14 remains not started.
 ```
 
 ## Phase 0 - Project Memory
@@ -1277,7 +1277,7 @@ Validation:
 
 Known gaps:
 
-- The relay client supports `ws://`; public `wss://` requires a TLS terminator/reverse proxy in front of `conu-relay`.
+- The relay client supports `ws://`; public `wss://` requires client support plus hosted TLS termination in front of `conu-relay`.
 - Superseded by the daemon relay production hardening pass below: conUD now owns bounded relay sync windows when configured.
 - Relay-backed stream byte routing, offline mailbox delivery, hosted relay auth/rate limits, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
 - Phase 14 rooms/pub-sub remains not started.
@@ -1343,13 +1343,96 @@ Validation:
 Known gaps:
 
 - Relay pump uses bounded reconnect/sync windows, not a single long-lived persistent relay session.
-- Public `wss://` still requires a TLS terminator/reverse proxy in front of `conu-relay`.
+- Public `wss://` still requires client support plus hosted TLS termination in front of `conu-relay`.
 - Relay-backed stream byte routing, offline mailbox delivery, hosted relay auth/rate limits, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
 - Phase 14 rooms/pub-sub remains not started.
 
 Next recommendation:
 
 - Run full validation, merge the daemon relay hardening branch, then choose between Phase 14 rooms/pub-sub or deeper hosted relay auth/TLS plus persistent relay session work.
+
+## Post Phase 15 Distribution And Hosting
+
+Status: completed
+
+Goal:
+
+Make the user install and relay hosting story concrete without overstating the current public-network readiness.
+
+Completed work:
+
+- Created GitHub issue #38 and branch `codex/distribution-hosting-npm`.
+- Added `docs/distribution-and-hosting.md` explaining how users install conU, how agents use it, how to self-host the current relay, and why Rust native binaries plus an npm launcher is the best first public distribution path.
+- Added npm package template `packaging/npm/conu-cli` with launcher shims for `conu`, `conud`, `conu-relay`, and `conu-mcp`.
+- Added npm postinstall downloader that selects the platform release asset, requires SHA-256 verification by default, supports local binary-dir testing, and keeps protocol behavior in Rust.
+- Added Docker relay hosting template under `packaging/docker`.
+- Updated release scripts to create platform-suffixed artifacts and matching `.sha256` files.
+- Updated GitHub release workflow to build/upload `windows-x64`, `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64` artifacts.
+- Updated README, user guide, packaging docs, production readiness, release checklist, internet relay test, repo memory, repo map, implementation guardrails, and security checklist.
+- Kept public-hosting guidance honest: the current client supports `ws://`; managed public relay still requires `wss://`, hosted auth/rate limits, persistent sessions, stream byte routing, offline mailbox, capability policy, signed remote cards, and OS-backed key storage.
+
+Files changed:
+
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/docker/relay.Dockerfile`
+- `packaging/npm/conu-cli/.npmignore`
+- `packaging/npm/conu-cli/README.md`
+- `packaging/npm/conu-cli/bin/conu.js`
+- `packaging/npm/conu-cli/bin/conud.js`
+- `packaging/npm/conu-cli/bin/conu-relay.js`
+- `packaging/npm/conu-cli/bin/conu-mcp.js`
+- `packaging/npm/conu-cli/lib/platform.js`
+- `packaging/npm/conu-cli/lib/run.js`
+- `packaging/npm/conu-cli/package.json`
+- `packaging/npm/conu-cli/scripts/install.js`
+- `.github/workflows/release.yml`
+- `.gitignore`
+- `scripts/build-release.ps1`
+- `scripts/build-release.sh`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `node --check packaging\npm\conu-cli\scripts\install.js`, `node --check packaging\npm\conu-cli\lib\platform.js`, and `node --check packaging\npm\conu-cli\lib\run.js` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `npm pack --dry-run` passed and confirmed the npm tarball includes only launcher/package files, not vendored binaries.
+- npm installer local binary-dir smoke passed and launched `conu 0.1.0`.
+- npm installer HTTP smoke passed against `dist/conu-0.1.0-windows-x64.zip`, verified the `.sha256`, extracted the archive, and launched `conu 0.1.0`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and created `dist/conu-0.1.0-windows-x64.zip` plus `dist/conu-0.1.0-windows-x64.zip.sha256`.
+- Release archive listing confirmed `docs/distribution-and-hosting.md`, `packaging/docker/relay.Dockerfile`, and `packaging/npm/conu-cli/package.json` are included without conU state/log/security-key paths.
+- `git diff --check` passed.
+- Privacy scan reviewed payload/secret terms in docs, packaging, and agent memory; new matches are warnings, placeholder env examples, or metadata-only policy text.
+
+Known gaps:
+
+- `@conu/cli` is a package template and has not been published yet.
+- GitHub Release assets must be attached before users can run `npm install -g @conu/cli` successfully.
+- Release artifacts are checksummed but not signed/notarized.
+- The relay host path remains controlled self-hosting over reachable `ws://`, not a managed public relay network.
+- Hosted relay auth/rate limits, `wss://` client support, persistent relay sessions, stream byte routing, offline mailbox, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
+- Phase 14 rooms/pub-sub remains not started.
+
+Next recommendation:
+
+- Publish the first GitHub Release with platform artifacts/checksums, then publish `@conu/cli`; after that, prioritize `wss://` client support and hosted relay auth before advertising a public managed relay.
 
 ## Phase Completion Log
 
@@ -1375,4 +1458,5 @@ Add entries here when a phase is completed.
 2026-05-11 - Post Phase 15 audit completed. Added clippy-clean polish across runtime, CLI, MCP, CI, and docs while preserving payload privacy and leaving Phase 14 not started.
 2026-05-11 - Post Phase 15 internet data-plane and CLI polish completed. Added public peer-card trust, peer-encrypted relay message queueing, explicit relay sync, richer watch animation, SDK/Python/MCP remote helpers, relay E2E tests, and internet relay test docs. Phase 14 remains not started.
 2026-05-11 - Post Phase 15 daemon relay production hardening completed. Added conUD-owned relay pump, retry/backoff, relay daemon smoke script, Windows start hardening, docs/skill updates, and daemon-owned remote message validation. Phase 14 remains not started.
+2026-05-11 - Post Phase 15 distribution and hosting completed. Added native npm launcher package template, platform release artifact naming/checksums, Docker relay hosting template, distribution/hosting docs, release workflow updates, and installer validation. Phase 14 remains not started.
 ```

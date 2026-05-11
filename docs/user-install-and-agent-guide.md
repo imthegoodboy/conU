@@ -2,7 +2,7 @@
 
 This guide explains how a user can install the current conU app, start it on their PC, and let local agents use it.
 
-Current version status: Phase 15 is complete for the current local-first app, with a relay-backed message path that now runs from conUD when configured. conU is usable for local agent registration, local encrypted-at-rest message submission, manual public peer-card exchange, peer-encrypted one-shot relay messages between trusted nodes, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, an MCP stdio adapter, repeatable release builds, service templates, and `conu doctor` readiness checks. It is not yet a managed public hosted internet release.
+Current version status: Phase 15 is complete for the current local-first app, with a relay-backed message path that now runs from conUD when configured. conU is usable for local agent registration, local encrypted-at-rest message submission, manual public peer-card exchange, peer-encrypted one-shot relay messages between trusted nodes, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, an MCP stdio adapter, repeatable release builds, service templates, a native-binary npm launcher template, Docker relay hosting template, and `conu doctor` readiness checks. It is not yet a managed public hosted internet release.
 
 ## What Works Today
 
@@ -21,10 +21,13 @@ Current version status: Phase 15 is complete for the current local-first app, wi
 - Let MCP-capable agents launch `conu-mcp` and call conU tools.
 - Run `conu doctor` to check local install readiness and payload-safe logs.
 - Use Windows, systemd, and launchd service templates.
+- Use the npm launcher packaging template once platform release assets are published.
+- Host the current relay yourself for controlled `ws://` tests.
 
 ## What Does Not Work Yet
 
 - No signed one-click installer yet.
+- No published `@conu/cli` package yet; the package template exists under `packaging/npm/conu-cli` and should be published after GitHub Release assets/checksums exist.
 - No TypeScript SDK yet.
 - No CLI command that reveals message contents. This is intentional; use SDK or MCP explicit receive APIs when the addressed local agent needs payload bytes.
 - No hosted relay service, TLS client, or managed public relay auth yet. The current client supports reachable `ws://` relay endpoints.
@@ -33,6 +36,29 @@ Current version status: Phase 15 is complete for the current local-first app, wi
 - Relay-backed one-shot message delivery exists through the conUD relay pump; persistent relay sessions, stream byte routing, hosted relay auth/TLS, and offline mailbox delivery are not implemented yet.
 - Service templates exist, but users still need to install/register them for their platform.
 - Local private keys are file-backed today; OS keychain/DPAPI/HSM support is still a release blocker.
+
+## Install With npm
+
+This is the best public install shape once the first GitHub Release and npm package are published:
+
+```powershell
+npm install -g @conu/cli
+conu doctor
+conu init
+conu start
+```
+
+The npm package is not the conU implementation. It is a small launcher that downloads the native Rust archive for the user's platform, verifies the `.sha256` checksum, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp` on `PATH`.
+
+For local testing of the package template from this repo:
+
+```powershell
+$env:CONU_NPM_BINARY_DIR = "$PWD\dist\conu-0.1.0-windows-x64\bin"
+npm install -g .\packaging\npm\conu-cli
+conu doctor
+```
+
+See `docs/distribution-and-hosting.md` for the release asset names, publish flow, and relay hosting path.
 
 ## Install From Source
 
@@ -417,11 +443,12 @@ These are not hidden bugs; they are the honest state of the current app:
 | Area | Current issue | User impact | Workaround today |
 | --- | --- | --- | --- |
 | Installer | Release artifact scripts exist, but packages are not signed | Users must trust a source build or unsigned artifact | Use `cargo install --path` or inspect/build artifacts locally |
+| npm install | `@conu/cli` template exists but is not published until release assets are attached | `npm install -g @conu/cli` is the target path, not a live package guarantee yet | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
 | Agent API | Rust SDK, Python wrapper, and MCP adapter exist; TypeScript is later | Most agents can integrate now, TS apps need wrapper work | Use MCP, Rust SDK, Python SDK, or CLI/stdin |
 | Receiving payloads | CLI intentionally lists inbox metadata only | Agents needing bytes must use explicit receive APIs | Use Rust SDK `receive_message_bytes` or MCP `conu_receive_message` with `includePayload` |
-| Internet messaging | One-shot relay messages work through the conUD relay pump, but no hosted relay/TLS client, persistent relay session, stream byte routing, or offline mailbox exists | Users can test over reachable `ws://`; managed public network is not ready | Run `conu-relay` yourself or expose it through a tunnel/reverse proxy that terminates TLS before conU |
+| Internet messaging | One-shot relay messages work through the conUD relay pump, but no hosted relay/TLS client, persistent relay session, stream byte routing, or offline mailbox exists | Users can test over reachable `ws://`; managed public network is not ready | Run `conu-relay` yourself on a trusted host or private network path |
 | Direct transport | Route selection exists, but real QUIC sockets and NAT hole punching do not | Direct routes show as metadata only | Configure direct endpoints for route scoring tests |
 | Pairing | Pair/join are local trust groundwork | Not real cross-machine pairing yet | Use for metadata/trust testing |
 | Service install | Service templates exist but need local edits/admin steps | User must choose service path/user | Use `packaging/windows`, `packaging/linux`, or `packaging/macos` templates |
@@ -465,6 +492,7 @@ To make conU genuinely useful over the internet, the next phase should build:
 
 - Rooms, pub/sub, and multi-agent session metadata.
 - Hosted relay auth/TLS hardening, persistent relay sessions, offline mailbox, and stream byte delivery.
+- Published npm package backed by platform release assets and checksums.
 - Real QUIC socket transport and NAT candidate exchange after the room/session model is stable.
 - TypeScript SDK after the protocol surface stabilizes.
 - Signed installers and OS keychain-backed secret storage after local packaging stabilizes.

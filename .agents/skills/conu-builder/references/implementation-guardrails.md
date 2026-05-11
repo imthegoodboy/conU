@@ -147,9 +147,13 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 ## Packaging And Release Rules
 
 - Phase 15 packaging artifacts must include binaries, docs, packaging templates, and manifest metadata only.
+- Platform release artifacts used by npm must include a sibling SHA-256 checksum file.
+- The npm package is a thin launcher/downloader for native Rust binaries; it must not reimplement conU protocol behavior in JavaScript.
+- npm install scripts may download release archives and copy binaries, but must not read, upload, log, or package local conU state.
 - Release artifacts must not include local conU state, `CONU_HOME`, `.conu`, private keys, logs, inboxes, route registries, message stores, or test payload output.
 - `conu doctor` may report binary paths, readiness booleans, runtime health, and payload-safe log scan counts; it must not print log contents, private keys, payload text, or secrets.
 - Windows service, Linux systemd, and macOS launchd files are templates until a signed installer configures platform-specific users and paths.
+- Docker relay templates are acceptable for controlled self-hosted tests, but public hosted relay claims still require `wss://`, hosted auth/rate limits, persistent sessions, and relay abuse controls.
 - A local release may be marked ready only with documented limits. Do not claim public hosted internet readiness until hosted relay auth/TLS, persistent relay sessions, stream byte routing, capability policy, signed remote cards, and OS-backed key storage are implemented.
 - CI/release workflows must run metadata-only checks and must not upload conU state directories or logs as artifacts.
 
