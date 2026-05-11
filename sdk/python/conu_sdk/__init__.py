@@ -63,6 +63,29 @@ class ConuClient:
     def peers(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "peers", "--json")
 
+    def identity_export(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "identity", "export", "--json")
+
+    def trust_peer(
+        self,
+        peer_node_id: str,
+        display_name: str,
+        exchange_public_key_hex: str,
+        relay_endpoint: str | None = None,
+    ) -> dict[str, Any]:
+        args = [
+            "peers",
+            "trust",
+            peer_node_id,
+            display_name,
+            "--exchange-key",
+            exchange_public_key_hex,
+            "--json",
+        ]
+        if relay_endpoint is not None:
+            args.extend(["--relay", relay_endpoint])
+        return self._run_json(self.conu_bin, *args)
+
     def sync_routes(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "routes", "sync", "--json")
 
@@ -121,6 +144,36 @@ class ConuClient:
             "--stdin",
             "--json",
             input_bytes=payload,
+        )
+
+    def send_remote_message(
+        self,
+        from_agent_id: str,
+        to_agent_id: str,
+        peer_node_id: str,
+        payload: bytes,
+    ) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "messages",
+            "send",
+            from_agent_id,
+            to_agent_id,
+            "--peer",
+            peer_node_id,
+            "--stdin",
+            "--json",
+            input_bytes=payload,
+        )
+
+    def relay_sync(self, wait_ms: int = 1000) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "relay",
+            "sync",
+            "--wait-ms",
+            str(wait_ms),
+            "--json",
         )
 
     def open_stream(

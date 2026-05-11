@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 15 as a directed skip-ahead. Phase 14 rooms/pub-sub remain not started.
+The repository has completed Phase 15 as a directed skip-ahead, and now includes a relay-backed one-shot message MVP. Phase 14 rooms/pub-sub remain not started.
 
 Implemented so far:
 
@@ -27,6 +27,9 @@ Implemented so far:
 - conUD processing for local message delivery
 - encrypted-at-rest local message request and inbox payload storage
 - local X25519 peer key agreement helpers
+- manual public peer-card export/import through `conu identity export` and `conu peers trust`
+- relay-backed peer-encrypted remote message queueing through `conu messages send --peer`
+- explicit relay send/receive sync through `conu relay sync`
 - replay protection for local message request and envelope ids
 - `conu security audit` for payload-safe hardening status
 - Rust SDK crate `conu-sdk` for agent-facing registration, messaging, receive, peer, security, and stream calls
@@ -39,7 +42,7 @@ Implemented so far:
 - shared relay frame contract in `conu-core`
 - std-only `conu-relay` WebSocket service
 - relay session authentication with a shared token
-- connected-runtime metadata forwarding with `WELCOME`, `ENVELOPE`, `SENT`, and `UNDELIVERED` frames
+- connected-runtime blind forwarding with `WELCOME`, `ENVELOPE`, `SENT`, and `UNDELIVERED` frames
 - conUD-owned remote session sync through `conu sessions sync`
 - remote runtime session metadata under `sessions/registry.toml`
 - trusted remote agent mirror under `agents/remote.toml`
@@ -71,6 +74,7 @@ Current important files:
 - `architecture.md`: production architecture and protocol direction.
 - `plan.md`: phase-by-phase execution plan.
 - `docs/direct-transport-and-routes.md`: Phase 13 route manager, config, and privacy boundary.
+- `docs/internet-relay-test.md`: current relay-backed remote message smoke test.
 - `docs/release-checklist.md`: Phase 15 release gate.
 - `docs/observability.md`: payload-safe observability policy.
 - `packaging/README.md`: install and service templates.

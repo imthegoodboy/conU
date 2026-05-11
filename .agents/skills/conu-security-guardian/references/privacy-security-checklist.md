@@ -15,6 +15,7 @@
 - Node identity is generated locally.
 - Agent identity is bound to a trusted node.
 - Pairing is explicit.
+- Manual peer-card trust must import only public node id, display name, public exchange key, and relay endpoint.
 - Trust is revocable.
 - Discovery is scoped by trust and policy.
 
@@ -31,12 +32,15 @@
 - Relay logs metadata only.
 - Relay cannot impersonate a peer.
 - Relay fallback does not weaken trust checks.
+- Relay message delivery must decrypt only after the sender exchange public key matches the trusted peer card.
+- Relay frames may carry ciphertext bodies, never plaintext payload fields.
 
 ## Storage
 
 - Trust store avoids plaintext secrets when possible.
 - Message request and inbox files use encrypted-at-rest payload fields.
 - Mailbox stores encrypted envelopes when mailbox delivery is implemented.
+- Relay outbox stores peer-encrypted envelope bodies, not plaintext payloads.
 - Logs are payload-safe.
 - Config does not store private keys.
 - Security key files remain local-only and must not appear in CLI output, logs, docs examples, or tests except artificial field-name checks.

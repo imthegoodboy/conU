@@ -14,6 +14,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Signed local agent cards.
 - Local pairing/trust records with revocation.
 - Metadata-only relay frame contract and standalone WebSocket relay MVP.
+- Peer-card exchange and relay-backed peer-encrypted one-shot message delivery.
 - Remote session and remote agent metadata mirror for trusted peers.
 - Stream lifecycle metadata, backpressure counters, and private watch animation.
 - Direct QUIC candidate scoring, NAT profile labels, route probes, and relay fallback selection.
@@ -33,8 +34,8 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 ## Still Local Or Groundwork
 
 - File-backed IPC is reliable for development, but not yet a production named-pipe/socket transport.
-- Remote sessions are metadata mirrors. They do not yet move encrypted payload bytes between machines.
-- The relay forwards metadata frames, but conUD does not yet own a live relay client for data-plane delivery.
+- Remote sessions are still metadata mirrors; manual peer-card exchange is the current cross-machine trust path.
+- The relay-backed data plane currently supports one-shot peer-encrypted messages through explicit `conu relay sync`; stream byte routing, reconnect loops, and offline mailbox delivery are not active yet.
 - Direct transport is route metadata only. Real QUIC sockets, ICE-style candidate exchange, and NAT hole punching are not active yet.
 - Stream writes count bytes and emit events. They do not persist or relay chunk bytes yet.
 - Pairing is local trust-store groundwork, not full cross-machine rendezvous.
@@ -44,7 +45,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 
 ## Release Blockers
 
-- Live relay-backed encrypted message and stream routing.
+- Live relay-backed encrypted stream routing, reconnect loops, and offline mailbox delivery.
 - Real direct QUIC transport with peer authentication and NAT traversal.
 - Remote signed agent-card exchange and verification.
 - Capability grants and user-visible permission policy.
@@ -82,6 +83,7 @@ Every release candidate must confirm:
 - Logs use `payload=not_observed` or metadata-only equivalents.
 - Route registry, route probes, and route logs contain route metadata only.
 - Relay frames reject plaintext payload fields.
+- Relay message frames may carry ciphertext bodies only after local trust verifies the sender public exchange key.
 - Message and mailbox storage use encrypted payload fields.
 - Tests use artificial negative strings only to prove they do not leak.
 
@@ -105,6 +107,6 @@ Each artifact must include only binaries, docs, packaging templates, and `manife
 
 ## Local Release Decision
 
-Current Phase 15 status is `local_release_ready_with_known_limits`.
+Current status is `relay_message_mvp_ready_with_known_limits`.
 
-This means a developer can install, initialize, start, pair locally, connect visible agents, run readiness checks, and inspect payload-safe logs. It does not mean conU is ready as a hosted public internet network.
+This means a developer can install, initialize, start, pair locally, exchange public peer cards, send a peer-encrypted one-shot message through a reachable `ws://` relay, run readiness checks, and inspect payload-safe logs. It does not mean conU is ready as a hosted public internet network with managed auth, TLS, offline mailbox storage, stream byte routing, or direct QUIC.

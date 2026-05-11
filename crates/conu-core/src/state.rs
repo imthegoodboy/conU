@@ -43,6 +43,10 @@ const PAIRING_USED_DIR: &str = "used";
 const SESSIONS_DIR: &str = "sessions";
 const SESSION_REGISTRY_FILE: &str = "registry.toml";
 const MAILBOX_DIR: &str = "mailbox";
+const RELAY_DIR: &str = "relay";
+const RELAY_OUTBOX_DIR: &str = "outbox";
+const RELAY_SENT_DIR: &str = "sent";
+const RELAY_REJECTED_DIR: &str = "rejected";
 const LOGS_DIR: &str = "logs";
 const SECURITY_DIR: &str = "security";
 const IDENTITY_SIGNING_KEY_FILE: &str = "identity-signing.key";
@@ -88,6 +92,10 @@ pub struct StatePaths {
     pub sessions_dir: PathBuf,
     pub session_registry: PathBuf,
     pub mailbox_dir: PathBuf,
+    pub relay_dir: PathBuf,
+    pub relay_outbox_dir: PathBuf,
+    pub relay_sent_dir: PathBuf,
+    pub relay_rejected_dir: PathBuf,
     pub logs_dir: PathBuf,
     pub security_dir: PathBuf,
     pub identity_signing_key: PathBuf,
@@ -119,6 +127,8 @@ impl StatePaths {
         let routes_dir = home.join(ROUTES_DIR);
         let pairing_dir = home.join(PAIRING_DIR);
         let security_dir = home.join(SECURITY_DIR);
+        let mailbox_dir = home.join(MAILBOX_DIR);
+        let relay_dir = mailbox_dir.join(RELAY_DIR);
 
         Self {
             node_identity: home.join(NODE_FILE),
@@ -153,7 +163,11 @@ impl StatePaths {
             pairing_dir,
             sessions_dir: home.join(SESSIONS_DIR),
             session_registry: home.join(SESSIONS_DIR).join(SESSION_REGISTRY_FILE),
-            mailbox_dir: home.join(MAILBOX_DIR),
+            relay_outbox_dir: relay_dir.join(RELAY_OUTBOX_DIR),
+            relay_sent_dir: relay_dir.join(RELAY_SENT_DIR),
+            relay_rejected_dir: relay_dir.join(RELAY_REJECTED_DIR),
+            relay_dir,
+            mailbox_dir,
             logs_dir: home.join(LOGS_DIR),
             identity_signing_key: security_dir.join(IDENTITY_SIGNING_KEY_FILE),
             identity_exchange_key: security_dir.join(IDENTITY_EXCHANGE_KEY_FILE),
@@ -339,6 +353,10 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.pairing_used_dir,
         &paths.sessions_dir,
         &paths.mailbox_dir,
+        &paths.relay_dir,
+        &paths.relay_outbox_dir,
+        &paths.relay_sent_dir,
+        &paths.relay_rejected_dir,
         &paths.logs_dir,
         &paths.security_dir,
     ] {

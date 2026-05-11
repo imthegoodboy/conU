@@ -7,7 +7,7 @@ Use this checklist before publishing any conU build.
 - Confirm the release version in all Cargo packages.
 - Confirm `plan.md` reflects the completed phase and known gaps.
 - Confirm Phase 14 rooms are not claimed unless implemented.
-- Confirm public internet data-plane delivery is not claimed until live relay/direct byte transport exists.
+- Confirm public internet claims are limited to the current relay message MVP unless hosted relay auth/TLS, reconnect loops, stream byte routing, and direct transport are implemented.
 
 ## Build
 
@@ -48,6 +48,8 @@ conu status
 conu pair
 conu join <code>
 conu routes sync
+conu identity export
+conu relay sync --wait-ms 1000
 conu connect
 conu stop
 ```
@@ -58,6 +60,7 @@ conu stop
 - `conu security audit` reports initialized local controls.
 - CLI output does not show message text, prompt text, reasoning, file contents, private keys, shared secrets, or raw payload bytes.
 - Logs use metadata-only fields such as `payload=not_observed`.
+- Relay frames carry ciphertext bodies only; no plaintext payload fields are accepted or logged.
 - Release archives do not include `CONU_HOME`, `.conu`, `node.toml`, `security/*.key`, `messages/`, `runtime/`, `logs/`, or `routes/` from a developer machine.
 - MCP stdout remains JSON-RPC only.
 - `conu_receive_message` and SDK receive APIs return payload bytes only to the addressed local agent by explicit request.
@@ -88,4 +91,4 @@ needs_fix
 blocked
 ```
 
-Current Phase 15 decision target is `local_release_ready`. Public hosted/internet release remains blocked until live encrypted remote data-plane delivery, OS-backed key storage, capability policy, and remote signed agent-card exchange are finished.
+Current decision target is `relay_message_mvp_ready`. Public hosted/internet release remains blocked until hosted relay auth/TLS, reconnect loops, stream byte routing, direct QUIC, OS-backed key storage, capability policy, and remote signed agent-card exchange are finished.

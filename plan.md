@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: not_started
 Last updated: 2026-05-11
-Note: Phase 15 was completed as a user-directed skip-ahead; Phase 14 remains not started.
+Note: Phase 15 was completed as a user-directed skip-ahead; a post-Phase-15 relay message MVP and CLI polish pass is complete; Phase 14 remains not started.
 ```
 
 ## Phase 0 - Project Memory
@@ -1211,6 +1211,82 @@ Known gaps:
 - No Phase 14 rooms/pub-sub implementation was started in this audit.
 - Public hosted internet readiness remains blocked by the known Phase 15 release blockers.
 
+## Post Phase 15 Internet Data-Plane And CLI Polish
+
+Status: completed
+
+Goal:
+
+Make conU testable over a reachable WebSocket relay for one-shot peer-encrypted agent messages, while improving the CLI control-room flow and keeping all payload surfaces private.
+
+Completed work:
+
+- Created GitHub issue #34 and branch `codex/internet-data-plane-cli-polish`.
+- Extended the shared relay frame contract to carry peer-encrypted opaque bodies while still rejecting plaintext payload fields.
+- Added a std-only relay WebSocket client in `conu_core::relay`.
+- Added manual public peer-card export/import with `conu identity export` and `conu peers trust`.
+- Added relay-backed remote message queueing with `conu messages send --peer <peer-node-id> --stdin`.
+- Added `conu relay sync --wait-ms <ms>` for explicit outbound flush and inbound receive over the relay.
+- Delivered inbound relay envelopes to the addressed local agent inbox after verifying the sender exchange public key against local trust.
+- Added relay queue counters and a richer ASCII `conu watch` transport view.
+- Exposed peer-card, remote send, and relay sync helpers through the Rust SDK, Python wrapper, and MCP adapter.
+- Added `docs/internet-relay-test.md` and updated user, SDK/MCP, production, security, release, README, and future-agent docs.
+
+Files changed:
+
+- `Cargo.toml` lock/dependency metadata as needed by existing workspace updates.
+- `README.md`
+- `docs/internet-relay-test.md`
+- `docs/user-install-and-agent-guide.md`
+- `docs/sdk-and-mcp.md`
+- `docs/production-readiness.md`
+- `docs/security-hardening.md`
+- `docs/release-checklist.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `crates/conu-core/src/relay.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/messages.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conu-core/src/trust.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-relay/Cargo.toml`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `crates/conu-sdk/src/lib.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `sdk/python/conu_sdk/__init__.py`
+- `plan.md`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed, including a two-home relay E2E test that sends and receives a peer-encrypted message through `conu-relay`.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu` passed and created `dist/conu-0.1.0-host.zip`.
+- `git diff --check` passed.
+- Targeted CLI remote queue test passed and confirmed the relay outbox stores encrypted fields without literal payload text.
+- Privacy scan reviewed payload-looking strings; matches are artificial negative tests, docs examples, or encrypted field names, not runtime log/CLI payload leakage.
+
+Known gaps:
+
+- The relay client supports `ws://`; public `wss://` requires a TLS terminator/reverse proxy in front of `conu-relay`.
+- Relay sync is explicit/one-shot today; no long-running reconnect loop or service-owned relay pump is active.
+- Relay-backed stream byte routing, offline mailbox delivery, hosted relay auth/rate limits, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
+- Phase 14 rooms/pub-sub remains not started.
+
+Next recommendation:
+
+- For user testing, run `docs/internet-relay-test.md` locally or over a reachable `ws://` relay.
+- For product hardening, add a conUD-owned relay pump with reconnect/backoff, then stream byte routing and hosted relay auth/TLS strategy.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -1233,4 +1309,5 @@ Add entries here when a phase is completed.
 2026-05-11 - Phase 13 completed. conUD-owned direct/relay route manager, NAT-profile scoring, relay fallback selection, route probes/logs, CLI route commands, SDK/Python/MCP route tools, docs, skills, and GNU-toolchain validation added. Next: Phase 14 rooms, pub/sub, and multi-agent sessions.
 2026-05-11 - Phase 15 completed as a user-directed skip-ahead. Added doctor readiness checks, release/smoke scripts, packaging templates, CI/release workflows, release checklist, observability docs, strict local-install smoke validation, and GNU-toolchain release validation. Phase 14 remains not started.
 2026-05-11 - Post Phase 15 audit completed. Added clippy-clean polish across runtime, CLI, MCP, CI, and docs while preserving payload privacy and leaving Phase 14 not started.
+2026-05-11 - Post Phase 15 internet data-plane and CLI polish completed. Added public peer-card trust, peer-encrypted relay message queueing, explicit relay sync, richer watch animation, SDK/Python/MCP remote helpers, relay E2E tests, and internet relay test docs. Phase 14 remains not started.
 ```

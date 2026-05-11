@@ -138,6 +138,7 @@ Supported runtime-to-relay frames:
 ```txt
 HELLO node=<node-id> token=<token> payload=not_observed
 FORWARD to=<node-id> envelope=<envelope-id> bytes=<count> payload=opaque
+FORWARD to=<node-id> envelope=<envelope-id> from_agent=<agent-id> to_agent=<agent-id> bytes=<count> cipher=<cipher> key=<key-id> sender_key=<public-key> nonce=<nonce> body=<ciphertext> payload=peer_encrypted
 PING payload=not_observed
 ```
 
@@ -146,13 +147,14 @@ Supported relay-to-runtime frames:
 ```txt
 WELCOME session=<session-id> payload=not_observed
 ENVELOPE from=<node-id> to=<node-id> envelope=<envelope-id> bytes=<count> payload=opaque
+ENVELOPE from=<node-id> to=<node-id> envelope=<envelope-id> from_agent=<agent-id> to_agent=<agent-id> bytes=<count> cipher=<cipher> key=<key-id> sender_key=<public-key> nonce=<nonce> body=<ciphertext> payload=peer_encrypted
 SENT to=<node-id> envelope=<envelope-id> bytes=<count> payload=not_observed
 UNDELIVERED to=<node-id> envelope=<envelope-id> reason=<safe-reason> payload=not_observed
 PONG payload=not_observed
 ERROR reason=<safe-reason> payload=not_observed
 ```
 
-Phase 8 does not yet expose this relay through the local agent gateway. conUD remote session and discovery mirrors begin in Phase 9, while live relay-backed messaging/streaming lands later.
+The current relay data-plane MVP exposes peer-encrypted one-shot messages through `conu messages send --peer` and `conu relay sync`. Live stream byte routing, reconnect loops, hosted relay auth hardening, and offline mailbox delivery land later.
 
 The Phase 9 remote session surface is conUD-owned metadata sync:
 

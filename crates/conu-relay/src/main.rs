@@ -6,7 +6,7 @@ fn main() -> ExitCode {
     match args.next().as_deref() {
         Some("--check") => {
             println!("{}", conu_core::scaffold_status("conu-relay"));
-            println!("relay: phase 8 websocket relay ready; payloads not observed");
+            println!("relay: websocket relay ready; ciphertext bodies only; payloads not observed");
             ExitCode::SUCCESS
         }
         Some("--serve") => {
