@@ -43,6 +43,9 @@ set_presence()
 process_queued()
 list_agents()
 list_peers()
+sync_routes()
+list_routes()
+list_route_probes()
 send_message_bytes()
 inbox_metadata()
 receive_message_bytes()
@@ -82,6 +85,8 @@ print(sent["payloadBytes"])
 
 The wrapper passes send/stream payload bytes through stdin and returns command output to the caller. It does not print or log payloads.
 
+Route helpers are available as `sync_routes()`, `routes()`, and `route_probes()`. They return route metadata only.
+
 ## MCP Adapter
 
 The MCP adapter lives in `crates/conu-mcp` and runs as a stdio server:
@@ -114,6 +119,8 @@ conu_security_audit
 conu_register_agent
 conu_set_presence
 conu_process_queued
+conu_sync_routes
+conu_list_routes
 conu_list_agents
 conu_list_peers
 conu_send_message
@@ -123,7 +130,7 @@ conu_write_stream
 conu_close_stream
 ```
 
-`conu_send_message` accepts `payloadText` or `payloadHex`, but the tool response reports only request id, byte count, delivery counts, and envelope ids. `conu_receive_message` returns metadata by default. It returns `payloadHex` only when `includePayload` is `true`.
+`conu_sync_routes` and `conu_list_routes` expose route ids, peer ids, transport labels, endpoints, scores, latency estimates, NAT profile labels, fallback flags, and failure reasons. They do not expose payload bytes. `conu_send_message` accepts `payloadText` or `payloadHex`, but the tool response reports only request id, byte count, delivery counts, and envelope ids. `conu_receive_message` returns metadata by default. It returns `payloadHex` only when `includePayload` is `true`.
 
 When `CONU_AGENT_ID` is set, `conu-mcp` is bound to that local agent id. Register, presence, send, receive, stream open, stream write, and stream close actions are rejected if they attempt to act as a different local agent.
 
@@ -137,5 +144,6 @@ Reference: [MCP 2025-11-25 Transports](https://modelcontextprotocol.io/specifica
 
 - TypeScript SDK remains future work.
 - Remote relay-backed data-plane delivery is not active yet.
+- Route sync selects configured direct QUIC candidates and relay fallback metadata; it does not open a real QUIC socket yet.
 - MCP uses local stdio only; HTTP MCP transport is not implemented.
 - `conu_receive_message` is intentionally explicit because normal CLI and tool metadata views must not display payload contents.

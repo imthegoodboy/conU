@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use conu_sdk::{Capabilities, ConuClient, Presence, SdkError, Stream};
+use conu_sdk::{Capabilities, ConuClient, Presence, Route, SdkError, Stream};
 use serde_json::{Map, Value, json};
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -146,6 +146,8 @@ impl McpServer {
             "conu_register_agent" => self.tool_register_agent(args),
             "conu_set_presence" => self.tool_set_presence(args),
             "conu_process_queued" => self.tool_process_queued(),
+            "conu_sync_routes" => self.tool_sync_routes(),
+            "conu_list_routes" => self.tool_list_routes(args),
             "conu_list_agents" => self.tool_list_agents(args),
             "conu_list_peers" => self.tool_list_peers(),
             "conu_send_message" => self.tool_send_message(args),
@@ -267,6 +269,33 @@ impl McpServer {
                 "reconnecting": report.sessions.reconnecting,
                 "offline": report.sessions.offline
             },
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_sync_routes(&self) -> Result<Value, String> {
+        let report = self.client.sync_routes().map_err(safe_sdk_error)?;
+        Ok(json!({
+            "status": "synced",
+            "peers": report.peers,
+            "candidates": report.candidates,
+            "directAttempts": report.direct_attempts,
+            "directAvailable": report.direct_available,
+            "selectedDirect": report.selected_direct,
+            "selectedRelay": report.selected_relay,
+            "relayFallbacks": report.relay_fallbacks,
+            "probesRecorded": report.probes_recorded,
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_list_routes(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        if optional_bool(args, "sync", false)? {
+            self.client.sync_routes().map_err(safe_sdk_error)?;
+        }
+        let routes = self.client.list_routes().map_err(safe_sdk_error)?;
+        Ok(json!({
+            "routes": routes.iter().map(route_to_json).collect::<Vec<_>>(),
             "contentsDisplayed": false
         }))
     }
@@ -485,6 +514,16 @@ impl McpServer {
                 "conu_process_queued",
                 "Process queued conU gateway work once.",
                 schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_sync_routes",
+                "Probe and score direct/relay routes for trusted peers.",
+                schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_list_routes",
+                "List direct QUIC and relay route candidates without payloads.",
+                schema(json!({ "sync": { "type": "boolean" } }), vec![]),
             ),
             tool(
                 "conu_list_agents",
@@ -772,6 +811,25 @@ fn stream_to_json(stream: &Stream) -> Value {
     })
 }
 
+fn route_to_json(route: &Route) -> Value {
+    json!({
+        "routeId": &route.route_id,
+        "peerNodeId": &route.peer_node_id,
+        "displayName": &route.display_name,
+        "transport": route.transport.as_str(),
+        "endpoint": &route.endpoint,
+        "state": route.state.as_str(),
+        "score": route.score,
+        "latencyMs": route.latency_ms,
+        "directAttempted": route.direct_attempted,
+        "relayFallback": route.relay_fallback,
+        "natProfile": route.nat_profile.as_str(),
+        "failureReason": route.failure_reason.as_deref(),
+        "updatedAtUnix": route.updated_at_unix,
+        "contentsDisplayed": false
+    })
+}
+
 fn safe_sdk_error(error: SdkError) -> String {
     error.to_string()
 }
@@ -846,6 +904,30 @@ mod tests {
         assert!(body.contains("conu_send_message"));
         assert!(body.contains("conu_receive_message"));
         assert!(body.contains("conu_open_stream"));
+        assert!(body.contains("conu_sync_routes"));
+        assert!(body.contains("conu_list_routes"));
+    }
+
+    #[test]
+    fn route_tools_return_metadata_only() {
+        let server = McpServer::with_home(test_home("routes"));
+        let sync = call_tool(&server, 1, "conu_sync_routes", json!({}));
+        let routes = call_tool(
+            &server,
+            2,
+            "conu_list_routes",
+            json!({
+                "sync": true
+            }),
+        );
+        let sync_json: Value = serde_json::from_str(&tool_text(&sync)).expect("sync json");
+        let routes_json: Value = serde_json::from_str(&tool_text(&routes)).expect("routes json");
+        let body = format!("{sync_json}\n{routes_json}");
+
+        assert_eq!(sync_json["contentsDisplayed"], Value::Bool(false));
+        assert_eq!(routes_json["contentsDisplayed"], Value::Bool(false));
+        assert_eq!(routes_json["routes"], json!([]));
+        assert!(!body.contains("private message contents"));
     }
 
     #[test]

@@ -16,18 +16,20 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Metadata-only relay frame contract and standalone WebSocket relay MVP.
 - Remote session and remote agent metadata mirror for trusted peers.
 - Stream lifecycle metadata, backpressure counters, and private watch animation.
+- Direct QUIC candidate scoring, NAT profile labels, route probes, and relay fallback selection.
 - Replay protection for local message request and envelope ids.
 - Rust SDK for local agent registration, messaging, receive, peer, security, and stream calls.
 - Python stdlib wrapper SDK around installed `conu` and `conud` binaries.
 - MCP stdio adapter exposing conU as JSON-RPC tools for MCP-capable agents.
 - Payload-safe logs, receipts, watch output, and CLI JSON.
-- Phase 11 security audit command and Phase 12 SDK/MCP receive path.
+- Phase 11 security audit command, Phase 12 SDK/MCP receive path, and Phase 13 route manager.
 
 ## Still Local Or Groundwork
 
 - File-backed IPC is reliable for development, but not yet a production named-pipe/socket transport.
 - Remote sessions are metadata mirrors. They do not yet move encrypted payload bytes between machines.
 - The relay forwards metadata frames, but conUD does not yet own a live relay client for data-plane delivery.
+- Direct transport is route metadata only. Real QUIC sockets, ICE-style candidate exchange, and NAT hole punching are not active yet.
 - Stream writes count bytes and emit events. They do not persist or relay chunk bytes yet.
 - Pairing is local trust-store groundwork, not full cross-machine rendezvous.
 - MCP is stdio-only. HTTP MCP transport, auth, and remote MCP hosting are intentionally not implemented.
@@ -36,6 +38,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 ## Release Blockers
 
 - Live relay-backed encrypted message and stream routing.
+- Real direct QUIC transport with peer authentication and NAT traversal.
 - Remote signed agent-card exchange and verification.
 - Capability grants and user-visible permission policy.
 - SDK permission policy hardening before public package distribution.
@@ -68,6 +71,7 @@ Every release candidate must confirm:
 - SDK/MCP list, send, status, receipt, and stream outputs stay metadata-only.
 - SDK/MCP receive APIs return payload bytes only to the addressed local agent by explicit request.
 - Logs use `payload=not_observed` or metadata-only equivalents.
+- Route registry, route probes, and route logs contain route metadata only.
 - Relay frames reject plaintext payload fields.
 - Message and mailbox storage use encrypted payload fields.
 - Tests use artificial negative strings only to prove they do not leak.

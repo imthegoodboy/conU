@@ -15,6 +15,7 @@ use conu_core::agents::{
 use conu_core::messages::{
     self, DeliveryReceipt, InboxEntry, LocalMessage, MessageProcessReport, MessageSubmission,
 };
+use conu_core::routes::{self, RouteProbe, RouteRecord, RouteSyncReport};
 use conu_core::runtime::{self, RuntimeStatus};
 use conu_core::security::{self, SecurityAudit};
 use conu_core::sessions::{self, RemoteAgentRecord, RemoteSession, SessionSyncReport};
@@ -26,6 +27,7 @@ use conu_core::trust::{self, JoinReport, PairingInvite, RevokeReport, TrustedPee
 use conu_protocol::{AgentCapabilities, OpaquePayload};
 
 pub use conu_core::agents::AgentPresence as Presence;
+pub use conu_core::routes::RouteRecord as Route;
 pub use conu_core::streams::StreamRecord as Stream;
 pub use conu_protocol::AgentCapabilities as Capabilities;
 
@@ -142,6 +144,21 @@ impl ConuClient {
     /// List trusted/revoked peers.
     pub fn list_peers(&self) -> Result<Vec<TrustedPeer>, SdkError> {
         Ok(trust::list_peers(self.home_override())?)
+    }
+
+    /// Probe and score direct/relay routes for trusted peers.
+    pub fn sync_routes(&self) -> Result<RouteSyncReport, SdkError> {
+        Ok(routes::sync_routes(self.home_override())?)
+    }
+
+    /// List direct/relay route candidates.
+    pub fn list_routes(&self) -> Result<Vec<RouteRecord>, SdkError> {
+        Ok(routes::list_routes(self.home_override())?)
+    }
+
+    /// List metadata-only route probe history.
+    pub fn list_route_probes(&self) -> Result<Vec<RouteProbe>, SdkError> {
+        Ok(routes::list_route_probes(self.home_override())?)
     }
 
     /// Create a local pairing invitation.
@@ -303,6 +320,7 @@ pub enum SdkError {
     Agent(agents::AgentError),
     Message(messages::MessageError),
     Runtime(runtime::RuntimeError),
+    Route(routes::RouteError),
     Session(sessions::SessionError),
     Stream(streams::StreamError),
     Trust(trust::TrustError),
@@ -324,6 +342,7 @@ impl fmt::Display for SdkError {
             Self::Agent(error) => write!(formatter, "{error}"),
             Self::Message(error) => write!(formatter, "{error}"),
             Self::Runtime(error) => write!(formatter, "{error}"),
+            Self::Route(error) => write!(formatter, "{error}"),
             Self::Session(error) => write!(formatter, "{error}"),
             Self::Stream(error) => write!(formatter, "{error}"),
             Self::Trust(error) => write!(formatter, "{error}"),
@@ -374,6 +393,12 @@ impl From<messages::MessageError> for SdkError {
 impl From<runtime::RuntimeError> for SdkError {
     fn from(error: runtime::RuntimeError) -> Self {
         Self::Runtime(error)
+    }
+}
+
+impl From<routes::RouteError> for SdkError {
+    fn from(error: routes::RouteError) -> Self {
+        Self::Route(error)
     }
 }
 

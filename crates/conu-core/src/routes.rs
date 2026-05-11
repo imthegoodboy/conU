@@ -1,0 +1,984 @@
+//! Route selection and direct-transport probing metadata.
+//!
+//! Phase 13 introduces a conUD-owned route manager. It records direct QUIC
+//! candidates, relay fallback candidates, route scores, and probe metadata
+//! without moving or observing payload bytes.
+
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::fmt;
+use std::fs::{self, OpenOptions};
+use std::hash::{Hash, Hasher};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::state::{self, StateError, StatePaths};
+use crate::trust::{self, TrustStatus, TrustedPeer};
+
+const ROUTE_VERSION: &str = "1";
+const DEFAULT_RELAY_ENDPOINT: &str = "ws://127.0.0.1:8787";
+const DIRECT_QUIC_LATENCY_MS: u64 = 25;
+const RELAY_WEBSOCKET_LATENCY_MS: u64 = 80;
+
+/// Transport class for a candidate route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteTransport {
+    DirectQuic,
+    RelayWebSocket,
+}
+
+impl RouteTransport {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectQuic => "direct-quic",
+            Self::RelayWebSocket => "relay-websocket",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "direct-quic" => Self::DirectQuic,
+            _ => Self::RelayWebSocket,
+        }
+    }
+}
+
+/// Current route candidate state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteState {
+    Selected,
+    Candidate,
+    Fallback,
+    Unavailable,
+}
+
+impl RouteState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Selected => "selected",
+            Self::Candidate => "candidate",
+            Self::Fallback => "fallback",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "selected" => Self::Selected,
+            "candidate" => Self::Candidate,
+            "fallback" => Self::Fallback,
+            _ => Self::Unavailable,
+        }
+    }
+}
+
+/// NAT posture inferred from local configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NatProfile {
+    Unknown,
+    Public,
+    Cone,
+    Symmetric,
+    RelayOnly,
+}
+
+impl NatProfile {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Public => "public",
+            Self::Cone => "cone",
+            Self::Symmetric => "symmetric",
+            Self::RelayOnly => "relay-only",
+        }
+    }
+
+    fn from_config(value: Option<&String>) -> Self {
+        match value.map(String::as_str) {
+            Some("public") => Self::Public,
+            Some("cone") => Self::Cone,
+            Some("symmetric") => Self::Symmetric,
+            Some("relay-only") => Self::RelayOnly,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Persisted route candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteRecord {
+    pub route_id: String,
+    pub peer_node_id: String,
+    pub display_name: String,
+    pub transport: RouteTransport,
+    pub endpoint: String,
+    pub state: RouteState,
+    pub score: u16,
+    pub latency_ms: Option<u64>,
+    pub direct_attempted: bool,
+    pub relay_fallback: bool,
+    pub nat_profile: NatProfile,
+    pub failure_reason: Option<String>,
+    pub updated_at_unix: u64,
+}
+
+impl RouteRecord {
+    pub fn is_selected(&self) -> bool {
+        self.state == RouteState::Selected
+    }
+
+    pub fn is_direct(&self) -> bool {
+        self.transport == RouteTransport::DirectQuic
+    }
+}
+
+/// One metadata-only route probe event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteProbe {
+    pub probe_id: String,
+    pub route_id: String,
+    pub peer_node_id: String,
+    pub transport: RouteTransport,
+    pub endpoint: String,
+    pub outcome: String,
+    pub score: u16,
+    pub latency_ms: Option<u64>,
+    pub created_at_unix: u64,
+}
+
+/// Summary of a route sync/probe pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteSyncReport {
+    pub peers: usize,
+    pub candidates: usize,
+    pub direct_attempts: usize,
+    pub direct_available: usize,
+    pub selected_direct: usize,
+    pub selected_relay: usize,
+    pub relay_fallbacks: usize,
+    pub probes_recorded: usize,
+}
+
+/// Errors produced by route management.
+#[derive(Debug)]
+pub enum RouteError {
+    State(StateError),
+    Trust(trust::TrustError),
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+    InvalidRecord {
+        reason: String,
+    },
+}
+
+impl RouteError {
+    fn io(action: &'static str, path: &Path, source: io::Error) -> Self {
+        Self::Io {
+            action,
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
+
+impl fmt::Display for RouteError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::State(error) => write!(formatter, "{error}"),
+            Self::Trust(error) => write!(formatter, "{error}"),
+            Self::Io {
+                action,
+                path,
+                source,
+            } => write!(formatter, "{action} at {}: {source}", path.display()),
+            Self::InvalidRecord { reason } => write!(formatter, "invalid route record: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for RouteError {}
+
+impl From<StateError> for RouteError {
+    fn from(error: StateError) -> Self {
+        Self::State(error)
+    }
+}
+
+impl From<trust::TrustError> for RouteError {
+    fn from(error: trust::TrustError) -> Self {
+        Self::Trust(error)
+    }
+}
+
+/// Probe trusted-peer routes and write the selected route registry.
+pub fn sync_routes(home_override: Option<PathBuf>) -> Result<RouteSyncReport, RouteError> {
+    let init = state::init_state(home_override)?;
+    sync_routes_from_paths(&init.paths)
+}
+
+/// Probe trusted-peer routes using already resolved state paths.
+pub fn sync_routes_from_paths(paths: &StatePaths) -> Result<RouteSyncReport, RouteError> {
+    ensure_route_files(paths)?;
+
+    let peers = trust::list_peers(Some(paths.home.clone()))?;
+    let config = read_config(paths)?;
+    let relay_endpoint = relay_endpoint(&config)?;
+    let nat_profile = NatProfile::from_config(config.get("nat_profile"));
+    let now = current_unix_seconds();
+    let mut routes = Vec::new();
+    let mut probes = Vec::new();
+
+    for peer in peers
+        .iter()
+        .filter(|peer| peer.status == TrustStatus::Trusted)
+    {
+        let direct = direct_route_candidate(peer, &config, nat_profile, now)?;
+        let relay = relay_route_candidate(peer, &relay_endpoint, nat_profile, now)?;
+        let direct_available = direct.state != RouteState::Unavailable;
+        let direct_selected = direct_available && direct.score >= relay.score;
+
+        let selected_direct = RouteRecord {
+            state: if direct_selected {
+                RouteState::Selected
+            } else {
+                direct.state
+            },
+            ..direct
+        };
+        let selected_relay = RouteRecord {
+            state: if direct_selected {
+                RouteState::Candidate
+            } else {
+                RouteState::Selected
+            },
+            relay_fallback: !direct_selected,
+            ..relay
+        };
+
+        probes.push(probe_from_route(&selected_direct, now));
+        probes.push(probe_from_route(&selected_relay, now));
+        routes.push(selected_direct);
+        routes.push(selected_relay);
+    }
+
+    write_routes(paths, &routes)?;
+    append_probes(paths, &probes)?;
+    append_route_log(paths, &routes)?;
+
+    Ok(report_from_routes(&routes, probes.len()))
+}
+
+/// Read route candidate records.
+pub fn list_routes(home_override: Option<PathBuf>) -> Result<Vec<RouteRecord>, RouteError> {
+    let paths = StatePaths::resolve(home_override)?;
+    read_routes(&paths)
+}
+
+/// Read metadata-only route probe history.
+pub fn list_route_probes(home_override: Option<PathBuf>) -> Result<Vec<RouteProbe>, RouteError> {
+    let paths = StatePaths::resolve(home_override)?;
+    read_probes(&paths)
+}
+
+/// Return the selected route for a peer, if one exists.
+pub fn selected_route_for_peer(
+    home_override: Option<PathBuf>,
+    peer_node_id: &str,
+) -> Result<Option<RouteRecord>, RouteError> {
+    let paths = StatePaths::resolve(home_override)?;
+    selected_route_for_peer_from_paths(&paths, peer_node_id)
+}
+
+/// Return the selected route for a peer from resolved paths.
+pub fn selected_route_for_peer_from_paths(
+    paths: &StatePaths,
+    peer_node_id: &str,
+) -> Result<Option<RouteRecord>, RouteError> {
+    let peer_node_id = validate_identifier(peer_node_id.to_string(), "peer node id")?;
+    Ok(read_routes(paths)?
+        .into_iter()
+        .find(|route| route.peer_node_id == peer_node_id && route.is_selected()))
+}
+
+fn direct_route_candidate(
+    peer: &TrustedPeer,
+    config: &HashMap<String, String>,
+    nat_profile: NatProfile,
+    now: u64,
+) -> Result<RouteRecord, RouteError> {
+    let endpoint = direct_endpoint(config, &peer.peer_node_id);
+    let route_id = route_id(
+        &peer.peer_node_id,
+        RouteTransport::DirectQuic,
+        endpoint.as_deref(),
+    );
+    let mut state = RouteState::Unavailable;
+    let mut score = 0;
+    let mut latency_ms = None;
+    let mut failure_reason = Some("no_direct_quic_candidate".to_string());
+
+    if nat_profile == NatProfile::RelayOnly {
+        failure_reason = Some("nat_profile_relay_only".to_string());
+    } else if let Some(endpoint) = endpoint.as_deref() {
+        if valid_direct_endpoint(endpoint) {
+            state = RouteState::Candidate;
+            score = direct_score(nat_profile);
+            latency_ms = Some(DIRECT_QUIC_LATENCY_MS);
+            failure_reason = None;
+        } else {
+            failure_reason = Some("invalid_direct_quic_endpoint".to_string());
+        }
+    }
+
+    Ok(RouteRecord {
+        route_id,
+        peer_node_id: peer.peer_node_id.clone(),
+        display_name: peer.display_name.clone(),
+        transport: RouteTransport::DirectQuic,
+        endpoint: endpoint.unwrap_or_else(|| "quic://unconfigured".to_string()),
+        state,
+        score,
+        latency_ms,
+        direct_attempted: true,
+        relay_fallback: false,
+        nat_profile,
+        failure_reason,
+        updated_at_unix: now,
+    })
+}
+
+fn relay_route_candidate(
+    peer: &TrustedPeer,
+    endpoint: &str,
+    nat_profile: NatProfile,
+    now: u64,
+) -> Result<RouteRecord, RouteError> {
+    Ok(RouteRecord {
+        route_id: route_id(
+            &peer.peer_node_id,
+            RouteTransport::RelayWebSocket,
+            Some(endpoint),
+        ),
+        peer_node_id: peer.peer_node_id.clone(),
+        display_name: peer.display_name.clone(),
+        transport: RouteTransport::RelayWebSocket,
+        endpoint: validate_endpoint(endpoint.to_string())?,
+        state: RouteState::Candidate,
+        score: 70,
+        latency_ms: Some(RELAY_WEBSOCKET_LATENCY_MS),
+        direct_attempted: false,
+        relay_fallback: false,
+        nat_profile,
+        failure_reason: None,
+        updated_at_unix: now,
+    })
+}
+
+fn direct_score(nat_profile: NatProfile) -> u16 {
+    match nat_profile {
+        NatProfile::Public => 98,
+        NatProfile::Cone => 92,
+        NatProfile::Unknown => 88,
+        NatProfile::Symmetric => 72,
+        NatProfile::RelayOnly => 0,
+    }
+}
+
+fn probe_from_route(route: &RouteRecord, now: u64) -> RouteProbe {
+    let outcome = match route.state {
+        RouteState::Selected | RouteState::Candidate => "available",
+        RouteState::Fallback => "fallback",
+        RouteState::Unavailable => route.failure_reason.as_deref().unwrap_or("unavailable"),
+    };
+
+    RouteProbe {
+        probe_id: probe_id(&route.route_id, now),
+        route_id: route.route_id.clone(),
+        peer_node_id: route.peer_node_id.clone(),
+        transport: route.transport,
+        endpoint: route.endpoint.clone(),
+        outcome: outcome.to_string(),
+        score: route.score,
+        latency_ms: route.latency_ms,
+        created_at_unix: now,
+    }
+}
+
+fn report_from_routes(routes: &[RouteRecord], probes_recorded: usize) -> RouteSyncReport {
+    let peers = routes
+        .iter()
+        .map(|route| route.peer_node_id.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    RouteSyncReport {
+        peers,
+        candidates: routes.len(),
+        direct_attempts: routes
+            .iter()
+            .filter(|route| route.transport == RouteTransport::DirectQuic)
+            .count(),
+        direct_available: routes
+            .iter()
+            .filter(|route| {
+                route.transport == RouteTransport::DirectQuic
+                    && route.state != RouteState::Unavailable
+            })
+            .count(),
+        selected_direct: routes
+            .iter()
+            .filter(|route| route.is_selected() && route.is_direct())
+            .count(),
+        selected_relay: routes
+            .iter()
+            .filter(|route| {
+                route.is_selected() && route.transport == RouteTransport::RelayWebSocket
+            })
+            .count(),
+        relay_fallbacks: routes.iter().filter(|route| route.relay_fallback).count(),
+        probes_recorded,
+    }
+}
+
+fn ensure_route_files(paths: &StatePaths) -> Result<(), RouteError> {
+    fs::create_dir_all(&paths.routes_dir)
+        .map_err(|error| RouteError::io("create routes directory", &paths.routes_dir, error))?;
+    fs::create_dir_all(&paths.logs_dir)
+        .map_err(|error| RouteError::io("create logs directory", &paths.logs_dir, error))
+}
+
+fn read_config(paths: &StatePaths) -> Result<HashMap<String, String>, RouteError> {
+    let contents = match fs::read_to_string(&paths.config) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(error) => return Err(RouteError::io("read route config", &paths.config, error)),
+    };
+    Ok(parse_key_values(&contents))
+}
+
+fn relay_endpoint(config: &HashMap<String, String>) -> Result<String, RouteError> {
+    validate_endpoint(
+        config
+            .get("default_relay")
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_RELAY_ENDPOINT.to_string()),
+    )
+}
+
+fn direct_endpoint(config: &HashMap<String, String>, peer_node_id: &str) -> Option<String> {
+    let keyed = format!("direct_quic_{}", config_key_suffix(peer_node_id));
+    config
+        .get(&keyed)
+        .or_else(|| config.get("direct_quic_endpoint"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn read_routes(paths: &StatePaths) -> Result<Vec<RouteRecord>, RouteError> {
+    if !paths.route_registry.exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents = fs::read_to_string(&paths.route_registry)
+        .map_err(|error| RouteError::io("read route registry", &paths.route_registry, error))?;
+    parse_routes(&contents)
+}
+
+fn write_routes(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteError> {
+    fs::create_dir_all(&paths.routes_dir)
+        .map_err(|error| RouteError::io("create routes directory", &paths.routes_dir, error))?;
+    let mut sorted = routes.to_vec();
+    sorted.sort_by(|left, right| {
+        left.peer_node_id
+            .cmp(&right.peer_node_id)
+            .then(left.transport.as_str().cmp(right.transport.as_str()))
+    });
+    let mut contents = format!("# conU route registry\nversion = \"{}\"\n", ROUTE_VERSION);
+
+    for route in sorted {
+        contents.push_str("\n[[route]]\n");
+        contents.push_str(&format!(
+            "route_id = \"{}\"\n",
+            escape_file_value(&route.route_id)
+        ));
+        contents.push_str(&format!(
+            "peer_node_id = \"{}\"\n",
+            escape_file_value(&route.peer_node_id)
+        ));
+        contents.push_str(&format!(
+            "display_name = \"{}\"\n",
+            escape_file_value(&route.display_name)
+        ));
+        contents.push_str(&format!("transport = \"{}\"\n", route.transport.as_str()));
+        contents.push_str(&format!(
+            "endpoint = \"{}\"\n",
+            escape_file_value(&route.endpoint)
+        ));
+        contents.push_str(&format!("state = \"{}\"\n", route.state.as_str()));
+        contents.push_str(&format!("score = {}\n", route.score));
+        contents.push_str(&format!("latency_ms = {}\n", route.latency_ms.unwrap_or(0)));
+        contents.push_str(&format!("direct_attempted = {}\n", route.direct_attempted));
+        contents.push_str(&format!("relay_fallback = {}\n", route.relay_fallback));
+        contents.push_str(&format!(
+            "nat_profile = \"{}\"\n",
+            route.nat_profile.as_str()
+        ));
+        contents.push_str(&format!(
+            "failure_reason = \"{}\"\n",
+            escape_file_value(route.failure_reason.as_deref().unwrap_or(""))
+        ));
+        contents.push_str(&format!("updated_at_unix = {}\n", route.updated_at_unix));
+        contents.push_str("payload_displayed = false\n");
+    }
+
+    fs::write(&paths.route_registry, contents)
+        .map_err(|error| RouteError::io("write route registry", &paths.route_registry, error))
+}
+
+fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteError> {
+    if probes.is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&paths.routes_dir)
+        .map_err(|error| RouteError::io("create routes directory", &paths.routes_dir, error))?;
+    let new_file = !paths.route_probes.exists();
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&paths.route_probes)
+        .map_err(|error| RouteError::io("open route probes", &paths.route_probes, error))?;
+
+    if new_file {
+        writeln!(file, "# conU route probes\nversion = \"{}\"", ROUTE_VERSION)
+            .map_err(|error| RouteError::io("write route probes", &paths.route_probes, error))?;
+    }
+
+    for probe in probes {
+        writeln!(
+            file,
+            "\n[[probe]]\nprobe_id = \"{}\"\nroute_id = \"{}\"\npeer_node_id = \"{}\"\ntransport = \"{}\"\nendpoint = \"{}\"\noutcome = \"{}\"\nscore = {}\nlatency_ms = {}\ncreated_at_unix = {}\npayload_displayed = false",
+            escape_file_value(&probe.probe_id),
+            escape_file_value(&probe.route_id),
+            escape_file_value(&probe.peer_node_id),
+            probe.transport.as_str(),
+            escape_file_value(&probe.endpoint),
+            escape_file_value(&probe.outcome),
+            probe.score,
+            probe.latency_ms.unwrap_or(0),
+            probe.created_at_unix
+        )
+        .map_err(|error| RouteError::io("write route probe", &paths.route_probes, error))?;
+    }
+
+    Ok(())
+}
+
+fn read_probes(paths: &StatePaths) -> Result<Vec<RouteProbe>, RouteError> {
+    if !paths.route_probes.exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents = fs::read_to_string(&paths.route_probes)
+        .map_err(|error| RouteError::io("read route probes", &paths.route_probes, error))?;
+    parse_probes(&contents)
+}
+
+fn append_route_log(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteError> {
+    fs::create_dir_all(&paths.logs_dir)
+        .map_err(|error| RouteError::io("create logs directory", &paths.logs_dir, error))?;
+    let log_path = paths.logs_dir.join("routes.log");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| RouteError::io("open route log", &log_path, error))?;
+    let report = report_from_routes(routes, 0);
+
+    writeln!(
+        file,
+        "event=route_sync peers={} candidates={} selected_direct={} selected_relay={} relay_fallbacks={} payload=not_observed",
+        report.peers,
+        report.candidates,
+        report.selected_direct,
+        report.selected_relay,
+        report.relay_fallbacks
+    )
+    .map_err(|error| RouteError::io("write route log", &log_path, error))
+}
+
+fn parse_routes(contents: &str) -> Result<Vec<RouteRecord>, RouteError> {
+    let mut routes = Vec::new();
+    let mut current = HashMap::new();
+
+    for line in contents.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') || line == "version = \"1\"" {
+            continue;
+        }
+        if line == "[[route]]" {
+            if !current.is_empty() {
+                routes.push(route_from_values(&current)?);
+                current.clear();
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        current.insert(key.trim().to_string(), clean_value(value));
+    }
+
+    if !current.is_empty() {
+        routes.push(route_from_values(&current)?);
+    }
+
+    Ok(routes)
+}
+
+fn parse_probes(contents: &str) -> Result<Vec<RouteProbe>, RouteError> {
+    let mut probes = Vec::new();
+    let mut current = HashMap::new();
+
+    for line in contents.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') || line == "version = \"1\"" {
+            continue;
+        }
+        if line == "[[probe]]" {
+            if !current.is_empty() {
+                probes.push(probe_from_values(&current)?);
+                current.clear();
+            }
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        current.insert(key.trim().to_string(), clean_value(value));
+    }
+
+    if !current.is_empty() {
+        probes.push(probe_from_values(&current)?);
+    }
+
+    Ok(probes)
+}
+
+fn route_from_values(values: &HashMap<String, String>) -> Result<RouteRecord, RouteError> {
+    let latency_ms = parse_u64(&required(values, "latency_ms")?)?;
+    let failure_reason = optional_clean(values.get("failure_reason"));
+    Ok(RouteRecord {
+        route_id: validate_identifier(required(values, "route_id")?, "route id")?,
+        peer_node_id: validate_identifier(required(values, "peer_node_id")?, "peer node id")?,
+        display_name: validate_display_name(required(values, "display_name")?)?,
+        transport: RouteTransport::from_str(&required(values, "transport")?),
+        endpoint: validate_endpoint(required(values, "endpoint")?)?,
+        state: RouteState::from_str(&required(values, "state")?),
+        score: parse_u16(&required(values, "score")?)?,
+        latency_ms: if latency_ms == 0 {
+            None
+        } else {
+            Some(latency_ms)
+        },
+        direct_attempted: parse_bool(values.get("direct_attempted")).unwrap_or(false),
+        relay_fallback: parse_bool(values.get("relay_fallback")).unwrap_or(false),
+        nat_profile: NatProfile::from_config(values.get("nat_profile")),
+        failure_reason,
+        updated_at_unix: parse_u64(&required(values, "updated_at_unix")?)?,
+    })
+}
+
+fn probe_from_values(values: &HashMap<String, String>) -> Result<RouteProbe, RouteError> {
+    let latency_ms = parse_u64(&required(values, "latency_ms")?)?;
+    Ok(RouteProbe {
+        probe_id: validate_identifier(required(values, "probe_id")?, "probe id")?,
+        route_id: validate_identifier(required(values, "route_id")?, "route id")?,
+        peer_node_id: validate_identifier(required(values, "peer_node_id")?, "peer node id")?,
+        transport: RouteTransport::from_str(&required(values, "transport")?),
+        endpoint: validate_endpoint(required(values, "endpoint")?)?,
+        outcome: validate_identifier(required(values, "outcome")?, "outcome")?,
+        score: parse_u16(&required(values, "score")?)?,
+        latency_ms: if latency_ms == 0 {
+            None
+        } else {
+            Some(latency_ms)
+        },
+        created_at_unix: parse_u64(&required(values, "created_at_unix")?)?,
+    })
+}
+
+fn parse_key_values(contents: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+
+    for line in contents.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        values.insert(key.trim().to_string(), clean_value(value));
+    }
+
+    values
+}
+
+fn clean_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
+fn required(values: &HashMap<String, String>, key: &'static str) -> Result<String, RouteError> {
+    values
+        .get(key)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| RouteError::InvalidRecord {
+            reason: format!("missing {key}"),
+        })
+}
+
+fn optional_clean(value: Option<&String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_identifier(value: String, field: &'static str) -> Result<String, RouteError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(RouteError::InvalidRecord {
+            reason: format!("{field} cannot be empty"),
+        });
+    }
+    if value.len() > 180 {
+        return Err(RouteError::InvalidRecord {
+            reason: format!("{field} is too long"),
+        });
+    }
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return Err(RouteError::InvalidRecord {
+            reason: format!("{field} must use ASCII letters, numbers, dash, underscore, or dot"),
+        });
+    }
+    Ok(value)
+}
+
+fn validate_display_name(value: String) -> Result<String, RouteError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(RouteError::InvalidRecord {
+            reason: "display name cannot be empty".to_string(),
+        });
+    }
+    if value.len() > 120 || value.contains('\n') || value.contains('\r') {
+        return Err(RouteError::InvalidRecord {
+            reason: "display name is invalid".to_string(),
+        });
+    }
+    Ok(value)
+}
+
+fn validate_endpoint(value: String) -> Result<String, RouteError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(RouteError::InvalidRecord {
+            reason: "endpoint cannot be empty".to_string(),
+        });
+    }
+    if value.len() > 220 || value.chars().any(char::is_whitespace) {
+        return Err(RouteError::InvalidRecord {
+            reason: "endpoint is invalid".to_string(),
+        });
+    }
+    Ok(value)
+}
+
+fn valid_direct_endpoint(value: &str) -> bool {
+    let endpoint = value
+        .strip_prefix("quic://")
+        .or_else(|| value.strip_prefix("udp://"))
+        .unwrap_or(value);
+    let Some((host, port)) = endpoint.rsplit_once(':') else {
+        return false;
+    };
+    !host.trim().is_empty()
+        && port.parse::<u16>().is_ok_and(|port| port > 0)
+        && !endpoint.chars().any(char::is_whitespace)
+}
+
+fn parse_bool(value: Option<&String>) -> Option<bool> {
+    match value?.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_u16(value: &str) -> Result<u16, RouteError> {
+    value.parse::<u16>().map_err(|_| RouteError::InvalidRecord {
+        reason: "expected unsigned score".to_string(),
+    })
+}
+
+fn parse_u64(value: &str) -> Result<u64, RouteError> {
+    value.parse::<u64>().map_err(|_| RouteError::InvalidRecord {
+        reason: "expected unsigned integer".to_string(),
+    })
+}
+
+fn route_id(peer_node_id: &str, transport: RouteTransport, endpoint: Option<&str>) -> String {
+    let mut hasher = DefaultHasher::new();
+    peer_node_id.hash(&mut hasher);
+    transport.as_str().hash(&mut hasher);
+    endpoint.unwrap_or("").hash(&mut hasher);
+    format!("route_{:016x}", hasher.finish())
+}
+
+fn probe_id(route_id: &str, now: u64) -> String {
+    let mut hasher = DefaultHasher::new();
+    route_id.hash(&mut hasher);
+    now.hash(&mut hasher);
+    current_unix_nanos().hash(&mut hasher);
+    format!("probe_{:016x}", hasher.finish())
+}
+
+fn config_key_suffix(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn escape_file_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn current_unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::process;
+
+    #[test]
+    fn sync_prefers_relay_when_no_direct_candidate_exists() {
+        let home = test_home("relay-fallback");
+        let peer = trusted_peer(&home);
+
+        let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let routes = list_routes(Some(home)).expect("routes read");
+        let selected = routes
+            .iter()
+            .find(|route| route.peer_node_id == peer.peer_node_id && route.is_selected())
+            .expect("selected route");
+
+        assert_eq!(report.relay_fallbacks, 1);
+        assert_eq!(selected.transport, RouteTransport::RelayWebSocket);
+        assert!(selected.relay_fallback);
+    }
+
+    #[test]
+    fn sync_prefers_direct_quic_when_candidate_is_configured() {
+        let home = test_home("direct-quic");
+        let peer = trusted_peer(&home);
+        let config_key = format!("direct_quic_{}", config_key_suffix(&peer.peer_node_id));
+        fs::write(
+            StatePaths::from_home(home.clone()).config,
+            format!(
+                "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\nnat_profile = \"public\"\n{config_key} = \"quic://127.0.0.1:9443\"\n"
+            ),
+        )
+        .expect("config writes");
+
+        let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let selected =
+            selected_route_for_peer(Some(home), &peer.peer_node_id).expect("route lookup");
+
+        assert_eq!(report.selected_direct, 1);
+        assert_eq!(report.selected_relay, 0);
+        assert_eq!(
+            selected.expect("selected").transport,
+            RouteTransport::DirectQuic
+        );
+    }
+
+    #[test]
+    fn route_logs_and_probes_are_payload_safe() {
+        let home = test_home("payload-safe");
+        trusted_peer(&home);
+
+        sync_routes(Some(home.clone())).expect("routes sync");
+        let paths = StatePaths::from_home(home.clone());
+        let log = fs::read_to_string(paths.logs_dir.join("routes.log")).expect("log reads");
+        let probes = fs::read_to_string(paths.route_probes).expect("probes read");
+
+        assert!(log.contains("payload=not_observed"));
+        assert!(probes.contains("payload_displayed = false"));
+        assert!(!log.contains("private message contents"));
+        assert!(!probes.contains("private message contents"));
+        assert!(!log.contains("Review this code"));
+    }
+
+    #[test]
+    fn revoked_peer_is_not_routeable() {
+        let home = test_home("revoked");
+        let peer = trusted_peer(&home);
+        trust::revoke_peer(Some(home.clone()), &peer.peer_node_id).expect("revokes");
+
+        let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let routes = list_routes(Some(home)).expect("routes read");
+
+        assert_eq!(report.peers, 0);
+        assert!(routes.is_empty());
+    }
+
+    fn trusted_peer(home: &Path) -> TrustedPeer {
+        state::init_state(Some(home.to_path_buf())).expect("state initializes");
+        let invite =
+            trust::create_pairing_invite(Some(home.to_path_buf())).expect("invite creates");
+        trust::join_pairing_code(Some(home.to_path_buf()), &invite.code)
+            .expect("joins")
+            .peer
+    }
+
+    fn test_home(name: &str) -> PathBuf {
+        let mut path = env::temp_dir();
+        path.push(format!(
+            "conu-routes-test-{}-{}-{name}",
+            process::id(),
+            current_unix_nanos()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        path
+    }
+}

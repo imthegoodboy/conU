@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use conu_protocol::AgentCapabilities;
 
 use crate::agents::AgentPresence;
+use crate::routes::{self, RouteTransport};
 use crate::state::{self, StateError, StatePaths};
 use crate::trust::{self, TrustStatus, TrustedPeer};
 
@@ -88,6 +89,7 @@ pub struct SessionSyncReport {
 pub enum SessionError {
     State(StateError),
     Trust(trust::TrustError),
+    Route(routes::RouteError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -113,6 +115,7 @@ impl fmt::Display for SessionError {
         match self {
             Self::State(error) => write!(formatter, "{error}"),
             Self::Trust(error) => write!(formatter, "{error}"),
+            Self::Route(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -137,6 +140,12 @@ impl From<trust::TrustError> for SessionError {
     }
 }
 
+impl From<routes::RouteError> for SessionError {
+    fn from(error: routes::RouteError) -> Self {
+        Self::Route(error)
+    }
+}
+
 /// Sync remote sessions from the local trust store.
 pub fn sync_remote_sessions(
     home_override: Option<PathBuf>,
@@ -152,6 +161,7 @@ pub fn sync_remote_sessions_from_paths(
     ensure_session_files(paths)?;
 
     let peers = trust::list_peers(Some(paths.home.clone()))?;
+    routes::sync_routes_from_paths(paths)?;
     let previous = read_sessions(paths)?
         .into_iter()
         .map(|session| (session.peer_node_id.clone(), session))
@@ -163,7 +173,8 @@ pub fn sync_remote_sessions_from_paths(
 
     for peer in peers {
         let prior = previous.get(&peer.peer_node_id);
-        let session = session_from_peer(&peer, prior, &relay_endpoint, now);
+        let selected_route = routes::selected_route_for_peer_from_paths(paths, &peer.peer_node_id)?;
+        let session = session_from_peer(&peer, prior, &relay_endpoint, selected_route, now);
         if peer.status == TrustStatus::Trusted {
             remote_agents.push(remote_agent_from_peer(&peer, now));
         }
@@ -197,6 +208,7 @@ fn session_from_peer(
     peer: &TrustedPeer,
     prior: Option<&RemoteSession>,
     relay_endpoint: &str,
+    selected_route: Option<routes::RouteRecord>,
     now: u64,
 ) -> RemoteSession {
     let state = if peer.status == TrustStatus::Trusted {
@@ -216,13 +228,23 @@ fn session_from_peer(
         _ => prior.map(|session| session.last_seen_unix).unwrap_or(now),
     };
     let remote_agent_count = usize::from(peer.status == TrustStatus::Trusted);
+    let (route, endpoint) = match selected_route {
+        Some(route) if peer.status == TrustStatus::Trusted => {
+            let route_label = match route.transport {
+                RouteTransport::DirectQuic => "direct-quic",
+                RouteTransport::RelayWebSocket => "relay-websocket",
+            };
+            (route_label.to_string(), route.endpoint)
+        }
+        _ => ("relay-websocket".to_string(), relay_endpoint.to_string()),
+    };
 
     RemoteSession {
         peer_node_id: peer.peer_node_id.clone(),
         display_name: peer.display_name.clone(),
         state,
-        route: "relay".to_string(),
-        relay_endpoint: relay_endpoint.to_string(),
+        route,
+        relay_endpoint: endpoint,
         reconnect_attempts,
         remote_agent_count,
         last_seen_unix,

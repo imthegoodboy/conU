@@ -1,8 +1,8 @@
 //! CLI rendering and command dispatch for conU.
 //!
-//! Phase 11 adds conUD runtime detection, metadata-only local/remote agent
+//! Phase 13 adds conUD runtime detection, metadata-only local/remote agent
 //! visibility, encrypted-at-rest local opaque envelopes, remote session
-//! mirrors, stream/watch metadata, and security audit output.
+//! mirrors, stream/watch metadata, route selection, and security audit output.
 
 use std::collections::HashSet;
 use std::env;
@@ -15,6 +15,7 @@ use conu_core::agents::{
     self, AgentPresence, AgentRegistration, LocalAgentRecord, PresenceHeartbeat,
 };
 use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
+use conu_core::routes::{self, RouteProbe, RouteRecord, RouteSyncReport, RouteTransport};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
 use conu_core::security::{self, SecurityAudit, SecurityReport};
 use conu_core::sessions::{self, RemoteAgentRecord, RemoteSession, SessionSyncReport};
@@ -102,6 +103,7 @@ where
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
         "sessions" => render_sessions(&args[1..], home_override),
+        "routes" => render_routes(&args[1..], home_override),
         "security" => render_security(&args[1..], home_override),
         "pair" => render_pair(&args[1..], home_override),
         "join" => render_join(&args[1..], home_override),
@@ -133,6 +135,7 @@ fn render_dashboard(home_override: Option<PathBuf>) -> String {
                 .count()
         })
         .unwrap_or(0);
+    let route_records = routes::list_routes(home_override.clone()).unwrap_or_default();
     let remote_agents = sessions::list_remote_agents(home_override)
         .map(|agents| agents.len())
         .unwrap_or(0);
@@ -167,7 +170,8 @@ control room
   local agents  {local_agents}
   remote agents {remote_agents}
   remote peers  {trusted_peers} trusted
-  network       relay service  available via conu-relay
+  routes        direct {} relay {}
+  network       direct when available, relay fallback
 
 quick commands
   conu init
@@ -176,13 +180,16 @@ quick commands
   conu agents register <agent-id> <display-name>
   conu messages send <from-agent> <to-agent> --stdin
   conu streams open <from-agent> <to-agent>
+  conu routes sync
   conu security audit
   conu pair
   conu peers
   conu join <code>
   conu connect
   conu watch",
-        conu_core::PRODUCT_LAW
+        conu_core::PRODUCT_LAW,
+        selected_direct_route_count(&route_records),
+        selected_relay_route_count(&route_records)
     )
 }
 
@@ -229,6 +236,10 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         Ok(streams) => streams,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
+    let route_records = match routes::list_routes(home_override.clone()) {
+        Ok(routes) => routes,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
     let security_audit =
         security::security_audit(home_override).unwrap_or_else(|_| empty_security_audit());
 
@@ -240,6 +251,7 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
             &remote_agents,
             &sessions,
             &stream_records,
+            &route_records,
             &peers,
             &security_audit,
         )),
@@ -250,6 +262,7 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
             &remote_agents,
             &sessions,
             &stream_records,
+            &route_records,
             &peers,
             &security_audit,
         )),
@@ -1631,6 +1644,341 @@ privacy
     )
 }
 
+fn render_routes(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("sync") => render_routes_sync(&args[1..], home_override),
+        Some("probes") => render_route_probes(&args[1..], home_override),
+        None | Some("--json") => render_routes_list(args, home_override),
+        Some(_) => CliOutput::failure(2, render_routes_usage()),
+    }
+}
+
+fn render_routes_sync(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+
+    match routes::sync_routes(home_override) {
+        Ok(report) => {
+            if json {
+                CliOutput::success(render_routes_report_json(&report))
+            } else {
+                CliOutput::success(render_routes_report_text(&report))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU routes sync failed\n\n{error}")),
+    }
+}
+
+fn render_routes_list(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+    let route_records = match routes::list_routes(home_override) {
+        Ok(routes) => routes,
+        Err(error) => return CliOutput::failure(1, format!("conU routes failed\n\n{error}")),
+    };
+
+    if json {
+        CliOutput::success(render_routes_json(&route_records))
+    } else {
+        CliOutput::success(render_routes_text(&route_records))
+    }
+}
+
+fn render_route_probes(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+    let probes = match routes::list_route_probes(home_override) {
+        Ok(probes) => probes,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU routes probes failed\n\n{error}"));
+        }
+    };
+
+    if json {
+        CliOutput::success(render_route_probes_json(&probes))
+    } else {
+        CliOutput::success(render_route_probes_text(&probes))
+    }
+}
+
+fn render_routes_json(route_records: &[RouteRecord]) -> String {
+    let route_items = route_records
+        .iter()
+        .map(|route| {
+            format!(
+                r#"    {{
+      "routeId": "{}",
+      "peerNodeId": "{}",
+      "displayName": "{}",
+      "transport": "{}",
+      "endpoint": "{}",
+      "state": "{}",
+      "score": {},
+      "latencyMs": {},
+      "directAttempted": {},
+      "relayFallback": {},
+      "natProfile": "{}",
+      "failureReason": {},
+      "updatedAtUnix": {}
+    }}"#,
+                json_escape(&route.route_id),
+                json_escape(&route.peer_node_id),
+                json_escape(&route.display_name),
+                route.transport.as_str(),
+                json_escape(&route.endpoint),
+                route.state.as_str(),
+                route.score,
+                json_u64(route.latency_ms),
+                route.direct_attempted,
+                route.relay_fallback,
+                route.nat_profile.as_str(),
+                json_optional_string(route.failure_reason.as_deref()),
+                route.updated_at_unix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let routes_json = if route_items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{route_items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "routes": {},
+  "selectedDirect": {},
+  "selectedRelay": {},
+  "relayFallbacks": {},
+  "contentsDisplayed": false
+}}"#,
+        routes_json,
+        selected_direct_route_count(route_records),
+        selected_relay_route_count(route_records),
+        relay_fallback_route_count(route_records)
+    )
+}
+
+fn render_routes_text(route_records: &[RouteRecord]) -> String {
+    let selected_text = route_records
+        .iter()
+        .filter(|route| route.is_selected())
+        .map(render_route_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let selected_text = if selected_text.is_empty() {
+        "  none selected yet".to_string()
+    } else {
+        selected_text
+    };
+
+    let candidates_text = route_records
+        .iter()
+        .filter(|route| !route.is_selected())
+        .map(render_route_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let candidates_text = if candidates_text.is_empty() {
+        "  none recorded yet".to_string()
+    } else {
+        candidates_text
+    };
+
+    format!(
+        r"conU routes
+
+selected
+{selected_text}
+
+candidates
+{candidates_text}
+
+summary
+  selected direct  {}
+  selected relay   {}
+  relay fallbacks  {}
+
+privacy
+  payload view     contents are not displayed by conU
+
+next
+  conu routes sync",
+        selected_direct_route_count(route_records),
+        selected_relay_route_count(route_records),
+        relay_fallback_route_count(route_records)
+    )
+}
+
+fn render_route_line(route: &RouteRecord) -> String {
+    let latency = route
+        .latency_ms
+        .map(|latency| format!("{latency}ms"))
+        .unwrap_or_else(|| "n/a".to_string());
+    let state = if route.relay_fallback {
+        "fallback"
+    } else {
+        route.state.as_str()
+    };
+
+    format!(
+        "  {}  {}  {}  score {}  latency {}  endpoint {}",
+        route.peer_node_id,
+        route.transport.as_str(),
+        state,
+        route.score,
+        latency,
+        route.endpoint
+    )
+}
+
+fn render_route_probes_json(probes: &[RouteProbe]) -> String {
+    let probe_items = probes
+        .iter()
+        .map(|probe| {
+            format!(
+                r#"    {{
+      "probeId": "{}",
+      "routeId": "{}",
+      "peerNodeId": "{}",
+      "transport": "{}",
+      "endpoint": "{}",
+      "outcome": "{}",
+      "score": {},
+      "latencyMs": {},
+      "createdAtUnix": {}
+    }}"#,
+                json_escape(&probe.probe_id),
+                json_escape(&probe.route_id),
+                json_escape(&probe.peer_node_id),
+                probe.transport.as_str(),
+                json_escape(&probe.endpoint),
+                json_escape(&probe.outcome),
+                probe.score,
+                json_u64(probe.latency_ms),
+                probe.created_at_unix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let probes_json = if probe_items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{probe_items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "probes": {},
+  "contentsDisplayed": false
+}}"#,
+        probes_json
+    )
+}
+
+fn render_route_probes_text(probes: &[RouteProbe]) -> String {
+    let mut recent = probes.iter().rev().take(12).collect::<Vec<_>>();
+    recent.reverse();
+    let probes_text = recent
+        .iter()
+        .map(|probe| {
+            let latency = probe
+                .latency_ms
+                .map(|latency| format!("{latency}ms"))
+                .unwrap_or_else(|| "n/a".to_string());
+            format!(
+                "  {}  {}  {}  score {}  latency {}",
+                probe.peer_node_id,
+                probe.transport.as_str(),
+                probe.outcome,
+                probe.score,
+                latency
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let probes_text = if probes_text.is_empty() {
+        "  none recorded yet".to_string()
+    } else {
+        probes_text
+    };
+
+    format!(
+        r"conU route probes
+
+recent probes
+{probes_text}
+
+privacy
+  payload view  contents are not displayed by conU"
+    )
+}
+
+fn render_routes_report_json(report: &RouteSyncReport) -> String {
+    format!(
+        r#"{{
+  "status": "synced",
+  "peers": {},
+  "candidates": {},
+  "directAttempts": {},
+  "directAvailable": {},
+  "selectedDirect": {},
+  "selectedRelay": {},
+  "relayFallbacks": {},
+  "probesRecorded": {},
+  "contentsDisplayed": false
+}}"#,
+        report.peers,
+        report.candidates,
+        report.direct_attempts,
+        report.direct_available,
+        report.selected_direct,
+        report.selected_relay,
+        report.relay_fallbacks,
+        report.probes_recorded
+    )
+}
+
+fn render_routes_report_text(report: &RouteSyncReport) -> String {
+    format!(
+        r"conU routes sync
+
+status: synced
+trusted peers: {}
+candidates: {}
+direct attempts: {}
+direct available: {}
+selected direct: {}
+selected relay: {}
+relay fallbacks: {}
+probes recorded: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        report.peers,
+        report.candidates,
+        report.direct_attempts,
+        report.direct_available,
+        report.selected_direct,
+        report.selected_relay,
+        report.relay_fallbacks,
+        report.probes_recorded
+    )
+}
+
+fn render_routes_usage() -> String {
+    r"usage:
+  conu routes [--json]
+  conu routes sync [--json]
+  conu routes probes [--json]"
+        .to_string()
+}
+
 fn render_security(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let remaining = match args.first().map(String::as_str) {
         None => args,
@@ -2030,6 +2378,7 @@ fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput 
         return error;
     }
     let local_agents = agents::list_local_agents(home_override.clone()).unwrap_or_default();
+    let route_records = routes::list_routes(home_override.clone()).unwrap_or_default();
     let remote_agents = sessions::list_remote_agents(home_override).unwrap_or_default();
     let local = if local_agents.is_empty() {
         "none registered".to_string()
@@ -2070,9 +2419,12 @@ fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput 
 selector
   source local agent   {local}
   target remote agent  {remote}
+  route plan           direct {} | relay {}
   mode                 message | stream | room | observe
 
 status: stream sessions use `conu streams open`; interactive selector remains future work",
+        selected_direct_route_count(&route_records),
+        selected_relay_route_count(&route_records)
     ))
 }
 
@@ -2292,6 +2644,7 @@ fn render_status_text(
     remote_agents: &[RemoteAgentRecord],
     sessions: &[RemoteSession],
     stream_records: &[StreamRecord],
+    route_records: &[RouteRecord],
     peers: &[TrustedPeer],
     security: &SecurityAudit,
 ) -> String {
@@ -2315,6 +2668,7 @@ runtime
   health        {}
   local IPC     file gateway active
   relay         service available via conu-relay
+  routes        direct {} relay {} fallback {}
 
 identity
   state         {}
@@ -2332,6 +2686,7 @@ agents
   trusted peers {}
   sessions      {}
   streams       {}
+  routes        {} selected
 
 privacy
   local storage encrypted at rest: {}
@@ -2341,6 +2696,9 @@ privacy
         runtime_state_label(runtime_status),
         runtime_pid_label(runtime_status),
         runtime_health_label(runtime_status),
+        selected_direct_route_count(route_records),
+        selected_relay_route_count(route_records),
+        relay_fallback_route_count(route_records),
         initialization_label(snapshot),
         node,
         display_name,
@@ -2354,6 +2712,7 @@ privacy
         trusted_peer_count(peers),
         sessions.len(),
         stream_records.len(),
+        selected_route_count(route_records),
         yes_no(security.local_payload_encryption),
         yes_no(security.signed_agent_cards),
         yes_no(security.replay_cache)
@@ -2367,6 +2726,7 @@ fn render_status_json(
     remote_agents: &[RemoteAgentRecord],
     sessions: &[RemoteSession],
     stream_records: &[StreamRecord],
+    route_records: &[RouteRecord],
     peers: &[TrustedPeer],
     security: &SecurityAudit,
 ) -> String {
@@ -2389,7 +2749,10 @@ fn render_status_json(
     "heartbeatAgeSecs": {},
     "localHealth": "{}",
     "localIpc": "file_gateway",
-    "relay": "service_available"
+    "relay": "service_available",
+    "selectedDirectRoutes": {},
+    "selectedRelayRoutes": {},
+    "relayFallbacks": {}
   }},
   "identity": {{
     "state": "{}",
@@ -2405,7 +2768,8 @@ fn render_status_json(
     "registry": "{}",
     "trustedPeers": {},
     "sessions": {},
-    "streams": {}
+    "streams": {},
+    "routes": {}
   }},
   "security": {{
     "initialized": {},
@@ -2423,6 +2787,9 @@ fn render_status_json(
         json_u32(runtime_status.pid),
         json_u64(runtime_status.heartbeat_age_secs()),
         json_escape(runtime_health_label(runtime_status)),
+        selected_direct_route_count(route_records),
+        selected_relay_route_count(route_records),
+        relay_fallback_route_count(route_records),
         initialization_label(snapshot),
         json_escape(node),
         json_escape(display_name),
@@ -2435,6 +2802,7 @@ fn render_status_json(
         trusted_peer_count(peers),
         sessions.len(),
         stream_records.len(),
+        selected_route_count(route_records),
         security.initialized,
         security.local_payload_encryption,
         security.signed_agent_cards,
@@ -2463,6 +2831,9 @@ Usage:
   conu streams close <stream-id> [--json]
   conu sessions [--json]
   conu sessions sync [--json]
+  conu routes [--json]
+  conu routes sync [--json]
+  conu routes probes [--json]
   conu security audit [--json]
   conu peers [--json]
   conu peers revoke <peer-node-id> [--json]
@@ -2476,7 +2847,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 11 adds encrypted local payload storage, signed agent cards, replay protection, and peer key agreement helpers. Payload contents remain hidden."
+Phase 13 adds direct QUIC route candidates, NAT-aware scoring, relay fallback selection, and metadata-only route probes. Payload contents remain hidden."
         .to_string()
 }
 
@@ -2624,6 +2995,34 @@ fn trusted_peer_count(peers: &[TrustedPeer]) -> usize {
         .count()
 }
 
+fn selected_route_count(route_records: &[RouteRecord]) -> usize {
+    route_records
+        .iter()
+        .filter(|route| route.is_selected())
+        .count()
+}
+
+fn selected_direct_route_count(route_records: &[RouteRecord]) -> usize {
+    route_records
+        .iter()
+        .filter(|route| route.is_selected() && route.transport == RouteTransport::DirectQuic)
+        .count()
+}
+
+fn selected_relay_route_count(route_records: &[RouteRecord]) -> usize {
+    route_records
+        .iter()
+        .filter(|route| route.is_selected() && route.transport == RouteTransport::RelayWebSocket)
+        .count()
+}
+
+fn relay_fallback_route_count(route_records: &[RouteRecord]) -> usize {
+    route_records
+        .iter()
+        .filter(|route| route.relay_fallback)
+        .count()
+}
+
 fn json_u32(value: Option<u32>) -> String {
     value
         .map(|value| value.to_string())
@@ -2634,6 +3033,10 @@ fn json_u64(value: Option<u64>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "null".to_string())
+}
+
+fn json_optional_string(value: Option<&str>) -> String {
+    value.map(json_string).unwrap_or_else(|| "null".to_string())
 }
 
 fn resolve_conud_executable() -> PathBuf {
@@ -2721,6 +3124,7 @@ fn finish(mut output: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::process;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2735,12 +3139,12 @@ mod tests {
     }
 
     #[test]
-    fn phase_eleven_commands_are_registered() {
+    fn phase_thirteen_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [
             "init", "status", "agents", "streams", "sessions", "security", "pair", "peers",
-            "connect", "watch", "stop",
+            "routes", "connect", "watch", "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
@@ -2807,6 +3211,67 @@ mod tests {
         assert!(status.stdout.contains("\"remote\": 1"));
         assert!(status.stdout.contains("\"sessions\": 1"));
         assert!(!agents.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn routes_sync_selects_relay_fallback_without_payloads() {
+        let home = temp_home("routes-relay");
+        let pair = run_with_home(["pair"], Some(home.clone()));
+        let code = pairing_code_from_output(&pair.stdout);
+        let join = run_with_home(["join", &code], Some(home.clone()));
+        let sync = run_with_home(["routes", "sync", "--json"], Some(home.clone()));
+        let routes = run_with_home(["routes", "--json"], Some(home.clone()));
+        let probes = run_with_home(["routes", "probes"], Some(home));
+
+        assert_eq!(join.code, 0, "{}", join.stderr);
+        assert_eq!(sync.code, 0, "{}", sync.stderr);
+        assert!(sync.stdout.contains("\"selectedRelay\": 1"));
+        assert!(sync.stdout.contains("\"relayFallbacks\": 1"));
+        assert!(routes.stdout.contains("\"transport\": \"relay-websocket\""));
+        assert!(routes.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(
+            probes
+                .stdout
+                .contains("payload view  contents are not displayed")
+        );
+        assert!(!routes.stdout.contains("private message contents"));
+        assert!(!probes.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn routes_sync_prefers_configured_direct_quic_candidate() {
+        let home = temp_home("routes-direct");
+        let pair = run_with_home(["pair"], Some(home.clone()));
+        let code = pairing_code_from_output(&pair.stdout);
+        let join = run_with_home(["join", &code], Some(home.clone()));
+        let peer_id = join
+            .stdout
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("peer: "))
+            .expect("peer id line")
+            .to_string();
+        let config_key = format!("direct_quic_{}", config_key_suffix_for_test(&peer_id));
+        fs::write(
+            state::StatePaths::from_home(home.clone()).config,
+            format!(
+                "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\nnat_profile = \"public\"\n{config_key} = \"quic://127.0.0.1:9443\"\n"
+            ),
+        )
+        .expect("config writes");
+
+        let sync = run_with_home(["routes", "sync", "--json"], Some(home.clone()));
+        let routes = run_with_home(["routes"], Some(home.clone()));
+        let session_sync = run_with_home(["sessions", "sync"], Some(home.clone()));
+        let sessions = run_with_home(["sessions"], Some(home));
+
+        assert_eq!(join.code, 0, "{}", join.stderr);
+        assert_eq!(sync.code, 0, "{}", sync.stderr);
+        assert!(sync.stdout.contains("\"selectedDirect\": 1"));
+        assert!(sync.stdout.contains("\"selectedRelay\": 0"));
+        assert!(routes.stdout.contains("direct-quic"));
+        assert!(session_sync.stdout.contains("sessions: 1"));
+        assert!(sessions.stdout.contains("route direct-quic"));
+        assert!(!routes.stdout.contains("private message contents"));
     }
 
     #[test]
@@ -3162,6 +3627,19 @@ mod tests {
             .find_map(|line| line.trim().strip_prefix("stream: "))
             .expect("stream id line")
             .to_string()
+    }
+
+    fn config_key_suffix_for_test(value: &str) -> String {
+        value
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect()
     }
 
     fn register_test_agent(home: &PathBuf, agent_id: &str) {

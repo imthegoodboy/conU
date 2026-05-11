@@ -63,6 +63,15 @@ class ConuClient:
     def peers(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "peers", "--json")
 
+    def sync_routes(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "routes", "sync", "--json")
+
+    def routes(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "routes", "--json")
+
+    def route_probes(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "routes", "probes", "--json")
+
     def inbox(self, agent_id: str) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "messages", "inbox", agent_id, "--json")
 

@@ -94,6 +94,17 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Revoked peers must not remain visible as active remote agents after session sync.
 - Route metadata may include relay endpoint, peer id, state, and reconnect counts; it must not include message contents, tokens, or private payload bytes.
 
+## Direct Route Rules
+
+- Phase 13 route selection belongs in `conu_core::routes`; other modules should call that API instead of parsing route files directly.
+- Route state belongs under `routes/registry.toml`; probe history belongs under `routes/probes.toml`; route logs belong under `logs/routes.log`.
+- Route records may include route id, peer id, display name, transport label, endpoint, state, score, estimated latency, NAT profile, fallback flag, and failure reason.
+- Route records must not include plaintext payloads, prompt text, reasoning, file contents, auth tokens, private keys, shared secrets, or decrypted bytes.
+- Revoked peers must not remain routeable after route sync.
+- `conu sessions sync`, conUD processing, SDK, and MCP may refresh or list route metadata, but they must keep outputs payload-safe.
+- A configured `direct-quic` route is a candidate and route label until real QUIC sockets and NAT traversal are implemented; do not claim live direct byte transport before it exists.
+- Relay fallback must remain available when direct endpoint config is missing, invalid, or disabled by `nat_profile = "relay-only"`.
+
 ## Stream And Watch Rules
 
 - Phase 10 streams are metadata-first in `conu_core::streams`.

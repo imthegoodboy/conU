@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use conu_protocol::OpaquePayload;
 
 use crate::agents;
+use crate::routes;
 use crate::sessions;
 use crate::state::{self, StateError, StatePaths};
 
@@ -99,6 +100,7 @@ pub enum StreamError {
     State(StateError),
     Agent(agents::AgentError),
     Session(sessions::SessionError),
+    Route(routes::RouteError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -125,6 +127,7 @@ impl fmt::Display for StreamError {
             Self::State(error) => write!(formatter, "{error}"),
             Self::Agent(error) => write!(formatter, "{error}"),
             Self::Session(error) => write!(formatter, "{error}"),
+            Self::Route(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -157,6 +160,12 @@ impl From<sessions::SessionError> for StreamError {
     }
 }
 
+impl From<routes::RouteError> for StreamError {
+    fn from(error: routes::RouteError) -> Self {
+        Self::Route(error)
+    }
+}
+
 /// Open a stream between a local agent and a visible local or remote agent.
 pub fn open_stream(
     home_override: Option<PathBuf>,
@@ -170,6 +179,7 @@ pub fn open_stream(
     let kind = validate_identifier(kind.to_string(), "stream kind")?;
 
     validate_stream_agents(home_override, &from_agent_id, &to_agent_id)?;
+    let route = stream_route_for_target(&init.paths, &to_agent_id)?;
 
     let now = current_unix_seconds();
     let stream = StreamRecord {
@@ -178,7 +188,7 @@ pub fn open_stream(
         to_agent_id,
         kind,
         state: StreamState::Open,
-        route: "metadata-relay".to_string(),
+        route,
         chunks_written: 0,
         bytes_written: 0,
         backpressure_window: DEFAULT_BACKPRESSURE_WINDOW,
@@ -193,6 +203,25 @@ pub fn open_stream(
     append_stream_log(&init.paths, "stream_opened", &stream, 0)?;
 
     Ok(StreamOpenReport { stream })
+}
+
+fn stream_route_for_target(paths: &StatePaths, to_agent_id: &str) -> Result<String, StreamError> {
+    if agents::agent_exists(Some(paths.home.clone()), to_agent_id)? {
+        return Ok("local".to_string());
+    }
+
+    let remote_agents = sessions::list_remote_agents(Some(paths.home.clone()))?;
+    let Some(remote_agent) = remote_agents
+        .into_iter()
+        .find(|agent| agent.agent_id == to_agent_id)
+    else {
+        return Ok("metadata-relay".to_string());
+    };
+
+    let selected = routes::selected_route_for_peer_from_paths(paths, &remote_agent.peer_node_id)?;
+    Ok(selected
+        .map(|route| route.transport.as_str().to_string())
+        .unwrap_or_else(|| "metadata-relay".to_string()))
 }
 
 /// Record an opaque stream chunk by byte count only.
