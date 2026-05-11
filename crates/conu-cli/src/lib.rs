@@ -1,8 +1,8 @@
 //! CLI rendering and command dispatch for conU.
 //!
-//! Phase 13 adds conUD runtime detection, metadata-only local/remote agent
-//! visibility, encrypted-at-rest local opaque envelopes, remote session
-//! mirrors, stream/watch metadata, route selection, and security audit output.
+//! The CLI is conU's human control room: it exposes local runtime status,
+//! agent metadata, trust/session/route state, streams, security audit output,
+//! and release readiness checks without displaying private payload contents.
 
 use std::collections::HashSet;
 use std::env;
@@ -245,30 +245,21 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     };
     let security_audit =
         security::security_audit(home_override).unwrap_or_else(|_| empty_security_audit());
+    let view = StatusView {
+        snapshot: &snapshot,
+        runtime_status: &runtime_status,
+        local_agents: &local_agents,
+        remote_agents: &remote_agents,
+        sessions: &sessions,
+        stream_records: &stream_records,
+        route_records: &route_records,
+        peers: &peers,
+        security: &security_audit,
+    };
 
     match json_flag(args) {
-        Ok(true) => CliOutput::success(render_status_json(
-            &snapshot,
-            &runtime_status,
-            &local_agents,
-            &remote_agents,
-            &sessions,
-            &stream_records,
-            &route_records,
-            &peers,
-            &security_audit,
-        )),
-        Ok(false) => CliOutput::success(render_status_text(
-            &snapshot,
-            &runtime_status,
-            &local_agents,
-            &remote_agents,
-            &sessions,
-            &stream_records,
-            &route_records,
-            &peers,
-            &security_audit,
-        )),
+        Ok(true) => CliOutput::success(render_status_json(&view)),
+        Ok(false) => CliOutput::success(render_status_text(&view)),
         Err(error) => error,
     }
 }
@@ -2998,17 +2989,22 @@ next
     )
 }
 
-fn render_status_text(
-    snapshot: &StateSnapshot,
-    runtime_status: &RuntimeStatus,
-    local_agents: &[LocalAgentRecord],
-    remote_agents: &[RemoteAgentRecord],
-    sessions: &[RemoteSession],
-    stream_records: &[StreamRecord],
-    route_records: &[RouteRecord],
-    peers: &[TrustedPeer],
-    security: &SecurityAudit,
-) -> String {
+struct StatusView<'a> {
+    snapshot: &'a StateSnapshot,
+    runtime_status: &'a RuntimeStatus,
+    local_agents: &'a [LocalAgentRecord],
+    remote_agents: &'a [RemoteAgentRecord],
+    sessions: &'a [RemoteSession],
+    stream_records: &'a [StreamRecord],
+    route_records: &'a [RouteRecord],
+    peers: &'a [TrustedPeer],
+    security: &'a SecurityAudit,
+}
+
+fn render_status_text(view: &StatusView<'_>) -> String {
+    let snapshot = view.snapshot;
+    let runtime_status = view.runtime_status;
+    let security = view.security;
     let node = snapshot
         .node
         .as_ref()
@@ -3057,9 +3053,9 @@ privacy
         runtime_state_label(runtime_status),
         runtime_pid_label(runtime_status),
         runtime_health_label(runtime_status),
-        selected_direct_route_count(route_records),
-        selected_relay_route_count(route_records),
-        relay_fallback_route_count(route_records),
+        selected_direct_route_count(view.route_records),
+        selected_relay_route_count(view.route_records),
+        relay_fallback_route_count(view.route_records),
         initialization_label(snapshot),
         node,
         display_name,
@@ -3067,30 +3063,23 @@ privacy
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
         ready_label(security.initialized),
-        local_agents.len(),
-        remote_agents.len(),
+        view.local_agents.len(),
+        view.remote_agents.len(),
         ready_label(snapshot.agent_registry_exists),
-        trusted_peer_count(peers),
-        sessions.len(),
-        stream_records.len(),
-        selected_route_count(route_records),
+        trusted_peer_count(view.peers),
+        view.sessions.len(),
+        view.stream_records.len(),
+        selected_route_count(view.route_records),
         yes_no(security.local_payload_encryption),
         yes_no(security.signed_agent_cards),
         yes_no(security.replay_cache)
     )
 }
 
-fn render_status_json(
-    snapshot: &StateSnapshot,
-    runtime_status: &RuntimeStatus,
-    local_agents: &[LocalAgentRecord],
-    remote_agents: &[RemoteAgentRecord],
-    sessions: &[RemoteSession],
-    stream_records: &[StreamRecord],
-    route_records: &[RouteRecord],
-    peers: &[TrustedPeer],
-    security: &SecurityAudit,
-) -> String {
+fn render_status_json(view: &StatusView<'_>) -> String {
+    let snapshot = view.snapshot;
+    let runtime_status = view.runtime_status;
+    let security = view.security;
     let node = snapshot
         .node
         .as_ref()
@@ -3148,22 +3137,22 @@ fn render_status_json(
         json_u32(runtime_status.pid),
         json_u64(runtime_status.heartbeat_age_secs()),
         json_escape(runtime_health_label(runtime_status)),
-        selected_direct_route_count(route_records),
-        selected_relay_route_count(route_records),
-        relay_fallback_route_count(route_records),
+        selected_direct_route_count(view.route_records),
+        selected_relay_route_count(view.route_records),
+        relay_fallback_route_count(view.route_records),
         initialization_label(snapshot),
         json_escape(node),
         json_escape(display_name),
         json_escape(&snapshot.paths.home.display().to_string()),
         ready_label(snapshot.config_exists),
         ready_label(snapshot.trust_store_exists),
-        local_agents.len(),
-        remote_agents.len(),
+        view.local_agents.len(),
+        view.remote_agents.len(),
         ready_label(snapshot.agent_registry_exists),
-        trusted_peer_count(peers),
-        sessions.len(),
-        stream_records.len(),
-        selected_route_count(route_records),
+        trusted_peer_count(view.peers),
+        view.sessions.len(),
+        view.stream_records.len(),
+        selected_route_count(view.route_records),
         security.initialized,
         security.local_payload_encryption,
         security.signed_agent_cards,
@@ -4048,10 +4037,11 @@ mod tests {
             .collect()
     }
 
-    fn register_test_agent(home: &PathBuf, agent_id: &str) {
+    fn register_test_agent(home: &std::path::Path, agent_id: &str) {
         let registration =
             AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid registration");
-        agents::submit_registration(Some(home.clone()), registration).expect("request submits");
-        agents::process_gateway_requests(Some(home.clone())).expect("request processes");
+        agents::submit_registration(Some(home.to_path_buf()), registration)
+            .expect("request submits");
+        agents::process_gateway_requests(Some(home.to_path_buf())).expect("request processes");
     }
 }

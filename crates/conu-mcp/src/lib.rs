@@ -75,10 +75,7 @@ impl McpServer {
                 "request id must not be null",
             ));
         }
-        if id.is_none() {
-            return None;
-        }
-        let id = id.unwrap_or(Value::Null);
+        let id = id?;
 
         let result = match method {
             "initialize" => Ok(self.initialize_result()),

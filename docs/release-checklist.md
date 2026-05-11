@@ -16,6 +16,7 @@ Windows:
 ```powershell
 cargo fmt --all -- --check
 cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
+cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 ```
@@ -25,6 +26,7 @@ macOS/Linux:
 ```sh
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ./scripts/build-release.sh
 ```

@@ -191,7 +191,7 @@ pub enum RuntimeError {
         path: PathBuf,
         source: io::Error,
     },
-    AlreadyRunning(RuntimeStatus),
+    AlreadyRunning(Box<RuntimeStatus>),
 }
 
 impl RuntimeError {
@@ -266,7 +266,7 @@ pub fn acquire_runtime(home_override: Option<PathBuf>) -> Result<RuntimeLease, R
     let existing = read_runtime_from_paths(&paths)?;
 
     if existing.is_live() {
-        return Err(RuntimeError::AlreadyRunning(existing));
+        return Err(RuntimeError::AlreadyRunning(Box::new(existing)));
     }
 
     if existing.state == RuntimeState::Stale || paths.runtime_lock.exists() {
@@ -519,6 +519,14 @@ fn current_unix_seconds() -> u64 {
 }
 
 #[cfg(test)]
+fn current_unix_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -615,12 +623,4 @@ mod tests {
             current_unix_nanos()
         ))
     }
-}
-
-#[cfg(test)]
-fn current_unix_nanos() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
 }

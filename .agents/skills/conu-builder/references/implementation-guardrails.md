@@ -25,7 +25,7 @@ This workspace was first validated on Windows where the default MSVC Rust toolch
 - `cargo check --workspace --all-targets` works with the default MSVC toolchain for std-only code.
 - `cargo test` and `cargo run` require a linker.
 - `rustup toolchain install stable-x86_64-pc-windows-gnu` provided a working local linker path.
-- Use `cargo +stable-x86_64-pc-windows-gnu test --workspace` and matching `cargo +... run` commands until MSVC Build Tools or CI are configured.
+- Use `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings`, `cargo +stable-x86_64-pc-windows-gnu test --workspace`, and matching `cargo +... run` commands until MSVC Build Tools or CI are configured.
 
 Do not add proc-macro/build-script-heavy dependencies unless validation can still run in the active environment or CI.
 

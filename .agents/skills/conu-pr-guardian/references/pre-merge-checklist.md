@@ -32,6 +32,7 @@ Run what exists for the phase:
 ```txt
 cargo fmt
 cargo check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test
 unit tests
 integration tests
