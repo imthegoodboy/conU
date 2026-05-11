@@ -56,20 +56,21 @@ Handles:
 
 Build in resumable phases:
 
-1. project memory and architecture
-2. Rust workspace scaffold
-3. CLI identity and dashboard
-4. local identity and persistent state
-5. conUD daemon skeleton
-6. local IPC and agent registration
-7. opaque envelope send/receive
-8. pairing and trust store
-9. WebSocket relay
-10. remote discovery and sessions
-11. streams and watch animation
-12. encryption hardening
-13. SDK/MCP adapter
-14. QUIC/direct transport
+0. project memory and architecture
+1. Rust workspace scaffold
+2. CLI identity and dashboard
+3. local identity and persistent state
+4. conUD daemon skeleton
+5. local IPC and agent registration
+6. opaque envelope send/receive
+7. pairing and trust store
+8. WebSocket relay
+9. remote discovery and sessions
+10. streams and watch animation
+11. encryption hardening
+12. SDK/MCP adapter
+13. direct transport and NAT route manager
+14. rooms, pub/sub, and multi-agent sessions
 15. packaging and production readiness
 
 Always check `plan.md` for the active phase before changing code.

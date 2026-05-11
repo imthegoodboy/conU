@@ -173,6 +173,24 @@ conud --process-ipc
 
 `conu sessions sync` reads trusted peers and mirrors route/session metadata so `conu agents` can show visible remote agents. It does not transfer private payloads and does not yet create an interactive live stream. Revoked peers must disappear from the active remote-agent mirror after sync.
 
+The Phase 13 route surface lets agents and users inspect conUD-owned route selection:
+
+```txt
+routes/registry.toml   direct/relay candidate and selected route metadata
+routes/probes.toml     metadata-only route probe history
+logs/routes.log        payload-safe route summaries
+```
+
+Supported commands:
+
+```txt
+conu routes [--json]
+conu routes sync [--json]
+conu routes probes [--json]
+```
+
+`conu routes sync` scores configured direct QUIC candidates against relay WebSocket fallback. It may show route ids, peer ids, transport labels, endpoints, scores, latency estimates, NAT profile labels, and fallback state. It must never show message text, prompt text, reasoning, file contents, private keys, shared secrets, tokens, or payload bytes.
+
 The Phase 10 stream/watch surface is metadata-only stream lifecycle:
 
 ```txt
@@ -226,6 +244,9 @@ ConuClient::register_agent()
 ConuClient::set_presence()
 ConuClient::list_agents()
 ConuClient::list_peers()
+ConuClient::sync_routes()
+ConuClient::list_routes()
+ConuClient::list_route_probes()
 ConuClient::send_message_bytes()
 ConuClient::inbox_metadata()
 ConuClient::receive_message_bytes()
@@ -243,6 +264,8 @@ conu_security_audit
 conu_register_agent
 conu_set_presence
 conu_process_queued
+conu_sync_routes
+conu_list_routes
 conu_list_agents
 conu_list_peers
 conu_send_message

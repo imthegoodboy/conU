@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 12.
+The repository has completed Phase 13.
 
 Implemented so far:
 
@@ -48,11 +48,16 @@ Implemented so far:
 - stream open/write/close commands with stdin-only opaque writes
 - payload-safe watch event bus under `streams/events.toml`
 - `conu watch` private transport animation
+- conUD-owned direct/relay route manager through `conu routes`
+- metadata-only route registry under `routes/registry.toml`
+- metadata-only route probes under `routes/probes.toml`
+- route sync integration with remote sessions, streams, Rust SDK, Python wrapper SDK, and MCP
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs
 - payload-safe message delivery metadata logs
 - payload-safe remote session metadata logs
 - payload-safe stream metadata logs
+- payload-safe route metadata logs
 - payload-safe protocol scaffold
 - daemon runtime skeleton and relay service binary
 
@@ -60,6 +65,7 @@ Current important files:
 
 - `architecture.md`: production architecture and protocol direction.
 - `plan.md`: phase-by-phase execution plan.
+- `docs/direct-transport-and-routes.md`: Phase 13 route manager, config, and privacy boundary.
 - `.agents/AGENTS.md`: future-agent onboarding.
 - `.agents/about/`: original product vision.
 - `.agents/Rules/SKILL.MD`: hard project rules.

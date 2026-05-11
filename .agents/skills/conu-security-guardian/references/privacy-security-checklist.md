@@ -7,6 +7,7 @@
 - SDK and MCP list/send/status/stream outputs do not print payload text.
 - Logs do not include payload text.
 - Metrics do not include payload text.
+- Route registry, probe history, and route logs include only metadata.
 - Tests do not normalize leaking payload contents as expected behavior.
 
 ## Identity And Trust
@@ -45,6 +46,13 @@
 - Local agent cards are signed and signature verification fails on tampering.
 - Replay cache rejects duplicate message request and envelope ids before duplicate delivery.
 - Revoked peers must not remain visible or routeable.
+
+## Routes
+
+- Direct routes are selected only for trusted peers.
+- Relay fallback does not weaken trust checks.
+- Direct endpoint config must not contain tokens, private keys, or payload material.
+- Route failure reasons stay generic and must not echo arbitrary payload-bearing input.
 
 ## CLI Watch
 

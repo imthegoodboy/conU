@@ -28,7 +28,7 @@ needs_revision
 ## Current Status
 
 ```txt
-Current phase: Phase 13 - Direct Transport And NAT Upgrade
+Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: not_started
 Last updated: 2026-05-11
 ```
@@ -966,6 +966,11 @@ Validation:
 - `cargo fmt` passed.
 - `cargo +stable-x86_64-pc-windows-gnu check --workspace` passed.
 - `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- Python wrapper route smoke passed with local `target/debug/conu.exe`.
+- Isolated CLI smoke passed with `CONU_HOME` under `%TEMP%`: `conu init`, `conu pair`, `conu join`, `conu routes sync --json`, `conu routes --json`, and `conu status --json`.
+- `git diff --check` passed.
+- Privacy scan reviewed payload-looking strings; new route files, logs, CLI, SDK, MCP, and docs remain metadata-only.
 - `cargo +stable-x86_64-pc-windows-gnu run -p conu-sdk --example local_agents` passed.
 - `cargo +stable-x86_64-pc-windows-gnu run -p conu-mcp` stdio `tools/list` smoke passed.
 - `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
@@ -986,7 +991,7 @@ Next:
 
 ## Phase 13 - Direct Transport And NAT Upgrade
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -994,16 +999,70 @@ Move beyond relay-only networking.
 
 Deliverables:
 
-- QUIC transport
-- direct route attempt
-- relay fallback
-- route quality scoring
-- hole-punching research/prototype
+- [x] direct QUIC candidate route records
+- [x] direct route attempt/probe metadata
+- [x] relay fallback
+- [x] route quality scoring
+- [x] NAT profile config and hole-punching research notes
+- [ ] live QUIC socket transport
 
 Exit criteria:
 
-- Direct route is preferred when available.
-- Relay fallback keeps product reliable.
+- [x] Direct route is preferred when a valid direct endpoint is configured.
+- [x] Relay fallback keeps route selection reliable when direct is unavailable.
+
+Completed work:
+
+- Added `conu_core::routes`, a conUD-owned route manager that builds direct QUIC candidates and relay WebSocket fallback candidates for trusted peers only.
+- Added route scoring by NAT profile, deterministic selected-route lookup, relay fallback flags, route probe history, and payload-safe route logs.
+- Added route state layout under `routes/registry.toml`, `routes/probes.toml`, and `logs/routes.log`.
+- Integrated route sync into `conu sessions sync`, conUD runtime processing, stream route labels for remote agents, Rust SDK, Python SDK wrapper, and MCP.
+- Added CLI commands: `conu routes`, `conu routes sync`, and `conu routes probes`, with text and JSON output.
+- Updated `conu status`, dashboard, and `conu connect` to show selected direct/relay/fallback route metadata.
+- Updated docs and future-agent skills to explain Phase 13 route behavior, config, validation, and privacy boundaries.
+
+Files changed:
+
+- `crates/conu-core/src/routes.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conu-core/src/sessions.rs`
+- `crates/conu-core/src/streams.rs`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-sdk/src/lib.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `crates/conud/src/main.rs`
+- `sdk/python/conu_sdk/__init__.py`
+- `README.md`
+- `docs/direct-transport-and-routes.md`
+- `docs/user-install-and-agent-guide.md`
+- `docs/sdk-and-mcp.md`
+- `docs/production-readiness.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/Pr/SKILL.MD`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `plan.md`
+
+Validation:
+
+- `cargo fmt` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+
+Known gaps:
+
+- Real QUIC packet transport is not implemented yet; Phase 13 selects and records `direct-quic` route candidates.
+- NAT traversal is config/profile based; live ICE-style candidate gathering, STUN/TURN, and hole punching remain future transport work.
+- Route probes are metadata/config probes with latency estimates, not real RTT measurements.
+- conUD still does not own live relay-backed encrypted message or stream byte delivery.
+- Direct endpoint config is manual today.
+
+Next:
+
+- Start Phase 14: rooms, pub/sub, and multi-agent session metadata, while keeping live direct QUIC and relay-backed encrypted data-plane delivery as future transport hardening.
 
 ## Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 
@@ -1071,4 +1130,5 @@ Add entries here when a phase is completed.
 2026-05-10 - Phase 10 completed. Stream lifecycle metadata, stdin-only opaque stream writes, backpressure checks, watch event bus, private watch animation, tests, docs, and isolated CONU_HOME smoke validation added. Next: Phase 11 encryption hardening.
 2026-05-10 - Phase 11 completed. Local security module added with Ed25519 signed agent cards, X25519 peer key agreement helpers, XChaCha20Poly1305 encrypted-at-rest message storage, replay protection, `conu security audit`, tests, docs, and GNU-toolchain validation. Next: Phase 12 SDK and MCP adapter.
 2026-05-11 - Phase 12 completed. Rust SDK, MCP stdio adapter, Python wrapper SDK, local agent examples, explicit addressed-agent receive API, tests, docs, and GNU-toolchain validation added. Next: Phase 13 direct transport and NAT upgrade.
+2026-05-11 - Phase 13 completed. conUD-owned direct/relay route manager, NAT-profile scoring, relay fallback selection, route probes/logs, CLI route commands, SDK/Python/MCP route tools, docs, skills, and GNU-toolchain validation added. Next: Phase 14 rooms, pub/sub, and multi-agent sessions.
 ```

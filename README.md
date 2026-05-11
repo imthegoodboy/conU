@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 12 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, and agents can now use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter.
+Phase 13 is complete. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, and conUD now owns metadata-only direct/relay route selection.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -54,6 +54,8 @@ messages/inbox/        delivered local opaque envelopes by recipient agent
 messages/receipts/     metadata-only local delivery receipts
 streams/registry.toml  stream lifecycle metadata
 streams/events.toml    payload-safe watch event bus
+routes/registry.toml   direct/relay route candidates and selected paths
+routes/probes.toml     metadata-only route probe history
 pairing/invites/       pending local pairing invitations
 pairing/used/          consumed local pairing invitations
 sessions/registry.toml remote runtime session metadata
@@ -63,6 +65,7 @@ logs/agents.log        local agent metadata log
 logs/messages.log      local message delivery metadata log
 logs/sessions.log      remote session sync metadata log
 logs/streams.log       stream lifecycle metadata log
+logs/routes.log        direct/relay route sync metadata log
 ```
 
 Runtime, agent, and message logs contain metadata only, such as event name, pid, node id, agent id, envelope id, byte count, and `payload=not_observed`. New local message request and recipient-inbox envelope files store conU-owned payload bytes with XChaCha20Poly1305 encrypted-at-rest fields. CLI output, receipts, processed markers, rejected markers, and logs do not display message contents.
@@ -160,6 +163,21 @@ conu agents --json
 
 This phase is still metadata/discovery groundwork: remote agent cards are derived from trusted peer metadata until the full relay-backed session exchange lands. Payloads remain opaque and are never displayed by session or agent listing commands.
 
+## Direct Routes And Relay Fallback
+
+Phase 13 adds a route manager owned by conUD:
+
+```bash
+conu routes sync
+conu routes
+conu routes --json
+conu routes probes
+```
+
+`conu routes sync` reads trusted peers and `config.toml`, scores direct QUIC candidates against relay WebSocket fallback, writes `routes/registry.toml`, appends metadata-only probes to `routes/probes.toml`, and records payload-safe summaries in `logs/routes.log`. Direct endpoints can be configured with `direct_quic_endpoint = "quic://host:port"` or a peer-specific sanitized key like `direct_quic_peer_abcd1234 = "quic://host:port"`.
+
+This is route selection groundwork, not a full QUIC data plane yet. conU can now prefer a configured direct route and fall back to relay metadata, while live QUIC sockets, ICE-style hole punching, and relay-backed encrypted byte delivery remain future transport hardening.
+
 ## Streams And Watch
 
 Phase 10 adds stream lifecycle metadata and a private watch view:
@@ -189,7 +207,7 @@ Rust agents can use `conu_sdk::ConuClient` to register, update presence, list ag
 
 MCP-capable agents can launch `conu-mcp` as a stdio server. It exposes tools such as `conu_register_agent`, `conu_list_agents`, `conu_send_message`, `conu_receive_message`, `conu_open_stream`, and `conu_security_audit`. The adapter follows the current MCP stdio transport shape: newline-delimited JSON-RPC 2.0 messages on stdin/stdout. Tool list/send/status outputs remain metadata-only. Set `CONU_AGENT_ID` when launching one MCP server for one agent; then the adapter rejects attempts to act as another local agent. `conu_receive_message` returns payload bytes as `payloadHex` only when the addressed local agent explicitly passes `includePayload: true`.
 
-See `docs/sdk-and-mcp.md` for SDK examples, MCP tool contracts, and privacy rules.
+See `docs/sdk-and-mcp.md` for SDK examples, MCP tool contracts, route tools, and privacy rules. See `docs/direct-transport-and-routes.md` for the Phase 13 route manager.
 
 ## Development
 
@@ -226,6 +244,9 @@ cargo run -p conu-cli -- streams close stream_example
 cargo run -p conu-cli -- watch
 cargo run -p conu-cli -- sessions sync
 cargo run -p conu-cli -- sessions --json
+cargo run -p conu-cli -- routes sync
+cargo run -p conu-cli -- routes --json
+cargo run -p conu-cli -- routes probes
 cargo run -p conu-cli -- security audit
 cargo run -p conu-cli -- security audit --json
 cargo run -p conu-cli -- pair

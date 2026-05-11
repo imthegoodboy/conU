@@ -23,7 +23,7 @@ crates/conud
   daemon process, local gateway/message/session processing, session manager, runtime lifecycle
 
 crates/conu-core
-  local state, security keys/encryption/signatures/replay, runtime lifecycle, agent registry, local message routing, stream metadata, trust store, relay frame contract, remote session mirror, future policy logic
+  local state, security keys/encryption/signatures/replay, runtime lifecycle, agent registry, local message routing, stream metadata, route selection, trust store, relay frame contract, remote session mirror, future policy logic
 
 crates/conu-protocol
   envelopes, agent cards, control-plane messages, data-plane messages
@@ -32,7 +32,7 @@ crates/conu-relay
   std-only WebSocket relay service, session auth, metadata-only forwarding, relay/bootstrap groundwork
 
 crates/conu-sdk
-  Rust agent-facing SDK over registration, presence, peers, messages, receive, streams, and security audit
+  Rust agent-facing SDK over registration, presence, peers, routes, messages, receive, streams, and security audit
 
 crates/conu-mcp
   MCP stdio adapter exposing conU tools over newline-delimited JSON-RPC
