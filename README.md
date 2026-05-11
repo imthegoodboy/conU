@@ -241,6 +241,7 @@ See `docs/sdk-and-mcp.md` for SDK examples, MCP tool contracts, route tools, and
 ```bash
 cargo fmt
 cargo check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test
 ```
 
@@ -248,6 +249,7 @@ On Windows machines without Visual Studio C++ Build Tools, use the GNU Rust tool
 
 ```bash
 rustup toolchain install stable-x86_64-pc-windows-gnu
+cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 ```
 

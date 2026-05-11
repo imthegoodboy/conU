@@ -63,6 +63,7 @@ Before merging production-affecting work, run:
 ```bash
 cargo fmt --all -- --check
 cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
+cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py
 conu doctor --json

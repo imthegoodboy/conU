@@ -1175,6 +1175,42 @@ Next:
 
 - Return to Phase 14 rooms, pub/sub, and multi-agent sessions, or harden signed installers/OS key storage if the product priority stays packaging.
 
+## Post Phase 15 Audit - Production Polish
+
+Status: completed
+
+Goal:
+
+Audit the whole repo after Phase 15, fix small maintainability issues, and raise the validation bar without starting Phase 14 feature work.
+
+Completed work:
+
+- Created GitHub issue #32 for the final audit and production polish pass.
+- Updated the CLI crate header so it describes the current control-room surface instead of stale Phase 13 wording.
+- Boxed the `RuntimeError::AlreadyRunning` status payload to keep runtime error results small.
+- Moved the test-only runtime nanosecond helper before the test module for cleaner module layout.
+- Simplified MCP JSON-RPC notification handling with `?` while preserving notification behavior.
+- Refactored status rendering through a `StatusView` to avoid long argument lists.
+- Tightened a CLI test helper to accept `&Path` instead of `&PathBuf`.
+- Added clippy with `-D warnings` to CI, release checklist, production readiness docs, README development commands, and PR guardrails.
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+- Privacy scan reviewed payload-looking terms; matches are existing negative tests, storage field names, and SDK/MCP input contracts.
+
+Known gaps:
+
+- No Phase 14 rooms/pub-sub implementation was started in this audit.
+- Public hosted internet readiness remains blocked by the known Phase 15 release blockers.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -1196,4 +1232,5 @@ Add entries here when a phase is completed.
 2026-05-11 - Phase 12 completed. Rust SDK, MCP stdio adapter, Python wrapper SDK, local agent examples, explicit addressed-agent receive API, tests, docs, and GNU-toolchain validation added. Next: Phase 13 direct transport and NAT upgrade.
 2026-05-11 - Phase 13 completed. conUD-owned direct/relay route manager, NAT-profile scoring, relay fallback selection, route probes/logs, CLI route commands, SDK/Python/MCP route tools, docs, skills, and GNU-toolchain validation added. Next: Phase 14 rooms, pub/sub, and multi-agent sessions.
 2026-05-11 - Phase 15 completed as a user-directed skip-ahead. Added doctor readiness checks, release/smoke scripts, packaging templates, CI/release workflows, release checklist, observability docs, strict local-install smoke validation, and GNU-toolchain release validation. Phase 14 remains not started.
+2026-05-11 - Post Phase 15 audit completed. Added clippy-clean polish across runtime, CLI, MCP, CI, and docs while preserving payload privacy and leaving Phase 14 not started.
 ```
