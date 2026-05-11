@@ -14,11 +14,13 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::security;
 use crate::state::{self, StateError, StatePaths};
 
 const TRUST_VERSION: &str = "1";
 const PAIRING_VERSION: &str = "1";
 const PAIRING_TTL_SECS: u64 = 10 * 60;
+const DEFAULT_RELAY_ENDPOINT: &str = "ws://127.0.0.1:8787";
 
 /// Lifecycle state for a local pairing invitation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,8 +93,19 @@ pub struct TrustedPeer {
     pub status: TrustStatus,
     pub source: String,
     pub pairing_code_hash: String,
+    pub exchange_public_key_hex: Option<String>,
+    pub relay_endpoint: Option<String>,
     pub created_at_unix: u64,
     pub updated_at_unix: u64,
+}
+
+/// Public card a user can exchange with another conU node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerCard {
+    pub node_id: String,
+    pub display_name: String,
+    pub exchange_public_key_hex: String,
+    pub relay_endpoint: String,
 }
 
 /// Result of joining a local pairing invitation.
@@ -121,6 +134,7 @@ pub enum TrustError {
     InvalidRequest {
         reason: String,
     },
+    Security(security::SecurityError),
 }
 
 impl TrustError {
@@ -143,6 +157,7 @@ impl fmt::Display for TrustError {
                 source,
             } => write!(formatter, "{action} at {}: {source}", path.display()),
             Self::InvalidRequest { reason } => write!(formatter, "invalid trust request: {reason}"),
+            Self::Security(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -152,6 +167,12 @@ impl std::error::Error for TrustError {}
 impl From<StateError> for TrustError {
     fn from(error: StateError) -> Self {
         Self::State(error)
+    }
+}
+
+impl From<security::SecurityError> for TrustError {
+    fn from(error: security::SecurityError) -> Self {
+        Self::Security(error)
     }
 }
 
@@ -212,6 +233,43 @@ pub fn list_peers(home_override: Option<PathBuf>) -> Result<Vec<TrustedPeer>, Tr
     read_trust_store(&paths)
 }
 
+/// Export this node's public card for manual cross-machine trust.
+pub fn export_peer_card(home_override: Option<PathBuf>) -> Result<PeerCard, TrustError> {
+    let init = state::init_state(home_override)?;
+    let material = security::local_peer_key_material(&init.paths)?;
+
+    Ok(PeerCard {
+        node_id: init.node.node_id,
+        display_name: init.node.display_name,
+        exchange_public_key_hex: material.local_exchange_public_key_hex,
+        relay_endpoint: configured_relay_endpoint(&init.paths)?,
+    })
+}
+
+/// Trust a peer from an explicitly exchanged public card.
+pub fn trust_peer_card(
+    home_override: Option<PathBuf>,
+    card: PeerCard,
+) -> Result<TrustedPeer, TrustError> {
+    let init = state::init_state(home_override)?;
+    let now = current_unix_seconds();
+    let card = validate_peer_card(card)?;
+
+    if card.node_id == init.node.node_id {
+        return Err(TrustError::InvalidRequest {
+            reason: "cannot trust the local node as a remote peer".to_string(),
+        });
+    }
+
+    security::derive_peer_key_agreement_from_paths(
+        &init.paths,
+        &card.exchange_public_key_hex,
+        b"conu manual peer trust v1",
+    )?;
+
+    upsert_manual_trusted_peer(&init.paths, card, now)
+}
+
 /// Revoke a peer by node id.
 pub fn revoke_peer(
     home_override: Option<PathBuf>,
@@ -267,6 +325,54 @@ fn upsert_trusted_peer(
         status: TrustStatus::Trusted,
         source: "local_pair_code".to_string(),
         pairing_code_hash: pairing_code_hash(&invite.code),
+        exchange_public_key_hex: None,
+        relay_endpoint: None,
+        created_at_unix: now,
+        updated_at_unix: now,
+    });
+
+    if !peers
+        .iter()
+        .any(|entry| entry.peer_node_id == peer.peer_node_id)
+    {
+        peers.push(peer.clone());
+    }
+
+    write_trust_store(paths, &peers)?;
+    Ok(peer)
+}
+
+fn upsert_manual_trusted_peer(
+    paths: &StatePaths,
+    card: PeerCard,
+    now: u64,
+) -> Result<TrustedPeer, TrustError> {
+    let mut peers = read_trust_store(paths)?;
+    let fingerprint = manual_peer_hash(&card.node_id, &card.exchange_public_key_hex);
+    let mut result = None;
+
+    for peer in &mut peers {
+        if peer.peer_node_id == card.node_id {
+            peer.display_name = card.display_name.clone();
+            peer.status = TrustStatus::Trusted;
+            peer.source = "manual_peer_card".to_string();
+            peer.pairing_code_hash = fingerprint.clone();
+            peer.exchange_public_key_hex = Some(card.exchange_public_key_hex.clone());
+            peer.relay_endpoint = Some(card.relay_endpoint.clone());
+            peer.updated_at_unix = now;
+            result = Some(peer.clone());
+            break;
+        }
+    }
+
+    let peer = result.unwrap_or_else(|| TrustedPeer {
+        peer_node_id: card.node_id,
+        display_name: card.display_name,
+        status: TrustStatus::Trusted,
+        source: "manual_peer_card".to_string(),
+        pairing_code_hash: fingerprint,
+        exchange_public_key_hex: Some(card.exchange_public_key_hex),
+        relay_endpoint: Some(card.relay_endpoint),
         created_at_unix: now,
         updated_at_unix: now,
     });
@@ -382,6 +488,14 @@ fn write_trust_store(paths: &StatePaths, peers: &[TrustedPeer]) -> Result<(), Tr
             "pairing_code_hash = \"{}\"\n",
             escape_file_value(&peer.pairing_code_hash)
         ));
+        contents.push_str(&format!(
+            "exchange_public_key_hex = \"{}\"\n",
+            escape_file_value(peer.exchange_public_key_hex.as_deref().unwrap_or(""))
+        ));
+        contents.push_str(&format!(
+            "relay_endpoint = \"{}\"\n",
+            escape_file_value(peer.relay_endpoint.as_deref().unwrap_or(""))
+        ));
         contents.push_str(&format!("created_at_unix = {}\n", peer.created_at_unix));
         contents.push_str(&format!("updated_at_unix = {}\n", peer.updated_at_unix));
         contents.push_str("payload_displayed = false\n");
@@ -436,6 +550,8 @@ fn peer_from_values(values: &HashMap<String, String>) -> Result<TrustedPeer, Tru
             required(values, "pairing_code_hash")?,
             "pairing code hash",
         )?,
+        exchange_public_key_hex: optional_hex(values.get("exchange_public_key_hex"))?,
+        relay_endpoint: optional_endpoint(values.get("relay_endpoint"))?,
         created_at_unix: parse_u64(&required(values, "created_at_unix")?)?,
         updated_at_unix: parse_u64(&required(values, "updated_at_unix")?)?,
     })
@@ -470,6 +586,13 @@ fn pairing_code_hash(code: &str) -> String {
     let mut hasher = DefaultHasher::new();
     code.hash(&mut hasher);
     format!("pair_{:016x}", hasher.finish())
+}
+
+fn manual_peer_hash(node_id: &str, exchange_public_key_hex: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    node_id.hash(&mut hasher);
+    exchange_public_key_hex.hash(&mut hasher);
+    format!("manual_{:016x}", hasher.finish())
 }
 
 fn pairing_code_suffix(code: &str) -> String {
@@ -536,6 +659,83 @@ fn validate_display_name(value: String) -> Result<String, TrustError> {
         });
     }
     Ok(value)
+}
+
+fn validate_endpoint(value: String) -> Result<String, TrustError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(TrustError::InvalidRequest {
+            reason: "relay endpoint cannot be empty".to_string(),
+        });
+    }
+    if !value.starts_with("ws://") {
+        return Err(TrustError::InvalidRequest {
+            reason: "relay endpoint must start with ws:// for the current relay client".to_string(),
+        });
+    }
+    if value.len() > 220 || value.chars().any(char::is_whitespace) {
+        return Err(TrustError::InvalidRequest {
+            reason: "relay endpoint is invalid".to_string(),
+        });
+    }
+    Ok(value)
+}
+
+fn validate_hex(value: String, field: &'static str) -> Result<String, TrustError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(TrustError::InvalidRequest {
+            reason: format!("{field} cannot be empty"),
+        });
+    }
+    if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(TrustError::InvalidRequest {
+            reason: format!("{field} must be hex"),
+        });
+    }
+    Ok(value)
+}
+
+fn validate_peer_card(card: PeerCard) -> Result<PeerCard, TrustError> {
+    Ok(PeerCard {
+        node_id: validate_identifier(card.node_id, "peer node id")?,
+        display_name: validate_display_name(card.display_name)?,
+        exchange_public_key_hex: validate_hex(card.exchange_public_key_hex, "exchange public key")?,
+        relay_endpoint: validate_endpoint(card.relay_endpoint)?,
+    })
+}
+
+fn optional_hex(value: Option<&String>) -> Result<Option<String>, TrustError> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| validate_hex(value, "exchange public key"))
+        .transpose()
+}
+
+fn optional_endpoint(value: Option<&String>) -> Result<Option<String>, TrustError> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(validate_endpoint)
+        .transpose()
+}
+
+fn configured_relay_endpoint(paths: &StatePaths) -> Result<String, TrustError> {
+    let contents = match fs::read_to_string(&paths.config) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(DEFAULT_RELAY_ENDPOINT.to_string());
+        }
+        Err(error) => return Err(TrustError::io("read conU config", &paths.config, error)),
+    };
+    let values = parse_key_values(&contents);
+    let endpoint = values
+        .get("default_relay")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_RELAY_ENDPOINT.to_string());
+    validate_endpoint(endpoint)
 }
 
 fn parse_key_values(contents: &str) -> HashMap<String, String> {

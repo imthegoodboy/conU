@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 conu-core.workspace = true
+conu-protocol.workspace = true
 
 [lints]
 workspace = true

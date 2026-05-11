@@ -16,13 +16,14 @@ use conu_core::agents::{
     self, AgentPresence, AgentRegistration, LocalAgentRecord, PresenceHeartbeat,
 };
 use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
+use conu_core::relay_delivery::{self, RemoteMessage};
 use conu_core::routes::{self, RouteProbe, RouteRecord, RouteSyncReport, RouteTransport};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
 use conu_core::security::{self, SecurityAudit, SecurityReport};
 use conu_core::sessions::{self, RemoteAgentRecord, RemoteSession, SessionSyncReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
 use conu_core::streams::{self, StreamEvent, StreamRecord};
-use conu_core::trust::{self, TrustStatus, TrustedPeer};
+use conu_core::trust::{self, PeerCard, TrustStatus, TrustedPeer};
 use conu_protocol::OpaquePayload;
 
 /// A rendered CLI command result.
@@ -102,10 +103,12 @@ where
         "agents" => render_agents(&args[1..], home_override),
         "peers" => render_peers(&args[1..], home_override),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
+        "relay" => render_relay(&args[1..], home_override),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
         "sessions" => render_sessions(&args[1..], home_override),
         "routes" => render_routes(&args[1..], home_override),
         "security" => render_security(&args[1..], home_override),
+        "identity" => render_identity(&args[1..], home_override),
         "pair" => render_pair(&args[1..], home_override),
         "join" => render_join(&args[1..], home_override),
         "connect" => render_connect(&args[1..], home_override),
@@ -181,6 +184,9 @@ quick commands
   conu agents
   conu agents register <agent-id> <display-name>
   conu messages send <from-agent> <to-agent> --stdin
+  conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
+  conu relay sync --wait-ms 3000
+  conu identity export
   conu streams open <from-agent> <to-agent>
   conu routes sync
   conu security audit
@@ -776,6 +782,10 @@ fn render_message_send(
         return CliOutput::failure(2, "stdin payload is empty");
     }
 
+    if let Some(peer_node_id) = parsed.peer_node_id.clone() {
+        return render_remote_message_send(parsed, &peer_node_id, home_override, stdin_payload);
+    }
+
     let before = inbox_ids(home_override.clone(), &parsed.to_agent_id);
     let payload_bytes = stdin_payload.len();
     let message = match LocalMessage::new(
@@ -848,6 +858,79 @@ bytes: {}
 privacy
   payload view  contents are not displayed by conU",
         parsed.from_agent_id, parsed.to_agent_id, submission.request_id, payload_bytes
+    ))
+}
+
+fn render_remote_message_send(
+    parsed: MessageSendArgs,
+    peer_node_id: &str,
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let payload_bytes = stdin_payload.len();
+    let message = match RemoteMessage::new(
+        &parsed.from_agent_id,
+        &parsed.to_agent_id,
+        peer_node_id,
+        OpaquePayload::from_bytes(stdin_payload),
+    ) {
+        Ok(message) => message,
+        Err(error) => {
+            return CliOutput::failure(2, format!("conU messages send failed\n\n{error}"));
+        }
+    };
+    let submission = match relay_delivery::submit_remote_message(home_override, message) {
+        Ok(submission) => submission,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
+        }
+    };
+
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "queued_remote",
+  "fromAgentId": "{}",
+  "toAgentId": "{}",
+  "peerNodeId": "{}",
+  "requestId": "{}",
+  "envelopeId": "{}",
+  "payloadBytes": {},
+  "route": "relay-websocket",
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&parsed.from_agent_id),
+            json_escape(&parsed.to_agent_id),
+            json_escape(&submission.peer_node_id),
+            json_escape(&submission.request_id),
+            json_escape(&submission.envelope_id),
+            payload_bytes
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU messages send
+
+status: queued for relay
+from: {}
+to: {}
+peer: {}
+request: {}
+envelope: {}
+bytes: {}
+route: relay-websocket
+
+next
+  conu relay sync --wait-ms 3000
+
+privacy
+  payload view  contents are not displayed by conU",
+        parsed.from_agent_id,
+        parsed.to_agent_id,
+        submission.peer_node_id,
+        submission.request_id,
+        submission.envelope_id,
+        payload_bytes
     ))
 }
 
@@ -1031,6 +1114,7 @@ privacy
 struct MessageSendArgs {
     from_agent_id: String,
     to_agent_id: String,
+    peer_node_id: Option<String>,
     stdin: bool,
     json: bool,
 }
@@ -1043,17 +1127,27 @@ struct MessageInboxArgs {
 fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput> {
     let mut json = false;
     let mut stdin = false;
+    let mut peer_node_id = None;
     let mut positional = Vec::new();
+    let mut index = 0;
 
-    for arg in args {
-        match arg.as_str() {
+    while index < args.len() {
+        match args[index].as_str() {
             "--json" => json = true,
             "--stdin" => stdin = true,
+            "--peer" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                peer_node_id = Some(value.clone());
+                index += 1;
+            }
             value if value.starts_with("--") => {
                 return Err(CliOutput::failure(2, format!("unknown option: {value}")));
             }
             value => positional.push(value.to_string()),
         }
+        index += 1;
     }
 
     if positional.len() != 2 {
@@ -1063,6 +1157,7 @@ fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput
     Ok(MessageSendArgs {
         from_agent_id: positional.remove(0),
         to_agent_id: positional.remove(0),
+        peer_node_id,
         stdin,
         json,
     })
@@ -1097,6 +1192,7 @@ fn parse_message_inbox_args(args: &[String]) -> Result<MessageInboxArgs, CliOutp
 fn render_messages_usage() -> String {
     r"usage:
   conu messages send <from-agent> <to-agent> --stdin [--json]
+  conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
   conu messages receipts [--json]"
         .to_string()
@@ -1973,6 +2069,115 @@ fn render_routes_usage() -> String {
         .to_string()
 }
 
+fn render_relay(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("sync") => render_relay_sync(&args[1..], home_override),
+        _ => CliOutput::failure(2, render_relay_usage()),
+    }
+}
+
+fn render_relay_sync(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_relay_sync_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let report =
+        match relay_delivery::sync_relay_once(home_override, Duration::from_millis(parsed.wait_ms))
+        {
+            Ok(report) => report,
+            Err(error) => {
+                return CliOutput::failure(1, format!("conU relay sync failed\n\n{error}"));
+            }
+        };
+
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "synced",
+  "endpoint": "{}",
+  "connected": {},
+  "queued": {},
+  "sent": {},
+  "received": {},
+  "undelivered": {},
+  "rejected": {},
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&report.endpoint),
+            report.connected,
+            report.queued,
+            report.sent,
+            report.received,
+            report.undelivered,
+            report.rejected
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU relay sync
+
+endpoint: {}
+connected: {}
+queued: {}
+sent: {}
+received: {}
+undelivered: {}
+rejected: {}
+
+flow
+  [agent] -> {{conUD}} == peer-encrypted ws ==> {{relay}} ==> {{remote conUD}} -> [agent]
+
+privacy
+  payload view  contents are not displayed by conU
+  relay view    encrypted body plus route metadata only",
+        report.endpoint,
+        yes_no(report.connected),
+        report.queued,
+        report.sent,
+        report.received,
+        report.undelivered,
+        report.rejected
+    ))
+}
+
+struct RelaySyncArgs {
+    wait_ms: u64,
+    json: bool,
+}
+
+fn parse_relay_sync_args(args: &[String]) -> Result<RelaySyncArgs, CliOutput> {
+    let mut wait_ms = 1000;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--wait-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_relay_usage()));
+                };
+                wait_ms = match value.parse::<u64>() {
+                    Ok(value) if value <= 60_000 => value,
+                    _ => return Err(CliOutput::failure(2, render_relay_usage())),
+                };
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            _ => return Err(CliOutput::failure(2, render_relay_usage())),
+        }
+        index += 1;
+    }
+
+    Ok(RelaySyncArgs { wait_ms, json })
+}
+
+fn render_relay_usage() -> String {
+    "usage: conu relay sync [--wait-ms <milliseconds>] [--json]".to_string()
+}
+
 fn render_security(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let remaining = match args.first().map(String::as_str) {
         None => args,
@@ -2094,6 +2299,67 @@ fn render_security_usage() -> String {
     "usage: conu security audit [--json]".to_string()
 }
 
+fn render_identity(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("export") => render_identity_export(&args[1..], home_override),
+        _ => CliOutput::failure(2, render_identity_usage()),
+    }
+}
+
+fn render_identity_export(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+    let card = match trust::export_peer_card(home_override) {
+        Ok(card) => card,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU identity export failed\n\n{error}"));
+        }
+    };
+
+    if json {
+        return CliOutput::success(format!(
+            r#"{{
+  "nodeId": "{}",
+  "displayName": "{}",
+  "exchangePublicKeyHex": "{}",
+  "relayEndpoint": "{}",
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&card.node_id),
+            json_escape(&card.display_name),
+            json_escape(&card.exchange_public_key_hex),
+            json_escape(&card.relay_endpoint)
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU identity export
+
+node: {}
+name: {}
+exchange public key: {}
+relay: {}
+
+share this public card with a peer, then import their card with:
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay {}
+
+privacy
+  key view      public exchange key only
+  payload view  contents are not displayed by conU",
+        card.node_id,
+        card.display_name,
+        card.exchange_public_key_hex,
+        card.relay_endpoint,
+        card.relay_endpoint
+    ))
+}
+
+fn render_identity_usage() -> String {
+    "usage: conu identity export [--json]".to_string()
+}
+
 fn inbox_ids(home_override: Option<PathBuf>, agent_id: &str) -> HashSet<String> {
     messages::list_agent_inbox(home_override, agent_id)
         .map(|entries| {
@@ -2132,6 +2398,7 @@ fn wait_for_message_delivery(
 fn render_peers(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("revoke") => render_peer_revoke(&args[1..], home_override),
+        Some("trust") => render_peer_trust(&args[1..], home_override),
         _ => render_peer_list(args, home_override),
     }
 }
@@ -2147,6 +2414,61 @@ fn render_peer_list(args: &[String], home_override: Option<PathBuf>) -> CliOutpu
         Ok(false) => CliOutput::success(render_peers_text(&peers)),
         Err(error) => error,
     }
+}
+
+fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_peer_trust_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let card = PeerCard {
+        node_id: parsed.peer_node_id,
+        display_name: parsed.display_name,
+        exchange_public_key_hex: parsed.exchange_key,
+        relay_endpoint: parsed.relay_endpoint,
+    };
+    let peer = match trust::trust_peer_card(home_override, card) {
+        Ok(peer) => peer,
+        Err(error) => return CliOutput::failure(1, format!("conU peers trust failed\n\n{error}")),
+    };
+
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "{}",
+  "peerNodeId": "{}",
+  "displayName": "{}",
+  "exchangeKeyTrusted": {},
+  "relayEndpoint": "{}",
+  "contentsDisplayed": false
+}}"#,
+            peer.status.as_str(),
+            json_escape(&peer.peer_node_id),
+            json_escape(&peer.display_name),
+            peer.exchange_public_key_hex.is_some(),
+            json_escape(peer.relay_endpoint.as_deref().unwrap_or(""))
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU peers trust
+
+status: {}
+peer: {}
+name: {}
+exchange key: trusted
+relay: {}
+
+next
+  conu relay sync --wait-ms 3000
+
+privacy
+  payload view  contents are not displayed by conU",
+        peer.status.as_str(),
+        peer.peer_node_id,
+        peer.display_name,
+        peer.relay_endpoint.as_deref().unwrap_or("not configured")
+    ))
 }
 
 fn render_peer_revoke(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -2199,12 +2521,16 @@ fn render_peers_json(peers: &[TrustedPeer]) -> String {
       "displayName": "{}",
       "status": "{}",
       "source": "{}",
+      "exchangeKeyTrusted": {},
+      "relayEndpoint": "{}",
       "updatedAtUnix": {}
     }}"#,
                 json_escape(&peer.peer_node_id),
                 json_escape(&peer.display_name),
                 peer.status.as_str(),
                 json_escape(&peer.source),
+                peer.exchange_public_key_hex.is_some(),
+                json_escape(peer.relay_endpoint.as_deref().unwrap_or("")),
                 peer.updated_at_unix
             )
         })
@@ -2234,10 +2560,16 @@ fn render_peers_text(peers: &[TrustedPeer]) -> String {
             .iter()
             .map(|peer| {
                 format!(
-                    "  {}  {}  {}",
+                    "  {}  {}  {}  key {}  relay {}",
                     peer.peer_node_id,
                     peer.status.as_str(),
-                    peer.display_name
+                    peer.display_name,
+                    if peer.exchange_public_key_hex.is_some() {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    peer.relay_endpoint.as_deref().unwrap_or("-")
                 )
             })
             .collect::<Vec<_>>()
@@ -2253,8 +2585,70 @@ trusted peers
 next
   conu pair
   conu join <code>
+  conu identity export
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port>]
   conu peers revoke <peer-node-id>"
     )
+}
+
+struct PeerTrustArgs {
+    peer_node_id: String,
+    display_name: String,
+    exchange_key: String,
+    relay_endpoint: String,
+    json: bool,
+}
+
+fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
+    let mut json = false;
+    let mut exchange_key = None;
+    let mut relay_endpoint = "ws://127.0.0.1:8787".to_string();
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--exchange-key" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                };
+                exchange_key = Some(value.clone());
+                index += 1;
+            }
+            "--relay" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                };
+                relay_endpoint = value.clone();
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    let Some(exchange_key) = exchange_key else {
+        return Err(CliOutput::failure(2, render_peer_trust_usage()));
+    };
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_peer_trust_usage()));
+    }
+
+    Ok(PeerTrustArgs {
+        peer_node_id: positional.remove(0),
+        display_name: positional.remove(0),
+        exchange_key,
+        relay_endpoint,
+        json,
+    })
+}
+
+fn render_peer_trust_usage() -> String {
+    "usage: conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port>] [--json]".to_string()
 }
 
 fn parse_peer_revoke_args(args: &[String]) -> Result<(String, bool), CliOutput> {
@@ -2428,7 +2822,8 @@ fn render_watch(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     }
 
     let stream_records = streams::list_streams(home_override.clone()).unwrap_or_default();
-    let events = streams::list_events(home_override).unwrap_or_default();
+    let events = streams::list_events(home_override.clone()).unwrap_or_default();
+    let relay_queue = relay_delivery::relay_queue_summary(home_override).ok();
     let open_streams = stream_records
         .iter()
         .filter(|stream| stream.state.as_str() == "open")
@@ -2459,24 +2854,40 @@ fn render_watch(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let latest_event = latest
         .map(|event| event.event_type.as_str())
         .unwrap_or("idle");
+    let relay_queued = relay_queue.as_ref().map(|queue| queue.queued).unwrap_or(0);
+    let relay_sent = relay_queue.as_ref().map(|queue| queue.sent).unwrap_or(0);
+    let relay_rejected = relay_queue
+        .as_ref()
+        .map(|queue| queue.rejected)
+        .unwrap_or(0);
 
     CliOutput::success(format!(
         r"conU watch
 
-transport view
+private transport view
   {flow}
+
+  .-----------.      .--------.      .------------.      .---------.
+  |  agent A  | ---> | conUD  | ===> | blind relay | ===> | agent B |
+  '-----------'      '--------'      '------------'      '---------'
+                         peer-encrypted envelopes
+
+live counters
   route         {route}
   stream        {stream_id}
   event         {latest_event}
   open streams  {open_streams}
   packets       {total_packets}
   bytes         {total_bytes}
+  relay queued  {relay_queued}
+  relay sent    {relay_sent}
+  relay reject  {relay_rejected}
   contents      not displayed
 
 animation
-  [agent] >>> private packets >>> [agent]
+  [agent] >>> private packets >>> [conUD] >>> encrypted relay >>> [agent]
 
-status: stream metadata only",
+status: metadata animation only",
     ))
 }
 
@@ -3173,8 +3584,10 @@ Usage:
   conu agents register <agent-id> <display-name> [--kind <kind>] [--json]
   conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
   conu messages send <from-agent> <to-agent> --stdin [--json]
+  conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
   conu messages receipts [--json]
+  conu relay sync [--wait-ms <milliseconds>] [--json]
   conu streams [--json]
   conu streams open <from-agent> <to-agent> [--kind <kind>] [--json]
   conu streams write <stream-id> --stdin [--json]
@@ -3185,7 +3598,9 @@ Usage:
   conu routes sync [--json]
   conu routes probes [--json]
   conu security audit [--json]
+  conu identity export [--json]
   conu peers [--json]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port>] [--json]
   conu peers revoke <peer-node-id> [--json]
   conu pair [--json]
   conu join <code> [--json]
@@ -3198,7 +3613,7 @@ Usage:
   conu --help
   conu --version
 
-Phase 15 adds release readiness checks, packaging paths, and service templates while payload contents remain hidden."
+conU carries local and relay-backed peer-encrypted messages while payload contents remain hidden."
         .to_string()
 }
 
@@ -3824,6 +4239,56 @@ mod tests {
         assert!(request_text.contains("payload_privacy = \"encrypted_at_rest\""));
         assert!(request_text.contains("payload_ciphertext_hex"));
         assert!(!request_text.contains("payload_hex"));
+        assert!(!request_text.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_send_peer_queues_encrypted_relay_payload() {
+        let alice_home = temp_home("remote-message-alice");
+        let bob_home = temp_home("remote-message-bob");
+        let bob_card = trust::export_peer_card(Some(bob_home)).expect("bob card exports");
+        register_test_agent(&alice_home, "agent.sender");
+
+        let trusted = run_with_home(
+            [
+                "peers",
+                "trust",
+                &bob_card.node_id,
+                &bob_card.display_name,
+                "--exchange-key",
+                &bob_card.exchange_public_key_hex,
+                "--relay",
+                &bob_card.relay_endpoint,
+                "--json",
+            ],
+            Some(alice_home.clone()),
+        );
+        let sent = run_with_home_and_stdin(
+            [
+                "messages",
+                "send",
+                "agent.sender",
+                "agent.remote",
+                "--peer",
+                &bob_card.node_id,
+                "--stdin",
+                "--json",
+            ],
+            Some(alice_home.clone()),
+            b"private message contents".to_vec(),
+        );
+        let request = std::fs::read_dir(state::StatePaths::from_home(alice_home).relay_outbox_dir)
+            .expect("relay outbox reads")
+            .next()
+            .expect("relay request exists")
+            .expect("relay request entry");
+        let request_text = std::fs::read_to_string(request.path()).expect("request reads");
+
+        assert_eq!(trusted.code, 0, "{}", trusted.stderr);
+        assert_eq!(sent.code, 0, "{}", sent.stderr);
+        assert!(sent.stdout.contains("\"status\": \"queued_remote\""));
+        assert!(request_text.contains("payload_privacy = \"peer_encrypted\""));
+        assert!(request_text.contains("payload_ciphertext_hex"));
         assert!(!request_text.contains("private message contents"));
     }
 

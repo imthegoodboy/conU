@@ -78,11 +78,11 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 
 - Phase 8 relay is a std-only WebSocket MVP in `crates/conu-relay` with its frame contract in `conu_core::relay`.
 - Runtime clients must authenticate with `HELLO node=<id> token=<token> payload=not_observed` before forwarding.
-- `FORWARD` frames may include target node id, envelope id, byte count, and `payload=opaque`; they must not include plaintext payload fields.
+- `FORWARD` frames may include target node id, agent ids, envelope id, byte count, and peer-encrypted body fields; they must not include plaintext payload fields.
 - Relay server output, errors, tests, and logs must not echo auth tokens or private payload contents.
 - The relay may return `UNDELIVERED reason=peer_offline` when the target runtime is not connected; do not add mailbox storage until the encrypted mailbox phase.
 - On Windows, accepted streams from a nonblocking listener must be set back to blocking mode before frame reads.
-- `conu-relay` alone is not a live remote-agent connection; conUD session/discovery mirrors begin in Phase 9 and live stream routing remains later work.
+- `conu-relay` plus `conu relay sync` can move peer-encrypted one-shot messages for trusted peers. Long-running reconnect loops, stream byte routing, hosted auth hardening, and offline mailbox delivery remain later work.
 
 ## Remote Session And Discovery Rules
 
@@ -90,7 +90,7 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - conUD owns session sync; CLI commands may request sync or display the mirror but must not inspect payloads.
 - Remote session state belongs under `sessions/registry.toml`; mirrored remote agent cards belong under `agents/remote.toml`.
 - Session logs must use metadata-only lines with counts, route state, and `payload=not_observed`.
-- `conu agents` may show trusted remote agent cards from the mirror, but it must not claim live messaging/streaming before later phases wire the relay client into conUD.
+- `conu agents` may show trusted remote agent cards from the mirror. One-shot relay messages are available through explicit peer-card trust and relay sync; live stream routing remains future work.
 - Revoked peers must not remain visible as active remote agents after session sync.
 - Route metadata may include relay endpoint, peer id, state, and reconnect counts; it must not include message contents, tokens, or private payload bytes.
 
@@ -127,7 +127,7 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - New message request and inbox files must use `payload_ciphertext_hex`, not `payload_hex`.
 - Agent registry records should include signature metadata for new/updated local agents.
 - CLI security output may show readiness booleans and key ids, but must never show private keys, shared secrets, plaintext payloads, or decrypted payloads.
-- Peer key agreement helpers are available for later live relay-backed encrypted delivery, but current remote sessions are still metadata mirrors.
+- Peer key agreement helpers now back the relay message MVP. The relay must carry ciphertext only, and inbound envelopes must verify the sender exchange public key against the trusted peer card before delivery.
 
 ## SDK And MCP Rules
 
@@ -141,6 +141,7 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - `conu_receive_message` returns metadata by default and may return `payloadHex` only when `includePayload` is true.
 - `CONU_AGENT_ID` may bind one `conu-mcp` server to one local agent; bound servers must not act as another agent.
 - Python SDK wrappers should pass payload bytes through stdin and avoid printing/logging payloads.
+- SDK/MCP remote send helpers must queue peer-encrypted bytes and return metadata only. Relay sync helpers report counters only.
 - TypeScript SDK is intentionally later; do not mark it complete until implemented and validated.
 
 ## Packaging And Release Rules
@@ -149,7 +150,7 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Release artifacts must not include local conU state, `CONU_HOME`, `.conu`, private keys, logs, inboxes, route registries, message stores, or test payload output.
 - `conu doctor` may report binary paths, readiness booleans, runtime health, and payload-safe log scan counts; it must not print log contents, private keys, payload text, or secrets.
 - Windows service, Linux systemd, and macOS launchd files are templates until a signed installer configures platform-specific users and paths.
-- A local release may be marked ready only with documented limits. Do not claim public hosted internet readiness until live encrypted remote data-plane delivery, capability policy, signed remote cards, and OS-backed key storage are implemented.
+- A local release may be marked ready only with documented limits. Do not claim public hosted internet readiness until hosted relay auth/TLS, reconnect loops, stream byte routing, capability policy, signed remote cards, and OS-backed key storage are implemented.
 - CI/release workflows must run metadata-only checks and must not upload conU state directories or logs as artifacts.
 
 ## Privacy Rules

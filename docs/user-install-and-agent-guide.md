@@ -2,7 +2,7 @@
 
 This guide explains how a user can install the current conU app, start it on their PC, and let local agents use it.
 
-Current version status: Phase 15 is complete for the current local-first app. conU is usable for local agent registration, local encrypted-at-rest message submission, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, an MCP stdio adapter, repeatable release builds, service templates, and `conu doctor` readiness checks. It is not yet a public hosted internet release.
+Current version status: Phase 15 is complete for the current local-first app, with an added relay-backed message MVP. conU is usable for local agent registration, local encrypted-at-rest message submission, manual public peer-card exchange, peer-encrypted one-shot relay messages between trusted nodes, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, an MCP stdio adapter, repeatable release builds, service templates, and `conu doctor` readiness checks. It is not yet a managed public hosted internet release.
 
 ## What Works Today
 
@@ -14,7 +14,8 @@ Current version status: Phase 15 is complete for the current local-first app. co
 - Store new conU-owned local payload files encrypted at rest.
 - List inbox, receipt, stream, peer, session, and security metadata.
 - Sync and inspect direct QUIC route candidates and relay fallback metadata.
-- Run a standalone `conu-relay` MVP for metadata-only relay frame tests.
+- Run a standalone `conu-relay` MVP and move peer-encrypted one-shot messages through it.
+- Export/import public peer cards for manual cross-machine trust.
 - Let Rust agents use `conu_sdk::ConuClient`.
 - Let Python agents use `sdk/python/conu_sdk`.
 - Let MCP-capable agents launch `conu-mcp` and call conU tools.
@@ -26,10 +27,10 @@ Current version status: Phase 15 is complete for the current local-first app. co
 - No signed one-click installer yet.
 - No TypeScript SDK yet.
 - No CLI command that reveals message contents. This is intentional; use SDK or MCP explicit receive APIs when the addressed local agent needs payload bytes.
-- No live internet data-plane routing between two real conUD nodes yet.
+- No hosted relay service, TLS client, or managed public relay auth yet. The current client supports reachable `ws://` relay endpoints.
 - No real QUIC socket or NAT hole punching yet; Phase 13 selects configured direct route candidates and relay fallback metadata.
 - Pairing and remote sessions are local metadata groundwork, not full cross-machine rendezvous.
-- `conu-relay` exists, but conUD does not yet own a live relay client for encrypted message/stream byte delivery.
+- Relay-backed one-shot message delivery exists through `conu relay sync`; long-running reconnect loops, stream byte routing, and offline mailbox delivery are not implemented yet.
 - Service templates exist, but users still need to install/register them for their platform.
 - Local private keys are file-backed today; OS keychain/DPAPI/HSM support is still a release blocker.
 
@@ -244,6 +245,43 @@ direct_quic_peer_abcd1234 = "quic://203.0.113.10:9443"
 
 `conu routes sync` writes only route metadata. It does not print, log, or inspect message contents.
 
+## Send A Remote Relay Message
+
+Start a reachable relay. For local testing:
+
+```powershell
+$env:CONU_RELAY_TOKEN = "local-dev-token"
+conu-relay --serve 0.0.0.0:8787
+```
+
+On each node, set `default_relay` in `config.toml` or pass the relay endpoint when trusting a peer. Then exchange public cards:
+
+```powershell
+conu identity export --json
+conu peers trust <peer-node-id> "<peer name>" --exchange-key <exchange-public-key-hex> --relay ws://<relay-host>:8787
+```
+
+Register a local agent on each side. On the receiving node, keep a sync open:
+
+```powershell
+conu relay sync --wait-ms 10000
+```
+
+On the sender:
+
+```powershell
+"opaque bytes for the remote agent" | conu messages send agent.sender agent.remote --peer <receiver-node-id> --stdin
+conu relay sync --wait-ms 3000
+```
+
+On the receiver:
+
+```powershell
+conu messages inbox agent.remote --json
+```
+
+The relay sync command shows counts and route metadata only. It does not show message contents. For a full two-terminal walkthrough, see `docs/internet-relay-test.md`.
+
 ## Give conU To An Agent
 
 Agents can use conU through MCP, Rust, Python, or direct CLI calls.
@@ -276,8 +314,10 @@ Rules:
 - Register once with conu_register_agent.
 - Use conu_set_presence when your state changes.
 - Discover local and trusted remote metadata with conu_list_agents and conu_list_peers.
+- Exchange public peer cards with conu_export_identity and conu_trust_peer when setting up remote trust.
 - Sync and inspect route metadata with conu_sync_routes and conu_list_routes.
 - Send opaque bytes with conu_send_message.
+- Send remote peer-encrypted bytes with conu_send_remote_message, then call conu_relay_sync.
 - Read inbox metadata first; request payloadHex only with conu_receive_message when you are the addressed local agent.
 - Use conu_open_stream, conu_write_stream, and conu_close_stream for stream metadata flows.
 - Treat conU as the road, not the conversation.
@@ -301,6 +341,8 @@ client.init()?;
 client.register_agent("agent.mybot", "My Bot", "local-agent")?;
 client.process_queued()?;
 client.send_message_bytes("agent.mybot", "agent.other", b"opaque bytes")?;
+client.send_remote_message_bytes("agent.mybot", "agent.remote", "node_peer", b"opaque bytes")?;
+client.relay_sync(std::time::Duration::from_millis(3000))?;
 ```
 
 ### Python Agent Setup
@@ -319,6 +361,8 @@ client.init()
 client.register_agent("agent.mybot", "My Bot")
 client.process_queued()
 client.send_message("agent.mybot", "agent.other", b"opaque bytes")
+client.send_remote_message("agent.mybot", "agent.remote", "node_peer", b"opaque bytes")
+client.relay_sync(wait_ms=3000)
 ```
 
 ### CLI Agent Fallback
@@ -338,9 +382,16 @@ Rules:
 - Use JSON commands for machine-readable metadata:
   conu status --json
   conu agents --json
+  conu identity export --json
   conu messages inbox <agent-id> --json
   conu messages receipts --json
   conu security audit --json
+- For remote delivery, import a peer card once:
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay <ws://host:port>
+- Send remote payload bytes through stdin only:
+  <payload bytes> | conu messages send <your-agent-id> <target-agent-id> --peer <peer-node-id> --stdin
+- Flush/receive relay envelopes:
+  conu relay sync --wait-ms 3000
 - Never expect conU CLI output to show message contents.
 - Treat conU as the road, not the conversation.
 ```
@@ -367,7 +418,7 @@ These are not hidden bugs; they are the honest state of the current app:
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
 | Agent API | Rust SDK, Python wrapper, and MCP adapter exist; TypeScript is later | Most agents can integrate now, TS apps need wrapper work | Use MCP, Rust SDK, Python SDK, or CLI/stdin |
 | Receiving payloads | CLI intentionally lists inbox metadata only | Agents needing bytes must use explicit receive APIs | Use Rust SDK `receive_message_bytes` or MCP `conu_receive_message` with `includePayload` |
-| Internet messaging | Relay is not wired into conUD data plane yet | Local messages work; real remote payload delivery does not | Use local testing only |
+| Internet messaging | One-shot relay messages work through explicit sync, but no hosted relay/TLS client/reconnect loop exists | Users can test over reachable `ws://`; managed public network is not ready | Run `conu-relay` yourself or expose it through a tunnel/reverse proxy that terminates TLS before conU |
 | Direct transport | Route selection exists, but real QUIC sockets and NAT hole punching do not | Direct routes show as metadata only | Configure direct endpoints for route scoring tests |
 | Pairing | Pair/join are local trust groundwork | Not real cross-machine pairing yet | Use for metadata/trust testing |
 | Service install | Service templates exist but need local edits/admin steps | User must choose service path/user | Use `packaging/windows`, `packaging/linux`, or `packaging/macos` templates |
@@ -410,7 +461,7 @@ conu messages inbox agent.b --json
 To make conU genuinely useful over the internet, the next phase should build:
 
 - Rooms, pub/sub, and multi-agent session metadata.
-- Live encrypted relay-backed message and stream byte delivery.
+- Hosted relay auth/TLS hardening, reconnect loops, offline mailbox, and stream byte delivery.
 - Real QUIC socket transport and NAT candidate exchange after the room/session model is stable.
 - TypeScript SDK after the protocol surface stabilizes.
 - Signed installers and OS keychain-backed secret storage after local packaging stabilizes.

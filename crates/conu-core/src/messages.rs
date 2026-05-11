@@ -285,6 +285,32 @@ pub fn read_message_payload(
     Ok(OpaquePayload::from_bytes(payload))
 }
 
+/// Deliver a peer-decrypted remote envelope to a local addressed agent inbox.
+pub fn deliver_remote_envelope_from_paths(
+    paths: &StatePaths,
+    envelope_id: &str,
+    from_agent_id: &str,
+    to_agent_id: &str,
+    payload: OpaquePayload,
+) -> Result<InboxEntry, MessageError> {
+    let envelope_id = validate_identifier(envelope_id.to_string(), "envelope id")?;
+    let from_agent_id = validate_identifier(from_agent_id.to_string(), "from agent id")?;
+    let to_agent_id = validate_identifier(to_agent_id.to_string(), "to agent id")?;
+    validate_payload_size(payload.len())?;
+    validate_local_recipient_can_receive(paths, &to_agent_id)?;
+
+    let envelope = Envelope::new(
+        &envelope_id,
+        AgentId::new(from_agent_id)?,
+        AgentId::new(to_agent_id)?,
+        EnvelopeKind::Message,
+        payload,
+    )?;
+
+    security::record_replay_id_from_paths(paths, &envelope_id, "relay_envelope")?;
+    deliver_envelope_with_status(paths, envelope, "delivered_relay")
+}
+
 /// List metadata-only local delivery receipts.
 pub fn list_receipts(home_override: Option<PathBuf>) -> Result<Vec<DeliveryReceipt>, MessageError> {
     let paths = StatePaths::resolve(home_override)?;
@@ -359,7 +385,7 @@ fn process_one_message_request(
     )?;
 
     security::record_replay_id_from_paths(paths, &envelope_id, "message_envelope")?;
-    deliver_envelope(paths, envelope)
+    deliver_envelope_with_status(paths, envelope, "delivered_local")
 }
 
 fn validate_agents_can_message(
@@ -395,7 +421,32 @@ fn validate_agents_can_message(
     Ok(())
 }
 
-fn deliver_envelope(paths: &StatePaths, envelope: Envelope) -> Result<InboxEntry, MessageError> {
+fn validate_local_recipient_can_receive(
+    paths: &StatePaths,
+    to_agent_id: &str,
+) -> Result<(), MessageError> {
+    let registered = agents::list_local_agents(Some(paths.home.clone()))?;
+    let recipient = registered
+        .iter()
+        .find(|agent| agent.agent_id == to_agent_id)
+        .ok_or_else(|| MessageError::InvalidRequest {
+            reason: "recipient is not a registered local agent".to_string(),
+        })?;
+
+    if !recipient.capabilities.messages {
+        return Err(MessageError::InvalidRequest {
+            reason: "recipient is not allowed to receive messages".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn deliver_envelope_with_status(
+    paths: &StatePaths,
+    envelope: Envelope,
+    status: &str,
+) -> Result<InboxEntry, MessageError> {
     let now = current_unix_seconds();
     let receipt_id = request_id("rcpt");
     let inbox_dir = paths.message_inbox_dir.join(envelope.to.as_str());
@@ -430,7 +481,7 @@ fn deliver_envelope(paths: &StatePaths, envelope: Envelope) -> Result<InboxEntry
         envelope_id: entry.envelope_id.clone(),
         from_agent_id: entry.from_agent_id.clone(),
         to_agent_id: entry.to_agent_id.clone(),
-        status: "delivered_local".to_string(),
+        status: status.to_string(),
         delivered_at_unix: now,
         payload_bytes: entry.payload_bytes,
     };
@@ -438,7 +489,7 @@ fn deliver_envelope(paths: &StatePaths, envelope: Envelope) -> Result<InboxEntry
         .message_receipts_dir
         .join(format!("{}.receipt", receipt.receipt_id));
     write_new_file(&receipt_path, &render_receipt(&receipt))?;
-    append_message_log(paths, &entry)?;
+    append_message_log(paths, &entry, status)?;
 
     Ok(entry)
 }
@@ -661,7 +712,11 @@ fn render_receipt(receipt: &DeliveryReceipt) -> String {
     )
 }
 
-fn append_message_log(paths: &StatePaths, entry: &InboxEntry) -> Result<(), MessageError> {
+fn append_message_log(
+    paths: &StatePaths,
+    entry: &InboxEntry,
+    status: &str,
+) -> Result<(), MessageError> {
     fs::create_dir_all(&paths.logs_dir)
         .map_err(|error| MessageError::io("create log directory", &paths.logs_dir, error))?;
     let log_path = paths.logs_dir.join("messages.log");
@@ -673,8 +728,9 @@ fn append_message_log(paths: &StatePaths, entry: &InboxEntry) -> Result<(), Mess
 
     writeln!(
         file,
-        "time={} event=message_delivered envelope={} from={} to={} bytes={} payload=not_observed",
+        "time={} event=message_delivered status={} envelope={} from={} to={} bytes={} payload=not_observed",
         current_unix_seconds(),
+        sanitize_log_value(status),
         sanitize_log_value(&entry.envelope_id),
         sanitize_log_value(&entry.from_agent_id),
         sanitize_log_value(&entry.to_agent_id),

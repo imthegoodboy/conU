@@ -19,7 +19,7 @@ use conu_core::relay::{
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_HTTP_HEADER_BYTES: usize = 8192;
-const MAX_FRAME_BYTES: usize = 64 * 1024;
+const MAX_FRAME_BYTES: usize = 256 * 1024;
 
 /// Configuration for the relay server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,6 +275,9 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                         to_node_id: forward.to_node_id.clone(),
                         envelope_id: forward.envelope_id.clone(),
                         payload_bytes: forward.payload_bytes,
+                        from_agent_id: forward.from_agent_id.clone(),
+                        to_agent_id: forward.to_agent_id.clone(),
+                        body: forward.body.clone(),
                     });
                     let mut target = target.lock().map_err(|_| {
                         RelayError::Protocol("relay target lock failed".to_string())
@@ -590,7 +593,15 @@ fn sha1(bytes: &[u8]) -> [u8; 20] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use conu_core::agents::{self, AgentRegistration};
+    use conu_core::messages;
     use conu_core::relay::{RelayForward, RelayHello, render_client_frame};
+    use conu_core::relay_delivery::{self, RemoteMessage};
+    use conu_core::{state, trust};
+    use conu_protocol::OpaquePayload;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process;
 
     #[test]
     fn websocket_accept_key_matches_rfc_example() {
@@ -657,6 +668,52 @@ mod tests {
         assert!(!response.contains("secret-bad-token"));
     }
 
+    #[test]
+    fn relay_delivers_peer_encrypted_message_between_two_state_homes() {
+        let relay =
+            spawn_relay(RelayConfig::new("127.0.0.1:0", "local-dev-token").expect("valid config"))
+                .expect("relay starts");
+        let endpoint = format!("ws://{}", relay.local_addr());
+        let alice_home = test_home("alice");
+        let bob_home = test_home("bob");
+        prepare_home(&alice_home, &endpoint);
+        prepare_home(&bob_home, &endpoint);
+        trust_each_other(&alice_home, &bob_home);
+        register_agent(&alice_home, "agent.alice");
+        register_agent(&bob_home, "agent.bob");
+        let bob_node = node_id(&bob_home);
+        let remote = RemoteMessage::new(
+            "agent.alice",
+            "agent.bob",
+            bob_node,
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("remote message valid");
+        relay_delivery::submit_remote_message(Some(alice_home.clone()), remote)
+            .expect("remote message queues");
+
+        let bob_home_for_thread = bob_home.clone();
+        let bob_sync = thread::spawn(move || {
+            relay_delivery::sync_relay_once(Some(bob_home_for_thread), Duration::from_millis(2_000))
+                .expect("bob relay sync")
+        });
+        thread::sleep(Duration::from_millis(100));
+        let alice_report =
+            relay_delivery::sync_relay_once(Some(alice_home), Duration::from_millis(1_000))
+                .expect("alice relay sync");
+        let bob_report = bob_sync.join().expect("bob thread joins");
+        let inbox = messages::list_agent_inbox(Some(bob_home.clone()), "agent.bob")
+            .expect("bob inbox reads");
+        let received =
+            messages::read_message_payload(Some(bob_home), "agent.bob", &inbox[0].envelope_id)
+                .expect("bob payload reads");
+
+        assert_eq!(alice_report.sent, 1);
+        assert_eq!(bob_report.received, 1);
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(received.as_bytes(), b"private message contents");
+    }
+
     fn connect_client(addr: SocketAddr) -> TcpStream {
         let mut stream = TcpStream::connect(addr).expect("client connects");
         stream
@@ -699,5 +756,46 @@ mod tests {
         read_text_frame(stream)
             .expect("server frame reads")
             .expect("server frame exists")
+    }
+
+    fn prepare_home(home: &Path, endpoint: &str) {
+        state::init_state(Some(home.to_path_buf())).expect("state initializes");
+        let paths = state::StatePaths::from_home(home.to_path_buf());
+        fs::write(
+            paths.config,
+            format!("version = \"1\"\ndefault_relay = \"{endpoint}\"\n"),
+        )
+        .expect("config writes");
+    }
+
+    fn trust_each_other(alice_home: &Path, bob_home: &Path) {
+        let alice = trust::export_peer_card(Some(alice_home.to_path_buf())).expect("alice card");
+        let bob = trust::export_peer_card(Some(bob_home.to_path_buf())).expect("bob card");
+        trust::trust_peer_card(Some(alice_home.to_path_buf()), bob).expect("alice trusts bob");
+        trust::trust_peer_card(Some(bob_home.to_path_buf()), alice).expect("bob trusts alice");
+    }
+
+    fn register_agent(home: &Path, agent_id: &str) {
+        let registration =
+            AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid agent");
+        agents::submit_registration(Some(home.to_path_buf()), registration)
+            .expect("registration submits");
+        agents::process_gateway_requests(Some(home.to_path_buf())).expect("registration processes");
+    }
+
+    fn node_id(home: &Path) -> String {
+        state::read_state(Some(home.to_path_buf()))
+            .expect("state reads")
+            .node
+            .expect("node exists")
+            .node_id
+    }
+
+    fn test_home(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "conu-relay-e2e-test-{label}-{}-{}",
+            process::id(),
+            current_unix_nanos()
+        ))
     }
 }

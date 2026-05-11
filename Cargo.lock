@@ -111,6 +111,7 @@ name = "conu-relay"
 version = "0.1.0"
 dependencies = [
  "conu-core",
+ "conu-protocol",
 ]
 
 [[package]]

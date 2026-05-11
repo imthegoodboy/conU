@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 15 is complete for the current local-first app. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, local pairing/trust records can be created and revoked, `conu-relay` can accept WebSocket runtime sessions for metadata-only relay forwarding, conUD can sync remote session/discovery metadata for trusted peers, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist.
+Phase 15 is complete for the current local-first app, and this branch adds the first live relay-backed internet data-plane slice. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime skeleton, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, users can exchange public peer cards, trusted peers can send peer-encrypted messages through `conu-relay`, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -60,12 +60,16 @@ pairing/invites/       pending local pairing invitations
 pairing/used/          consumed local pairing invitations
 sessions/registry.toml remote runtime session metadata
 mailbox/               future encrypted mailbox storage
+mailbox/relay/outbox/  peer-encrypted outbound relay envelopes
+mailbox/relay/sent/    metadata markers for relay-sent envelopes
+mailbox/relay/rejected/ rejected relay outbox markers
 logs/conud.log         runtime metadata log
 logs/agents.log        local agent metadata log
 logs/messages.log      local message delivery metadata log
 logs/sessions.log      remote session sync metadata log
 logs/streams.log       stream lifecycle metadata log
 logs/routes.log        direct/relay route sync metadata log
+logs/relay-delivery.log relay delivery metadata log
 ```
 
 Runtime, agent, and message logs contain metadata only, such as event name, pid, node id, agent id, envelope id, byte count, and `payload=not_observed`. New local message request and recipient-inbox envelope files store conU-owned payload bytes with XChaCha20Poly1305 encrypted-at-rest fields. CLI output, receipts, processed markers, rejected markers, and logs do not display message contents.
@@ -99,6 +103,19 @@ conu messages receipts
 ```
 
 `conu messages send` reads bytes from stdin so payloads are not placed directly in the command line. When `conUD` is running, delivery is processed automatically. If the runtime is offline, encrypted message requests remain queued under `runtime/ipc/messages/inbox/` and can be processed with `conud --process-ipc`.
+
+## Relay-Backed Remote Messages
+
+conU can now move peer-encrypted message envelopes between two trusted nodes through the WebSocket relay:
+
+```bash
+conu identity export --json
+conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay ws://relay-host:8787
+conu messages send agent.sender agent.remote --peer <peer-node-id> --stdin
+conu relay sync --wait-ms 3000
+```
+
+Run `conu relay sync --wait-ms 10000` on the receiving node while the sender syncs. The relay sees node ids, agent ids, envelope id, byte count, public exchange key material, and ciphertext only. It does not receive plaintext message contents. See `docs/internet-relay-test.md` for a local two-node smoke and an internet test checklist.
 
 ## Security Hardening
 
@@ -150,7 +167,7 @@ The release artifact includes `conu`, `conud`, `conu-relay`, `conu-mcp`, docs, p
 
 ## Pairing And Trust
 
-Phase 7 adds local trust-store mechanics before the hosted relay exists:
+Phase 7 adds local trust-store mechanics, and the relay data-plane adds manual public peer-card exchange:
 
 ```bash
 conu pair
@@ -158,9 +175,11 @@ conu join 123456
 conu peers
 conu peers --json
 conu peers revoke peer_example
+conu identity export
+conu peers trust node_example "Peer Node" --exchange-key <hex> --relay ws://127.0.0.1:8787
 ```
 
-`conu pair` creates a short local invitation code with an expiration. `conu join <code>` consumes a local invitation and writes a trusted peer record to `trust.toml`. Peer ids and display names are derived from a hash suffix, and the trust store records `pairing_code_hash` instead of the raw used code. Cross-machine pairing remains local-trust groundwork until remote sessions and discovery are wired into conUD.
+`conu pair` creates a short local invitation code with an expiration. `conu join <code>` consumes a local invitation and writes a trusted peer record to `trust.toml`. For cross-machine testing today, exchange `conu identity export --json` output with the other user and import their public card using `conu peers trust`. Trust records store public exchange keys and relay endpoints when available; private keys are never exported.
 
 ## WebSocket Relay
 
@@ -171,9 +190,9 @@ set CONU_RELAY_TOKEN=local-dev-token
 cargo run -p conu-relay -- --serve 127.0.0.1:8787
 ```
 
-Connected runtimes send `HELLO`, `FORWARD`, and `PING` frames. The relay answers with `WELCOME`, `ENVELOPE`, `SENT`, `UNDELIVERED`, `PONG`, or `ERROR` frames. Forwarding is metadata-only: the relay sees target node id, envelope id, and byte count, while payload fields are rejected and logs/output use `payload=not_observed` or `payload=opaque`.
+Connected runtimes send `HELLO`, `FORWARD`, and `PING` frames. The relay answers with `WELCOME`, `ENVELOPE`, `SENT`, `UNDELIVERED`, `PONG`, or `ERROR` frames. Relay `FORWARD` can carry a peer-encrypted opaque body for message delivery, but plaintext payload fields are rejected and logs/output use `payload=not_observed`, `payload=opaque`, or `payload=peer_encrypted`.
 
-The relay is available now as a standalone service. Full relay-backed live session exchange, reconnect networking, and encrypted payload hardening land in later phases.
+The relay is available now as a standalone service for encrypted message sync. Full live stream byte routing, hosted relay auth hardening, offline relay mailbox storage, reconnect networking, and direct QUIC still land in later transport phases.
 
 ## Remote Sessions And Discovery
 
@@ -203,7 +222,7 @@ conu routes probes
 
 `conu routes sync` reads trusted peers and `config.toml`, scores direct QUIC candidates against relay WebSocket fallback, writes `routes/registry.toml`, appends metadata-only probes to `routes/probes.toml`, and records payload-safe summaries in `logs/routes.log`. Direct endpoints can be configured with `direct_quic_endpoint = "quic://host:port"` or a peer-specific sanitized key like `direct_quic_peer_abcd1234 = "quic://host:port"`.
 
-This is route selection groundwork, not a full QUIC data plane yet. conU can now prefer a configured direct route and fall back to relay metadata, while live QUIC sockets, ICE-style hole punching, and relay-backed encrypted byte delivery remain future transport hardening.
+This is route selection groundwork, not a full QUIC data plane yet. conU can now prefer a configured direct route and fall back to relay metadata, while live QUIC sockets and ICE-style hole punching remain future transport hardening. Relay-backed one-shot message delivery exists for trusted peers.
 
 ## Streams And Watch
 
@@ -230,9 +249,9 @@ cargo run -p conu-sdk --example local_agents
 cargo run -p conu-mcp
 ```
 
-Rust agents can use `conu_sdk::ConuClient` to register, update presence, list agents/peers, send opaque bytes, receive local payload bytes for the addressed agent, and open/write/close streams. Python agents can use the stdlib wrapper under `sdk/python`.
+Rust agents can use `conu_sdk::ConuClient` to register, update presence, list agents/peers, exchange peer cards, send local opaque bytes, queue remote relay messages, run relay sync, receive payload bytes for the addressed local agent, and open/write/close streams. Python agents can use the stdlib wrapper under `sdk/python`.
 
-MCP-capable agents can launch `conu-mcp` as a stdio server. It exposes tools such as `conu_register_agent`, `conu_list_agents`, `conu_send_message`, `conu_receive_message`, `conu_open_stream`, and `conu_security_audit`. The adapter follows the current MCP stdio transport shape: newline-delimited JSON-RPC 2.0 messages on stdin/stdout. Tool list/send/status outputs remain metadata-only. Set `CONU_AGENT_ID` when launching one MCP server for one agent; then the adapter rejects attempts to act as another local agent. `conu_receive_message` returns payload bytes as `payloadHex` only when the addressed local agent explicitly passes `includePayload: true`.
+MCP-capable agents can launch `conu-mcp` as a stdio server. It exposes tools such as `conu_register_agent`, `conu_export_identity`, `conu_trust_peer`, `conu_send_message`, `conu_send_remote_message`, `conu_relay_sync`, `conu_receive_message`, `conu_open_stream`, and `conu_security_audit`. The adapter follows the current MCP stdio transport shape: newline-delimited JSON-RPC 2.0 messages on stdin/stdout. Tool list/send/status outputs remain metadata-only. Set `CONU_AGENT_ID` when launching one MCP server for one agent; then the adapter rejects attempts to act as another local agent. `conu_receive_message` returns payload bytes as `payloadHex` only when the addressed local agent explicitly passes `includePayload: true`.
 
 See `docs/sdk-and-mcp.md` for SDK examples, MCP tool contracts, route tools, and privacy rules. See `docs/direct-transport-and-routes.md` for the Phase 13 route manager.
 
@@ -265,8 +284,11 @@ cargo run -p conu-cli -- agents --json
 cargo run -p conu-cli -- agents register agent.codex "Codex Desktop" --kind coding-agent
 cargo run -p conu-cli -- agents heartbeat agent.codex --presence busy
 cargo run -p conu-cli -- messages send agent.sender agent.receiver --stdin
+cargo run -p conu-cli -- messages send agent.sender agent.remote --peer node_peer --stdin
 cargo run -p conu-cli -- messages inbox agent.receiver --json
 cargo run -p conu-cli -- messages receipts --json
+cargo run -p conu-cli -- identity export --json
+cargo run -p conu-cli -- relay sync --wait-ms 3000
 cargo run -p conu-cli -- streams open agent.sender agent.receiver
 cargo run -p conu-cli -- streams write stream_example --stdin
 cargo run -p conu-cli -- streams close stream_example
@@ -283,6 +305,7 @@ cargo run -p conu-cli -- doctor --json
 cargo run -p conu-cli -- pair
 cargo run -p conu-cli -- join 123456
 cargo run -p conu-cli -- peers --json
+cargo run -p conu-cli -- peers trust node_peer "Peer Node" --exchange-key <hex> --relay ws://127.0.0.1:8787
 cargo run -p conu-cli -- peers revoke peer_example
 cargo run -p conu-cli -- connect
 cargo run -p conu-cli -- watch

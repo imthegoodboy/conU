@@ -5,8 +5,9 @@
 //! explicitly calls `conu_receive_message` with `includePayload: true`.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
-use conu_sdk::{Capabilities, ConuClient, Presence, Route, SdkError, Stream};
+use conu_sdk::{Capabilities, ConuClient, PeerCard, Presence, Route, SdkError, Stream};
 use serde_json::{Map, Value, json};
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -147,7 +148,11 @@ impl McpServer {
             "conu_list_routes" => self.tool_list_routes(args),
             "conu_list_agents" => self.tool_list_agents(args),
             "conu_list_peers" => self.tool_list_peers(),
+            "conu_export_identity" => self.tool_export_identity(),
+            "conu_trust_peer" => self.tool_trust_peer(args),
             "conu_send_message" => self.tool_send_message(args),
+            "conu_send_remote_message" => self.tool_send_remote_message(args),
+            "conu_relay_sync" => self.tool_relay_sync(args),
             "conu_receive_message" => self.tool_receive_message(args),
             "conu_open_stream" => self.tool_open_stream(args),
             "conu_write_stream" => self.tool_write_stream(args),
@@ -335,9 +340,42 @@ impl McpServer {
                 "displayName": &peer.display_name,
                 "status": peer.status.as_str(),
                 "source": &peer.source,
+                "exchangeKeyTrusted": peer.exchange_public_key_hex.is_some(),
+                "relayEndpoint": peer.relay_endpoint.as_deref(),
                 "createdAtUnix": peer.created_at_unix,
                 "updatedAtUnix": peer.updated_at_unix
             })).collect::<Vec<_>>(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_export_identity(&self) -> Result<Value, String> {
+        let card = self.client.export_peer_card().map_err(safe_sdk_error)?;
+        Ok(json!({
+            "nodeId": card.node_id,
+            "displayName": card.display_name,
+            "exchangePublicKeyHex": card.exchange_public_key_hex,
+            "relayEndpoint": card.relay_endpoint,
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_trust_peer(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let card = PeerCard {
+            node_id: required_string(args, "peerNodeId")?,
+            display_name: required_string(args, "displayName")?,
+            exchange_public_key_hex: required_string(args, "exchangePublicKeyHex")?,
+            relay_endpoint: optional_string(args, "relayEndpoint")?
+                .unwrap_or_else(|| "ws://127.0.0.1:8787".to_string()),
+        };
+        let peer = self.client.trust_peer_card(card).map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": peer.status.as_str(),
+            "peerNodeId": peer.peer_node_id,
+            "displayName": peer.display_name,
+            "exchangeKeyTrusted": peer.exchange_public_key_hex.is_some(),
+            "relayEndpoint": peer.relay_endpoint,
             "contentsDisplayed": false
         }))
     }
@@ -369,6 +407,49 @@ impl McpServer {
                 .as_ref()
                 .map(|report| report.messages.envelope_ids.clone())
                 .unwrap_or_default(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_send_remote_message(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let from_agent_id = required_string(args, "fromAgentId")?;
+        self.ensure_agent_allowed(&from_agent_id)?;
+        let to_agent_id = required_string(args, "toAgentId")?;
+        let peer_node_id = required_string(args, "peerNodeId")?;
+        let payload = payload_from_args(args)?;
+        let submission = self
+            .client
+            .send_remote_message_bytes(&from_agent_id, &to_agent_id, &peer_node_id, payload)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": "queued_remote",
+            "requestId": submission.request_id,
+            "envelopeId": submission.envelope_id,
+            "fromAgentId": from_agent_id,
+            "toAgentId": to_agent_id,
+            "peerNodeId": submission.peer_node_id,
+            "payloadBytes": submission.payload_bytes,
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_relay_sync(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let wait_ms = optional_u64(args, "waitMs", 1000)?;
+        let report = self
+            .client
+            .relay_sync(Duration::from_millis(wait_ms.min(60_000)))
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": "synced",
+            "endpoint": report.endpoint,
+            "connected": report.connected,
+            "queued": report.queued,
+            "sent": report.sent,
+            "received": report.received,
+            "undelivered": report.undelivered,
+            "rejected": report.rejected,
             "contentsDisplayed": false
         }))
     }
@@ -533,6 +614,24 @@ impl McpServer {
                 schema(json!({}), vec![]),
             ),
             tool(
+                "conu_export_identity",
+                "Export this node's public peer card for cross-machine trust.",
+                schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_trust_peer",
+                "Trust a remote node from its public peer card.",
+                schema(
+                    json!({
+                        "peerNodeId": { "type": "string" },
+                        "displayName": { "type": "string" },
+                        "exchangePublicKeyHex": { "type": "string" },
+                        "relayEndpoint": { "type": "string" }
+                    }),
+                    vec!["peerNodeId", "displayName", "exchangePublicKeyHex"],
+                ),
+            ),
+            tool(
                 "conu_send_message",
                 "Queue an opaque message. The response reports metadata and byte counts only.",
                 schema(
@@ -545,6 +644,25 @@ impl McpServer {
                     }),
                     vec!["fromAgentId", "toAgentId"],
                 ),
+            ),
+            tool(
+                "conu_send_remote_message",
+                "Queue a peer-encrypted remote message for relay delivery.",
+                schema(
+                    json!({
+                        "fromAgentId": { "type": "string" },
+                        "toAgentId": { "type": "string" },
+                        "peerNodeId": { "type": "string" },
+                        "payloadText": { "type": "string" },
+                        "payloadHex": { "type": "string" }
+                    }),
+                    vec!["fromAgentId", "toAgentId", "peerNodeId"],
+                ),
+            ),
+            tool(
+                "conu_relay_sync",
+                "Connect to the relay once, flush outbound remote messages, and receive inbound envelopes.",
+                schema(json!({ "waitMs": { "type": "integer" } }), vec![]),
             ),
             tool(
                 "conu_receive_message",
@@ -730,6 +848,16 @@ fn optional_bool(
         None | Some(Value::Null) => Ok(default),
         Some(Value::Bool(value)) => Ok(*value),
         Some(_) => Err(format!("{key} must be a boolean")),
+    }
+}
+
+fn optional_u64(args: &Map<String, Value>, key: &'static str, default: u64) -> Result<u64, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(default),
+        Some(Value::Number(value)) => value
+            .as_u64()
+            .ok_or_else(|| format!("{key} must be an unsigned integer")),
+        Some(_) => Err(format!("{key} must be an unsigned integer")),
     }
 }
 

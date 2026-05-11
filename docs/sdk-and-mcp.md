@@ -43,10 +43,15 @@ set_presence()
 process_queued()
 list_agents()
 list_peers()
+export_peer_card()
+trust_peer_card()
 sync_routes()
 list_routes()
 list_route_probes()
 send_message_bytes()
+send_remote_message_bytes()
+relay_sync()
+relay_queue_summary()
 inbox_metadata()
 receive_message_bytes()
 list_receipts()
@@ -87,6 +92,8 @@ The wrapper passes send/stream payload bytes through stdin and returns command o
 
 Route helpers are available as `sync_routes()`, `routes()`, and `route_probes()`. They return route metadata only.
 
+Remote relay helpers are available as `identity_export()`, `trust_peer()`, `send_remote_message()`, and `relay_sync()`. They exchange public peer-card metadata and queue peer-encrypted message bytes without printing payload contents.
+
 ## MCP Adapter
 
 The MCP adapter lives in `crates/conu-mcp` and runs as a stdio server:
@@ -123,14 +130,18 @@ conu_sync_routes
 conu_list_routes
 conu_list_agents
 conu_list_peers
+conu_export_identity
+conu_trust_peer
 conu_send_message
+conu_send_remote_message
+conu_relay_sync
 conu_receive_message
 conu_open_stream
 conu_write_stream
 conu_close_stream
 ```
 
-`conu_sync_routes` and `conu_list_routes` expose route ids, peer ids, transport labels, endpoints, scores, latency estimates, NAT profile labels, fallback flags, and failure reasons. They do not expose payload bytes. `conu_send_message` accepts `payloadText` or `payloadHex`, but the tool response reports only request id, byte count, delivery counts, and envelope ids. `conu_receive_message` returns metadata by default. It returns `payloadHex` only when `includePayload` is `true`.
+`conu_sync_routes` and `conu_list_routes` expose route ids, peer ids, transport labels, endpoints, scores, latency estimates, NAT profile labels, fallback flags, and failure reasons. They do not expose payload bytes. `conu_export_identity` returns public node id, display name, public exchange key, and relay endpoint only. `conu_trust_peer` imports another node's public card. `conu_send_message` and `conu_send_remote_message` accept `payloadText` or `payloadHex`, but their responses report only request id, envelope id, byte count, and delivery metadata. `conu_relay_sync` reports relay counters only. `conu_receive_message` returns metadata by default. It returns `payloadHex` only when `includePayload` is `true`.
 
 When `CONU_AGENT_ID` is set, `conu-mcp` is bound to that local agent id. Register, presence, send, receive, stream open, stream write, and stream close actions are rejected if they attempt to act as a different local agent.
 
@@ -143,7 +154,7 @@ Reference: [MCP 2025-11-25 Transports](https://modelcontextprotocol.io/specifica
 ## Current Boundaries
 
 - TypeScript SDK remains future work.
-- Remote relay-backed data-plane delivery is not active yet.
+- Remote relay-backed one-shot message delivery is active through explicit relay sync. Stream byte routing, reconnect loops, offline relay mailbox delivery, and hosted relay auth hardening remain future work.
 - Route sync selects configured direct QUIC candidates and relay fallback metadata; it does not open a real QUIC socket yet.
 - MCP uses local stdio only; HTTP MCP transport is not implemented.
 - `conu_receive_message` is intentionally explicit because normal CLI and tool metadata views must not display payload contents.

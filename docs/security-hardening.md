@@ -58,7 +58,9 @@ Message request ids and delivered envelope ids are recorded in `security/replay.
 
 ### Peer Key Agreement Helpers
 
-The security module exposes X25519 key agreement helpers and peer payload encryption helpers for the next relay-backed delivery phase. They derive a symmetric key from local exchange material, peer public material, ordered public keys, and context bytes. The derived shared secret is not returned or printed.
+The security module exposes X25519 key agreement helpers and peer payload encryption helpers used by the relay message MVP. They derive a symmetric key from local exchange material, peer public material, ordered public keys, and context bytes. The derived shared secret is not returned or printed.
+
+Inbound relay messages are decrypted only after the sender exchange public key matches the locally trusted peer card. The relay sees ciphertext and routing metadata, not plaintext message contents.
 
 ## CLI Audit
 
@@ -85,7 +87,7 @@ Phase 11 hardens the current local product surface, but these items still need d
 
 - OS keychain, DPAPI, Secure Enclave, HSM, or user-managed secret backend for private key protection.
 - Automated key rotation with multi-key read, re-encryption migration, and old-key retirement.
-- Live relay-backed encrypted envelope routing using the peer key agreement helpers.
+- Hosted relay auth/TLS hardening, reconnect loops, stream byte routing, and offline relay mailbox delivery.
 - Signed remote agent-card exchange over real sessions instead of derived metadata mirrors.
 - Permission grants that bind trusted peers to specific local agent actions.
 - SDK/MCP permission hardening for multi-tenant or hosted deployments.
