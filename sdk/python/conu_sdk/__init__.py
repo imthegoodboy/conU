@@ -95,6 +95,12 @@ class ConuClient:
     def route_probes(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "routes", "probes", "--json")
 
+    def rooms(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "rooms", "--json")
+
+    def room_events(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "rooms", "events", "--json")
+
     def inbox(self, agent_id: str) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "messages", "inbox", agent_id, "--json")
 
@@ -164,6 +170,79 @@ class ConuClient:
             "--stdin",
             "--json",
             input_bytes=payload,
+        )
+
+    def create_room(
+        self,
+        room_id: str,
+        display_name: str,
+        agent_id: str,
+    ) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "rooms",
+            "create",
+            room_id,
+            display_name,
+            "--agent",
+            agent_id,
+            "--json",
+        )
+
+    def join_room(self, room_id: str, agent_id: str) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "rooms",
+            "join",
+            room_id,
+            agent_id,
+            "--json",
+        )
+
+    def publish_room_event(
+        self,
+        room_id: str,
+        from_agent_id: str,
+        topic: str,
+        payload: bytes,
+    ) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "rooms",
+            "publish",
+            room_id,
+            from_agent_id,
+            topic,
+            "--stdin",
+            "--json",
+            input_bytes=payload,
+        )
+
+    def connect_local(
+        self,
+        from_agent_id: str,
+        to_agent_id: str,
+        kind: str = "message",
+    ) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "connect",
+            "local",
+            from_agent_id,
+            to_agent_id,
+            "--kind",
+            kind,
+            "--json",
+        )
+
+    def connect_room(self, room_id: str, agent_id: str) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "connect",
+            "room",
+            room_id,
+            agent_id,
+            "--json",
         )
 
     def relay_sync(self, wait_ms: int = 1000) -> dict[str, Any]:

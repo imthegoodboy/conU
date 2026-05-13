@@ -98,7 +98,7 @@ Supported request type:
 send_message
 ```
 
-Phase 6 intentionally does not expose remote relay delivery, discovery, streams, rooms, or pub/sub. Those start in later phases.
+Phase 6 intentionally does not expose remote relay delivery, discovery, streams, rooms, or pub/sub. Those start in later phases and are documented below as they become available.
 
 The Phase 7 trust surface is local pairing groundwork:
 
@@ -213,6 +213,29 @@ conu watch
 
 `conu streams write` accepts opaque bytes from stdin and records only byte counts. `conu watch` renders transport flow, route, stream id, packet count, and bytes without rendering message or chunk contents.
 
+The Phase 14 rooms/pub-sub surface is local-first shared coordination:
+
+```txt
+rooms/registry.toml   room, participant, topic, and session metadata
+rooms/events.toml     payload-safe room event bus
+logs/rooms.log        metadata-only room events
+messages/inbox        encrypted-at-rest room event fanout envelopes for joined local participants
+```
+
+Supported commands:
+
+```txt
+conu connect local <from-agent> <to-agent> [--kind <kind>] [--json]
+conu connect room <room-id> <agent-id> [--json]
+conu rooms [--json]
+conu rooms create <room-id> <display-name> --agent <agent-id> [--json]
+conu rooms join <room-id> <agent-id> [--json]
+conu rooms publish <room-id> <from-agent> <topic> --stdin [--json]
+conu rooms events [--json]
+```
+
+Room membership is the current subscription model. `conu rooms publish` accepts opaque bytes from stdin, records only metadata in room files/logs, and fans out encrypted-at-rest event envelopes to joined local participants. Relay-backed room event fanout, per-topic grants, and remote room data delivery remain future work.
+
 The Phase 11 security surface hardens local payload storage and identity metadata:
 
 ```txt
@@ -255,6 +278,11 @@ ConuClient::receive_message_bytes()
 ConuClient::open_stream()
 ConuClient::write_stream_bytes()
 ConuClient::close_stream()
+ConuClient::create_room()
+ConuClient::join_room()
+ConuClient::publish_room_event_bytes()
+ConuClient::list_rooms()
+ConuClient::list_room_events()
 ConuClient::security_audit()
 ```
 
@@ -275,11 +303,16 @@ conu_receive_message
 conu_open_stream
 conu_write_stream
 conu_close_stream
+conu_create_room
+conu_join_room
+conu_list_rooms
+conu_publish_room_event
+conu_list_room_events
 ```
 
-SDK/MCP receive is explicit. Normal list, send, receipt, status, and stream outputs remain metadata-only. Payload bytes may be returned only through `ConuClient::receive_message_bytes()` or `conu_receive_message` with `includePayload: true`, and only for an envelope present in the addressed local agent inbox.
+SDK/MCP receive is explicit. Normal list, send, receipt, status, stream, and room outputs remain metadata-only. Payload bytes may be returned only through `ConuClient::receive_message_bytes()` or `conu_receive_message` with `includePayload: true`, and only for an envelope present in the addressed local agent inbox.
 
-When launching `conu-mcp` for one agent, set `CONU_AGENT_ID`. A bound MCP server must reject register, presence, send, receive, stream-open, stream-write, and stream-close attempts for a different local agent.
+When launching `conu-mcp` for one agent, set `CONU_AGENT_ID`. A bound MCP server must reject register, presence, send, receive, stream-open, stream-write, stream-close, room-create, room-join, and room-publish attempts for a different local agent.
 
 ## Safety
 

@@ -4,7 +4,7 @@
 
 - Payload content is opaque to conU runtime surfaces unless the local agent intentionally handles it.
 - CLI does not print payload text.
-- SDK and MCP list/send/status/stream outputs do not print payload text.
+- SDK and MCP list/send/status/stream/room outputs do not print payload text.
 - Logs do not include payload text.
 - Metrics do not include payload text.
 - Route registry, probe history, and route logs include only metadata.
@@ -40,6 +40,7 @@
 
 - Trust store avoids plaintext secrets when possible.
 - Message request and inbox files use encrypted-at-rest payload fields.
+- Room registry, room events, and room logs contain metadata only; local room fanout payloads live only as encrypted-at-rest inbox envelopes for joined local participants.
 - Mailbox stores encrypted envelopes when mailbox delivery is implemented.
 - Relay outbox stores peer-encrypted envelope bodies, not plaintext payloads.
 - Logs are payload-safe.

@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 15 as a directed skip-ahead, and now includes daemon-pumped relay-backed one-shot message delivery. Phase 14 rooms/pub-sub remain not started.
+The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes daemon-pumped relay-backed one-shot message delivery plus local rooms/pub-sub metadata with encrypted-at-rest local fanout to joined local participants.
 
 Implemented so far:
 
@@ -50,7 +50,12 @@ Implemented so far:
 - remote agents visible through `conu agents`
 - stream lifecycle metadata through `conu streams`
 - stream open/write/close commands with stdin-only opaque writes
+- local connect flows through `conu connect local`
+- rooms/pub-sub metadata through `conu rooms`
+- encrypted-at-rest local room event fanout to joined local participants' message inboxes
+- room tools in the Rust SDK, Python wrapper SDK, and MCP adapter
 - payload-safe watch event bus under `streams/events.toml`
+- payload-safe room event bus under `rooms/events.toml`
 - `conu watch` private transport animation
 - conUD-owned direct/relay route manager through `conu routes`
 - conUD-owned relay pump for peer-encrypted one-shot remote message delivery

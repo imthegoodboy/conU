@@ -11,7 +11,7 @@ conU owns the connection.
 
 ## Current Status
 
-Phase 15 is complete for the current local-first app, with a hardened relay message path beyond the original MVP. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, users can exchange public peer cards, trusted peers can send peer-encrypted messages through `conu-relay`, conUD can automatically pump configured relay routes, streams produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist. The repo also contains an npm launcher package template and relay hosting docs for the first public distribution path.
+Phase 14 and Phase 15 are complete for the current local-first app, with rooms/pub-sub metadata, encrypted-at-rest local room event fanout, a richer CLI control-room dashboard, local agent connect flows, and a hardened relay message path beyond the original MVP. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime, local agents can register signed metadata and presence, registered local agents can exchange encrypted-at-rest opaque message envelopes, users can exchange public peer cards, trusted peers can send peer-encrypted messages through `conu-relay`, conUD can automatically pump configured relay routes, streams and rooms produce payload-safe watch events, `conu security audit` reports hardened controls without showing secrets, agents can use conU through the Rust SDK, Python wrapper SDK, and MCP stdio adapter, conUD owns metadata-only direct/relay route selection, and release packaging/readiness checks now exist. The repo also contains an npm launcher package template and relay hosting docs for the first public distribution path.
 
 The repository currently contains compile-ready crate boundaries for:
 
@@ -54,6 +54,8 @@ messages/inbox/        delivered local opaque envelopes by recipient agent
 messages/receipts/     metadata-only local delivery receipts
 streams/registry.toml  stream lifecycle metadata
 streams/events.toml    payload-safe watch event bus
+rooms/registry.toml    room, participant, topic, and multi-agent session metadata
+rooms/events.toml      payload-safe room event bus
 routes/registry.toml   direct/relay route candidates and selected paths
 routes/probes.toml     metadata-only route probe history
 pairing/invites/       pending local pairing invitations
@@ -68,6 +70,7 @@ logs/agents.log        local agent metadata log
 logs/messages.log      local message delivery metadata log
 logs/sessions.log      remote session sync metadata log
 logs/streams.log       stream lifecycle metadata log
+logs/rooms.log         room/pub-sub metadata log
 logs/routes.log        direct/relay route sync metadata log
 logs/relay-delivery.log relay delivery metadata log
 ```
@@ -103,6 +106,24 @@ conu messages receipts
 ```
 
 `conu messages send` reads bytes from stdin so payloads are not placed directly in the command line. When `conUD` is running, delivery is processed automatically. If the runtime is offline, encrypted message requests remain queued under `runtime/ipc/messages/inbox/` and can be processed with `conud --process-ipc`.
+
+## Local Connect, Rooms, And Pub/Sub
+
+Phase 14 adds the multi-agent room/session surface and improves the CLI control room:
+
+```bash
+conu connect
+conu connect local agent.codex agent.hermes
+conu rooms create room.dev "Dev Room" --agent agent.codex
+conu rooms join room.dev agent.hermes
+conu rooms publish room.dev agent.hermes build --stdin
+conu rooms events
+conu watch
+```
+
+`conu connect local` opens a metadata-tracked local stream between two registered local agents. `conu rooms` creates shared room metadata, joins visible local or trusted remote agents, and publishes opaque room events by byte count. Joined local participants receive encrypted-at-rest event envelopes in their normal message inbox. Room registry, event bus, CLI output, and logs contain room id, participant ids, topic, event id, route label, byte count, delivery count, and timestamps only. They do not store or print payload text.
+
+Current room delivery is a local pub/sub bus for agent coordination and CLI watch. Remote room participants can be represented when remote discovery has mirrored their agent cards, but relay-backed room event fanout and live stream byte transport remain future hardening work.
 
 ## Relay-Backed Remote Messages
 
@@ -258,9 +279,9 @@ cargo run -p conu-sdk --example local_agents
 cargo run -p conu-mcp
 ```
 
-Rust agents can use `conu_sdk::ConuClient` to register, update presence, list agents/peers, exchange peer cards, send local opaque bytes, queue remote relay messages, optionally run relay sync, receive payload bytes for the addressed local agent, and open/write/close streams. Python agents can use the stdlib wrapper under `sdk/python`.
+Rust agents can use `conu_sdk::ConuClient` to register, update presence, list agents/peers, exchange peer cards, send local opaque bytes, queue remote relay messages, optionally run relay sync, receive payload bytes for the addressed local agent, open/write/close streams, and create/join/publish room metadata events. Python agents can use the stdlib wrapper under `sdk/python`.
 
-MCP-capable agents can launch `conu-mcp` as a stdio server. It exposes tools such as `conu_register_agent`, `conu_export_identity`, `conu_trust_peer`, `conu_send_message`, `conu_send_remote_message`, `conu_relay_sync`, `conu_receive_message`, `conu_open_stream`, and `conu_security_audit`. The adapter follows the current MCP stdio transport shape: newline-delimited JSON-RPC 2.0 messages on stdin/stdout. Tool list/send/status outputs remain metadata-only. Set `CONU_AGENT_ID` when launching one MCP server for one agent; then the adapter rejects attempts to act as another local agent. `conu_receive_message` returns payload bytes as `payloadHex` only when the addressed local agent explicitly passes `includePayload: true`.
+MCP-capable agents can launch `conu-mcp` as a stdio server. It exposes tools such as `conu_register_agent`, `conu_export_identity`, `conu_trust_peer`, `conu_send_message`, `conu_send_remote_message`, `conu_relay_sync`, `conu_receive_message`, `conu_open_stream`, `conu_create_room`, `conu_join_room`, `conu_publish_room_event`, and `conu_security_audit`. The adapter follows the current MCP stdio transport shape: newline-delimited JSON-RPC 2.0 messages on stdin/stdout. Tool list/send/status/room outputs remain metadata-only. Set `CONU_AGENT_ID` when launching one MCP server for one agent; then the adapter rejects attempts to act as another local agent. `conu_receive_message` returns payload bytes as `payloadHex` only when the addressed local agent explicitly passes `includePayload: true`.
 
 See `docs/sdk-and-mcp.md` for SDK examples, MCP tool contracts, route tools, and privacy rules. See `docs/direct-transport-and-routes.md` for the Phase 13 route manager.
 
@@ -302,6 +323,11 @@ cargo run -p conu-cli -- relay sync --wait-ms 3000
 cargo run -p conu-cli -- streams open agent.sender agent.receiver
 cargo run -p conu-cli -- streams write stream_example --stdin
 cargo run -p conu-cli -- streams close stream_example
+cargo run -p conu-cli -- connect local agent.sender agent.receiver
+cargo run -p conu-cli -- rooms create room.dev "Dev Room" --agent agent.sender
+cargo run -p conu-cli -- rooms join room.dev agent.receiver
+cargo run -p conu-cli -- rooms publish room.dev agent.receiver build --stdin
+cargo run -p conu-cli -- rooms events
 cargo run -p conu-cli -- watch
 cargo run -p conu-cli -- sessions sync
 cargo run -p conu-cli -- sessions --json

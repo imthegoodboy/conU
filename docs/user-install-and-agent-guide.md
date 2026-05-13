@@ -2,7 +2,7 @@
 
 This guide explains how a user can install the current conU app, start it on their PC, and let local agents use it.
 
-Current version status: Phase 15 is complete for the current local-first app, with a relay-backed message path that now runs from conUD when configured. conU is usable for local agent registration, local encrypted-at-rest message submission, manual public peer-card exchange, peer-encrypted one-shot relay messages between trusted nodes, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, an MCP stdio adapter, repeatable release builds, service templates, a native-binary npm launcher template, Docker relay hosting template, and `conu doctor` readiness checks. It is not yet a managed public hosted internet release.
+Current version status: Phase 14 and Phase 15 are complete for the current local-first app, with rooms/pub-sub metadata, encrypted-at-rest local room event fanout, a stronger CLI dashboard/connect flow, and a relay-backed message path that runs from conUD when configured. conU is usable for local agent registration, local encrypted-at-rest message submission, local agent connect streams, room/pub-sub metadata and local fanout, manual public peer-card exchange, peer-encrypted one-shot relay messages between trusted nodes, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, an MCP stdio adapter, repeatable release builds, service templates, a native-binary npm launcher template, Docker relay hosting template, and `conu doctor` readiness checks. It is not yet a managed public hosted internet release.
 
 ## What Works Today
 
@@ -11,6 +11,8 @@ Current version status: Phase 15 is complete for the current local-first app, wi
 - Start and stop the local `conUD` runtime.
 - Register local agents by id.
 - Send local opaque payload bytes from one registered local agent to another.
+- Connect two local registered agents with `conu connect local`.
+- Create room metadata, join local or mirrored trusted remote agents, and publish opaque room events by topic and byte count with local inbox fanout for joined local participants.
 - Store new conU-owned local payload files encrypted at rest.
 - List inbox, receipt, stream, peer, session, and security metadata.
 - Sync and inspect direct QUIC route candidates and relay fallback metadata.
@@ -30,6 +32,7 @@ Current version status: Phase 15 is complete for the current local-first app, wi
 - No published `@conu/cli` package yet; the package template exists under `packaging/npm/conu-cli` and should be published after GitHub Release assets/checksums exist.
 - No TypeScript SDK yet.
 - No CLI command that reveals message contents. This is intentional; use SDK or MCP explicit receive APIs when the addressed local agent needs payload bytes.
+- Rooms currently provide local pub/sub coordination, encrypted-at-rest local fanout, and watch visibility. Relay-backed room event fanout is not implemented yet.
 - No hosted relay service, TLS client, or managed public relay auth yet. The current client supports reachable `ws://` relay endpoints.
 - No real QUIC socket or NAT hole punching yet; Phase 13 selects configured direct route candidates and relay fallback metadata.
 - Pairing and remote sessions are local metadata groundwork, not full cross-machine rendezvous.
@@ -242,6 +245,41 @@ conu messages receipts --json
 
 The inbox command shows metadata only: envelope id, sender, receiver, receipt id, byte count, and delivery time. It does not print the payload.
 
+## Connect Two Local Agents
+
+If two agents are on the same PC, register both and open a local metadata stream:
+
+```powershell
+conu agents register agent.codex "Codex Desktop" --kind coding-agent
+conu agents register agent.hermes "Hermes" --kind coding-agent
+conud --process-ipc
+conu connect local agent.codex agent.hermes
+conu watch
+```
+
+This gives the agents a conU connection surface and gives the user a live dashboard/watch view. The stream can record opaque chunks with:
+
+```powershell
+"opaque stream bytes" | conu streams write <stream-id> --stdin
+```
+
+The CLI shows stream id, route, packet count, and byte count. It does not show the stream bytes.
+
+## Create A Local Room
+
+Rooms are the current multi-agent coordination layer:
+
+```powershell
+conu rooms create room.dev "Dev Room" --agent agent.codex
+conu rooms join room.dev agent.hermes
+"opaque room bytes" | conu rooms publish room.dev agent.hermes build --stdin
+conu rooms
+conu rooms events
+conu watch
+```
+
+Room commands show only room id, participants, topic, event id, route label, byte count, local delivery count, and timestamps. Room registry/events/log files do not store the room event payload; joined local recipients receive the opaque bytes as encrypted-at-rest event envelopes in their message inbox. Use rooms when several agents need a shared bus; use direct messages when one agent is addressing exactly one other agent.
+
 ## Sync Routes
 
 Phase 13 lets conUD choose route metadata for trusted peers:
@@ -347,6 +385,7 @@ Rules:
 - Send remote peer-encrypted bytes with conu_send_remote_message while conUD is running; call conu_relay_sync only for manual flush/debug flows.
 - Read inbox metadata first; request payloadHex only with conu_receive_message when you are the addressed local agent.
 - Use conu_open_stream, conu_write_stream, and conu_close_stream for stream metadata flows.
+- Use conu_create_room, conu_join_room, conu_publish_room_event, conu_list_rooms, and conu_list_room_events for shared room/pub-sub metadata and local fanout.
 - Treat conU as the road, not the conversation.
 ```
 
@@ -369,6 +408,9 @@ client.register_agent("agent.mybot", "My Bot", "local-agent")?;
 client.process_queued()?;
 client.send_message_bytes("agent.mybot", "agent.other", b"opaque bytes")?;
 client.send_remote_message_bytes("agent.mybot", "agent.remote", "node_peer", b"opaque bytes")?;
+client.create_room("room.dev", "Dev Room", "agent.mybot")?;
+client.join_room("room.dev", "agent.other")?;
+client.publish_room_event_bytes("room.dev", "agent.mybot", "build", b"opaque bytes")?;
 client.relay_sync(std::time::Duration::from_millis(3000))?;
 ```
 
@@ -389,6 +431,9 @@ client.register_agent("agent.mybot", "My Bot")
 client.process_queued()
 client.send_message("agent.mybot", "agent.other", b"opaque bytes")
 client.send_remote_message("agent.mybot", "agent.remote", "node_peer", b"opaque bytes")
+client.create_room("room.dev", "Dev Room", "agent.mybot")
+client.join_room("room.dev", "agent.other")
+client.publish_room_event("room.dev", "agent.mybot", "build", b"opaque bytes")
 client.relay_sync(wait_ms=3000)
 ```
 
@@ -406,9 +451,17 @@ Rules:
   conu agents heartbeat <agent-id> --presence <ready|busy|idle|offline>
 - Send payload bytes through stdin only:
   <payload bytes> | conu messages send <your-agent-id> <target-agent-id> --stdin
+- Connect to a local peer:
+  conu connect local <your-agent-id> <target-agent-id>
+- Use rooms for shared coordination:
+  conu rooms create <room-id> <display-name> --agent <your-agent-id>
+  conu rooms join <room-id> <target-agent-id>
+  <payload bytes> | conu rooms publish <room-id> <your-agent-id> <topic> --stdin
 - Use JSON commands for machine-readable metadata:
   conu status --json
   conu agents --json
+  conu rooms --json
+  conu rooms events --json
   conu identity export --json
   conu messages inbox <agent-id> --json
   conu messages receipts --json

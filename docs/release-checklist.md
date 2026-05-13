@@ -7,7 +7,7 @@ Use this checklist before publishing any conU build.
 - Confirm the release version in all Cargo packages.
 - Confirm `packaging/npm/conu-cli/package.json` has the same version.
 - Confirm `plan.md` reflects the completed phase and known gaps.
-- Confirm Phase 14 rooms are not claimed unless implemented.
+- Confirm Phase 14 room claims stay scoped to implemented local metadata/fanout behavior unless relay-backed room fanout exists.
 - Confirm public internet claims are limited to the current daemon-pumped relay message path unless hosted relay auth/TLS, persistent relay sessions, stream byte routing, and direct transport are implemented.
 
 ## Build

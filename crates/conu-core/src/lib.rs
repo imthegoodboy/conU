@@ -4,6 +4,7 @@ pub mod agents;
 pub mod messages;
 pub mod relay;
 pub mod relay_delivery;
+pub mod rooms;
 pub mod routes;
 pub mod runtime;
 pub mod security;

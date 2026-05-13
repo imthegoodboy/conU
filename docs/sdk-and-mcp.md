@@ -1,6 +1,6 @@
 # conU SDK And MCP Adapter
 
-Phase 12 gives agents stable ways to call conU without learning its internal file layout.
+Phase 12 gives agents stable ways to call conU without learning its internal file layout. Phase 14 extends that surface with local rooms/pub-sub calls.
 
 The contract stays the same:
 
@@ -9,7 +9,7 @@ Agents own the conversation.
 conU owns the connection.
 ```
 
-conU list, send, receipt, status, watch, and stream outputs are metadata-only. Payload bytes are returned only through an explicit receive API for the addressed local agent.
+conU list, send, receipt, status, watch, stream, and room outputs are metadata-only. Payload bytes are returned only through an explicit receive API for the addressed local agent.
 
 ## Rust SDK
 
@@ -60,6 +60,11 @@ write_stream_bytes()
 close_stream()
 list_streams()
 list_stream_events()
+create_room()
+join_room()
+publish_room_event_bytes()
+list_rooms()
+list_room_events()
 ```
 
 Run the example:
@@ -93,6 +98,8 @@ The wrapper passes send/stream payload bytes through stdin and returns command o
 Route helpers are available as `sync_routes()`, `routes()`, and `route_probes()`. They return route metadata only.
 
 Remote relay helpers are available as `identity_export()`, `trust_peer()`, `send_remote_message()`, and `relay_sync()`. They exchange public peer-card metadata and queue peer-encrypted message bytes without printing payload contents. When conUD is running with relay config, queued remote messages are pumped by the daemon; `relay_sync()` remains useful for manual flush/debug flows.
+
+Room helpers are available as `create_room()`, `join_room()`, `publish_room_event()`, `rooms()`, `room_events()`, `connect_local()`, and `connect_room()`. Room publish payloads go through stdin, joined local participants receive encrypted-at-rest event envelopes, and wrapper responses show metadata only.
 
 ## MCP Adapter
 
@@ -139,11 +146,16 @@ conu_receive_message
 conu_open_stream
 conu_write_stream
 conu_close_stream
+conu_create_room
+conu_join_room
+conu_list_rooms
+conu_publish_room_event
+conu_list_room_events
 ```
 
-`conu_sync_routes` and `conu_list_routes` expose route ids, peer ids, transport labels, endpoints, scores, latency estimates, NAT profile labels, fallback flags, and failure reasons. They do not expose payload bytes. `conu_export_identity` returns public node id, display name, public exchange key, and relay endpoint only. `conu_trust_peer` imports another node's public card. `conu_send_message` and `conu_send_remote_message` accept `payloadText` or `payloadHex`, but their responses report only request id, envelope id, byte count, and delivery metadata. `conu_relay_sync` reports relay counters only. `conu_receive_message` returns metadata by default. It returns `payloadHex` only when `includePayload` is `true`.
+`conu_sync_routes` and `conu_list_routes` expose route ids, peer ids, transport labels, endpoints, scores, latency estimates, NAT profile labels, fallback flags, and failure reasons. They do not expose payload bytes. `conu_export_identity` returns public node id, display name, public exchange key, and relay endpoint only. `conu_trust_peer` imports another node's public card. `conu_send_message`, `conu_send_remote_message`, and `conu_publish_room_event` accept `payloadText` or `payloadHex`, but their responses report only request id, envelope/event id, byte count, local delivery count, and delivery metadata. `conu_relay_sync` reports relay counters only. `conu_receive_message` returns metadata by default. It returns `payloadHex` only when `includePayload` is `true`.
 
-When `CONU_AGENT_ID` is set, `conu-mcp` is bound to that local agent id. Register, presence, send, receive, stream open, stream write, and stream close actions are rejected if they attempt to act as a different local agent.
+When `CONU_AGENT_ID` is set, `conu-mcp` is bound to that local agent id. Register, presence, send, receive, stream open, stream write, stream close, room create, room join, and room publish actions are rejected if they attempt to act as a different local agent.
 
 ## MCP Protocol Notes
 
@@ -155,6 +167,7 @@ Reference: [MCP 2025-11-25 Transports](https://modelcontextprotocol.io/specifica
 
 - TypeScript SDK remains future work.
 - Remote relay-backed one-shot message delivery is active through the conUD relay pump when relay config is present; explicit relay sync remains a manual/debug tool. Stream byte routing, persistent relay sessions, offline relay mailbox delivery, and hosted relay auth hardening remain future work.
+- Rooms fan out to joined local participants only. Relay-backed room event fanout and per-topic subscription policy remain future work.
 - Route sync selects configured direct QUIC candidates and relay fallback metadata; it does not open a real QUIC socket yet.
 - MCP uses local stdio only; HTTP MCP transport is not implemented.
 - `conu_receive_message` is intentionally explicit because normal CLI and tool metadata views must not display payload contents.

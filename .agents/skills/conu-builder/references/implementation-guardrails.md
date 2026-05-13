@@ -116,6 +116,18 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Backpressure checks should reject oversized chunks before writing stream metadata.
 - Do not claim live relay-backed byte streaming until the transport/encryption phases actually move encrypted chunks over the relay.
 
+## Room And Pub/Sub Rules
+
+- Phase 14 rooms are metadata-first in `conu_core::rooms`.
+- Room lifecycle state belongs under `rooms/registry.toml`; room event metadata belongs under `rooms/events.toml`; room logs belong under `logs/rooms.log`.
+- Room membership is the current subscription model until per-topic grants are implemented.
+- `conu rooms publish` must read opaque event bytes from stdin and record only byte counts, topics, routes, event ids, delivery counts, and participant metadata in room surfaces.
+- Joined local participants may receive encrypted-at-rest event envelopes in `messages/inbox/<agent-id>`, using the same payload storage privacy rules as local messages.
+- Room logs must use metadata-only lines with room id, agent id, byte count, and `payload=not_observed`.
+- `conu watch`, room list/event commands, SDK room calls, and MCP room tools must never show event payload text.
+- Backpressure checks should reject oversized room events before writing room metadata or local fanout envelopes.
+- Do not claim relay-backed room fanout, per-topic authorization policy, or remote room data delivery until those transports and policies actually exist.
+
 ## Security Hardening Rules
 
 - Phase 11 local security state belongs under `security/`.

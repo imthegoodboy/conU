@@ -311,6 +311,32 @@ pub fn deliver_remote_envelope_from_paths(
     deliver_envelope_with_status(paths, envelope, "delivered_relay")
 }
 
+/// Deliver an opaque room event to a local subscribed agent inbox.
+pub fn deliver_room_event_from_paths(
+    paths: &StatePaths,
+    envelope_id: &str,
+    from_agent_id: &str,
+    to_agent_id: &str,
+    payload: OpaquePayload,
+) -> Result<InboxEntry, MessageError> {
+    let envelope_id = validate_identifier(envelope_id.to_string(), "envelope id")?;
+    let from_agent_id = validate_identifier(from_agent_id.to_string(), "from agent id")?;
+    let to_agent_id = validate_identifier(to_agent_id.to_string(), "to agent id")?;
+    validate_payload_size(payload.len())?;
+    validate_local_recipient_can_receive(paths, &to_agent_id)?;
+
+    let envelope = Envelope::new(
+        &envelope_id,
+        AgentId::new(from_agent_id)?,
+        AgentId::new(to_agent_id)?,
+        EnvelopeKind::Event,
+        payload,
+    )?;
+
+    security::record_replay_id_from_paths(paths, &envelope_id, "room_event_envelope")?;
+    deliver_envelope_with_status(paths, envelope, "delivered_room")
+}
+
 /// List metadata-only local delivery receipts.
 pub fn list_receipts(home_override: Option<PathBuf>) -> Result<Vec<DeliveryReceipt>, MessageError> {
     let paths = StatePaths::resolve(home_override)?;
@@ -474,7 +500,10 @@ fn deliver_envelope_with_status(
         &message_envelope_aad(&entry.envelope_id, &entry.from_agent_id, &entry.to_agent_id),
     )?;
     let envelope_path = inbox_dir.join(format!("{}.env", entry.envelope_id));
-    write_new_file(&envelope_path, &render_envelope_file(&entry, &encrypted))?;
+    write_new_file(
+        &envelope_path,
+        &render_envelope_file(&entry, envelope.kind, &encrypted),
+    )?;
 
     let receipt = DeliveryReceipt {
         receipt_id: entry.receipt_id.clone(),
@@ -681,13 +710,18 @@ fn render_message_request(
     )
 }
 
-fn render_envelope_file(entry: &InboxEntry, encrypted: &EncryptedPayload) -> String {
+fn render_envelope_file(
+    entry: &InboxEntry,
+    kind: EnvelopeKind,
+    encrypted: &EncryptedPayload,
+) -> String {
     format!(
-        "version = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nkind = \"message\"\nreceipt_id = \"{}\"\ndelivered_at_unix = {}\npayload_len = {}\npayload_privacy = \"encrypted_at_rest\"\npayload_cipher = \"{}\"\npayload_key_id = \"{}\"\npayload_nonce_hex = \"{}\"\npayload_ciphertext_hex = \"{}\"\n",
+        "version = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nkind = \"{}\"\nreceipt_id = \"{}\"\ndelivered_at_unix = {}\npayload_len = {}\npayload_privacy = \"encrypted_at_rest\"\npayload_cipher = \"{}\"\npayload_key_id = \"{}\"\npayload_nonce_hex = \"{}\"\npayload_ciphertext_hex = \"{}\"\n",
         PROTOCOL_VERSION,
         escape_file_value(&entry.envelope_id),
         escape_file_value(&entry.from_agent_id),
         escape_file_value(&entry.to_agent_id),
+        envelope_kind_label(kind),
         escape_file_value(&entry.receipt_id),
         entry.delivered_at_unix,
         entry.payload_bytes,
@@ -696,6 +730,15 @@ fn render_envelope_file(entry: &InboxEntry, encrypted: &EncryptedPayload) -> Str
         escape_file_value(&encrypted.nonce_hex),
         escape_file_value(&encrypted.ciphertext_hex)
     )
+}
+
+fn envelope_kind_label(kind: EnvelopeKind) -> &'static str {
+    match kind {
+        EnvelopeKind::Message => "message",
+        EnvelopeKind::StreamChunk => "stream_chunk",
+        EnvelopeKind::Event => "event",
+        EnvelopeKind::Receipt => "receipt",
+    }
 }
 
 fn render_receipt(receipt: &DeliveryReceipt) -> String {

@@ -18,6 +18,7 @@ use conu_core::agents::{
 };
 use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
 use conu_core::relay_delivery::{self, RemoteMessage};
+use conu_core::rooms::{self, RoomEvent, RoomRecord};
 use conu_core::routes::{self, RouteProbe, RouteRecord, RouteSyncReport, RouteTransport};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
 use conu_core::security::{self, SecurityAudit, SecurityReport};
@@ -100,12 +101,20 @@ where
 
     match command {
         "init" => render_init(&args[1..], home_override),
+        "dashboard" => {
+            if let Some(error) = reject_args(&args[1..]) {
+                error
+            } else {
+                CliOutput::success(render_dashboard(home_override))
+            }
+        }
         "status" => render_status(&args[1..], home_override),
         "agents" => render_agents(&args[1..], home_override),
         "peers" => render_peers(&args[1..], home_override),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
         "relay" => render_relay(&args[1..], home_override),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
+        "rooms" => render_rooms(&args[1..], home_override, stdin_payload),
         "sessions" => render_sessions(&args[1..], home_override),
         "routes" => render_routes(&args[1..], home_override),
         "security" => render_security(&args[1..], home_override),
@@ -130,9 +139,7 @@ where
 fn render_dashboard(home_override: Option<PathBuf>) -> String {
     let snapshot = state::read_state(home_override.clone()).ok();
     let runtime_status = runtime::read_runtime(home_override.clone()).ok();
-    let local_agents = agents::list_local_agents(home_override.clone())
-        .map(|agents| agents.len())
-        .unwrap_or(0);
+    let local_agent_records = agents::list_local_agents(home_override.clone()).unwrap_or_default();
     let trusted_peers = trust::list_peers(home_override.clone())
         .map(|peers| {
             peers
@@ -142,9 +149,18 @@ fn render_dashboard(home_override: Option<PathBuf>) -> String {
         })
         .unwrap_or(0);
     let route_records = routes::list_routes(home_override.clone()).unwrap_or_default();
-    let remote_agents = sessions::list_remote_agents(home_override)
-        .map(|agents| agents.len())
-        .unwrap_or(0);
+    let stream_records = streams::list_streams(home_override.clone()).unwrap_or_default();
+    let room_records = rooms::list_rooms(home_override.clone()).unwrap_or_default();
+    let room_events = rooms::list_room_events(home_override.clone()).unwrap_or_default();
+    let relay_queue = relay_delivery::relay_queue_summary(home_override.clone()).ok();
+    let remote_agent_records = sessions::list_remote_agents(home_override).unwrap_or_default();
+    let local_agents = local_agent_records.len();
+    let remote_agents = remote_agent_records.len();
+    let open_streams = stream_records
+        .iter()
+        .filter(|stream| stream.state.as_str() == "open")
+        .count();
+    let relay_queued = relay_queue.as_ref().map(|queue| queue.queued).unwrap_or(0);
     let node = snapshot
         .as_ref()
         .and_then(|snapshot| snapshot.node.as_ref())
@@ -158,26 +174,43 @@ fn render_dashboard(home_override: Option<PathBuf>) -> String {
         .as_ref()
         .map(runtime_state_label)
         .unwrap_or("unavailable");
+    let local_preview = dashboard_local_agents(&local_agent_records);
+    let remote_preview = dashboard_remote_agents(&remote_agent_records);
 
     format!(
-        r"                 __  __
-  ___ ___  _ __ |  \/  |
- / __/ _ \| '_ \| |\/| |
-| (_| (_) | | | | |  | |
- \___\___/|_| |_|_|  |_|
+        r"        ____ ___  _   _
+  ____ / ___/ _ \| | | |
+ / __|| |  | | | | | | |
+| (__ | |__| |_| | |_| |
+ \___| \____\___/ \___/
 
-agent-native encrypted overlay
+agent command bridge
 {}
 
 control room
-  runtime       {runtime_state}
-  node          {node}
-  state         {state}
-  local agents  {local_agents}
-  remote agents {remote_agents}
-  remote peers  {trusted_peers} trusted
-  routes        direct {} relay {}
-  network       direct when available, relay fallback
+  runtime        {runtime_state}
+  node           {node}
+  state          {state}
+  local agents   {local_agents}
+  remote agents  {remote_agents}
+  rooms          {}
+  open streams   {open_streams}
+  relay queued   {relay_queued}
+  remote peers   {trusted_peers} trusted
+  routes         direct {} relay {}
+  payload view   private, never displayed
+
+agent desk
+  local          {local_preview}
+  remote         {remote_preview}
+
+live road
+  [agent] => [conUD] => [rooms | streams | relay] => [agent]
+              metadata only, payloads opaque
+
+recent room bus
+  events         {}
+  latest         {}
 
 quick commands
   conu init
@@ -185,6 +218,10 @@ quick commands
   conu status
   conu agents
   conu agents register <agent-id> <display-name>
+  conu connect local <from-agent> <to-agent>
+  conu rooms create <room-id> <display-name> --agent <agent-id>
+  conu rooms join <room-id> <agent-id>
+  conu rooms publish <room-id> <from-agent> <topic> --stdin
   conu messages send <from-agent> <to-agent> --stdin
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
   conu relay sync --wait-ms 3000
@@ -199,9 +236,59 @@ quick commands
   conu connect
   conu watch",
         conu_core::PRODUCT_LAW,
+        room_records.len(),
         selected_direct_route_count(&route_records),
-        selected_relay_route_count(&route_records)
+        selected_relay_route_count(&route_records),
+        room_events.len(),
+        latest_room_event_label(&room_events)
     )
+}
+
+fn dashboard_local_agents(agents: &[LocalAgentRecord]) -> String {
+    if agents.is_empty() {
+        return "none registered".to_string();
+    }
+
+    preview_items(
+        agents
+            .iter()
+            .map(|agent| format!("{}:{}", agent.agent_id, agent.presence.as_str()))
+            .collect(),
+    )
+}
+
+fn dashboard_remote_agents(agents: &[RemoteAgentRecord]) -> String {
+    if agents.is_empty() {
+        return "none visible".to_string();
+    }
+
+    preview_items(
+        agents
+            .iter()
+            .map(|agent| format!("{}:{}", agent.agent_id, agent.presence.as_str()))
+            .collect(),
+    )
+}
+
+fn preview_items(items: Vec<String>) -> String {
+    let total = items.len();
+    let mut preview = items.into_iter().take(3).collect::<Vec<_>>().join(", ");
+    if total > 3 {
+        preview.push_str(&format!(", +{} more", total - 3));
+    }
+    preview
+}
+
+fn latest_room_event_label(events: &[RoomEvent]) -> String {
+    events
+        .last()
+        .map(|event| {
+            format!(
+                "{} topic {} from {} bytes {}",
+                event.room_id, event.topic, event.from_agent_id, event.payload_bytes
+            )
+        })
+        .unwrap_or_else(|| "idle".to_string())
 }
 
 fn render_init(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -247,6 +334,10 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         Ok(streams) => streams,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
     };
+    let room_records = match rooms::list_rooms(home_override.clone()) {
+        Ok(rooms) => rooms,
+        Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
+    };
     let route_records = match routes::list_routes(home_override.clone()) {
         Ok(routes) => routes,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
@@ -260,6 +351,7 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         remote_agents: &remote_agents,
         sessions: &sessions,
         stream_records: &stream_records,
+        room_records: &room_records,
         route_records: &route_records,
         peers: &peers,
         security: &security_audit,
@@ -1572,6 +1664,563 @@ fn render_streams_usage() -> String {
         .to_string()
 }
 
+fn render_rooms(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("create") => render_room_create(&args[1..], home_override),
+        Some("join") => render_room_join(&args[1..], home_override),
+        Some("publish") => render_room_publish(&args[1..], home_override, stdin_payload),
+        Some("events") => render_room_events(&args[1..], home_override),
+        _ => render_rooms_list(args, home_override),
+    }
+}
+
+fn render_room_create(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_room_create_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match rooms::create_room(
+        home_override,
+        &parsed.room_id,
+        &parsed.display_name,
+        &parsed.agent_id,
+    ) {
+        Ok(report) => {
+            if parsed.json {
+                CliOutput::success(render_room_json(&report.room, "created"))
+            } else {
+                CliOutput::success(render_room_created_text(&report.room))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU rooms create failed\n\n{error}")),
+    }
+}
+
+fn render_room_join(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_room_join_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match rooms::join_room(home_override, &parsed.room_id, &parsed.agent_id) {
+        Ok(report) => {
+            let status = if report.joined {
+                "joined"
+            } else {
+                "already_joined"
+            };
+            if parsed.json {
+                CliOutput::success(render_room_json(&report.room, status))
+            } else {
+                CliOutput::success(render_room_join_text(
+                    &report.room,
+                    status,
+                    &parsed.agent_id,
+                ))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU rooms join failed\n\n{error}")),
+    }
+}
+
+fn render_room_publish(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let parsed = match parse_room_publish_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.stdin {
+        return CliOutput::failure(
+            2,
+            "usage: conu rooms publish <room-id> <from-agent> <topic> --stdin [--json]",
+        );
+    }
+    if stdin_payload.is_empty() {
+        return CliOutput::failure(2, "stdin payload is empty");
+    }
+
+    match rooms::publish_room_event(
+        home_override,
+        &parsed.room_id,
+        &parsed.from_agent_id,
+        &parsed.topic,
+        OpaquePayload::from_bytes(stdin_payload),
+    ) {
+        Ok(report) => {
+            if parsed.json {
+                CliOutput::success(render_room_event_json(
+                    &report.room,
+                    &report.event,
+                    report.local_deliveries,
+                ))
+            } else {
+                CliOutput::success(render_room_publish_text(
+                    &report.room,
+                    &report.event,
+                    report.local_deliveries,
+                ))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU rooms publish failed\n\n{error}")),
+    }
+}
+
+fn render_rooms_list(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let rooms = match rooms::list_rooms(home_override) {
+        Ok(rooms) => rooms,
+        Err(error) => return CliOutput::failure(1, format!("conU rooms failed\n\n{error}")),
+    };
+
+    match json_flag(args) {
+        Ok(true) => CliOutput::success(render_rooms_json(&rooms)),
+        Ok(false) => CliOutput::success(render_rooms_text(&rooms)),
+        Err(error) => error,
+    }
+}
+
+fn render_room_events(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+    let events = match rooms::list_room_events(home_override) {
+        Ok(events) => events,
+        Err(error) => return CliOutput::failure(1, format!("conU rooms events failed\n\n{error}")),
+    };
+
+    if json {
+        CliOutput::success(render_room_events_json(&events))
+    } else {
+        CliOutput::success(render_room_events_text(&events))
+    }
+}
+
+fn render_rooms_json(rooms: &[RoomRecord]) -> String {
+    let items = rooms
+        .iter()
+        .map(room_json_object)
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let rooms_json = if items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "rooms": {},
+  "contentsDisplayed": false
+}}"#,
+        rooms_json
+    )
+}
+
+fn render_room_events_json(events: &[RoomEvent]) -> String {
+    let items = events
+        .iter()
+        .map(room_event_json_object)
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let events_json = if items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "events": {},
+  "contentsDisplayed": false
+}}"#,
+        events_json
+    )
+}
+
+fn render_rooms_text(rooms: &[RoomRecord]) -> String {
+    let lines = if rooms.is_empty() {
+        "  none created yet".to_string()
+    } else {
+        rooms
+            .iter()
+            .map(|room| {
+                format!(
+                    "  {}  {}  participants {}  topics {}  events {}  bytes {}",
+                    room.room_id,
+                    room.state.as_str(),
+                    room.participants.len(),
+                    room.topics.len(),
+                    room.events_published,
+                    room.bytes_published
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU rooms
+
+rooms
+{lines}
+
+privacy
+  payload view  contents are not displayed by conU
+
+next
+  conu rooms create <room-id> <display-name> --agent <agent-id>"
+    )
+}
+
+fn render_room_events_text(events: &[RoomEvent]) -> String {
+    let lines = if events.is_empty() {
+        "  none published yet".to_string()
+    } else {
+        events
+            .iter()
+            .map(|event| {
+                format!(
+                    "  {}  room {}  topic {}  from {}  bytes {}  route {}",
+                    event.event_id,
+                    event.room_id,
+                    event.topic,
+                    event.from_agent_id,
+                    event.payload_bytes,
+                    event.route
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU rooms events
+
+events
+{lines}
+
+privacy
+  payload view  contents are not displayed by conU"
+    )
+}
+
+fn render_room_created_text(room: &RoomRecord) -> String {
+    format!(
+        r"conU rooms create
+
+status: created
+room: {}
+name: {}
+created by: {}
+participants: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        room.room_id,
+        room.display_name,
+        room.created_by_agent_id,
+        room.participants.len()
+    )
+}
+
+fn render_room_join_text(room: &RoomRecord, status: &str, agent_id: &str) -> String {
+    format!(
+        r"conU rooms join
+
+status: {status}
+room: {}
+agent: {agent_id}
+participants: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        room.room_id,
+        room.participants.len()
+    )
+}
+
+fn render_room_publish_text(
+    room: &RoomRecord,
+    event: &RoomEvent,
+    local_deliveries: usize,
+) -> String {
+    format!(
+        r"conU rooms publish
+
+status: published
+room: {}
+topic: {}
+from: {}
+event: {}
+route: {}
+bytes: {}
+room events: {}
+local deliveries: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        room.room_id,
+        event.topic,
+        event.from_agent_id,
+        event.event_id,
+        event.route,
+        event.payload_bytes,
+        room.events_published,
+        local_deliveries
+    )
+}
+
+fn render_room_json(room: &RoomRecord, status: &str) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "participants": {},
+  "room": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(status),
+        room.participants.len(),
+        room_json_object(room)
+    )
+}
+
+fn render_room_event_json(room: &RoomRecord, event: &RoomEvent, local_deliveries: usize) -> String {
+    format!(
+        r#"{{
+  "status": "published",
+  "roomId": "{}",
+  "eventsPublished": {},
+  "bytesPublished": {},
+  "localDeliveries": {},
+  "event": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(&room.room_id),
+        room.events_published,
+        room.bytes_published,
+        local_deliveries,
+        room_event_json_object(event)
+    )
+}
+
+fn room_json_object(room: &RoomRecord) -> String {
+    let participants = room
+        .participants
+        .iter()
+        .map(|participant| {
+            format!(
+                r#"        {{
+          "agentId": "{}",
+          "scope": "{}",
+          "joinedAtUnix": {}
+        }}"#,
+                json_escape(&participant.agent_id),
+                participant.scope.as_str(),
+                participant.joined_at_unix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let participants = if participants.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{participants}\n      ]")
+    };
+    let topics = room
+        .topics
+        .iter()
+        .map(|topic| json_string(topic))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let topics = if topics.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[{topics}]")
+    };
+
+    format!(
+        r#"    {{
+      "roomId": "{}",
+      "displayName": "{}",
+      "state": "{}",
+      "createdByAgentId": "{}",
+      "participants": {},
+      "topics": {},
+      "eventsPublished": {},
+      "bytesPublished": {},
+      "createdAtUnix": {},
+      "updatedAtUnix": {},
+      "contentsDisplayed": false
+    }}"#,
+        json_escape(&room.room_id),
+        json_escape(&room.display_name),
+        room.state.as_str(),
+        json_escape(&room.created_by_agent_id),
+        participants,
+        topics,
+        room.events_published,
+        room.bytes_published,
+        room.created_at_unix,
+        room.updated_at_unix
+    )
+}
+
+fn room_event_json_object(event: &RoomEvent) -> String {
+    format!(
+        r#"    {{
+      "eventId": "{}",
+      "roomId": "{}",
+      "topic": "{}",
+      "fromAgentId": "{}",
+      "eventType": "{}",
+      "route": "{}",
+      "payloadBytes": {},
+      "createdAtUnix": {},
+      "contentsDisplayed": false
+    }}"#,
+        json_escape(&event.event_id),
+        json_escape(&event.room_id),
+        json_escape(&event.topic),
+        json_escape(&event.from_agent_id),
+        json_escape(&event.event_type),
+        json_escape(&event.route),
+        event.payload_bytes,
+        event.created_at_unix
+    )
+}
+
+struct RoomCreateArgs {
+    room_id: String,
+    display_name: String,
+    agent_id: String,
+    json: bool,
+}
+
+struct RoomJoinArgs {
+    room_id: String,
+    agent_id: String,
+    json: bool,
+}
+
+struct RoomPublishArgs {
+    room_id: String,
+    from_agent_id: String,
+    topic: String,
+    stdin: bool,
+    json: bool,
+}
+
+fn parse_room_create_args(args: &[String]) -> Result<RoomCreateArgs, CliOutput> {
+    let mut json = false;
+    let mut agent_id = None;
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--agent" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_rooms_usage()));
+                };
+                agent_id = Some(value.clone());
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    let Some(agent_id) = agent_id else {
+        return Err(CliOutput::failure(2, render_rooms_usage()));
+    };
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_rooms_usage()));
+    }
+
+    Ok(RoomCreateArgs {
+        room_id: positional.remove(0),
+        display_name: positional.remove(0),
+        agent_id,
+        json,
+    })
+}
+
+fn parse_room_join_args(args: &[String]) -> Result<RoomJoinArgs, CliOutput> {
+    let mut json = false;
+    let mut positional = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_rooms_usage()));
+    }
+
+    Ok(RoomJoinArgs {
+        room_id: positional.remove(0),
+        agent_id: positional.remove(0),
+        json,
+    })
+}
+
+fn parse_room_publish_args(args: &[String]) -> Result<RoomPublishArgs, CliOutput> {
+    let mut json = false;
+    let mut stdin = false;
+    let mut positional = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--stdin" => stdin = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+
+    if positional.len() != 3 {
+        return Err(CliOutput::failure(2, render_rooms_usage()));
+    }
+
+    Ok(RoomPublishArgs {
+        room_id: positional.remove(0),
+        from_agent_id: positional.remove(0),
+        topic: positional.remove(0),
+        stdin,
+        json,
+    })
+}
+
+fn render_rooms_usage() -> String {
+    r"usage:
+  conu rooms [--json]
+  conu rooms create <room-id> <display-name> --agent <agent-id> [--json]
+  conu rooms join <room-id> <agent-id> [--json]
+  conu rooms publish <room-id> <from-agent> <topic> --stdin [--json]
+  conu rooms events [--json]"
+        .to_string()
+}
+
 fn render_sessions(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("sync") => render_sessions_sync(&args[1..], home_override),
@@ -2769,11 +3418,153 @@ next
 }
 
 fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
-    if let Some(error) = reject_args(args) {
-        return error;
+    match args.first().map(String::as_str) {
+        Some("local") => render_connect_local(&args[1..], home_override),
+        Some("room") => render_connect_room(&args[1..], home_override),
+        Some(value) if value.starts_with("--") => {
+            if let Some(error) = reject_args(args) {
+                error
+            } else {
+                render_connect_selector(home_override)
+            }
+        }
+        Some(_) => CliOutput::failure(2, render_connect_usage()),
+        None => render_connect_selector(home_override),
     }
+}
+
+fn render_connect_local(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_connect_local_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match agents::agent_exists(home_override.clone(), &parsed.to_agent_id) {
+        Ok(true) => {}
+        Ok(false) => {
+            return CliOutput::failure(
+                1,
+                "conU connect local failed\n\ntarget local agent is not registered locally",
+            );
+        }
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU connect local failed\n\n{error}"));
+        }
+    }
+
+    match streams::open_stream(
+        home_override,
+        &parsed.from_agent_id,
+        &parsed.to_agent_id,
+        &parsed.kind,
+    ) {
+        Ok(report) => {
+            if parsed.json {
+                CliOutput::success(format!(
+                    r#"{{
+  "status": "connected",
+  "mode": "local-stream",
+  "streamId": "{}",
+  "fromAgentId": "{}",
+  "toAgentId": "{}",
+  "kind": "{}",
+  "route": "{}",
+  "contentsDisplayed": false
+}}"#,
+                    json_escape(&report.stream.stream_id),
+                    json_escape(&report.stream.from_agent_id),
+                    json_escape(&report.stream.to_agent_id),
+                    json_escape(&report.stream.kind),
+                    json_escape(&report.stream.route)
+                ))
+            } else {
+                CliOutput::success(format!(
+                    r"conU connect local
+
+status: connected
+mode: local stream
+stream: {}
+from: {}
+to: {}
+kind: {}
+route: {}
+
+privacy
+  payload view  contents are not displayed by conU
+
+next
+  conu streams write {} --stdin",
+                    report.stream.stream_id,
+                    report.stream.from_agent_id,
+                    report.stream.to_agent_id,
+                    report.stream.kind,
+                    report.stream.route,
+                    report.stream.stream_id
+                ))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU connect local failed\n\n{error}")),
+    }
+}
+
+fn render_connect_room(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_connect_room_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match rooms::join_room(home_override, &parsed.room_id, &parsed.agent_id) {
+        Ok(report) => {
+            let status = if report.joined {
+                "connected"
+            } else {
+                "already_connected"
+            };
+            if parsed.json {
+                CliOutput::success(format!(
+                    r#"{{
+  "status": "{}",
+  "mode": "room",
+  "roomId": "{}",
+  "agentId": "{}",
+  "participants": {},
+  "contentsDisplayed": false
+}}"#,
+                    status,
+                    json_escape(&report.room.room_id),
+                    json_escape(&parsed.agent_id),
+                    report.room.participants.len()
+                ))
+            } else {
+                CliOutput::success(format!(
+                    r"conU connect room
+
+status: {status}
+room: {}
+agent: {}
+participants: {}
+
+privacy
+  payload view  contents are not displayed by conU
+
+next
+  conu rooms publish {} {} <topic> --stdin",
+                    report.room.room_id,
+                    parsed.agent_id,
+                    report.room.participants.len(),
+                    report.room.room_id,
+                    parsed.agent_id
+                ))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU connect room failed\n\n{error}")),
+    }
+}
+
+fn render_connect_selector(home_override: Option<PathBuf>) -> CliOutput {
     let local_agents = agents::list_local_agents(home_override.clone()).unwrap_or_default();
     let route_records = routes::list_routes(home_override.clone()).unwrap_or_default();
+    let rooms = rooms::list_rooms(home_override.clone()).unwrap_or_default();
     let remote_agents = sessions::list_remote_agents(home_override).unwrap_or_default();
     let local = if local_agents.is_empty() {
         "none registered".to_string()
@@ -2807,6 +3598,22 @@ fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput 
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let room_list = if rooms.is_empty() {
+        "none created".to_string()
+    } else {
+        rooms
+            .iter()
+            .map(|room| {
+                format!(
+                    "{} ({} participants, {} topics)",
+                    room.room_id,
+                    room.participants.len(),
+                    room.topics.len()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
 
     CliOutput::success(format!(
         r"conU connect
@@ -2814,13 +3621,102 @@ fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput 
 selector
   source local agent   {local}
   target remote agent  {remote}
+  room bus             {room_list}
   route plan           direct {} | relay {}
-  mode                 message | stream | room | observe
+  mode                 local stream | room | remote relay message
 
-status: stream sessions use `conu streams open`; interactive selector remains future work",
+actions
+  conu connect local <from-agent> <to-agent>
+  conu connect room <room-id> <agent-id>
+  conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
+
+privacy
+  payload view  contents are not displayed by conU",
         selected_direct_route_count(&route_records),
         selected_relay_route_count(&route_records)
     ))
+}
+
+struct ConnectLocalArgs {
+    from_agent_id: String,
+    to_agent_id: String,
+    kind: String,
+    json: bool,
+}
+
+struct ConnectRoomArgs {
+    room_id: String,
+    agent_id: String,
+    json: bool,
+}
+
+fn parse_connect_local_args(args: &[String]) -> Result<ConnectLocalArgs, CliOutput> {
+    let mut json = false;
+    let mut kind = "message".to_string();
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--kind" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_connect_usage()));
+                };
+                kind = value.clone();
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_connect_usage()));
+    }
+
+    Ok(ConnectLocalArgs {
+        from_agent_id: positional.remove(0),
+        to_agent_id: positional.remove(0),
+        kind,
+        json,
+    })
+}
+
+fn parse_connect_room_args(args: &[String]) -> Result<ConnectRoomArgs, CliOutput> {
+    let mut json = false;
+    let mut positional = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_connect_usage()));
+    }
+
+    Ok(ConnectRoomArgs {
+        room_id: positional.remove(0),
+        agent_id: positional.remove(0),
+        json,
+    })
+}
+
+fn render_connect_usage() -> String {
+    r"usage:
+  conu connect
+  conu connect local <from-agent> <to-agent> [--kind <kind>] [--json]
+  conu connect room <room-id> <agent-id> [--json]"
+        .to_string()
 }
 
 fn render_watch(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -2830,6 +3726,8 @@ fn render_watch(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
 
     let stream_records = streams::list_streams(home_override.clone()).unwrap_or_default();
     let events = streams::list_events(home_override.clone()).unwrap_or_default();
+    let room_records = rooms::list_rooms(home_override.clone()).unwrap_or_default();
+    let room_events = rooms::list_room_events(home_override.clone()).unwrap_or_default();
     let relay_queue = relay_delivery::relay_queue_summary(home_override).ok();
     let open_streams = stream_records
         .iter()
@@ -2861,6 +3759,21 @@ fn render_watch(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let latest_event = latest
         .map(|event| event.event_type.as_str())
         .unwrap_or("idle");
+    let latest_room = room_events.last();
+    let room_flow = latest_room
+        .map(|event| {
+            format!(
+                "{}  == private room event ==>  room {}",
+                event.from_agent_id, event.room_id
+            )
+        })
+        .unwrap_or_else(|| "agent       -> conUD room bus -> subscribed agents".to_string());
+    let latest_room_topic = latest_room
+        .map(|event| event.topic.as_str())
+        .unwrap_or("idle");
+    let latest_room_bytes = latest_room
+        .map(|event| event.payload_bytes)
+        .unwrap_or_default();
     let relay_queued = relay_queue.as_ref().map(|queue| queue.queued).unwrap_or(0);
     let relay_sent = relay_queue.as_ref().map(|queue| queue.sent).unwrap_or(0);
     let relay_rejected = relay_queue
@@ -2873,18 +3786,28 @@ fn render_watch(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
 
 private transport view
   {flow}
+  {room_flow}
 
-  .-----------.      .--------.      .------------.      .---------.
-  |  agent A  | ---> | conUD  | ===> | blind relay | ===> | agent B |
-  '-----------'      '--------'      '------------'      '---------'
-                         peer-encrypted envelopes
-                         daemon pump when configured
+  .-----------.      .--------.      .-------------.
+  |  agent A  | ---> | conUD  | ---> | room / bus  |
+  '-----------'      '--------'      '-------------'
+        |                |
+        |                v
+        |          .------------.      .---------.
+        '=======>  | blind relay | ===> | agent B |
+                   '------------'      '---------'
+                    peer-encrypted envelopes
+                    daemon pump when configured
 
 live counters
   route         {route}
   stream        {stream_id}
   event         {latest_event}
   open streams  {open_streams}
+  rooms         {rooms_count}
+  room events   {room_events_count}
+  room topic    {latest_room_topic}
+  room bytes    {latest_room_bytes}
   packets       {total_packets}
   bytes         {total_bytes}
   relay queued  {relay_queued}
@@ -2893,9 +3816,11 @@ live counters
   contents      not displayed
 
 animation
-  [agent] >>> private packets >>> [conUD] >>> encrypted relay >>> [agent]
+  [agent] >>> private packets >>> [conUD] >>> room/relay >>> [agent]
 
 status: metadata animation only",
+        rooms_count = room_records.len(),
+        room_events_count = room_events.len(),
     ))
 }
 
@@ -3405,6 +4330,7 @@ struct StatusView<'a> {
     remote_agents: &'a [RemoteAgentRecord],
     sessions: &'a [RemoteSession],
     stream_records: &'a [StreamRecord],
+    room_records: &'a [RoomRecord],
     route_records: &'a [RouteRecord],
     peers: &'a [TrustedPeer],
     security: &'a SecurityAudit,
@@ -3452,6 +4378,7 @@ agents
   trusted peers {}
   sessions      {}
   streams       {}
+  rooms         {}
   routes        {} selected
 
 privacy
@@ -3478,6 +4405,7 @@ privacy
         trusted_peer_count(view.peers),
         view.sessions.len(),
         view.stream_records.len(),
+        view.room_records.len(),
         selected_route_count(view.route_records),
         yes_no(security.local_payload_encryption),
         yes_no(security.signed_agent_cards),
@@ -3528,6 +4456,7 @@ fn render_status_json(view: &StatusView<'_>) -> String {
     "trustedPeers": {},
     "sessions": {},
     "streams": {},
+    "rooms": {},
     "routes": {}
   }},
   "security": {{
@@ -3561,6 +4490,7 @@ fn render_status_json(view: &StatusView<'_>) -> String {
         trusted_peer_count(view.peers),
         view.sessions.len(),
         view.stream_records.len(),
+        view.room_records.len(),
         selected_route_count(view.route_records),
         security.initialized,
         security.local_payload_encryption,
@@ -3576,6 +4506,7 @@ fn render_help() -> String {
 
 Usage:
   conu
+  conu dashboard
   conu init
   conu status [--json]
   conu agents [--json]
@@ -3590,6 +4521,11 @@ Usage:
   conu streams open <from-agent> <to-agent> [--kind <kind>] [--json]
   conu streams write <stream-id> --stdin [--json]
   conu streams close <stream-id> [--json]
+  conu rooms [--json]
+  conu rooms create <room-id> <display-name> --agent <agent-id> [--json]
+  conu rooms join <room-id> <agent-id> [--json]
+  conu rooms publish <room-id> <from-agent> <topic> --stdin [--json]
+  conu rooms events [--json]
   conu sessions [--json]
   conu sessions sync [--json]
   conu routes [--json]
@@ -3603,6 +4539,8 @@ Usage:
   conu pair [--json]
   conu join <code> [--json]
   conu connect
+  conu connect local <from-agent> <to-agent> [--kind <kind>] [--json]
+  conu connect room <room-id> <agent-id> [--json]
   conu watch
   conu doctor [--json]
   conu start [--json]
@@ -3939,21 +4877,39 @@ mod tests {
 
     #[test]
     fn dashboard_renders_control_room() {
-        let output = run_with_home(Vec::<String>::new(), Some(temp_home("dashboard")));
+        let home = temp_home("dashboard");
+        let output = run_with_home(Vec::<String>::new(), Some(home.clone()));
+        let explicit = run_with_home(["dashboard"], Some(home));
 
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("control room"));
         assert!(output.stdout.contains("conu init"));
         assert!(output.stderr.is_empty());
+        assert_eq!(explicit.code, 0);
+        assert!(explicit.stdout.contains("control room"));
+        assert!(explicit.stderr.is_empty());
     }
 
     #[test]
-    fn phase_thirteen_commands_are_registered() {
+    fn phase_fourteen_commands_are_registered() {
         let home = temp_home("commands");
 
         for command in [
-            "init", "status", "agents", "streams", "sessions", "security", "pair", "peers",
-            "routes", "connect", "watch", "doctor", "stop",
+            "init",
+            "status",
+            "agents",
+            "streams",
+            "rooms",
+            "sessions",
+            "security",
+            "pair",
+            "peers",
+            "routes",
+            "connect",
+            "dashboard",
+            "watch",
+            "doctor",
+            "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
             assert_eq!(output.code, 0, "{command} failed: {}", output.stderr);
@@ -4113,6 +5069,64 @@ mod tests {
         assert!(listed.stdout.contains("\"state\": \"closed\""));
         assert!(!watch.stdout.contains("private message contents"));
         assert!(!listed.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn rooms_flow_and_connect_are_metadata_only() {
+        let home = temp_home("rooms-flow");
+        register_test_agent(&home, "agent.codex");
+        register_test_agent(&home, "agent.hermes");
+
+        let connected = run_with_home(
+            ["connect", "local", "agent.codex", "agent.hermes", "--json"],
+            Some(home.clone()),
+        );
+        let created = run_with_home(
+            [
+                "rooms",
+                "create",
+                "room.dev",
+                "Dev Room",
+                "--agent",
+                "agent.codex",
+            ],
+            Some(home.clone()),
+        );
+        let joined = run_with_home(
+            ["rooms", "join", "room.dev", "agent.hermes", "--json"],
+            Some(home.clone()),
+        );
+        let published = run_with_home_and_stdin(
+            [
+                "rooms",
+                "publish",
+                "room.dev",
+                "agent.hermes",
+                "build",
+                "--stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            b"private message contents".to_vec(),
+        );
+        let events = run_with_home(["rooms", "events"], Some(home.clone()));
+        let watch = run_with_home(["watch"], Some(home));
+
+        assert_eq!(connected.code, 0, "{}", connected.stderr);
+        assert_eq!(created.code, 0, "{}", created.stderr);
+        assert_eq!(joined.code, 0, "{}", joined.stderr);
+        assert_eq!(published.code, 0, "{}", published.stderr);
+        assert!(connected.stdout.contains("\"status\": \"connected\""));
+        assert!(created.stdout.contains("status: created"));
+        assert!(joined.stdout.contains("\"participants\": 2"));
+        assert!(published.stdout.contains("\"payloadBytes\": 24"));
+        assert!(published.stdout.contains("\"localDeliveries\": 1"));
+        assert!(events.stdout.contains("topic build"));
+        assert!(watch.stdout.contains("room events"));
+        assert!(watch.stdout.contains("room/relay"));
+        assert!(!published.stdout.contains("private message contents"));
+        assert!(!events.stdout.contains("private message contents"));
+        assert!(!watch.stdout.contains("private message contents"));
     }
 
     #[test]

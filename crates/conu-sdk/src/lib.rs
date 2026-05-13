@@ -18,6 +18,9 @@ use conu_core::messages::{
 use conu_core::relay_delivery::{
     self, RelayQueueSummary, RelaySyncReport, RemoteMessage, RemoteMessageSubmission,
 };
+use conu_core::rooms::{
+    self, RoomCreateReport, RoomEvent, RoomJoinReport, RoomPublishReport, RoomRecord,
+};
 use conu_core::routes::{self, RouteProbe, RouteRecord, RouteSyncReport};
 use conu_core::runtime::{self, RuntimeStatus};
 use conu_core::security::{self, SecurityAudit};
@@ -31,6 +34,7 @@ use conu_protocol::{AgentCapabilities, OpaquePayload};
 use std::time::Duration;
 
 pub use conu_core::agents::AgentPresence as Presence;
+pub use conu_core::rooms::{RoomEvent as RoomBusEvent, RoomRecord as Room};
 pub use conu_core::routes::RouteRecord as Route;
 pub use conu_core::streams::StreamRecord as Stream;
 pub use conu_core::trust::PeerCard;
@@ -337,6 +341,53 @@ impl ConuClient {
         Ok(streams::list_events(self.home_override())?)
     }
 
+    /// Create a metadata-tracked room owned by a local agent.
+    pub fn create_room(
+        &self,
+        room_id: &str,
+        display_name: &str,
+        created_by_agent_id: &str,
+    ) -> Result<RoomCreateReport, SdkError> {
+        Ok(rooms::create_room(
+            self.home_override(),
+            room_id,
+            display_name,
+            created_by_agent_id,
+        )?)
+    }
+
+    /// Join a visible local or trusted remote agent to a room.
+    pub fn join_room(&self, room_id: &str, agent_id: &str) -> Result<RoomJoinReport, SdkError> {
+        Ok(rooms::join_room(self.home_override(), room_id, agent_id)?)
+    }
+
+    /// Publish one opaque room event by byte count only.
+    pub fn publish_room_event_bytes(
+        &self,
+        room_id: &str,
+        from_agent_id: &str,
+        topic: &str,
+        payload: impl Into<Vec<u8>>,
+    ) -> Result<RoomPublishReport, SdkError> {
+        Ok(rooms::publish_room_event(
+            self.home_override(),
+            room_id,
+            from_agent_id,
+            topic,
+            OpaquePayload::from_bytes(payload.into()),
+        )?)
+    }
+
+    /// List room metadata.
+    pub fn list_rooms(&self) -> Result<Vec<RoomRecord>, SdkError> {
+        Ok(rooms::list_rooms(self.home_override())?)
+    }
+
+    /// List payload-safe room events.
+    pub fn list_room_events(&self) -> Result<Vec<RoomEvent>, SdkError> {
+        Ok(rooms::list_room_events(self.home_override())?)
+    }
+
     fn home_override(&self) -> Option<PathBuf> {
         self.home.clone()
     }
@@ -367,6 +418,7 @@ pub enum SdkError {
     Runtime(runtime::RuntimeError),
     Route(routes::RouteError),
     RelayDelivery(relay_delivery::RelayDeliveryError),
+    Room(rooms::RoomError),
     Session(sessions::SessionError),
     Stream(streams::StreamError),
     Trust(trust::TrustError),
@@ -390,6 +442,7 @@ impl fmt::Display for SdkError {
             Self::Runtime(error) => write!(formatter, "{error}"),
             Self::Route(error) => write!(formatter, "{error}"),
             Self::RelayDelivery(error) => write!(formatter, "{error}"),
+            Self::Room(error) => write!(formatter, "{error}"),
             Self::Session(error) => write!(formatter, "{error}"),
             Self::Stream(error) => write!(formatter, "{error}"),
             Self::Trust(error) => write!(formatter, "{error}"),
@@ -452,6 +505,12 @@ impl From<routes::RouteError> for SdkError {
 impl From<relay_delivery::RelayDeliveryError> for SdkError {
     fn from(error: relay_delivery::RelayDeliveryError) -> Self {
         Self::RelayDelivery(error)
+    }
+}
+
+impl From<rooms::RoomError> for SdkError {
+    fn from(error: rooms::RoomError) -> Self {
+        Self::Room(error)
     }
 }
 
@@ -540,6 +599,43 @@ mod tests {
             .expect_err("wrong local agent cannot receive");
 
         assert!(matches!(error, SdkError::EnvelopeNotFound { .. }));
+    }
+
+    #[test]
+    fn sdk_room_flow_returns_metadata_only() {
+        let client = ConuClient::with_home(test_home("rooms"));
+        client.init().expect("state initializes");
+        client
+            .register_agent("agent.codex", "Codex", "test-agent")
+            .expect("codex registers");
+        client
+            .register_agent("agent.hermes", "Hermes", "test-agent")
+            .expect("hermes registers");
+        client.process_queued().expect("registrations process");
+
+        let created = client
+            .create_room("room.dev", "Dev Room", "agent.codex")
+            .expect("room creates");
+        let joined = client
+            .join_room("room.dev", "agent.hermes")
+            .expect("room joins");
+        let published = client
+            .publish_room_event_bytes(
+                "room.dev",
+                "agent.hermes",
+                "build",
+                b"private message contents",
+            )
+            .expect("event publishes");
+        let rooms = client.list_rooms().expect("rooms list");
+        let events = client.list_room_events().expect("events list");
+        let debug = format!("{created:?}\n{joined:?}\n{published:?}\n{rooms:?}\n{events:?}");
+
+        assert_eq!(published.event.payload_bytes, 24);
+        assert_eq!(published.local_deliveries, 1);
+        assert_eq!(rooms[0].participants.len(), 2);
+        assert_eq!(events.len(), 1);
+        assert!(!debug.contains("private message contents"));
     }
 
     #[test]

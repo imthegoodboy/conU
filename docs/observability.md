@@ -54,6 +54,7 @@ logs/agents.log      local agent registry events
 logs/messages.log    local delivery events
 logs/sessions.log    remote session sync events
 logs/streams.log     stream lifecycle events
+logs/rooms.log       room/pub-sub metadata events
 logs/routes.log      route sync events
 logs/relay-delivery.log relay send/receive events
 ```

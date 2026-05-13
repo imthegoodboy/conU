@@ -34,6 +34,9 @@ const MESSAGE_RECEIPTS_DIR: &str = "receipts";
 const STREAMS_DIR: &str = "streams";
 const STREAM_REGISTRY_FILE: &str = "registry.toml";
 const STREAM_EVENTS_FILE: &str = "events.toml";
+const ROOMS_DIR: &str = "rooms";
+const ROOM_REGISTRY_FILE: &str = "registry.toml";
+const ROOM_EVENTS_FILE: &str = "events.toml";
 const ROUTES_DIR: &str = "routes";
 const ROUTE_REGISTRY_FILE: &str = "registry.toml";
 const ROUTE_PROBES_FILE: &str = "probes.toml";
@@ -83,6 +86,9 @@ pub struct StatePaths {
     pub streams_dir: PathBuf,
     pub stream_registry: PathBuf,
     pub stream_events: PathBuf,
+    pub rooms_dir: PathBuf,
+    pub room_registry: PathBuf,
+    pub room_events: PathBuf,
     pub routes_dir: PathBuf,
     pub route_registry: PathBuf,
     pub route_probes: PathBuf,
@@ -124,6 +130,7 @@ impl StatePaths {
         let message_ipc_dir = ipc_dir.join(MESSAGES_DIR);
         let messages_dir = home.join(MESSAGES_DIR);
         let streams_dir = home.join(STREAMS_DIR);
+        let rooms_dir = home.join(ROOMS_DIR);
         let routes_dir = home.join(ROUTES_DIR);
         let pairing_dir = home.join(PAIRING_DIR);
         let security_dir = home.join(SECURITY_DIR);
@@ -155,6 +162,9 @@ impl StatePaths {
             stream_registry: streams_dir.join(STREAM_REGISTRY_FILE),
             stream_events: streams_dir.join(STREAM_EVENTS_FILE),
             streams_dir,
+            room_registry: rooms_dir.join(ROOM_REGISTRY_FILE),
+            room_events: rooms_dir.join(ROOM_EVENTS_FILE),
+            rooms_dir,
             route_registry: routes_dir.join(ROUTE_REGISTRY_FILE),
             route_probes: routes_dir.join(ROUTE_PROBES_FILE),
             routes_dir,
@@ -347,6 +357,7 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.message_inbox_dir,
         &paths.message_receipts_dir,
         &paths.streams_dir,
+        &paths.rooms_dir,
         &paths.routes_dir,
         &paths.pairing_dir,
         &paths.pairing_invites_dir,
@@ -591,6 +602,7 @@ mod tests {
                 .exists()
         );
         assert!(home.join(MESSAGES_DIR).join(MESSAGE_INBOX_DIR).exists());
+        assert!(home.join(ROOMS_DIR).exists());
         assert!(home.join(PAIRING_DIR).join(PAIRING_INVITES_DIR).exists());
         assert!(
             home.join(RUNTIME_DIR)

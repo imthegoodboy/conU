@@ -17,13 +17,13 @@ plan.md
 
 ```txt
 crates/conu-cli
-  CLI commands, ASCII dashboard, stream/watch animation, user control flow
+  CLI commands, ASCII dashboard, connect/rooms control flow, stream/watch animation, user control flow
 
 crates/conud
   daemon process, local gateway/message/session processing, relay pump, session manager, runtime lifecycle
 
 crates/conu-core
-  local state, security keys/encryption/signatures/replay, runtime lifecycle, agent registry, local message routing, relay-backed remote message delivery, stream metadata, route selection, trust store, relay frame contract, remote session mirror, future policy logic
+  local state, security keys/encryption/signatures/replay, runtime lifecycle, agent registry, local message routing, room/pub-sub fanout metadata, relay-backed remote message delivery, stream metadata, route selection, trust store, relay frame contract, remote session mirror, future policy logic
 
 crates/conu-protocol
   envelopes, agent cards, control-plane messages, data-plane messages
@@ -32,7 +32,7 @@ crates/conu-relay
   std-only WebSocket relay service, session auth, blind ciphertext forwarding, relay/bootstrap groundwork
 
 crates/conu-sdk
-  Rust agent-facing SDK over registration, presence, peers, peer cards, routes, local/remote messages, optional relay sync, receive, streams, and security audit
+  Rust agent-facing SDK over registration, presence, peers, peer cards, routes, local/remote messages, optional relay sync, receive, streams, rooms, and security audit
 
 crates/conu-mcp
   MCP stdio adapter exposing conU tools over newline-delimited JSON-RPC

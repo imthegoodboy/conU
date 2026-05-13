@@ -29,9 +29,9 @@ needs_revision
 
 ```txt
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
-Status: not_started
-Last updated: 2026-05-11
-Note: Phase 15 was completed as a user-directed skip-ahead; post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, and distribution/hosting passes are complete; Phase 14 remains not started.
+Status: completed
+Last updated: 2026-05-13
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, and Phase 14 local rooms/pub-sub passes are complete. Public hosted internet readiness remains scoped by the known relay TLS/auth/session gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -283,6 +283,8 @@ Files changed:
 - `.agents/repo/ABOUT.md`
 - `.agents/skills/conu-builder/references/implementation-guardrails.md`
 - `plan.md`
+- `scripts/build-release.ps1`
+- `scripts/build-release.sh`
 - `crates/conu-cli/src/lib.rs`
 - `crates/conu-core/src/lib.rs`
 - `crates/conu-core/src/state.rs`
@@ -1068,7 +1070,7 @@ Next:
 
 ## Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 
-Status: not_started
+Status: completed
 
 Goal:
 
@@ -1076,17 +1078,76 @@ Support shared spaces and multiple agents in one session.
 
 Deliverables:
 
-- rooms
-- subscriptions
-- publish/subscribe topics
-- room presence
-- group stream metadata
+- [x] rooms
+- [x] membership-based local subscriptions
+- [x] publish/subscribe topics
+- [x] room presence through participant metadata
+- [x] group stream/room metadata in CLI status, dashboard, connect, and watch
 
 Exit criteria:
 
-- Trusted agents can join a room.
-- Events route to subscribed agents.
-- CLI shows room flow without payloads.
+- [x] Trusted agents can join a room.
+- [x] Events route to subscribed local agents.
+- [x] CLI shows room flow without payloads.
+
+Completed work:
+
+- Added `conu_core::rooms` with room registry, participants, topics, payload-safe event bus, metadata logs, and backpressure limits.
+- Added local room event fanout: publishing to a room delivers encrypted-at-rest event envelopes to joined local participants' message inboxes while room registry/event/log surfaces keep only metadata.
+- Added `conu rooms`, `conu rooms create`, `conu rooms join`, `conu rooms publish --stdin`, and `conu rooms events` with text and JSON output.
+- Fixed the real CLI binary stdin path so `conu rooms publish --stdin` reads payload bytes outside unit tests.
+- Added `conu connect local` and `conu connect room` flows, plus a richer ASCII dashboard/watch view with rooms, room events, local deliveries, routes, streams, relay queue state, and payload privacy markers.
+- Added room APIs to the Rust SDK, Python wrapper SDK, and MCP adapter.
+- Updated user docs, release checklist, repo memory, README, and tests for rooms/pub-sub behavior.
+
+Files changed:
+
+- `README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `docs/observability.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/user-install-and-agent-guide.md`
+- `plan.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-cli/src/main.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/messages.rs`
+- `crates/conu-core/src/rooms.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `crates/conu-sdk/src/lib.rs`
+- `sdk/python/conu_sdk/__init__.py`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and created `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+- Release archive inspection passed, including all binaries plus `docs/sdk-and-mcp.md` and `docs/internet-relay-test.md`, and excluding local conU state/log/security/message directories.
+- `git diff --check` passed.
+- Direct binary room smoke passed with isolated `CONU_HOME`: `conu init`, agent registration, `conud --process-ipc`, `conu rooms create`, `conu rooms join --json`, real stdin `conu rooms publish --stdin --json`, `conu rooms events`, `conu messages inbox --json`, payload-text scan across conU-owned state, and rejected nonlocal publisher spoof without payload echo.
+
+Known gaps:
+
+- Relay-backed room event fanout is not implemented yet; remote room participants are metadata-visible only.
+- Room membership is the current subscription model; per-topic subscription grants and policy are still future work.
+- Live relay-backed stream byte routing, persistent relay sessions, hosted relay auth/rate limits, `wss://` client support, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, offline mailbox, and OS-backed key storage remain future hardening work.
+- Public managed online release remains blocked until the hosted relay/TLS/auth/session work is complete.
+
+Next recommendation:
+
+- Prioritize `wss://` client support, hosted relay auth/rate limits, persistent relay sessions, and then remote room fanout/stream byte routing before advertising conU as a managed public internet service.
 
 ## Phase 15 - Packaging And Production Readiness
 
@@ -1459,4 +1520,5 @@ Add entries here when a phase is completed.
 2026-05-11 - Post Phase 15 internet data-plane and CLI polish completed. Added public peer-card trust, peer-encrypted relay message queueing, explicit relay sync, richer watch animation, SDK/Python/MCP remote helpers, relay E2E tests, and internet relay test docs. Phase 14 remains not started.
 2026-05-11 - Post Phase 15 daemon relay production hardening completed. Added conUD-owned relay pump, retry/backoff, relay daemon smoke script, Windows start hardening, docs/skill updates, and daemon-owned remote message validation. Phase 14 remains not started.
 2026-05-11 - Post Phase 15 distribution and hosting completed. Added native npm launcher package template, platform release artifact naming/checksums, Docker relay hosting template, distribution/hosting docs, release workflow updates, and installer validation. Phase 14 remains not started.
+2026-05-13 - Phase 14 completed after the Phase 15 skip-ahead. Added local rooms/pub-sub metadata, encrypted-at-rest local room event fanout, room CLI/SDK/Python/MCP surfaces, connect/dashboard/watch polish, docs, and GNU-toolchain validation. Next: hosted relay TLS/auth, persistent relay sessions, remote room fanout, and stream byte routing.
 ```

@@ -7,7 +7,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use conu_sdk::{Capabilities, ConuClient, PeerCard, Presence, Route, SdkError, Stream};
+use conu_sdk::{
+    Capabilities, ConuClient, PeerCard, Presence, Room, RoomBusEvent, Route, SdkError, Stream,
+};
 use serde_json::{Map, Value, json};
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -157,6 +159,11 @@ impl McpServer {
             "conu_open_stream" => self.tool_open_stream(args),
             "conu_write_stream" => self.tool_write_stream(args),
             "conu_close_stream" => self.tool_close_stream(args),
+            "conu_create_room" => self.tool_create_room(args),
+            "conu_join_room" => self.tool_join_room(args),
+            "conu_list_rooms" => self.tool_list_rooms(),
+            "conu_publish_room_event" => self.tool_publish_room_event(args),
+            "conu_list_room_events" => self.tool_list_room_events(),
             _ => Err(format!("unknown conU tool: {name}")),
         }
     }
@@ -550,6 +557,79 @@ impl McpServer {
         }))
     }
 
+    fn tool_create_room(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let room_id = required_string(args, "roomId")?;
+        let display_name = required_string(args, "displayName")?;
+        let agent_id = required_string(args, "agentId")?;
+        self.ensure_agent_allowed(&agent_id)?;
+        let report = self
+            .client
+            .create_room(&room_id, &display_name, &agent_id)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": "created",
+            "room": room_to_json(&report.room),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_join_room(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let room_id = required_string(args, "roomId")?;
+        let agent_id = required_string(args, "agentId")?;
+        self.ensure_agent_allowed(&agent_id)?;
+        let report = self
+            .client
+            .join_room(&room_id, &agent_id)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": if report.joined { "joined" } else { "already_joined" },
+            "room": room_to_json(&report.room),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_list_rooms(&self) -> Result<Value, String> {
+        let rooms = self.client.list_rooms().map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "rooms": rooms.iter().map(room_to_json).collect::<Vec<_>>(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_publish_room_event(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let room_id = required_string(args, "roomId")?;
+        let from_agent_id = required_string(args, "fromAgentId")?;
+        self.ensure_agent_allowed(&from_agent_id)?;
+        let topic = required_string(args, "topic")?;
+        let payload = payload_from_args(args)?;
+        let report = self
+            .client
+            .publish_room_event_bytes(&room_id, &from_agent_id, &topic, payload)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": "published",
+            "roomId": report.room.room_id,
+            "eventsPublished": report.room.events_published,
+            "bytesPublished": report.room.bytes_published,
+            "localDeliveries": report.local_deliveries,
+            "event": room_event_to_json(&report.event),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_list_room_events(&self) -> Result<Value, String> {
+        let events = self.client.list_room_events().map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "events": events.iter().map(room_event_to_json).collect::<Vec<_>>(),
+            "contentsDisplayed": false
+        }))
+    }
+
     fn tools(&self) -> Vec<Value> {
         vec![
             tool(
@@ -707,6 +787,53 @@ impl McpServer {
                     json!({ "streamId": { "type": "string" } }),
                     vec!["streamId"],
                 ),
+            ),
+            tool(
+                "conu_create_room",
+                "Create a room bus owned by a registered local agent.",
+                schema(
+                    json!({
+                        "roomId": { "type": "string" },
+                        "displayName": { "type": "string" },
+                        "agentId": { "type": "string" }
+                    }),
+                    vec!["roomId", "displayName", "agentId"],
+                ),
+            ),
+            tool(
+                "conu_join_room",
+                "Join a visible local or trusted remote agent to a room.",
+                schema(
+                    json!({
+                        "roomId": { "type": "string" },
+                        "agentId": { "type": "string" }
+                    }),
+                    vec!["roomId", "agentId"],
+                ),
+            ),
+            tool(
+                "conu_list_rooms",
+                "List room metadata without payload contents.",
+                schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_publish_room_event",
+                "Publish an opaque event to a room. The response reports metadata and byte counts only.",
+                schema(
+                    json!({
+                        "roomId": { "type": "string" },
+                        "fromAgentId": { "type": "string" },
+                        "topic": { "type": "string" },
+                        "payloadText": { "type": "string" },
+                        "payloadHex": { "type": "string" }
+                    }),
+                    vec!["roomId", "fromAgentId", "topic"],
+                ),
+            ),
+            tool(
+                "conu_list_room_events",
+                "List payload-safe room events.",
+                schema(json!({}), vec![]),
             ),
         ]
     }
@@ -936,6 +1063,40 @@ fn stream_to_json(stream: &Stream) -> Value {
     })
 }
 
+fn room_to_json(room: &Room) -> Value {
+    json!({
+        "roomId": &room.room_id,
+        "displayName": &room.display_name,
+        "state": room.state.as_str(),
+        "createdByAgentId": &room.created_by_agent_id,
+        "participants": room.participants.iter().map(|participant| json!({
+            "agentId": &participant.agent_id,
+            "scope": participant.scope.as_str(),
+            "joinedAtUnix": participant.joined_at_unix
+        })).collect::<Vec<_>>(),
+        "topics": &room.topics,
+        "eventsPublished": room.events_published,
+        "bytesPublished": room.bytes_published,
+        "createdAtUnix": room.created_at_unix,
+        "updatedAtUnix": room.updated_at_unix,
+        "contentsDisplayed": false
+    })
+}
+
+fn room_event_to_json(event: &RoomBusEvent) -> Value {
+    json!({
+        "eventId": &event.event_id,
+        "roomId": &event.room_id,
+        "topic": &event.topic,
+        "fromAgentId": &event.from_agent_id,
+        "eventType": &event.event_type,
+        "route": &event.route,
+        "payloadBytes": event.payload_bytes,
+        "createdAtUnix": event.created_at_unix,
+        "contentsDisplayed": false
+    })
+}
+
 fn route_to_json(route: &Route) -> Value {
     json!({
         "routeId": &route.route_id,
@@ -1029,6 +1190,8 @@ mod tests {
         assert!(body.contains("conu_send_message"));
         assert!(body.contains("conu_receive_message"));
         assert!(body.contains("conu_open_stream"));
+        assert!(body.contains("conu_create_room"));
+        assert!(body.contains("conu_publish_room_event"));
         assert!(body.contains("conu_sync_routes"));
         assert!(body.contains("conu_list_routes"));
     }
@@ -1108,6 +1271,62 @@ mod tests {
 
         assert!(metadata_text.contains("\"payloadReturned\": false"));
         assert!(!metadata_text.contains("private message contents"));
+    }
+
+    #[test]
+    fn room_tools_keep_publish_payload_safe() {
+        let server = McpServer::with_home(test_home("rooms"));
+        call_tool(
+            &server,
+            1,
+            "conu_register_agent",
+            json!({ "agentId": "agent.codex", "displayName": "Codex" }),
+        );
+        call_tool(
+            &server,
+            2,
+            "conu_register_agent",
+            json!({ "agentId": "agent.hermes", "displayName": "Hermes" }),
+        );
+        call_tool(
+            &server,
+            3,
+            "conu_create_room",
+            json!({
+                "roomId": "room.dev",
+                "displayName": "Dev Room",
+                "agentId": "agent.codex"
+            }),
+        );
+        call_tool(
+            &server,
+            4,
+            "conu_join_room",
+            json!({
+                "roomId": "room.dev",
+                "agentId": "agent.hermes"
+            }),
+        );
+        let publish = call_tool(
+            &server,
+            5,
+            "conu_publish_room_event",
+            json!({
+                "roomId": "room.dev",
+                "fromAgentId": "agent.hermes",
+                "topic": "build",
+                "payloadText": "private message contents"
+            }),
+        );
+        let events = call_tool(&server, 6, "conu_list_room_events", json!({}));
+        let publish_text = tool_text(&publish);
+        let events_text = tool_text(&events);
+
+        assert!(publish_text.contains("\"payloadBytes\": 24"));
+        assert!(publish_text.contains("\"localDeliveries\": 1"));
+        assert!(events_text.contains("\"topic\": \"build\""));
+        assert!(!publish.to_string().contains("private message contents"));
+        assert!(!events.to_string().contains("private message contents"));
     }
 
     #[test]

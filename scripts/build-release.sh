@@ -52,11 +52,7 @@ for binary in conu conud conu-relay conu-mcp; do
 done
 
 cp README.md "$PACKAGE_ROOT/"
-cp docs/user-install-and-agent-guide.md "$DOC_DIR/"
-cp docs/production-readiness.md "$DOC_DIR/"
-cp docs/release-checklist.md "$DOC_DIR/"
-cp docs/observability.md "$DOC_DIR/"
-cp docs/distribution-and-hosting.md "$DOC_DIR/"
+cp docs/*.md "$DOC_DIR/"
 cp -R packaging "$PACKAGE_ROOT/"
 
 cat > "$PACKAGE_ROOT/manifest.toml" <<EOF

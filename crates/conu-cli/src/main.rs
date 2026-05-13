@@ -31,7 +31,8 @@ fn needs_stdin_payload(args: &[String]) -> bool {
         args,
         [command, subcommand, ..]
             if ((command == "messages" && subcommand == "send")
-                || (command == "streams" && subcommand == "write"))
+                || (command == "streams" && subcommand == "write")
+                || (command == "rooms" && subcommand == "publish"))
                 && args.iter().any(|arg| arg == "--stdin")
     )
 }
@@ -41,7 +42,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stdin_payload_is_read_for_message_and_stream_writes() {
+    fn stdin_payload_is_read_for_message_stream_and_room_writes() {
         assert!(needs_stdin_payload(&[
             "messages".to_string(),
             "send".to_string(),
@@ -53,6 +54,14 @@ mod tests {
             "streams".to_string(),
             "write".to_string(),
             "stream_1".to_string(),
+            "--stdin".to_string(),
+        ]));
+        assert!(needs_stdin_payload(&[
+            "rooms".to_string(),
+            "publish".to_string(),
+            "room.dev".to_string(),
+            "agent.a".to_string(),
+            "build".to_string(),
             "--stdin".to_string(),
         ]));
         assert!(!needs_stdin_payload(&[

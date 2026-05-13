@@ -81,11 +81,7 @@ try {
     }
 
     Copy-Item README.md -Destination $packageRoot -Force
-    Copy-Item docs\user-install-and-agent-guide.md -Destination $docDir -Force
-    Copy-Item docs\production-readiness.md -Destination $docDir -Force
-    Copy-Item docs\release-checklist.md -Destination $docDir -Force
-    Copy-Item docs\observability.md -Destination $docDir -Force
-    Copy-Item docs\distribution-and-hosting.md -Destination $docDir -Force
+    Copy-Item docs\*.md -Destination $docDir -Force
     Copy-Item -Recurse packaging -Destination $packageRoot -Force
 
     $manifest = @"
