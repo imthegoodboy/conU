@@ -115,7 +115,7 @@ Room helpers are available as `create_room()`, `join_room()`, `publish_room_even
 
 ## TypeScript SDK
 
-The TypeScript/JavaScript wrapper lives in `sdk/typescript`. It is dependency-free, runs on Node 18+, and wraps installed `conu` and `conud` binaries.
+The TypeScript/JavaScript wrapper lives in `sdk/typescript`. It is dependency-free, runs on Node 18+, and wraps installed `conu`, `conud`, and `conu-mcp` binaries. It is not browser-native protocol support; browser-conditioned imports fail closed through a safe stub that reports `browserSupport.supported = false` and never accepts private keys, relay tokens, endpoint secrets, or payload bytes.
 
 ```javascript
 import { ConuClient } from "@conu/sdk";
@@ -139,6 +139,8 @@ console.log({
 Useful calls include `init()`, `status()`, `securityAudit()`, `registerAgent()`, `heartbeat()`, `agents()`, `exportAgentCard()`, `trustAgentCard()`, `identityExport()`, `trustPeer()`, `setPeerPolicy()`, `sendMessage()`, `sendRemoteMessage()`, `inbox()`, `receiveMessageBytes()`, `relaySync()`, `syncRoutes()`, `routes()`, `openStream()`, `writeStream()`, `createRoom()`, `joinRoom()`, `setRoomTopicPolicy()`, `publishRoomEvent()`, `rotateIdentity()`, `retireIdentityArchives()`, `rotateStorage()`, `retireStorage()`, `telemetrySnapshot()`, and `processQueued()`.
 
 Payload-bearing methods pass bytes through stdin rather than argv. The wrapper does not print or log payloads, and command responses stay on the current CLI metadata contract. The TypeScript wrapper exposes raw local inbox bytes only through the explicit `receiveMessageBytes(agentId, envelopeId)` helper, which calls `conu_receive_message` with `includePayload: true` and still requires the envelope to be present in that addressed local agent inbox.
+
+For browser boundaries and the future browser-native protocol design requirements, see `docs/browser-native-typescript.md`.
 
 Run the package smoke check:
 
@@ -220,4 +222,4 @@ Reference: [MCP 2025-11-25 Transports](https://modelcontextprotocol.io/specifica
 - Route sync records configured direct QUIC candidates as inactive metadata and keeps relay selected until a real direct QUIC data plane exists.
 - MCP uses local stdio only; HTTP MCP transport is not implemented.
 - `conu_receive_message` is intentionally explicit because normal CLI and tool metadata views must not display payload contents.
-- The TypeScript wrapper follows CLI metadata surfaces for list/send/status helpers and exposes raw payload bytes only through explicit addressed-agent receive helpers.
+- The TypeScript wrapper follows CLI metadata surfaces for list/send/status helpers and exposes raw payload bytes only through explicit addressed-agent receive helpers. Browser-conditioned imports return a safe unsupported stub until a reviewed browser-native protocol package exists.

@@ -1,14 +1,27 @@
 {
   "name": "@conu/sdk",
   "version": "0.1.0",
-  "description": "Dependency-free TypeScript/JavaScript SDK wrapper for conU CLI and conUD.",
+  "description": "Dependency-free Node.js SDK wrapper for local conU CLI, conUD, and conU MCP binaries.",
   "type": "module",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
+  "browser": "./src/browser.js",
   "exports": {
     ".": {
+      "browser": {
+        "types": "./src/browser.d.ts",
+        "default": "./src/browser.js"
+      },
+      "node": {
+        "types": "./src/index.d.ts",
+        "default": "./src/index.js"
+      },
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
+    },
+    "./browser": {
+      "types": "./src/browser.d.ts",
+      "default": "./src/browser.js"
     }
   },
   "files": [
@@ -16,7 +29,7 @@
     "README.md"
   ],
   "scripts": {
-    "check": "node --check src/index.js && node --check ../../examples/typescript/local_agent_pair.mjs && node test/smoke.mjs"
+    "check": "node --check src/index.js && node --check src/browser.js && node --check ../../examples/typescript/local_agent_pair.mjs && node test/smoke.mjs"
   },
   "engines": {
     "node": ">=18"

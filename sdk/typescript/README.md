@@ -3,6 +3,14 @@
 This dependency-free package lets TypeScript and JavaScript agents call an
 installed `conu` and `conud` binary without parsing terminal UI by hand.
 
+This package is a Node.js wrapper. It is not a browser-native protocol SDK.
+Browser bundlers receive a small safe stub that reports
+`browserSupport.supported === false` and throws `BrowserUnsupportedError` if
+`ConuClient` is constructed. The browser stub does not accept private keys,
+relay tokens, payload bytes, or relay endpoints, and it does not log or place
+secrets in URLs. See `docs/browser-native-typescript.md` for the future
+browser-native design boundary.
+
 ```ts
 import { ConuClient } from "@conu/sdk";
 
