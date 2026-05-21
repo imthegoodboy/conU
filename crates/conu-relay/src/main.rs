@@ -24,6 +24,8 @@ use conu_relay::{
     write_issued_relay_token_file,
 };
 
+const ABUSE_THRESHOLD_POLICY_FILE_VERSION: &str = "1";
+
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
@@ -303,7 +305,7 @@ Usage:
   conu-relay --admin-revoke-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-audit-credentials --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
   conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]
-  conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] --max-<metric> <count>... [--json] [--fail-on-threshold]
+  conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --admin-tenant-upsert <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-tenant-revoke <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-tenant-node-upsert <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
@@ -319,7 +321,7 @@ Usage:
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
-  conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] --max-<metric> <count>... [--json] [--fail-on-threshold]
+  conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--json]
   conu-relay --mailbox-purge --mailbox-dir <path> --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
@@ -377,8 +379,11 @@ dry-run or explicit confirmation, and scheduled mailbox purge requires an explic
 plus CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted dashboard
 snapshots combine configured credential, tenant, accounting, and abuse summaries without displaying
 tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids.
-Abuse threshold reports preserve stdout report output and return exit code 3 only when
---fail-on-threshold is set and one or more configured thresholds are exceeded."
+Abuse threshold reports accept reusable --thresholds-file policy files with version set to 1,
+max_* threshold keys, and explicit false display guards; CLI --max-* values override file values.
+At least one threshold must be supplied by file or CLI. Abuse threshold reports preserve stdout
+report output and return exit code 3 only when --fail-on-threshold is set and one or more
+configured thresholds are exceeded."
     );
 }
 
@@ -1175,6 +1180,8 @@ struct AdminAbuseThresholdReportArgs {
     node_id: Option<String>,
     relay: String,
     admin_token_stdin: bool,
+    #[cfg(test)]
+    thresholds_file: Option<PathBuf>,
     thresholds: AbuseThresholds,
     json: bool,
     fail_on_threshold: bool,
@@ -1187,7 +1194,8 @@ fn parse_admin_abuse_threshold_report_args(
     let mut node_id = None::<String>;
     let mut relay = None::<String>;
     let mut admin_token_stdin = false;
-    let mut thresholds = AbuseThresholds::default();
+    let mut thresholds_file = None::<PathBuf>;
+    let mut cli_thresholds = AbuseThresholds::default();
     let mut json = false;
     let mut fail_on_threshold = false;
     let mut index = 0;
@@ -1218,6 +1226,16 @@ fn parse_admin_abuse_threshold_report_args(
                 };
                 relay = Some(value.to_string());
             }
+            "--thresholds-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_abuse_threshold_report_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(admin_abuse_threshold_report_usage());
+                }
+                thresholds_file = Some(PathBuf::from(value));
+            }
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--fail-on-threshold" => fail_on_threshold = true,
@@ -1227,7 +1245,7 @@ fn parse_admin_abuse_threshold_report_args(
                 let Some(limit) = args.get(index) else {
                     return Err(admin_abuse_threshold_report_usage());
                 };
-                parse_abuse_threshold_option(&mut thresholds, value, limit)?;
+                parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
             }
             value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
             _ => return Err(admin_abuse_threshold_report_usage()),
@@ -1241,6 +1259,8 @@ fn parse_admin_abuse_threshold_report_args(
     if !admin_token_stdin {
         return Err("--admin-token-stdin is required".to_string());
     }
+
+    let thresholds = merged_abuse_thresholds(thresholds_file.as_deref(), cli_thresholds)?;
     if !thresholds.has_any() {
         return Err(admin_abuse_threshold_report_usage());
     }
@@ -1250,6 +1270,8 @@ fn parse_admin_abuse_threshold_report_args(
         node_id,
         relay,
         admin_token_stdin,
+        #[cfg(test)]
+        thresholds_file,
         thresholds,
         json,
         fail_on_threshold,
@@ -1257,7 +1279,7 @@ fn parse_admin_abuse_threshold_report_args(
 }
 
 fn admin_abuse_threshold_report_usage() -> String {
-    "usage: conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] --max-<metric> <count>... [--json] [--fail-on-threshold]".to_string()
+    "usage: conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]".to_string()
 }
 
 fn admin_tenant_upsert_from_args(args: Vec<String>) -> Result<(), String> {
@@ -3194,6 +3216,36 @@ impl AbuseThresholds {
         .filter(Option::is_some)
         .count()
     }
+
+    fn overlay(self, overrides: Self) -> Self {
+        Self {
+            admin_unauthorized: overrides.admin_unauthorized.or(self.admin_unauthorized),
+            admin_failed: overrides.admin_failed.or(self.admin_failed),
+            unauthorized_sessions: overrides
+                .unauthorized_sessions
+                .or(self.unauthorized_sessions),
+            credential_denied_sessions: overrides
+                .credential_denied_sessions
+                .or(self.credential_denied_sessions),
+            tenant_denied_sessions: overrides
+                .tenant_denied_sessions
+                .or(self.tenant_denied_sessions),
+            rate_limited_sessions: overrides
+                .rate_limited_sessions
+                .or(self.rate_limited_sessions),
+            session_expired: overrides.session_expired.or(self.session_expired),
+            quota_denied_forwards: overrides
+                .quota_denied_forwards
+                .or(self.quota_denied_forwards),
+            undelivered_forwards: overrides.undelivered_forwards.or(self.undelivered_forwards),
+            mailbox_rejected_forwards: overrides
+                .mailbox_rejected_forwards
+                .or(self.mailbox_rejected_forwards),
+            malformed_client_frames: overrides
+                .malformed_client_frames
+                .or(self.malformed_client_frames),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3232,6 +3284,8 @@ struct AbuseThresholdReport {
 struct AbuseThresholdReportArgs {
     abuse_dir: PathBuf,
     node_id: Option<String>,
+    #[cfg(test)]
+    thresholds_file: Option<PathBuf>,
     thresholds: AbuseThresholds,
     json: bool,
     fail_on_threshold: bool,
@@ -3242,7 +3296,8 @@ fn parse_abuse_threshold_report_args(
 ) -> Result<AbuseThresholdReportArgs, String> {
     let mut abuse_dir = None::<PathBuf>;
     let mut node_id = None::<String>;
-    let mut thresholds = AbuseThresholds::default();
+    let mut thresholds_file = None::<PathBuf>;
+    let mut cli_thresholds = AbuseThresholds::default();
     let mut json = false;
     let mut fail_on_threshold = false;
     let mut index = 0;
@@ -3263,6 +3318,16 @@ fn parse_abuse_threshold_report_args(
                 };
                 node_id = Some(validate_dashboard_filter_id(value.to_string(), "node id")?);
             }
+            "--thresholds-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(abuse_threshold_report_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(abuse_threshold_report_usage());
+                }
+                thresholds_file = Some(PathBuf::from(value));
+            }
             "--json" => json = true,
             "--fail-on-threshold" => fail_on_threshold = true,
             "--help" | "-h" => return Err(abuse_threshold_report_usage()),
@@ -3271,7 +3336,7 @@ fn parse_abuse_threshold_report_args(
                 let Some(limit) = args.get(index) else {
                     return Err(abuse_threshold_report_usage());
                 };
-                parse_abuse_threshold_option(&mut thresholds, value, limit)?;
+                parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
             }
             value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
             _ => return Err(abuse_threshold_report_usage()),
@@ -3282,6 +3347,8 @@ fn parse_abuse_threshold_report_args(
     let Some(abuse_dir) = abuse_dir.filter(|path| !path.as_os_str().is_empty()) else {
         return Err(abuse_threshold_report_usage());
     };
+
+    let thresholds = merged_abuse_thresholds(thresholds_file.as_deref(), cli_thresholds)?;
     if !thresholds.has_any() {
         return Err(abuse_threshold_report_usage());
     }
@@ -3289,6 +3356,8 @@ fn parse_abuse_threshold_report_args(
     Ok(AbuseThresholdReportArgs {
         abuse_dir,
         node_id,
+        #[cfg(test)]
+        thresholds_file,
         thresholds,
         json,
         fail_on_threshold,
@@ -3296,7 +3365,190 @@ fn parse_abuse_threshold_report_args(
 }
 
 fn abuse_threshold_report_usage() -> String {
-    "usage: conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] --max-<metric> <count>... [--json] [--fail-on-threshold]".to_string()
+    "usage: conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]".to_string()
+}
+
+fn merged_abuse_thresholds(
+    thresholds_file: Option<&Path>,
+    cli_thresholds: AbuseThresholds,
+) -> Result<AbuseThresholds, String> {
+    let file_thresholds = thresholds_file
+        .map(load_abuse_threshold_policy_file)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(file_thresholds.overlay(cli_thresholds))
+}
+
+fn load_abuse_threshold_policy_file(path: &Path) -> Result<AbuseThresholds, String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("read abuse threshold policy file: {error}"))?;
+    parse_abuse_threshold_policy_file(&contents)
+}
+
+fn parse_abuse_threshold_policy_file(contents: &str) -> Result<AbuseThresholds, String> {
+    let mut version = None::<String>;
+    let mut thresholds = AbuseThresholds::default();
+    let mut guards = AbuseThresholdPolicyGuards::default();
+
+    for (line_index, raw_line) in contents.lines().enumerate() {
+        let line_number = line_index + 1;
+        let line = strip_config_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, raw_value) = line.split_once('=').ok_or_else(|| {
+            format!("abuse threshold policy file line {line_number} must use key = value")
+        })?;
+        let key = key.trim();
+        let value = clean_config_value(raw_value);
+        if key.is_empty() {
+            return Err(format!(
+                "abuse threshold policy file line {line_number} must include a key"
+            ));
+        }
+
+        if key == "version" {
+            version = Some(value);
+            continue;
+        }
+        if parse_abuse_threshold_policy_option(&mut thresholds, key, &value, line_number)? {
+            continue;
+        }
+        if guards.record_false(key, &value, line_number)? {
+            continue;
+        }
+
+        return Err(format!(
+            "abuse threshold policy file line {line_number} uses unsupported key {key}"
+        ));
+    }
+
+    match version.as_deref() {
+        Some(ABUSE_THRESHOLD_POLICY_FILE_VERSION) => {}
+        Some(_) => return Err("abuse threshold policy file version is unsupported".to_string()),
+        None => return Err("abuse threshold policy file version is required".to_string()),
+    }
+    guards.validate()?;
+    Ok(thresholds)
+}
+
+fn parse_abuse_threshold_policy_option(
+    thresholds: &mut AbuseThresholds,
+    key: &str,
+    value: &str,
+    line_number: usize,
+) -> Result<bool, String> {
+    match key {
+        "max_admin_unauthorized" => {
+            thresholds.admin_unauthorized = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_admin_failed" => {
+            thresholds.admin_failed = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_unauthorized_sessions" => {
+            thresholds.unauthorized_sessions = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_credential_denied_sessions" => {
+            thresholds.credential_denied_sessions =
+                Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_tenant_denied_sessions" => {
+            thresholds.tenant_denied_sessions = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_rate_limited_sessions" => {
+            thresholds.rate_limited_sessions = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_session_expired" => {
+            thresholds.session_expired = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_quota_denied_forwards" => {
+            thresholds.quota_denied_forwards = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_undelivered_forwards" => {
+            thresholds.undelivered_forwards = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_mailbox_rejected_forwards" => {
+            thresholds.mailbox_rejected_forwards = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        "max_malformed_client_frames" => {
+            thresholds.malformed_client_frames = Some(parse_policy_u64(value, key, line_number)?);
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+#[derive(Default)]
+struct AbuseThresholdPolicyGuards {
+    payload_displayed: bool,
+    token_displayed: bool,
+    token_hash_displayed: bool,
+    key_material_displayed: bool,
+    session_id_displayed: bool,
+    ciphertext_displayed: bool,
+    contents_displayed: bool,
+}
+
+impl AbuseThresholdPolicyGuards {
+    fn record_false(&mut self, key: &str, value: &str, line_number: usize) -> Result<bool, String> {
+        let guard = match key {
+            "payload_displayed" => &mut self.payload_displayed,
+            "token_displayed" => &mut self.token_displayed,
+            "token_hash_displayed" => &mut self.token_hash_displayed,
+            "key_material_displayed" => &mut self.key_material_displayed,
+            "session_id_displayed" => &mut self.session_id_displayed,
+            "ciphertext_displayed" => &mut self.ciphertext_displayed,
+            "contents_displayed" => &mut self.contents_displayed,
+            _ => return Ok(false),
+        };
+        if value != "false" {
+            return Err(format!(
+                "abuse threshold policy file line {line_number} {key} must be false"
+            ));
+        }
+        *guard = true;
+        Ok(true)
+    }
+
+    fn validate(self) -> Result<(), String> {
+        for (key, present) in [
+            ("payload_displayed", self.payload_displayed),
+            ("token_displayed", self.token_displayed),
+            ("token_hash_displayed", self.token_hash_displayed),
+            ("key_material_displayed", self.key_material_displayed),
+            ("session_id_displayed", self.session_id_displayed),
+            ("ciphertext_displayed", self.ciphertext_displayed),
+            ("contents_displayed", self.contents_displayed),
+        ] {
+            if !present {
+                return Err(format!(
+                    "abuse threshold policy file requires {key} = false"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_policy_u64(value: &str, key: &str, line_number: usize) -> Result<u64, String> {
+    value.parse::<u64>().map_err(|_| {
+        format!("abuse threshold policy file line {line_number} {key} must be an unsigned integer")
+    })
+}
+
+fn strip_config_comment(line: &str) -> &str {
+    line.split_once('#')
+        .map(|(before, _)| before)
+        .unwrap_or(line)
+}
+
+fn clean_config_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
 }
 
 fn parse_abuse_threshold_option(
@@ -5459,6 +5711,25 @@ mod tests {
     use super::*;
     use conu_relay::HostedTenantStatus;
 
+    fn abuse_threshold_policy_contents(thresholds: &str) -> String {
+        format!(
+            "version = \"1\"\n{thresholds}payload_displayed = false\ntoken_displayed = false\ntoken_hash_displayed = false\nkey_material_displayed = false\nsession_id_displayed = false\nciphertext_displayed = false\ncontents_displayed = false\n"
+        )
+    }
+
+    fn write_abuse_threshold_policy_file(contents: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "conu-relay-abuse-threshold-policy-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        fs::write(&path, contents).expect("write abuse threshold policy file");
+        path
+    }
+
     #[test]
     fn tenant_node_upsert_parser_defaults_permissions_to_false() {
         let parsed = parse_tenant_node_upsert_args(vec![
@@ -5639,6 +5910,54 @@ mod tests {
     }
 
     #[test]
+    fn abuse_threshold_policy_file_parser_is_metadata_only() {
+        let policy = abuse_threshold_policy_contents(
+            "max_admin_unauthorized = 5\nmax_rate_limited_sessions = 10\n",
+        );
+        let thresholds =
+            parse_abuse_threshold_policy_file(&policy).expect("threshold policy parses");
+        assert_eq!(thresholds.admin_unauthorized, Some(5));
+        assert_eq!(thresholds.rate_limited_sessions, Some(10));
+
+        let displayed_policy = policy.replace("token_displayed = false", "token_displayed = true");
+        assert!(
+            parse_abuse_threshold_policy_file(&displayed_policy)
+                .expect_err("displayed guard true should fail")
+                .contains("token_displayed must be false")
+        );
+        assert!(
+            parse_abuse_threshold_policy_file(
+                "version = \"1\"\nmax_admin_unauthorized = 0\npayload_displayed = false\n"
+            )
+            .expect_err("missing display guards should fail")
+            .contains("token_displayed = false")
+        );
+        assert!(
+            parse_abuse_threshold_policy_file(&abuse_threshold_policy_contents(
+                "unexpected_key = 1\n"
+            ))
+            .expect_err("unknown key should fail")
+            .contains("unsupported key unexpected_key")
+        );
+
+        let secret_value = "relay-secret-token";
+        let invalid_threshold =
+            parse_abuse_threshold_policy_file(&abuse_threshold_policy_contents(&format!(
+                "max_admin_unauthorized = \"{secret_value}\"\n"
+            )))
+            .expect_err("invalid threshold should fail");
+        assert!(invalid_threshold.contains("unsigned integer"));
+        assert!(!invalid_threshold.contains(secret_value));
+
+        let unknown_secret = parse_abuse_threshold_policy_file(&abuse_threshold_policy_contents(
+            &format!("token = \"{secret_value}\"\n"),
+        ))
+        .expect_err("secret-bearing unknown key should fail");
+        assert!(unknown_secret.contains("unsupported key token"));
+        assert!(!unknown_secret.contains(secret_value));
+    }
+
+    #[test]
     fn abuse_threshold_report_parser_and_renderers_are_metadata_only() {
         let parsed = parse_abuse_threshold_report_args(vec![
             "--abuse-dir".to_string(),
@@ -5662,6 +5981,38 @@ mod tests {
         assert_eq!(parsed.thresholds.mailbox_rejected_forwards, Some(2));
         assert!(parsed.json);
         assert!(parsed.fail_on_threshold);
+
+        let policy = abuse_threshold_policy_contents(
+            "max_admin_unauthorized = 5\nmax_rate_limited_sessions = 10\n",
+        );
+        let policy_path = write_abuse_threshold_policy_file(&policy);
+        let policy_arg = policy_path.to_string_lossy().to_string();
+        let parsed_from_file = parse_abuse_threshold_report_args(vec![
+            "--abuse-dir".to_string(),
+            "abuse".to_string(),
+            "--thresholds-file".to_string(),
+            policy_arg,
+            "--max-admin-unauthorized".to_string(),
+            "0".to_string(),
+        ])
+        .expect("abuse threshold policy args parse");
+        assert_eq!(
+            parsed_from_file.thresholds_file.as_deref(),
+            Some(policy_path.as_path())
+        );
+        assert_eq!(parsed_from_file.thresholds.admin_unauthorized, Some(0));
+        assert_eq!(parsed_from_file.thresholds.rate_limited_sessions, Some(10));
+        let _ = fs::remove_file(&policy_path);
+        assert!(
+            parse_abuse_threshold_report_args(vec![
+                "--abuse-dir".to_string(),
+                "abuse".to_string(),
+                "--thresholds-file".to_string(),
+                "".to_string(),
+            ])
+            .is_err()
+        );
+
         assert!(parse_abuse_threshold_report_args(Vec::new()).is_err());
         assert!(
             parse_abuse_threshold_report_args(
@@ -6047,6 +6398,38 @@ mod tests {
         assert_eq!(parsed.thresholds.rate_limited_sessions, Some(4));
         assert!(parsed.json);
         assert!(parsed.fail_on_threshold);
+
+        let policy = abuse_threshold_policy_contents(
+            "max_admin_failed = 2\nmax_rate_limited_sessions = 8\n",
+        );
+        let policy_path = write_abuse_threshold_policy_file(&policy);
+        let policy_arg = policy_path.to_string_lossy().to_string();
+        let parsed_from_file = parse_admin_abuse_threshold_report_args(vec![
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--thresholds-file".to_string(),
+            policy_arg,
+        ])
+        .expect("admin abuse threshold policy args parse");
+        assert_eq!(
+            parsed_from_file.thresholds_file.as_deref(),
+            Some(policy_path.as_path())
+        );
+        assert_eq!(parsed_from_file.thresholds.admin_failed, Some(2));
+        assert_eq!(parsed_from_file.thresholds.rate_limited_sessions, Some(8));
+        let _ = fs::remove_file(&policy_path);
+        assert!(
+            parse_admin_abuse_threshold_report_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--admin-token-stdin".to_string(),
+                "--thresholds-file".to_string(),
+                "".to_string(),
+            ])
+            .is_err()
+        );
+
         assert!(parse_admin_abuse_threshold_report_args(Vec::new()).is_err());
         assert!(
             parse_admin_abuse_threshold_report_args(vec![

@@ -83,6 +83,8 @@ contents_displayed = false
 
 Scopes map to admin actions: `scope_credentials` allows issue/rotate/revoke/audit credential commands, `scope_tenants` allows tenant upsert/revoke/audit commands, `scope_dashboard` allows hosted dashboard snapshots and hosted abuse threshold reports, and the mailbox scopes allow read-only mailbox audits or confirm-gated mailbox purges. Hosted account suspension requires either the full-admin compatibility token or a scoped admin token with both `scope_credentials = true` and `scope_tenants = true`, because it revokes tenant and credential metadata together. If `account_id` is present, credential, tenant, and account-suspension actions are limited to that account. Account-scoped dashboard snapshots or threshold reports without a node filter suppress global accounting and abuse counters; account-scoped mailbox audit/purge requires a node filter and an active tenant-node record. Scope failures return `admin_scope_denied` without echoing the submitted token or stored hash.
 
+Hosted abuse threshold reports can take repeated operator limits from `--thresholds-file <path>` as well as inline `--max-*` flags. The policy file is metadata-only: `version = "1"`, supported `max_*` threshold keys, and false display guards for payload, token, token hash, key material, session id, ciphertext, and contents. Inline `--max-*` flags override the policy file for one run.
+
 ## Tenant Lifecycle
 
 Tenant commands can run as local/offline file updates for the relay operator:
@@ -301,6 +303,7 @@ Operators can also compare those same metadata counters against explicitly suppl
 conu-relay --abuse-threshold-report `
   --abuse-dir C:\conu-relay\abuse `
   --node node-a-id `
+  --thresholds-file C:\conu-relay\abuse-thresholds.toml `
   --max-admin-unauthorized 0 `
   --max-credential-denied-sessions 10 `
   --max-mailbox-rejected-forwards 25 `
@@ -313,13 +316,14 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --admin-token-stdin `
     --account account.prod `
     --node node-a-id `
+    --thresholds-file C:\conu-relay\abuse-thresholds.toml `
     --max-admin-unauthorized 0 `
     --max-rate-limited-sessions 100 `
     --json `
     --fail-on-threshold
 ```
 
-Threshold reports return `status` (`ok` or `threshold_exceeded`), count/max/exceeded metadata for every abuse metric, the number of checked and exceeded thresholds, the optional account/node filters, and false display guards. By default they exit successfully after rendering the report. With `--fail-on-threshold`, they still preserve stdout report output but return exit code 3 when one or more configured thresholds are exceeded. The admin form reads the token from stdin, uses the same dashboard admin scope as hosted dashboard snapshots, and never echoes the token, token hashes, session ids, payloads, ciphertext bodies, frame contents, or raw abuse records.
+Threshold reports return `status` (`ok` or `threshold_exceeded`), count/max/exceeded metadata for every abuse metric, the number of checked and exceeded thresholds, the optional account/node filters, and false display guards. `--thresholds-file` supplies reusable metadata-only defaults; inline `--max-*` flags override those defaults for the current run. By default threshold reports exit successfully after rendering the report. With `--fail-on-threshold`, they still preserve stdout report output but return exit code 3 when one or more configured thresholds are exceeded. The admin form reads the token from stdin, uses the same dashboard admin scope as hosted dashboard snapshots, and never echoes the token, token hashes, session ids, payloads, ciphertext bodies, frame contents, or raw abuse records.
 
 This is a single-relay file-backed/admin-gated foundation for operator visibility. It is not distributed alerting, adaptive throttling, tenant-wide workflow automation, or a hosted dashboard service yet.
 
@@ -428,4 +432,4 @@ This is still single-relay and file-backed/admin-gated, even with scoped admin t
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token, hosted account-suspension, abuse-audit, local/admin-gated abuse threshold reports with optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token, hosted account-suspension, abuse-audit, local/admin-gated abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.
