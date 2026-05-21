@@ -298,6 +298,7 @@ pub enum RelayAdminAction {
     Revoke,
     Audit,
     Dashboard,
+    SessionAudit,
     TenantUpsert,
     TenantRevoke,
     TenantNodeUpsert,
@@ -316,6 +317,7 @@ impl RelayAdminAction {
             Self::Revoke => "revoke",
             Self::Audit => "audit",
             Self::Dashboard => "dashboard",
+            Self::SessionAudit => "session_audit",
             Self::TenantUpsert => "tenant_upsert",
             Self::TenantRevoke => "tenant_revoke",
             Self::TenantNodeUpsert => "tenant_node_upsert",
@@ -334,6 +336,7 @@ impl RelayAdminAction {
             "revoke" => Ok(Self::Revoke),
             "audit" => Ok(Self::Audit),
             "dashboard" => Ok(Self::Dashboard),
+            "session_audit" => Ok(Self::SessionAudit),
             "tenant_upsert" => Ok(Self::TenantUpsert),
             "tenant_revoke" => Ok(Self::TenantRevoke),
             "tenant_node_upsert" => Ok(Self::TenantNodeUpsert),
@@ -473,6 +476,32 @@ impl RelayAdminRequest {
             account_id: account_id
                 .map(|value| validate_identifier(value, "account id"))
                 .transpose()?,
+            node_id: node_id
+                .map(|value| validate_identifier(value, "node id"))
+                .transpose()?,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
+        })
+    }
+
+    pub fn session_audit(
+        admin_token: impl Into<String>,
+        node_id: Option<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::SessionAudit,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: None,
             node_id: node_id
                 .map(|value| validate_identifier(value, "node id"))
                 .transpose()?,
@@ -826,6 +855,13 @@ pub struct RelayAdminResult {
     pub mailbox_confirmed: Option<bool>,
     pub mailbox_purged_records: Option<u64>,
     pub mailbox_purged_bytes: Option<u64>,
+    pub session_state_records: usize,
+    pub session_state_active_records: usize,
+    pub session_state_expired_records: usize,
+    pub session_state_invalid_records: usize,
+    pub session_state_oldest_created_unix_millis: Option<u64>,
+    pub session_state_newest_last_seen_unix_millis: Option<u64>,
+    pub session_state_next_expires_unix_millis: Option<u64>,
     pub payload_displayed: bool,
     pub token_displayed: bool,
     pub token_hash_displayed: bool,
@@ -892,6 +928,13 @@ impl RelayAdminResult {
             mailbox_confirmed: None,
             mailbox_purged_records: None,
             mailbox_purged_bytes: None,
+            session_state_records: 0,
+            session_state_active_records: 0,
+            session_state_expired_records: 0,
+            session_state_invalid_records: 0,
+            session_state_oldest_created_unix_millis: None,
+            session_state_newest_last_seen_unix_millis: None,
+            session_state_next_expires_unix_millis: None,
             payload_displayed: false,
             token_displayed: false,
             token_hash_displayed: false,
@@ -1339,6 +1382,10 @@ fn parse_admin_request(
             values.get("account").cloned(),
             values.get("node").cloned(),
         ),
+        RelayAdminAction::SessionAudit => RelayAdminRequest::session_audit(
+            required(values, "admin_token")?,
+            values.get("node").cloned(),
+        ),
         RelayAdminAction::TenantUpsert => RelayAdminRequest::tenant_upsert(
             required(values, "admin_token")?,
             required(values, "account")?,
@@ -1466,6 +1513,32 @@ fn render_admin_result_line(result: &RelayAdminResult) -> String {
             line.push_str(&format!(" abuse_window_started={window_started_unix}"));
         }
     }
+    if result.action == RelayAdminAction::SessionAudit {
+        line.push_str(&format!(
+            " session_state_records={} session_state_active_records={} session_state_expired_records={} session_state_invalid_records={}",
+            result.session_state_records,
+            result.session_state_active_records,
+            result.session_state_expired_records,
+            result.session_state_invalid_records
+        ));
+        if let Some(oldest_created_unix_millis) = result.session_state_oldest_created_unix_millis {
+            line.push_str(&format!(
+                " session_state_oldest_created_unix_millis={oldest_created_unix_millis}"
+            ));
+        }
+        if let Some(newest_last_seen_unix_millis) =
+            result.session_state_newest_last_seen_unix_millis
+        {
+            line.push_str(&format!(
+                " session_state_newest_last_seen_unix_millis={newest_last_seen_unix_millis}"
+            ));
+        }
+        if let Some(next_expires_unix_millis) = result.session_state_next_expires_unix_millis {
+            line.push_str(&format!(
+                " session_state_next_expires_unix_millis={next_expires_unix_millis}"
+            ));
+        }
+    }
     if matches!(
         result.action,
         RelayAdminAction::MailboxAudit | RelayAdminAction::MailboxPurge
@@ -1587,6 +1660,22 @@ fn parse_admin_result(
         mailbox_confirmed: optional_bool(values, "confirmed")?,
         mailbox_purged_records: optional_u64(values, "mailbox_purged_records")?,
         mailbox_purged_bytes: optional_u64(values, "mailbox_purged_bytes")?,
+        session_state_records: optional_count(values, "session_state_records")?,
+        session_state_active_records: optional_count(values, "session_state_active_records")?,
+        session_state_expired_records: optional_count(values, "session_state_expired_records")?,
+        session_state_invalid_records: optional_count(values, "session_state_invalid_records")?,
+        session_state_oldest_created_unix_millis: optional_u64(
+            values,
+            "session_state_oldest_created_unix_millis",
+        )?,
+        session_state_newest_last_seen_unix_millis: optional_u64(
+            values,
+            "session_state_newest_last_seen_unix_millis",
+        )?,
+        session_state_next_expires_unix_millis: optional_u64(
+            values,
+            "session_state_next_expires_unix_millis",
+        )?,
         payload_displayed: optional_bool(values, "payload_displayed")?.unwrap_or(false),
         token_displayed: optional_bool(values, "token_displayed")?.unwrap_or(false),
         token_hash_displayed: optional_bool(values, "token_hash_displayed")?.unwrap_or(false),
@@ -2473,6 +2562,43 @@ mod tests {
         assert!(rendered_dashboard_result.contains("payload_displayed=false"));
         assert!(!rendered_dashboard_result.contains("admin-secret-token-1234567890"));
         assert!(!rendered_dashboard_result.contains(&token_hash));
+
+        let session_audit_request = RelayAdminRequest::session_audit(
+            "admin-secret-token-1234567890",
+            Some("node.hosted".to_string()),
+        )
+        .expect("session audit request parses");
+        let session_audit_frame = RelayClientFrame::Admin(Box::new(session_audit_request));
+        let rendered_session_audit = render_client_frame(&session_audit_frame);
+        let parsed_session_audit =
+            parse_client_frame(&rendered_session_audit).expect("session audit request parses");
+        let session_audit_debug = format!("{session_audit_frame:?}");
+        let session_audit_result = RelayServerFrame::AdminResult(Box::new(RelayAdminResult {
+            node_id: Some("node.hosted".to_string()),
+            session_state_records: 2,
+            session_state_active_records: 1,
+            session_state_expired_records: 1,
+            session_state_invalid_records: 1,
+            session_state_oldest_created_unix_millis: Some(1_763_596_800_000),
+            session_state_newest_last_seen_unix_millis: Some(1_763_596_900_000),
+            session_state_next_expires_unix_millis: Some(1_763_597_000_000),
+            ..RelayAdminResult::new(RelayAdminAction::SessionAudit, "audited")
+        }));
+        let rendered_session_audit_result = render_server_frame(&session_audit_result);
+        let parsed_session_audit_result = parse_server_frame(&rendered_session_audit_result)
+            .expect("session audit result parses");
+
+        assert_eq!(parsed_session_audit, session_audit_frame);
+        assert!(rendered_session_audit.contains("ADMIN action=session_audit"));
+        assert!(rendered_session_audit.contains("node=node.hosted"));
+        assert!(!session_audit_debug.contains("admin-secret-token-1234567890"));
+        assert_eq!(parsed_session_audit_result, session_audit_result);
+        assert!(rendered_session_audit_result.contains("ADMIN_RESULT action=session_audit"));
+        assert!(rendered_session_audit_result.contains("session_state_records=2"));
+        assert!(rendered_session_audit_result.contains("session_state_invalid_records=1"));
+        assert!(rendered_session_audit_result.contains("session_id_displayed=false"));
+        assert!(!rendered_session_audit_result.contains("admin-secret-token-1234567890"));
+        assert!(!rendered_session_audit_result.contains(&token_hash));
 
         let tenant_request = RelayAdminRequest::tenant_node_upsert(
             "admin-secret-token-1234567890",

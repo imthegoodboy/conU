@@ -14,11 +14,11 @@ use conu_relay::{
     RelayAbusePolicy, RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy,
     RelayAccountingStorage, RelayConfig, RelayCredential, RelayMailboxAudit,
     RelayMailboxMaintenancePolicy, RelayMailboxPolicy, RelayMailboxPurgeReport,
-    RelayMailboxStorage, RelaySessionPolicy, RelaySessionStorage,
+    RelayMailboxStorage, RelaySessionAudit, RelaySessionPolicy, RelaySessionStorage,
     audit_hosted_relay_credentials_file, audit_hosted_tenants_file, audit_relay_abuse_dir,
-    audit_relay_accounting_dir, audit_relay_mailbox_dir, issue_relay_credential,
-    purge_relay_mailbox_dir, relay_credential_manifest_contains_node, relay_token_sha256_hex,
-    revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
+    audit_relay_accounting_dir, audit_relay_mailbox_dir, audit_relay_session_state_dir,
+    issue_relay_credential, purge_relay_mailbox_dir, relay_credential_manifest_contains_node,
+    relay_token_sha256_hex, revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
     revoke_relay_credential_in_file, suspend_hosted_account_in_files, upsert_hosted_tenant_in_file,
     upsert_hosted_tenant_node_in_file, upsert_issued_relay_credential_in_file,
     write_issued_relay_token_file,
@@ -101,6 +101,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--admin-session-audit") => match admin_session_audit_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--admin-abuse-threshold-report") => {
             match admin_abuse_threshold_report_from_args(args.collect()) {
                 Ok(status) => status.exit_code(),
@@ -216,6 +223,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--session-audit") => match session_audit_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--abuse-audit") => match abuse_audit_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -306,6 +320,7 @@ Usage:
   conu-relay --admin-revoke-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-audit-credentials --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
   conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]
+  conu-relay --admin-session-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--json]
   conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --admin-tenant-upsert <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-tenant-revoke <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
@@ -321,6 +336,7 @@ Usage:
   conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
+  conu-relay --session-audit --session-state-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]
@@ -367,17 +383,18 @@ with at least 24 characters. Use --hash-token with stdin to generate credential-
 commands authenticate with an admin token read from stdin, send only node-token hash metadata to the
 relay, and write the raw node token locally only after the relay confirms the update. CONU_RELAY_ADMIN_TOKEN
 remains a full-admin compatibility path; CONU_RELAY_ADMIN_TOKENS_FILE can grant hashed tokens narrower
-credentials, tenants, dashboard, mailbox-audit, and mailbox-purge scopes. Local and admin
+credentials, tenants, dashboard, sessions, mailbox-audit, and mailbox-purge scopes. Local and admin
 tenant commands manage account, node, public key-id, and hosted permission metadata only; hosted
 account suspension revokes the tenant and all account credential records together. These commands never
 grant local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies.
-Admin hosted dashboard and tenant snapshots require the admin token over the relay control plane and
-return metadata-only credential, tenant, accounting, and abuse counters. Admin mailbox audits and
-purges require the admin token over the relay control plane and inspect or clean durable mailbox retention
-metadata from the running relay only. Abuse audit reads aggregate enforcement counters only, mailbox
-audit reads durable mailbox timestamps and file sizes only, manual and admin mailbox purge require
-dry-run or explicit confirmation, and scheduled mailbox purge requires an explicit local interval
-plus CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted dashboard
+Admin hosted dashboard, tenant, and session-state snapshots require the admin token over the relay
+control plane and return metadata-only credential, tenant, accounting, abuse, or session-state
+counters. Admin mailbox audits and purges require the admin token over the relay control plane and
+inspect or clean durable mailbox retention metadata from the running relay only. Session audit reads
+session-state counts and timestamp bounds only, abuse audit reads aggregate enforcement counters only,
+mailbox audit reads durable mailbox timestamps and file sizes only, manual and admin mailbox purge require
+dry-run or explicit confirmation, and scheduled mailbox purge requires an explicit local interval plus
+CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted dashboard
 snapshots combine configured credential, tenant, accounting, and abuse summaries without displaying
 tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids.
 Mailbox audit and purge commands accept reusable --retention-policy-file policy files with
@@ -1119,6 +1136,92 @@ fn parse_admin_dashboard_args(args: Vec<String>) -> Result<AdminDashboardArgs, S
 
 fn admin_dashboard_usage() -> String {
     "usage: conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]".to_string()
+}
+
+fn admin_session_audit_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_admin_session_audit_args(args)?;
+    let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
+    let request = RelayAdminRequest::session_audit(admin_token, parsed.node_id.clone())
+        .map_err(|error| error.to_string())?;
+    let result = send_admin_request(&parsed.relay, request)?;
+    if result.status != "audited" {
+        return Err(format!(
+            "relay admin session audit did not complete: status={}",
+            result.status
+        ));
+    }
+
+    if parsed.json {
+        println!(
+            "{}",
+            render_admin_session_audit_json(&result, &parsed.relay)
+        );
+    } else {
+        println!(
+            "{}",
+            render_admin_session_audit_text(&result, &parsed.relay)
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct AdminSessionAuditArgs {
+    node_id: Option<String>,
+    relay: String,
+    admin_token_stdin: bool,
+    json: bool,
+}
+
+fn parse_admin_session_audit_args(args: Vec<String>) -> Result<AdminSessionAuditArgs, String> {
+    let mut node_id = None::<String>;
+    let mut relay = None::<String>;
+    let mut admin_token_stdin = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_session_audit_usage());
+                };
+                node_id = Some(validate_dashboard_filter_id(value.to_string(), "node id")?);
+            }
+            "--relay" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_session_audit_usage());
+                };
+                relay = Some(value.to_string());
+            }
+            "--admin-token-stdin" => admin_token_stdin = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(admin_session_audit_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(admin_session_audit_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(relay) = relay.filter(|value| !value.trim().is_empty()) else {
+        return Err(admin_session_audit_usage());
+    };
+    if !admin_token_stdin {
+        return Err("--admin-token-stdin is required".to_string());
+    }
+
+    Ok(AdminSessionAuditArgs {
+        node_id,
+        relay,
+        admin_token_stdin,
+        json,
+    })
+}
+
+fn admin_session_audit_usage() -> String {
+    "usage: conu-relay --admin-session-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--json]".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3137,6 +3240,78 @@ fn hosted_account_suspend_usage() -> String {
 }
 
 #[derive(Debug, Clone)]
+struct SessionAuditArgs {
+    session_state_dir: PathBuf,
+    node_id: Option<String>,
+    json: bool,
+}
+
+fn session_audit_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_session_audit_args(args)?;
+    let audit = audit_relay_session_state_dir(&parsed.session_state_dir, parsed.node_id.as_deref())
+        .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!(
+            "{}",
+            render_session_audit_json(&audit, &parsed.session_state_dir)
+        );
+    } else {
+        println!(
+            "{}",
+            render_session_audit_text(&audit, &parsed.session_state_dir)
+        );
+    }
+    Ok(())
+}
+
+fn parse_session_audit_args(args: Vec<String>) -> Result<SessionAuditArgs, String> {
+    let mut session_state_dir = None::<PathBuf>;
+    let mut node_id = None::<String>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--session-state-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(session_audit_usage());
+                };
+                session_state_dir = Some(PathBuf::from(value));
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(session_audit_usage());
+                };
+                node_id = Some(validate_dashboard_filter_id(value.to_string(), "node id")?);
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(session_audit_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(session_audit_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(session_state_dir) = session_state_dir.filter(|path| !path.as_os_str().is_empty())
+    else {
+        return Err(session_audit_usage());
+    };
+
+    Ok(SessionAuditArgs {
+        session_state_dir,
+        node_id,
+        json,
+    })
+}
+
+fn session_audit_usage() -> String {
+    "usage: conu-relay --session-audit --session-state-dir <path> [--node <node-id>] [--json]"
+        .to_string()
+}
+
+#[derive(Debug, Clone)]
 struct AbuseAuditArgs {
     abuse_dir: PathBuf,
     node_id: Option<String>,
@@ -4650,6 +4825,166 @@ fn render_admin_account_suspend_json(result: &RelayAdminResult, relay: &str) -> 
     )
 }
 
+fn render_session_audit_text(audit: &RelaySessionAudit, session_state_dir: &Path) -> String {
+    format!(
+        r"conU relay session-state audit
+
+scope: {}
+session state dir: {}
+records: {}
+active records: {}
+expired records: {}
+invalid records: {}
+oldest created unix millis: {}
+newest last seen unix millis: {}
+next expires unix millis: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        audit.node_id.as_deref().unwrap_or("all"),
+        session_state_dir.display(),
+        audit.records,
+        audit.active_records,
+        audit.expired_records,
+        audit.invalid_records,
+        optional_u64_text(audit.oldest_created_unix_millis),
+        optional_u64_text(audit.newest_last_seen_unix_millis),
+        optional_u64_text(audit.next_expires_unix_millis),
+        yes_no(audit.payload_displayed),
+        yes_no(audit.token_displayed),
+        yes_no(audit.token_hash_displayed),
+        yes_no(audit.key_material_displayed),
+        yes_no(audit.session_id_displayed),
+        yes_no(audit.ciphertext_displayed),
+        yes_no(audit.contents_displayed)
+    )
+}
+
+fn render_session_audit_json(audit: &RelaySessionAudit, session_state_dir: &Path) -> String {
+    format!(
+        r#"{{
+  "scope": {},
+  "sessionStateDir": "{}",
+  "records": {},
+  "activeRecords": {},
+  "expiredRecords": {},
+  "invalidRecords": {},
+  "oldestCreatedUnixMillis": {},
+  "newestLastSeenUnixMillis": {},
+  "nextExpiresUnixMillis": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        optional_string_json(audit.node_id.as_deref()),
+        json_escape(&session_state_dir.display().to_string()),
+        audit.records,
+        audit.active_records,
+        audit.expired_records,
+        audit.invalid_records,
+        optional_u64_json(audit.oldest_created_unix_millis),
+        optional_u64_json(audit.newest_last_seen_unix_millis),
+        optional_u64_json(audit.next_expires_unix_millis),
+        bool_json(audit.payload_displayed),
+        bool_json(audit.token_displayed),
+        bool_json(audit.token_hash_displayed),
+        bool_json(audit.key_material_displayed),
+        bool_json(audit.session_id_displayed),
+        bool_json(audit.ciphertext_displayed),
+        bool_json(audit.contents_displayed)
+    )
+}
+
+fn render_admin_session_audit_text(result: &RelayAdminResult, relay: &str) -> String {
+    format!(
+        r"conU hosted relay admin session-state audit
+
+node: {}
+relay: {}
+records: {}
+active records: {}
+expired records: {}
+invalid records: {}
+oldest created unix millis: {}
+newest last seen unix millis: {}
+next expires unix millis: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        result.node_id.as_deref().unwrap_or("all"),
+        relay,
+        result.session_state_records,
+        result.session_state_active_records,
+        result.session_state_expired_records,
+        result.session_state_invalid_records,
+        optional_u64_text(result.session_state_oldest_created_unix_millis),
+        optional_u64_text(result.session_state_newest_last_seen_unix_millis),
+        optional_u64_text(result.session_state_next_expires_unix_millis),
+        yes_no(result.payload_displayed),
+        yes_no(result.token_displayed),
+        yes_no(result.token_hash_displayed),
+        yes_no(result.key_material_displayed),
+        yes_no(result.session_id_displayed),
+        yes_no(result.ciphertext_displayed),
+        yes_no(result.contents_displayed)
+    )
+}
+
+fn render_admin_session_audit_json(result: &RelayAdminResult, relay: &str) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "action": "{}",
+  "nodeId": {},
+  "relay": "{}",
+  "records": {},
+  "activeRecords": {},
+  "expiredRecords": {},
+  "invalidRecords": {},
+  "oldestCreatedUnixMillis": {},
+  "newestLastSeenUnixMillis": {},
+  "nextExpiresUnixMillis": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        json_escape(&result.status),
+        result.action.as_str(),
+        optional_string_json(result.node_id.as_deref()),
+        json_escape(relay),
+        result.session_state_records,
+        result.session_state_active_records,
+        result.session_state_expired_records,
+        result.session_state_invalid_records,
+        optional_u64_json(result.session_state_oldest_created_unix_millis),
+        optional_u64_json(result.session_state_newest_last_seen_unix_millis),
+        optional_u64_json(result.session_state_next_expires_unix_millis),
+        bool_json(result.payload_displayed),
+        bool_json(result.token_displayed),
+        bool_json(result.token_hash_displayed),
+        bool_json(result.key_material_displayed),
+        bool_json(result.session_id_displayed),
+        bool_json(result.ciphertext_displayed),
+        bool_json(result.contents_displayed)
+    )
+}
+
 fn render_abuse_audit_text(audit: &RelayAbuseAudit, abuse_dir: &Path) -> String {
     format!(
         r"conU relay abuse audit
@@ -6150,6 +6485,68 @@ mod tests {
     }
 
     #[test]
+    fn session_audit_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_session_audit_args(vec![
+            "--session-state-dir".to_string(),
+            "sessions".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("session audit args parse");
+        assert_eq!(parsed.session_state_dir, PathBuf::from("sessions"));
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert!(parsed.json);
+
+        let audit = RelaySessionAudit {
+            node_id: Some("node.hosted".to_string()),
+            records: 2,
+            active_records: 1,
+            expired_records: 1,
+            invalid_records: 1,
+            oldest_created_unix_millis: Some(1_763_596_800_000),
+            newest_last_seen_unix_millis: Some(1_763_596_900_000),
+            next_expires_unix_millis: Some(1_763_597_000_000),
+            payload_displayed: false,
+            token_displayed: false,
+            token_hash_displayed: false,
+            key_material_displayed: false,
+            session_id_displayed: false,
+            ciphertext_displayed: false,
+            contents_displayed: false,
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_session_audit_text(&audit, Path::new("sessions")),
+            render_session_audit_json(&audit, Path::new("sessions")),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("session"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+        assert!(parse_session_audit_args(Vec::new()).is_err());
+        assert!(
+            parse_session_audit_args(vec![
+                "--session-state-dir".to_string(),
+                "sessions".to_string(),
+                "--node".to_string(),
+                "bad node secret".to_string(),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn abuse_threshold_policy_file_parser_is_metadata_only() {
         let policy = abuse_threshold_policy_contents(
             "max_admin_unauthorized = 5\nmax_rate_limited_sessions = 10\n",
@@ -6707,6 +7104,65 @@ mod tests {
             assert!(output.contains("credentials"));
             assert!(output.contains("accounting"));
             assert!(output.contains("abuse"));
+            assert!(output.contains("token"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+    }
+
+    #[test]
+    fn admin_session_audit_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_admin_session_audit_args(vec![
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("admin session audit args parse");
+        assert_eq!(parsed.relay, "ws://127.0.0.1:8787");
+        assert!(parsed.admin_token_stdin);
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert!(parsed.json);
+        assert!(parse_admin_session_audit_args(Vec::new()).is_err());
+        assert!(
+            parse_admin_session_audit_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+            ])
+            .expect_err("admin token stdin required")
+            .contains("--admin-token-stdin")
+        );
+
+        let result = RelayAdminResult {
+            node_id: Some("node.hosted".to_string()),
+            session_state_records: 2,
+            session_state_active_records: 1,
+            session_state_expired_records: 1,
+            session_state_invalid_records: 1,
+            session_state_oldest_created_unix_millis: Some(1_763_596_800_000),
+            session_state_newest_last_seen_unix_millis: Some(1_763_596_900_000),
+            session_state_next_expires_unix_millis: Some(1_763_597_000_000),
+            ..RelayAdminResult::new(conu_core::relay::RelayAdminAction::SessionAudit, "audited")
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_admin_session_audit_text(&result, "ws://127.0.0.1:8787"),
+            render_admin_session_audit_json(&result, "ws://127.0.0.1:8787"),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("session"));
+            assert!(output.contains("records"));
             assert!(output.contains("token"));
             assert!(output.contains("contents"));
             assert!(!output.contains(secret_token));
