@@ -85,6 +85,8 @@ Scopes map to admin actions: `scope_credentials` allows issue/rotate/revoke/audi
 
 Hosted abuse threshold reports can take repeated operator limits from `--thresholds-file <path>` as well as inline `--max-*` flags. The policy file is metadata-only: `version = "1"`, supported `max_*` threshold keys, and false display guards for payload, token, token hash, key material, session id, ciphertext, and contents. Inline `--max-*` flags override the policy file for one run.
 
+Hosted mailbox retention audit and purge commands can take repeated operator retention settings from `--retention-policy-file <path>` as well as inline `--ttl-seconds` and `--node` flags. The policy file is metadata-only: `version = "1"`, optional `ttl_seconds` and `node_id` keys, and the same false display guards. Inline `--ttl-seconds` and `--node` flags override the policy file for one run; purge commands still require a TTL from file or CLI and exactly one of `--dry-run` or `--confirm`.
+
 ## Tenant Lifecycle
 
 Tenant commands can run as local/offline file updates for the relay operator:
@@ -230,6 +232,7 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --admin-token-stdin `
     --node node-a-id `
     --ttl-seconds 3600 `
+    --retention-policy-file C:\conu-relay\mailbox-retention.toml `
     --json
 
 Get-Content -Raw C:\secure\relay-admin.token |
@@ -238,6 +241,7 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --admin-token-stdin `
     --node node-a-id `
     --ttl-seconds 3600 `
+    --retention-policy-file C:\conu-relay\mailbox-retention.toml `
     --dry-run `
     --json
 
