@@ -37,7 +37,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Replay protection for local message request and envelope ids.
 - Rust SDK for local agent registration, messaging, receive, peer, security, and stream calls.
 - Python stdlib wrapper SDK around installed `conu` and `conud` binaries.
-- TypeScript/JavaScript stdlib-free Node wrapper SDK around installed `conu` and `conud` binaries.
+- TypeScript/JavaScript stdlib-free Node wrapper SDK around installed `conu`, `conud`, and `conu-mcp` binaries, including explicit addressed-agent payload receive.
 - MCP stdio adapter exposing conU as JSON-RPC tools for MCP-capable agents.
 - `conu doctor` local readiness and payload-safe log scanner.
 - Payload-safe local log rotation through `conu logs rotate`, with active and rotated logs covered by doctor scanning.

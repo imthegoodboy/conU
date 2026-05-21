@@ -381,7 +381,7 @@ conu_publish_room_event
 conu_list_room_events
 ```
 
-SDK/MCP receive is explicit. Normal list, send, receipt, status, stream, and room outputs remain metadata-only. Payload bytes may be returned only through Rust `ConuClient::receive_message_bytes()` or MCP `conu_receive_message` with `includePayload: true`, and only for an envelope present in the addressed local agent inbox. The TypeScript wrapper currently follows CLI metadata surfaces and does not expose a raw payload receive helper.
+SDK/MCP receive is explicit. Normal list, send, receipt, status, stream, and room outputs remain metadata-only. Payload bytes may be returned only through Rust `ConuClient::receive_message_bytes()`, TypeScript `receiveMessageBytes()`, or MCP `conu_receive_message` with `includePayload: true`, and only for an envelope present in the addressed local agent inbox. The TypeScript wrapper routes explicit payload receive through MCP rather than exposing payload bytes through normal CLI metadata surfaces.
 
 When launching `conu-mcp` for one agent, set `CONU_AGENT_ID`. A bound MCP server must reject register, presence, send, receive, stream-open, stream-write, stream-close, room-create, room-join, and room-publish attempts for a different local agent.
 

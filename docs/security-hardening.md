@@ -152,7 +152,7 @@ Phase 12 adds agent-facing receive APIs without changing CLI privacy:
 - `conu_sdk::ConuClient::receive_message_bytes(agent_id, envelope_id)` returns bytes only after the envelope is found in that local agent inbox.
 - `conu-mcp` returns message metadata by default and only returns `payloadHex` when `conu_receive_message` is called with `includePayload: true`.
 - `conu-mcp` stdout is reserved for valid MCP JSON-RPC messages; send/list/status/stream tool responses do not echo payload text.
-- The TypeScript/JavaScript wrapper passes payload bytes through stdin for send, stream, room, and relay credential helpers, returns CLI metadata/JSON, and does not expose a raw payload receive helper yet.
+- The TypeScript/JavaScript wrapper passes payload bytes through stdin for send, stream, room, and relay credential helpers, returns CLI metadata/JSON for normal list/status surfaces, and exposes raw inbox bytes only through explicit addressed-agent receive helpers.
 
 ## Production Gaps
 

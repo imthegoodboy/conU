@@ -96,6 +96,7 @@ conu stop
 - MCP stdout remains JSON-RPC only.
 - `conu_receive_message` and SDK receive APIs return payload bytes only to the addressed local agent by explicit request.
 - TypeScript/JavaScript SDK payload helpers pass bytes through stdin and do not put payload contents in argv, logs, or wrapper output.
+- TypeScript/JavaScript SDK raw inbox receive is explicit, addressed-agent scoped, and routed through `conu-mcp`/`conu_receive_message` rather than normal metadata listings.
 
 ## Packaging
 
