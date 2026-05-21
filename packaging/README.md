@@ -48,6 +48,17 @@ conu-<version>-macos-arm64.tar.gz
 
 Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically.
 
+Validate generated archives before upload:
+
+```sh
+python scripts/verify-release-artifacts.py dist
+```
+
+The release workflow runs the same verifier before publishing artifacts. It
+checks checksums, required binaries, `manifest.toml`, and common forbidden
+local-state paths so developer `CONU_HOME`, logs, private keys, inboxes, route
+registries, package `node_modules`, and vendored npm binaries are not shipped.
+
 ## npm Launcher Package
 
 The `npm/conu-cli` package is the intended one-command install wrapper:
@@ -64,7 +75,9 @@ Local package test:
 CONU_NPM_BINARY_DIR=/absolute/path/to/bin npm install -g ./packaging/npm/conu-cli
 ```
 
-See `docs/distribution-and-hosting.md` for the publish flow.
+See `docs/distribution-and-hosting.md` for the publish flow. Tagged releases
+publish GitHub Release assets automatically; npm publication is wired through
+the release workflow when the repository `NPM_TOKEN` secret is configured.
 
 ## Relay Docker Template
 
