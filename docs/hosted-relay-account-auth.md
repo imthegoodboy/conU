@@ -152,6 +152,22 @@ The relay increments counters for admin unauthorized attempts, admin failures, c
 
 This is a single-relay file-backed foundation for operator visibility. It is not distributed alerting, adaptive throttling, account suspension, tenant-wide workflow automation, or a hosted dashboard service yet.
 
+## Mailbox Retention Audit
+
+When `CONU_RELAY_MAILBOX_DIR` is configured, operators can audit durable offline-mailbox pressure without opening ciphertext-bearing files manually:
+
+```powershell
+conu-relay --mailbox-audit `
+  --mailbox-dir C:\conu-relay\mailbox `
+  --node node-a-id `
+  --ttl-seconds 3600 `
+  --json
+```
+
+The audit reports aggregate node/file counts, total mailbox bytes, oldest/newest queued timestamps, optional expired record and byte counts for the supplied TTL, invalid mailbox-file counts, and false display guards only. It never prints stored relay frames, ciphertext bodies, plaintext payloads, raw node tokens, token hashes, admin tokens, private keys, or relay session ids.
+
+This is a single-relay read-only snapshot. It is not distributed retention storage, automatic purge, legal retention policy, billing, or tenant-wide workflow automation.
+
 ## Hosted Dashboard Snapshot
 
 Managed relay operators can combine the current metadata-only stores into one local dashboard snapshot:
@@ -173,4 +189,4 @@ This is still single-relay and file-backed. It is not distributed dashboard stor
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, and dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, hosted mailbox retention policy, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, mailbox-audit, and dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, automated hosted mailbox retention/purge policy, full hosted identity/key administration, and managed direct NAT traversal.

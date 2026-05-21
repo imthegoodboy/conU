@@ -168,9 +168,9 @@ Phase 12 adds agent-facing receive APIs without changing CLI privacy:
 Phase 11 hardens the current local product surface, but these items still need dedicated future work:
 
 - Secure Enclave, HSM, or managed key administration beyond the current Windows DPAPI, macOS Keychain, Linux Secret Service, and user-managed wrap-key backends.
-- Distributed multi-instance relay session migration, distributed hosted dashboards/accounting/adaptive abuse workflows beyond local `conu-relay --hosted-dashboard` snapshots, hosted relay mailbox retention policy, and distributed tenant lifecycle/full hosted identity administration around the current single-relay account credential and tenant registry lifecycle.
+- Distributed multi-instance relay session migration, distributed hosted dashboards/accounting/adaptive abuse workflows beyond local `conu-relay --hosted-dashboard` snapshots, automated hosted relay mailbox retention/purge policy beyond local `conu-relay --mailbox-audit` snapshots, and distributed tenant lifecycle/full hosted identity administration around the current single-relay account credential and tenant registry lifecycle.
 - SDK/MCP permission hardening for multi-tenant or hosted deployments.
-- Hosted retention/accounting policy and managed key administration beyond the current local secret storage backends, account-scoped relay credential lifecycle, durable ciphertext relay mailbox files, metadata-only relay accounting counters, and metadata-only relay abuse counters.
+- Hosted retention/accounting policy and managed key administration beyond the current local secret storage backends, account-scoped relay credential lifecycle, durable ciphertext relay mailbox files, payload-safe relay mailbox audit snapshots, metadata-only relay accounting counters, and metadata-only relay abuse counters.
 - CI on Windows, macOS, and Linux with security/privacy regression scans.
 
 ## Implementation References Checked

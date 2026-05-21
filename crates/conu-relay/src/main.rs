@@ -12,13 +12,14 @@ use conu_relay::{
     CredentialManifestUpdate, HostedCredentialAudit, HostedTenantAudit, HostedTenantManifestUpdate,
     HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy,
     RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy, RelayAccountingStorage,
-    RelayConfig, RelayCredential, RelayMailboxPolicy, RelayMailboxStorage, RelaySessionPolicy,
-    RelaySessionStorage, audit_hosted_relay_credentials_file, audit_hosted_tenants_file,
-    audit_relay_abuse_dir, audit_relay_accounting_dir, issue_relay_credential,
-    relay_credential_manifest_contains_node, relay_token_sha256_hex, revoke_hosted_tenant_in_file,
-    revoke_hosted_tenant_node_in_file, revoke_relay_credential_in_file,
-    upsert_hosted_tenant_in_file, upsert_hosted_tenant_node_in_file,
-    upsert_issued_relay_credential_in_file, write_issued_relay_token_file,
+    RelayConfig, RelayCredential, RelayMailboxAudit, RelayMailboxPolicy, RelayMailboxStorage,
+    RelaySessionPolicy, RelaySessionStorage, audit_hosted_relay_credentials_file,
+    audit_hosted_tenants_file, audit_relay_abuse_dir, audit_relay_accounting_dir,
+    audit_relay_mailbox_dir, issue_relay_credential, relay_credential_manifest_contains_node,
+    relay_token_sha256_hex, revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
+    revoke_relay_credential_in_file, upsert_hosted_tenant_in_file,
+    upsert_hosted_tenant_node_in_file, upsert_issued_relay_credential_in_file,
+    write_issued_relay_token_file,
 };
 
 fn main() -> ExitCode {
@@ -128,6 +129,13 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--mailbox-audit") => match mailbox_audit_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--hosted-dashboard") => match hosted_dashboard_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -193,6 +201,7 @@ Usage:
   conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
+  conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--json]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --check
   conu-relay --help
@@ -233,7 +242,8 @@ commands authenticate with an admin token read from stdin, send only node-token 
 relay, and write the raw node token locally only after the relay confirms the update. Tenant
 commands manage account, node, public key-id, and hosted permission metadata only; they never grant
 local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Abuse
-audit reads aggregate enforcement counters only. Hosted dashboard snapshots combine configured
+audit reads aggregate enforcement counters only, and mailbox audit reads durable mailbox timestamps
+and file sizes only. Hosted dashboard snapshots combine configured
 credential, tenant, accounting, and abuse summaries without displaying tokens, token hashes,
 payloads, ciphertext bodies, frame contents, private keys, or relay session ids."
     );
@@ -1449,6 +1459,90 @@ fn abuse_audit_usage() -> String {
 }
 
 #[derive(Debug, Clone)]
+struct MailboxAuditArgs {
+    mailbox_dir: PathBuf,
+    node_id: Option<String>,
+    ttl: Option<Duration>,
+    json: bool,
+}
+
+fn mailbox_audit_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_mailbox_audit_args(args)?;
+    let audit = audit_relay_mailbox_dir(&parsed.mailbox_dir, parsed.node_id.as_deref(), parsed.ttl)
+        .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!("{}", render_mailbox_audit_json(&audit, &parsed.mailbox_dir));
+    } else {
+        println!("{}", render_mailbox_audit_text(&audit, &parsed.mailbox_dir));
+    }
+    Ok(())
+}
+
+fn parse_mailbox_audit_args(args: Vec<String>) -> Result<MailboxAuditArgs, String> {
+    let mut mailbox_dir = None::<PathBuf>;
+    let mut node_id = None::<String>;
+    let mut ttl = None::<Duration>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--mailbox-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mailbox_audit_usage());
+                };
+                mailbox_dir = Some(PathBuf::from(value));
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mailbox_audit_usage());
+                };
+                node_id = Some(validate_dashboard_filter_id(value.to_string(), "node id")?);
+            }
+            "--ttl-seconds" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mailbox_audit_usage());
+                };
+                ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(mailbox_audit_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(mailbox_audit_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(mailbox_dir) = mailbox_dir.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(mailbox_audit_usage());
+    };
+
+    Ok(MailboxAuditArgs {
+        mailbox_dir,
+        node_id,
+        ttl,
+        json,
+    })
+}
+
+fn parse_positive_cli_duration(value: &str, flag: &str) -> Result<Duration, String> {
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| format!("{flag} must be an unsigned integer"))?;
+    if seconds == 0 {
+        return Err(format!("{flag} must be greater than zero"));
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
+fn mailbox_audit_usage() -> String {
+    "usage: conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--json]".to_string()
+}
+
+#[derive(Debug, Clone)]
 struct HostedDashboardArgs {
     credentials_file: Option<PathBuf>,
     tenants_file: Option<PathBuf>,
@@ -1858,6 +1952,93 @@ fn render_abuse_audit_json(audit: &RelayAbuseAudit, abuse_dir: &Path) -> String 
         audit.undelivered_forwards,
         audit.mailbox_rejected_forwards,
         audit.malformed_client_frames,
+        bool_json(audit.payload_displayed),
+        bool_json(audit.token_displayed),
+        bool_json(audit.token_hash_displayed),
+        bool_json(audit.key_material_displayed),
+        bool_json(audit.session_id_displayed),
+        bool_json(audit.ciphertext_displayed),
+        bool_json(audit.contents_displayed)
+    )
+}
+
+fn render_mailbox_audit_text(audit: &RelayMailboxAudit, mailbox_dir: &Path) -> String {
+    format!(
+        r"conU relay mailbox audit
+
+scope: {}
+mailbox dir: {}
+retention ttl seconds: {}
+nodes: {}
+records: {}
+invalid records: {}
+bytes: {}
+oldest queued unix millis: {}
+newest queued unix millis: {}
+expired records: {}
+expired bytes: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        audit.node_id.as_deref().unwrap_or("all"),
+        mailbox_dir.display(),
+        optional_u64_text(audit.retention_ttl_seconds),
+        audit.nodes,
+        audit.records,
+        audit.invalid_records,
+        audit.bytes,
+        optional_u64_text(audit.oldest_queued_unix_millis),
+        optional_u64_text(audit.newest_queued_unix_millis),
+        optional_u64_text(audit.expired_records),
+        optional_u64_text(audit.expired_bytes),
+        yes_no(audit.payload_displayed),
+        yes_no(audit.token_displayed),
+        yes_no(audit.token_hash_displayed),
+        yes_no(audit.key_material_displayed),
+        yes_no(audit.session_id_displayed),
+        yes_no(audit.ciphertext_displayed),
+        yes_no(audit.contents_displayed)
+    )
+}
+
+fn render_mailbox_audit_json(audit: &RelayMailboxAudit, mailbox_dir: &Path) -> String {
+    format!(
+        r#"{{
+  "status": "audited",
+  "nodeId": {},
+  "mailboxDir": "{}",
+  "retentionTtlSeconds": {},
+  "nodes": {},
+  "records": {},
+  "invalidRecords": {},
+  "bytes": {},
+  "oldestQueuedUnixMillis": {},
+  "newestQueuedUnixMillis": {},
+  "expiredRecords": {},
+  "expiredBytes": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        optional_string_json(audit.node_id.as_deref()),
+        json_escape(&mailbox_dir.display().to_string()),
+        optional_u64_json(audit.retention_ttl_seconds),
+        audit.nodes,
+        audit.records,
+        audit.invalid_records,
+        audit.bytes,
+        optional_u64_json(audit.oldest_queued_unix_millis),
+        optional_u64_json(audit.newest_queued_unix_millis),
+        optional_u64_json(audit.expired_records),
+        optional_u64_json(audit.expired_bytes),
         bool_json(audit.payload_displayed),
         bool_json(audit.token_displayed),
         bool_json(audit.token_hash_displayed),
@@ -2724,6 +2905,82 @@ mod tests {
             assert!(!output.contains("BEGIN PRIVATE KEY"));
             assert!(!output.contains("payload-body"));
             assert!(!output.contains("ciphertext_body"));
+        }
+    }
+
+    #[test]
+    fn mailbox_audit_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_mailbox_audit_args(vec![
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--ttl-seconds".to_string(),
+            "3600".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("mailbox audit args parse");
+        assert_eq!(parsed.mailbox_dir, PathBuf::from("mailbox"));
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert_eq!(parsed.ttl, Some(Duration::from_secs(3600)));
+        assert!(parsed.json);
+
+        let invalid_filter = parse_mailbox_audit_args(vec![
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--node".to_string(),
+            "bad secret value".to_string(),
+        ])
+        .expect_err("invalid node filter should fail closed");
+        assert!(!invalid_filter.contains("bad secret value"));
+        assert!(
+            parse_mailbox_audit_args(vec![
+                "--mailbox-dir".to_string(),
+                "mailbox".to_string(),
+                "--ttl-seconds".to_string(),
+                "0".to_string(),
+            ])
+            .is_err()
+        );
+
+        let audit = RelayMailboxAudit {
+            node_id: Some("node.hosted".to_string()),
+            retention_ttl_seconds: Some(3600),
+            nodes: 1,
+            records: 2,
+            invalid_records: 0,
+            bytes: 512,
+            oldest_queued_unix_millis: Some(1_763_596_800_000),
+            newest_queued_unix_millis: Some(1_763_596_900_000),
+            expired_records: Some(1),
+            expired_bytes: Some(256),
+            payload_displayed: false,
+            token_displayed: false,
+            token_hash_displayed: false,
+            key_material_displayed: false,
+            session_id_displayed: false,
+            ciphertext_displayed: false,
+            contents_displayed: false,
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_mailbox_audit_text(&audit, Path::new("mailbox")),
+            render_mailbox_audit_json(&audit, Path::new("mailbox")),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("mailbox"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+            assert!(!output.contains("ENVELOPE from=node.a"));
         }
     }
 

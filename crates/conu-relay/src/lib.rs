@@ -795,6 +795,28 @@ pub struct RelayAccountingAudit {
     pub contents_displayed: bool,
 }
 
+/// Metadata-only durable relay mailbox audit result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayMailboxAudit {
+    pub node_id: Option<String>,
+    pub retention_ttl_seconds: Option<u64>,
+    pub nodes: usize,
+    pub records: usize,
+    pub invalid_records: usize,
+    pub bytes: u64,
+    pub oldest_queued_unix_millis: Option<u64>,
+    pub newest_queued_unix_millis: Option<u64>,
+    pub expired_records: Option<u64>,
+    pub expired_bytes: Option<u64>,
+    pub payload_displayed: bool,
+    pub token_displayed: bool,
+    pub token_hash_displayed: bool,
+    pub key_material_displayed: bool,
+    pub session_id_displayed: bool,
+    pub ciphertext_displayed: bool,
+    pub contents_displayed: bool,
+}
+
 /// Metadata-only abuse/dashboard counter window for relay enforcement events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayAbusePolicy {
@@ -1813,6 +1835,73 @@ pub fn audit_relay_accounting_dir(
             .envelopes_mailboxed
             .saturating_add(record.envelopes_mailboxed);
         audit.bytes_mailboxed = audit.bytes_mailboxed.saturating_add(record.bytes_mailboxed);
+    }
+
+    Ok(audit)
+}
+
+/// Summarize durable relay mailbox files without exposing frame contents,
+/// ciphertext bodies, plaintext payloads, tokens, hashes, or session ids.
+pub fn audit_relay_mailbox_dir(
+    root: impl AsRef<Path>,
+    node_id: Option<&str>,
+    retention_ttl: Option<Duration>,
+) -> Result<RelayMailboxAudit, RelayError> {
+    let root = root.as_ref();
+    let node_id = node_id
+        .map(|value| validate_node_id(value.to_string()))
+        .transpose()?;
+    if retention_ttl.is_some_and(|ttl| ttl.is_zero()) {
+        return Err(RelayError::InvalidConfig(
+            "relay mailbox audit TTL must be greater than zero",
+        ));
+    }
+    let retention_ttl_seconds = retention_ttl.map(|ttl| ttl.as_secs());
+    let retention_ttl_millis = retention_ttl.map(|ttl| ttl.as_millis());
+    let mut audit = RelayMailboxAudit {
+        node_id,
+        retention_ttl_seconds,
+        nodes: 0,
+        records: 0,
+        invalid_records: 0,
+        bytes: 0,
+        oldest_queued_unix_millis: None,
+        newest_queued_unix_millis: None,
+        expired_records: retention_ttl.map(|_| 0),
+        expired_bytes: retention_ttl.map(|_| 0),
+        payload_displayed: false,
+        token_displayed: false,
+        token_hash_displayed: false,
+        key_material_displayed: false,
+        session_id_displayed: false,
+        ciphertext_displayed: false,
+        contents_displayed: false,
+    };
+
+    if !root.exists() {
+        return Ok(audit);
+    }
+
+    let now_millis = current_unix_millis();
+    if let Some(node_id) = audit.node_id.as_deref() {
+        let node_dir = root.join(sanitize_identifier(node_id));
+        if node_dir.exists() {
+            audit_mailbox_node_dir(&mut audit, &node_dir, now_millis, retention_ttl_millis)?;
+        }
+        return Ok(audit);
+    }
+
+    for entry in
+        fs::read_dir(root).map_err(|error| RelayError::io("read relay mailbox directory", error))?
+    {
+        let entry = entry.map_err(|error| RelayError::io("read relay mailbox entry", error))?;
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        audit_mailbox_node_dir(&mut audit, &entry.path(), now_millis, retention_ttl_millis)?;
     }
 
     Ok(audit)
@@ -4701,6 +4790,83 @@ fn read_mailbox_file(path: &Path) -> Result<Option<QueuedRelayEnvelope>, RelayEr
     }))
 }
 
+fn audit_mailbox_node_dir(
+    audit: &mut RelayMailboxAudit,
+    node_dir: &Path,
+    now_millis: u128,
+    retention_ttl_millis: Option<u128>,
+) -> Result<(), RelayError> {
+    let mut node_records = 0usize;
+    for entry in fs::read_dir(node_dir)
+        .map_err(|error| RelayError::io("read relay mailbox node directory", error))?
+    {
+        let entry = entry.map_err(|error| RelayError::io("read relay mailbox envelope", error))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("mailbox") {
+            continue;
+        }
+
+        node_records = node_records.saturating_add(1);
+        audit.records = audit.records.saturating_add(1);
+        let byte_len = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        audit.bytes = audit.bytes.saturating_add(byte_len);
+
+        let Some(queued_at_millis) = read_mailbox_audit_timestamp(&path)? else {
+            audit.invalid_records = audit.invalid_records.saturating_add(1);
+            continue;
+        };
+
+        let queued_at_u64 = queued_at_millis.min(u64::MAX as u128) as u64;
+        audit.oldest_queued_unix_millis = Some(
+            audit
+                .oldest_queued_unix_millis
+                .map(|existing| existing.min(queued_at_u64))
+                .unwrap_or(queued_at_u64),
+        );
+        audit.newest_queued_unix_millis = Some(
+            audit
+                .newest_queued_unix_millis
+                .map(|existing| existing.max(queued_at_u64))
+                .unwrap_or(queued_at_u64),
+        );
+
+        if let Some(ttl_millis) = retention_ttl_millis {
+            let expired = now_millis.saturating_sub(queued_at_millis) >= ttl_millis;
+            if expired {
+                audit.expired_records = audit
+                    .expired_records
+                    .map(|records| records.saturating_add(1));
+                audit.expired_bytes = audit
+                    .expired_bytes
+                    .map(|bytes| bytes.saturating_add(byte_len));
+            }
+        }
+    }
+
+    if node_records > 0 {
+        audit.nodes = audit.nodes.saturating_add(1);
+    }
+    Ok(())
+}
+
+fn read_mailbox_audit_timestamp(path: &Path) -> Result<Option<u128>, RelayError> {
+    let contents = fs::read_to_string(path)
+        .map_err(|error| RelayError::io("read relay mailbox file", error))?;
+    let version = mailbox_value(&contents, "version").unwrap_or_default();
+    if version != RELAY_MAILBOX_FILE_VERSION {
+        return Ok(None);
+    }
+    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false") {
+        return Ok(None);
+    }
+    let Some(queued_at_millis) =
+        mailbox_value(&contents, "queued_at_millis").and_then(|value| value.parse::<u128>().ok())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(queued_at_millis))
+}
+
 fn mailbox_file_sequence(path: &Path) -> Option<u128> {
     path.file_stem()
         .and_then(|value| value.to_str())
@@ -7079,6 +7245,70 @@ token_displayed = true\n",
         assert_eq!(drained[0].envelope_id, "env.cap.1");
         assert!(read_mailbox_texts(&mailbox_dir).is_empty());
         assert!(!format!("{loaded:?}").contains("private message contents"));
+    }
+
+    #[test]
+    fn relay_file_backed_mailbox_audit_reports_retention_metadata_only() {
+        let mailbox_dir = test_home("durable-mailbox-audit").join("relay-mailbox");
+        let storage =
+            RelayMailboxStorage::file_backed(mailbox_dir.clone()).expect("storage config");
+        let mailbox_policy =
+            RelayMailboxPolicy::new(4, Duration::from_secs(60)).expect("valid mailbox policy");
+        let mut state = RelayHubState::default();
+
+        for (node_id, envelope_id) in [
+            ("node.b", "env.mailbox.audit.1"),
+            ("node.c", "env.mailbox.audit.2"),
+        ] {
+            let forwarded = forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame(node_id, envelope_id),
+            );
+            state
+                .enqueue_mailbox(node_id, forwarded, mailbox_policy, &storage)
+                .expect("mailbox accepts encrypted envelope");
+        }
+
+        let invalid_dir = mailbox_dir.join("node.invalid");
+        fs::create_dir_all(&invalid_dir).expect("invalid mailbox dir");
+        fs::write(
+            invalid_dir.join("invalid.mailbox"),
+            "version = \"1\"\nqueued_at_millis = invalid\nframe = ENVELOPE from=node.a body_ciphertext=ciphertext_body\npayload_displayed = false\n",
+        )
+        .expect("invalid mailbox fixture");
+        thread::sleep(Duration::from_millis(10));
+
+        let audit = audit_relay_mailbox_dir(&mailbox_dir, None, Some(Duration::from_millis(1)))
+            .expect("mailbox audit reads");
+        assert_eq!(audit.nodes, 3);
+        assert_eq!(audit.records, 3);
+        assert_eq!(audit.invalid_records, 1);
+        assert!(audit.bytes > 0);
+        assert!(audit.oldest_queued_unix_millis.is_some());
+        assert!(audit.newest_queued_unix_millis.is_some());
+        assert_eq!(audit.expired_records, Some(2));
+        assert!(audit.expired_bytes.unwrap_or_default() > 0);
+        assert!(!audit.payload_displayed);
+        assert!(!audit.token_displayed);
+        assert!(!audit.token_hash_displayed);
+        assert!(!audit.key_material_displayed);
+        assert!(!audit.session_id_displayed);
+        assert!(!audit.ciphertext_displayed);
+        assert!(!audit.contents_displayed);
+
+        let node_audit =
+            audit_relay_mailbox_dir(&mailbox_dir, Some("node.b"), Some(Duration::from_millis(1)))
+                .expect("node mailbox audit reads");
+        assert_eq!(node_audit.nodes, 1);
+        assert_eq!(node_audit.records, 1);
+        assert_eq!(node_audit.invalid_records, 0);
+
+        let debug = format!("{audit:?}");
+        assert!(!debug.contains("private message contents"));
+        assert!(!debug.contains("ciphertext_body"));
+        assert!(!debug.contains("ENVELOPE from=node.a"));
+        assert!(!debug.contains("relay_node.hosted_123456789"));
+        assert!(!debug.contains("token_sha256_hex"));
     }
 
     #[test]
