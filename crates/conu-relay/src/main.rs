@@ -12,11 +12,12 @@ use conu_relay::{
     CredentialManifestUpdate, HostedCredentialAudit, HostedTenantAudit, HostedTenantManifestUpdate,
     HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy,
     RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy, RelayAccountingStorage,
-    RelayConfig, RelayCredential, RelayMailboxAudit, RelayMailboxPolicy, RelayMailboxStorage,
-    RelaySessionPolicy, RelaySessionStorage, audit_hosted_relay_credentials_file,
-    audit_hosted_tenants_file, audit_relay_abuse_dir, audit_relay_accounting_dir,
-    audit_relay_mailbox_dir, issue_relay_credential, relay_credential_manifest_contains_node,
-    relay_token_sha256_hex, revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
+    RelayConfig, RelayCredential, RelayMailboxAudit, RelayMailboxPolicy, RelayMailboxPurgeReport,
+    RelayMailboxStorage, RelaySessionPolicy, RelaySessionStorage,
+    audit_hosted_relay_credentials_file, audit_hosted_tenants_file, audit_relay_abuse_dir,
+    audit_relay_accounting_dir, audit_relay_mailbox_dir, issue_relay_credential,
+    purge_relay_mailbox_dir, relay_credential_manifest_contains_node, relay_token_sha256_hex,
+    revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
     revoke_relay_credential_in_file, upsert_hosted_tenant_in_file,
     upsert_hosted_tenant_node_in_file, upsert_issued_relay_credential_in_file,
     write_issued_relay_token_file,
@@ -136,6 +137,13 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--mailbox-purge") => match mailbox_purge_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--hosted-dashboard") => match hosted_dashboard_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -202,6 +210,7 @@ Usage:
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--json]
+  conu-relay --mailbox-purge --mailbox-dir <path> --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --check
   conu-relay --help
@@ -242,8 +251,9 @@ commands authenticate with an admin token read from stdin, send only node-token 
 relay, and write the raw node token locally only after the relay confirms the update. Tenant
 commands manage account, node, public key-id, and hosted permission metadata only; they never grant
 local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Abuse
-audit reads aggregate enforcement counters only, and mailbox audit reads durable mailbox timestamps
-and file sizes only. Hosted dashboard snapshots combine configured
+audit reads aggregate enforcement counters only, mailbox audit reads durable mailbox timestamps
+and file sizes only, and mailbox purge requires dry-run or explicit confirmation before deleting
+expired durable mailbox files. Hosted dashboard snapshots combine configured
 credential, tenant, accounting, and abuse summaries without displaying tokens, token hashes,
 payloads, ciphertext bodies, frame contents, private keys, or relay session ids."
     );
@@ -1543,6 +1553,108 @@ fn mailbox_audit_usage() -> String {
 }
 
 #[derive(Debug, Clone)]
+struct MailboxPurgeArgs {
+    mailbox_dir: PathBuf,
+    node_id: Option<String>,
+    ttl: Duration,
+    dry_run: bool,
+    json: bool,
+}
+
+fn mailbox_purge_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_mailbox_purge_args(args)?;
+    let report = purge_relay_mailbox_dir(
+        &parsed.mailbox_dir,
+        parsed.node_id.as_deref(),
+        parsed.ttl,
+        parsed.dry_run,
+    )
+    .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!(
+            "{}",
+            render_mailbox_purge_json(&report, &parsed.mailbox_dir)
+        );
+    } else {
+        println!(
+            "{}",
+            render_mailbox_purge_text(&report, &parsed.mailbox_dir)
+        );
+    }
+    Ok(())
+}
+
+fn parse_mailbox_purge_args(args: Vec<String>) -> Result<MailboxPurgeArgs, String> {
+    let mut mailbox_dir = None::<PathBuf>;
+    let mut node_id = None::<String>;
+    let mut ttl = None::<Duration>;
+    let mut dry_run = false;
+    let mut confirm = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--mailbox-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mailbox_purge_usage());
+                };
+                mailbox_dir = Some(PathBuf::from(value));
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mailbox_purge_usage());
+                };
+                node_id = Some(validate_dashboard_filter_id(value.to_string(), "node id")?);
+            }
+            "--ttl-seconds" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mailbox_purge_usage());
+                };
+                ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
+            }
+            "--dry-run" => dry_run = true,
+            "--confirm" => confirm = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(mailbox_purge_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(mailbox_purge_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(mailbox_dir) = mailbox_dir.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(mailbox_purge_usage());
+    };
+    let Some(ttl) = ttl else {
+        return Err(mailbox_purge_usage());
+    };
+    match (dry_run, confirm) {
+        (true, false) | (false, true) => {}
+        _ => {
+            return Err(
+                "--mailbox-purge requires exactly one of --dry-run or --confirm".to_string(),
+            );
+        }
+    }
+
+    Ok(MailboxPurgeArgs {
+        mailbox_dir,
+        node_id,
+        ttl,
+        dry_run,
+        json,
+    })
+}
+
+fn mailbox_purge_usage() -> String {
+    "usage: conu-relay --mailbox-purge --mailbox-dir <path> --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]".to_string()
+}
+
+#[derive(Debug, Clone)]
 struct HostedDashboardArgs {
     credentials_file: Option<PathBuf>,
     tenants_file: Option<PathBuf>,
@@ -2046,6 +2158,111 @@ fn render_mailbox_audit_json(audit: &RelayMailboxAudit, mailbox_dir: &Path) -> S
         bool_json(audit.session_id_displayed),
         bool_json(audit.ciphertext_displayed),
         bool_json(audit.contents_displayed)
+    )
+}
+
+fn render_mailbox_purge_text(report: &RelayMailboxPurgeReport, mailbox_dir: &Path) -> String {
+    format!(
+        r"conU relay mailbox purge
+
+mode: {}
+scope: {}
+mailbox dir: {}
+retention ttl seconds: {}
+nodes: {}
+records: {}
+invalid records: {}
+bytes: {}
+expired records: {}
+expired bytes: {}
+purged records: {}
+purged bytes: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        if report.dry_run {
+            "dry-run"
+        } else {
+            "confirmed"
+        },
+        report.node_id.as_deref().unwrap_or("all"),
+        mailbox_dir.display(),
+        report.retention_ttl_seconds,
+        report.nodes,
+        report.records,
+        report.invalid_records,
+        report.bytes,
+        report.expired_records,
+        report.expired_bytes,
+        report.purged_records,
+        report.purged_bytes,
+        yes_no(report.payload_displayed),
+        yes_no(report.token_displayed),
+        yes_no(report.token_hash_displayed),
+        yes_no(report.key_material_displayed),
+        yes_no(report.session_id_displayed),
+        yes_no(report.ciphertext_displayed),
+        yes_no(report.contents_displayed)
+    )
+}
+
+fn render_mailbox_purge_json(report: &RelayMailboxPurgeReport, mailbox_dir: &Path) -> String {
+    let status = if report.dry_run { "dry_run" } else { "purged" };
+    format!(
+        r#"{{
+  "status": "{}",
+  "mode": "{}",
+  "nodeId": {},
+  "mailboxDir": "{}",
+  "retentionTtlSeconds": {},
+  "dryRun": {},
+  "confirmed": {},
+  "nodes": {},
+  "records": {},
+  "invalidRecords": {},
+  "bytes": {},
+  "expiredRecords": {},
+  "expiredBytes": {},
+  "purgedRecords": {},
+  "purgedBytes": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        status,
+        if report.dry_run {
+            "dry-run"
+        } else {
+            "confirmed"
+        },
+        optional_string_json(report.node_id.as_deref()),
+        json_escape(&mailbox_dir.display().to_string()),
+        report.retention_ttl_seconds,
+        bool_json(report.dry_run),
+        bool_json(report.confirmed),
+        report.nodes,
+        report.records,
+        report.invalid_records,
+        report.bytes,
+        report.expired_records,
+        report.expired_bytes,
+        report.purged_records,
+        report.purged_bytes,
+        bool_json(report.payload_displayed),
+        bool_json(report.token_displayed),
+        bool_json(report.token_hash_displayed),
+        bool_json(report.key_material_displayed),
+        bool_json(report.session_id_displayed),
+        bool_json(report.ciphertext_displayed),
+        bool_json(report.contents_displayed)
     )
 }
 
@@ -2973,6 +3190,101 @@ mod tests {
 
         for output in outputs {
             assert!(output.contains("mailbox"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+            assert!(!output.contains("ENVELOPE from=node.a"));
+        }
+    }
+
+    #[test]
+    fn mailbox_purge_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_mailbox_purge_args(vec![
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--ttl-seconds".to_string(),
+            "3600".to_string(),
+            "--dry-run".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("mailbox purge args parse");
+        assert_eq!(parsed.mailbox_dir, PathBuf::from("mailbox"));
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert_eq!(parsed.ttl, Duration::from_secs(3600));
+        assert!(parsed.dry_run);
+        assert!(parsed.json);
+
+        let invalid_filter = parse_mailbox_purge_args(vec![
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--node".to_string(),
+            "bad secret value".to_string(),
+            "--ttl-seconds".to_string(),
+            "3600".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect_err("invalid node filter should fail closed");
+        assert!(!invalid_filter.contains("bad secret value"));
+        assert!(
+            parse_mailbox_purge_args(vec![
+                "--mailbox-dir".to_string(),
+                "mailbox".to_string(),
+                "--ttl-seconds".to_string(),
+                "3600".to_string(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_mailbox_purge_args(vec![
+                "--mailbox-dir".to_string(),
+                "mailbox".to_string(),
+                "--ttl-seconds".to_string(),
+                "3600".to_string(),
+                "--dry-run".to_string(),
+                "--confirm".to_string(),
+            ])
+            .is_err()
+        );
+
+        let report = RelayMailboxPurgeReport {
+            node_id: Some("node.hosted".to_string()),
+            retention_ttl_seconds: 3600,
+            dry_run: false,
+            confirmed: true,
+            nodes: 1,
+            records: 3,
+            invalid_records: 1,
+            bytes: 768,
+            expired_records: 2,
+            expired_bytes: 512,
+            purged_records: 2,
+            purged_bytes: 512,
+            payload_displayed: false,
+            token_displayed: false,
+            token_hash_displayed: false,
+            key_material_displayed: false,
+            session_id_displayed: false,
+            ciphertext_displayed: false,
+            contents_displayed: false,
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_mailbox_purge_text(&report, Path::new("mailbox")),
+            render_mailbox_purge_json(&report, Path::new("mailbox")),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("mailbox"));
+            assert!(output.contains("purge") || output.contains("purged"));
             assert!(output.contains("contents"));
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));

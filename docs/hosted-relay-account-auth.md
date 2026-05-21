@@ -166,7 +166,27 @@ conu-relay --mailbox-audit `
 
 The audit reports aggregate node/file counts, total mailbox bytes, oldest/newest queued timestamps, optional expired record and byte counts for the supplied TTL, invalid mailbox-file counts, and false display guards only. It never prints stored relay frames, ciphertext bodies, plaintext payloads, raw node tokens, token hashes, admin tokens, private keys, or relay session ids.
 
-This is a single-relay read-only snapshot. It is not distributed retention storage, automatic purge, legal retention policy, billing, or tenant-wide workflow automation.
+Operators can enforce that same local retention boundary with an explicit dry-run or confirmation:
+
+```powershell
+conu-relay --mailbox-purge `
+  --mailbox-dir C:\conu-relay\mailbox `
+  --node node-a-id `
+  --ttl-seconds 3600 `
+  --dry-run `
+  --json
+
+conu-relay --mailbox-purge `
+  --mailbox-dir C:\conu-relay\mailbox `
+  --node node-a-id `
+  --ttl-seconds 3600 `
+  --confirm `
+  --json
+```
+
+Dry-run deletes nothing. Confirm mode deletes only expired valid `.mailbox` files under the selected durable mailbox directories. Purge output reports aggregate scanned, invalid, expired, purged, and byte counts with false display guards only; it never prints stored frames, ciphertext bodies, plaintext payloads, tokens, hashes, private keys, or session ids.
+
+This is a single-relay operator workflow. It is not distributed retention storage, legal retention policy, billing, tenant-wide workflow automation, or hosted scheduled purge orchestration.
 
 ## Hosted Dashboard Snapshot
 
@@ -189,4 +209,4 @@ This is still single-relay and file-backed. It is not distributed dashboard stor
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, mailbox-audit, and dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, automated hosted mailbox retention/purge policy, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, mailbox-audit, mailbox-purge, and dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, scheduled/distributed hosted mailbox retention orchestration, full hosted identity/key administration, and managed direct NAT traversal.
