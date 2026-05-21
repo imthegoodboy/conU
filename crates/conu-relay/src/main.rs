@@ -12,12 +12,12 @@ use conu_relay::{
     CredentialManifestUpdate, HostedCredentialAudit, HostedTenantAudit, HostedTenantManifestUpdate,
     HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy,
     RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy, RelayAccountingStorage,
-    RelayConfig, RelayCredential, RelayMailboxAudit, RelayMailboxPolicy, RelayMailboxPurgeReport,
-    RelayMailboxStorage, RelaySessionPolicy, RelaySessionStorage,
-    audit_hosted_relay_credentials_file, audit_hosted_tenants_file, audit_relay_abuse_dir,
-    audit_relay_accounting_dir, audit_relay_mailbox_dir, issue_relay_credential,
-    purge_relay_mailbox_dir, relay_credential_manifest_contains_node, relay_token_sha256_hex,
-    revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
+    RelayConfig, RelayCredential, RelayMailboxAudit, RelayMailboxMaintenancePolicy,
+    RelayMailboxPolicy, RelayMailboxPurgeReport, RelayMailboxStorage, RelaySessionPolicy,
+    RelaySessionStorage, audit_hosted_relay_credentials_file, audit_hosted_tenants_file,
+    audit_relay_abuse_dir, audit_relay_accounting_dir, audit_relay_mailbox_dir,
+    issue_relay_credential, purge_relay_mailbox_dir, relay_credential_manifest_contains_node,
+    relay_token_sha256_hex, revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
     revoke_relay_credential_in_file, upsert_hosted_tenant_in_file,
     upsert_hosted_tenant_node_in_file, upsert_issued_relay_credential_in_file,
     write_issued_relay_token_file,
@@ -231,6 +231,8 @@ Environment:
   CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS
                                         offline envelope TTL; defaults to 3600
   CONU_RELAY_MAILBOX_DIR              optional durable mailbox directory for peer-encrypted envelopes
+  CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS
+                                        optional relay-local expired mailbox purge interval; 0/empty disables
   CONU_RELAY_ACCOUNTING_DIR           optional metadata-only accounting directory
   CONU_RELAY_ACCOUNTING_WINDOW_SECONDS
                                         accounting/quota window; defaults to 86400
@@ -252,7 +254,8 @@ relay, and write the raw node token locally only after the relay confirms the up
 commands manage account, node, public key-id, and hosted permission metadata only; they never grant
 local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Abuse
 audit reads aggregate enforcement counters only, mailbox audit reads durable mailbox timestamps
-and file sizes only, and mailbox purge requires dry-run or explicit confirmation before deleting
+and file sizes only, manual mailbox purge requires dry-run or explicit confirmation, and scheduled
+mailbox purge requires an explicit local interval plus CONU_RELAY_MAILBOX_DIR before deleting
 expired durable mailbox files. Hosted dashboard snapshots combine configured
 credential, tenant, accounting, and abuse summaries without displaying tokens, token hashes,
 payloads, ciphertext bodies, frame contents, private keys, or relay session ids."
@@ -2753,6 +2756,7 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
     let session_storage = relay_session_storage_from_env()?;
     let mailbox_policy = relay_mailbox_policy_from_env()?;
     let mailbox_storage = relay_mailbox_storage_from_env()?;
+    let mailbox_maintenance = relay_mailbox_maintenance_from_env(&mailbox_storage)?;
     let accounting_policy = relay_accounting_policy_from_env()?;
     let accounting_storage = relay_accounting_storage_from_env()?;
     let abuse_policy = relay_abuse_policy_from_env()?;
@@ -2790,6 +2794,7 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
         .with_session_storage(session_storage)
         .with_mailbox_policy(mailbox_policy)
         .with_mailbox_storage(mailbox_storage)
+        .with_mailbox_maintenance(mailbox_maintenance)
         .with_accounting_policy(accounting_policy)
         .with_accounting_storage(accounting_storage)
         .with_abuse_policy(abuse_policy)
@@ -2877,6 +2882,23 @@ fn relay_mailbox_storage_from_env() -> Result<RelayMailboxStorage, String> {
     }
 }
 
+fn relay_mailbox_maintenance_from_env(
+    mailbox_storage: &RelayMailboxStorage,
+) -> Result<RelayMailboxMaintenancePolicy, String> {
+    let Some(seconds) =
+        parse_optional_duration_seconds("CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS")?
+    else {
+        return Ok(RelayMailboxMaintenancePolicy::disabled());
+    };
+    if matches!(mailbox_storage, RelayMailboxStorage::MemoryOnly) {
+        return Err(
+            "CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS requires CONU_RELAY_MAILBOX_DIR".to_string(),
+        );
+    }
+    RelayMailboxMaintenancePolicy::every(Duration::from_secs(seconds))
+        .map_err(|error| error.to_string())
+}
+
 fn relay_accounting_policy_from_env() -> Result<RelayAccountingPolicy, String> {
     RelayAccountingPolicy::new(
         Duration::from_secs(parse_duration_seconds(
@@ -2935,6 +2957,23 @@ fn parse_optional_limit(name: &str) -> Result<Option<usize>, String> {
         Ok(value) => {
             let parsed = value
                 .parse::<usize>()
+                .map_err(|_| format!("{name} must be an unsigned integer"))?;
+            if parsed == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(parsed))
+            }
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn parse_optional_duration_seconds(name: &str) -> Result<Option<u64>, String> {
+    match env::var(name) {
+        Ok(value) if value.trim().is_empty() => Ok(None),
+        Ok(value) => {
+            let parsed = value
+                .parse::<u64>()
                 .map_err(|_| format!("{name} must be an unsigned integer"))?;
             if parsed == 0 {
                 Ok(None)

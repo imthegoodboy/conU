@@ -197,6 +197,7 @@ export CONU_RELAY_SESSION_STATE_DIR=/var/lib/conu-relay/sessions
 export CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE=128
 export CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS=3600
 export CONU_RELAY_MAILBOX_DIR=/var/lib/conu-relay/mailbox
+export CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS=3600
 export CONU_RELAY_ACCOUNTING_DIR=/var/lib/conu-relay/accounting
 export CONU_RELAY_ACCOUNTING_WINDOW_SECONDS=86400
 export CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE=10000
@@ -212,7 +213,7 @@ conu-relay --serve 0.0.0.0:8787
 
 `CONU_RELAY_SESSION_STATE_DIR` persists metadata-only `.session` files per node so a same-node resume hint can survive a relay restart until the session TTL expires. They contain node ids, relay session ids, timestamps, and display guards; they do not contain relay tokens, token hashes, payloads, ciphertext bodies, private keys, or account secrets. Keep this directory on protected relay storage. The current file-backed session store is a single-writer boundary for self-hosted relays and controlled failover tests; it is not a distributed lock service or multi-region session migration layer.
 
-`CONU_RELAY_MAILBOX_DIR` persists durable `.mailbox` files for peer-encrypted offline envelopes. These files contain route metadata, public key material, ciphertext, and `payload_displayed = false`; they do not contain plaintext message text, stream chunks, room-event plaintext, relay tokens, token hashes, private keys, or session ids. Inspect local retention pressure with `conu-relay --mailbox-audit --mailbox-dir /var/lib/conu-relay/mailbox [--node <node-id>] [--ttl-seconds 3600] [--json]`. The audit reports aggregate file counts, byte totals, queue timestamp bounds, optional expired counts, invalid mailbox-file counts, and false display guards only. To enforce the same retention boundary, run `conu-relay --mailbox-purge --mailbox-dir /var/lib/conu-relay/mailbox --ttl-seconds 3600 [--node <node-id>] --dry-run [--json]`, review the aggregate expired counts, then rerun with `--confirm` to delete only expired valid `.mailbox` files. Purge output does not render stored relay frames, ciphertext bodies, payloads, tokens, token hashes, private keys, or session ids. This is a single-relay operator workflow, not distributed hosted retention automation or billing.
+`CONU_RELAY_MAILBOX_DIR` persists durable `.mailbox` files for peer-encrypted offline envelopes. These files contain route metadata, public key material, ciphertext, and `payload_displayed = false`; they do not contain plaintext message text, stream chunks, room-event plaintext, relay tokens, token hashes, private keys, or session ids. Inspect local retention pressure with `conu-relay --mailbox-audit --mailbox-dir /var/lib/conu-relay/mailbox [--node <node-id>] [--ttl-seconds 3600] [--json]`. The audit reports aggregate file counts, byte totals, queue timestamp bounds, optional expired counts, invalid mailbox-file counts, and false display guards only. To enforce the same retention boundary manually, run `conu-relay --mailbox-purge --mailbox-dir /var/lib/conu-relay/mailbox --ttl-seconds 3600 [--node <node-id>] --dry-run [--json]`, review the aggregate expired counts, then rerun with `--confirm` to delete only expired valid `.mailbox` files. Set `CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS` when the relay should run the same expired-file cleanup on a local schedule using `CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS`; this requires `CONU_RELAY_MAILBOX_DIR`, and `0` or an empty value disables it. Purge output does not render stored relay frames, ciphertext bodies, payloads, tokens, token hashes, private keys, or session ids. This is a single-relay operator workflow, not distributed hosted retention automation or billing.
 
 `CONU_RELAY_ACCOUNTING_DIR` persists metadata-only `.accounting` files per node. They contain node ids, accounting window start, authenticated session counts, sent/received envelope counts, byte counts, mailbox counts, `payload_displayed = false`, and `token_displayed = false`; they do not contain relay tokens, token hashes, session ids, message text, stream chunks, room-event plaintext, or ciphertext bodies. Set `CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE` and/or `CONU_RELAY_MAX_BYTES_SENT_PER_NODE` to reject over-quota sends for a node during the configured accounting window with `UNDELIVERED reason=quota_exceeded`.
 
@@ -251,6 +252,7 @@ docker run --rm -p 8787:8787 \
   -e CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE=128 \
   -e CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS=3600 \
   -e CONU_RELAY_MAILBOX_DIR=/var/lib/conu-relay/mailbox \
+  -e CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS=3600 \
   -e CONU_RELAY_ACCOUNTING_DIR=/var/lib/conu-relay/accounting \
   -e CONU_RELAY_ACCOUNTING_WINDOW_SECONDS=86400 \
   -e CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE=10000 \
@@ -272,7 +274,7 @@ Before running a managed public relay, conU still needs:
 - Distributed hosted account control planes and tenant lifecycle beyond the current single-relay file-backed account metadata, hosted tenant registry, online credential issue/rotate/revoke/audit APIs, offline `conu-relay --issue-credential` helper, `--revoke-credential`, and live-reloaded credential manifest.
 - Managed hosted quotas, distributed abuse monitoring, dashboards, and adaptive response beyond the current self-hosted connection/frame caps, per-node accounting quotas, single-relay metadata-only abuse counters, and local `--hosted-dashboard` snapshots.
 - Distributed hosted relay session migration and accounting beyond the current idle-timeout, max-TTL session policy, same-node resume hints, file-backed session records, and authenticated/resumed session counters.
-- Managed hosted mailbox retention/accounting dashboards beyond the current self-hosted durable ciphertext files, metadata-only mailbox counters, relay-local mailbox audit snapshots, and confirm-gated local purge command.
+- Managed hosted mailbox retention/accounting dashboards beyond the current self-hosted durable ciphertext files, metadata-only mailbox counters, relay-local mailbox audit snapshots, confirm-gated local purge command, and relay-local scheduled purge policy.
 - Hosted dashboard services and distributed permission administration beyond the current single-writer tenant registry, local dashboard snapshot, and local peer/room topic policy files.
 - Hosted managed key administration and hardware-backed key policy. Windows local key and stored relay credential files wrap secret bytes with current-user DPAPI, macOS uses user Keychain, Linux uses Secret Service when available, and non-Windows operators can still configure `CONU_SECRET_WRAP_KEY_HEX` or `CONU_SECRET_WRAP_KEY_FILE` for a user-managed encrypted fallback. Secure Enclave, HSM, and hosted identity/key administration still need dedicated work.
 
@@ -313,5 +315,5 @@ For the user install story, finish publishing in this order:
 1. Keep release assets and checksums generated by CI.
 2. Publish `@conu/cli` after the GitHub Release exists.
 3. Put public relay tests behind TLS termination and use `wss://` endpoints.
-4. Add distributed account control planes, distributed monitoring/dashboards, scheduled/distributed hosted mailbox retention policy beyond the local confirm-gated purge command, and distributed multi-instance session migration before opening a managed relay to everyone.
+4. Add distributed account control planes, distributed monitoring/dashboards, distributed hosted mailbox retention policy beyond the local audit/manual purge/scheduled purge workflows, and distributed multi-instance session migration before opening a managed relay to everyone.
 5. Add OS package managers, detached Linux package signatures, and auto-update policy after npm and release archives are stable.
