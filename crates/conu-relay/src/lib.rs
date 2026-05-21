@@ -39,6 +39,7 @@ const RELAY_MAILBOX_FILE_VERSION: &str = "1";
 const RELAY_SESSION_FILE_VERSION: &str = "1";
 const RELAY_CREDENTIALS_FILE_VERSION: &str = "1";
 const RELAY_ACCOUNTING_FILE_VERSION: &str = "1";
+const RELAY_ABUSE_FILE_VERSION: &str = "1";
 const HOSTED_TENANT_FILE_VERSION: &str = "1";
 const LOCAL_DEV_TOKEN: &str = "local-dev-token";
 const MIN_PUBLIC_BIND_TOKEN_LEN: usize = 24;
@@ -57,6 +58,8 @@ pub struct RelayConfig {
     pub mailbox_storage: RelayMailboxStorage,
     pub accounting_policy: RelayAccountingPolicy,
     pub accounting_storage: RelayAccountingStorage,
+    pub abuse_policy: RelayAbusePolicy,
+    pub abuse_storage: RelayAbuseStorage,
     pub admin: RelayAdminConfig,
 }
 
@@ -73,6 +76,8 @@ impl fmt::Debug for RelayConfig {
             .field("mailbox_storage", &self.mailbox_storage)
             .field("accounting_policy", &self.accounting_policy)
             .field("accounting_storage", &self.accounting_storage)
+            .field("abuse_policy", &self.abuse_policy)
+            .field("abuse_storage", &self.abuse_storage)
             .field("admin", &self.admin)
             .finish()
     }
@@ -767,6 +772,100 @@ impl fmt::Debug for RelayAccountingStorage {
     }
 }
 
+/// Metadata-only abuse/dashboard counter window for relay enforcement events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayAbusePolicy {
+    window: Duration,
+}
+
+impl RelayAbusePolicy {
+    pub fn new(window: Duration) -> Result<Self, RelayError> {
+        if window.is_zero() {
+            return Err(RelayError::InvalidConfig(
+                "relay abuse window must be greater than zero",
+            ));
+        }
+
+        Ok(Self { window })
+    }
+
+    fn window_start_unix(&self, now_unix: u64) -> u64 {
+        let window_secs = self.window.as_secs().max(1);
+        now_unix - (now_unix % window_secs)
+    }
+}
+
+impl Default for RelayAbusePolicy {
+    fn default() -> Self {
+        Self {
+            window: Duration::from_secs(DEFAULT_ACCOUNTING_WINDOW_SECS),
+        }
+    }
+}
+
+/// Optional persistence mode for metadata-only relay abuse/dashboard counters.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum RelayAbuseStorage {
+    #[default]
+    MemoryOnly,
+    FileBacked(PathBuf),
+}
+
+impl RelayAbuseStorage {
+    pub fn memory_only() -> Self {
+        Self::MemoryOnly
+    }
+
+    pub fn file_backed(path: impl Into<PathBuf>) -> Result<Self, RelayError> {
+        let path = path.into();
+        if path.as_os_str().is_empty() {
+            return Err(RelayError::InvalidConfig(
+                "relay abuse directory cannot be empty",
+            ));
+        }
+
+        Ok(Self::FileBacked(path))
+    }
+}
+
+impl fmt::Debug for RelayAbuseStorage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MemoryOnly => formatter.write_str("RelayAbuseStorage::MemoryOnly"),
+            Self::FileBacked(path) => formatter
+                .debug_struct("RelayAbuseStorage::FileBacked")
+                .field("path", path)
+                .finish(),
+        }
+    }
+}
+
+/// Metadata-only relay abuse/dashboard audit result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayAbuseAudit {
+    pub node_id: Option<String>,
+    pub records: usize,
+    pub window_started_unix: Option<u64>,
+    pub admin_unauthorized: u64,
+    pub admin_failed: u64,
+    pub unauthorized_sessions: u64,
+    pub credential_denied_sessions: u64,
+    pub tenant_denied_sessions: u64,
+    pub rate_limited_sessions: u64,
+    pub session_expired: u64,
+    pub quota_denied_forwards: u64,
+    pub undelivered_forwards: u64,
+    pub mailbox_rejected_forwards: u64,
+    pub malformed_client_frames: u64,
+    pub payload_displayed: bool,
+    pub token_displayed: bool,
+    pub token_hash_displayed: bool,
+    pub key_material_displayed: bool,
+    pub session_id_displayed: bool,
+    pub ciphertext_displayed: bool,
+    pub contents_displayed: bool,
+}
+
 /// Optional persistence mode for metadata-only authenticated relay session records.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub enum RelaySessionStorage {
@@ -863,6 +962,8 @@ impl RelayConfig {
             mailbox_storage: RelayMailboxStorage::default(),
             accounting_policy: RelayAccountingPolicy::default(),
             accounting_storage: RelayAccountingStorage::default(),
+            abuse_policy: RelayAbusePolicy::default(),
+            abuse_storage: RelayAbuseStorage::default(),
             admin: RelayAdminConfig::disabled(),
         })
     }
@@ -887,6 +988,8 @@ impl RelayConfig {
             mailbox_storage: RelayMailboxStorage::default(),
             accounting_policy: RelayAccountingPolicy::default(),
             accounting_storage: RelayAccountingStorage::default(),
+            abuse_policy: RelayAbusePolicy::default(),
+            abuse_storage: RelayAbuseStorage::default(),
             admin: RelayAdminConfig::disabled(),
         })
     }
@@ -916,6 +1019,8 @@ impl RelayConfig {
             mailbox_storage: RelayMailboxStorage::default(),
             accounting_policy: RelayAccountingPolicy::default(),
             accounting_storage: RelayAccountingStorage::default(),
+            abuse_policy: RelayAbusePolicy::default(),
+            abuse_storage: RelayAbuseStorage::default(),
             admin: RelayAdminConfig::disabled(),
         })
     }
@@ -952,6 +1057,16 @@ impl RelayConfig {
 
     pub fn with_accounting_storage(mut self, accounting_storage: RelayAccountingStorage) -> Self {
         self.accounting_storage = accounting_storage;
+        self
+    }
+
+    pub fn with_abuse_policy(mut self, abuse_policy: RelayAbusePolicy) -> Self {
+        self.abuse_policy = abuse_policy;
+        self
+    }
+
+    pub fn with_abuse_storage(mut self, abuse_storage: RelayAbuseStorage) -> Self {
+        self.abuse_storage = abuse_storage;
         self
     }
 
@@ -1590,6 +1705,110 @@ pub fn audit_hosted_tenants_file(
         key_material_displayed: false,
         contents_displayed: false,
     })
+}
+
+/// Summarize relay abuse/dashboard counters without exposing secrets, payloads,
+/// ciphertext bodies, token hashes, frame contents, or session ids.
+pub fn audit_relay_abuse_dir(
+    root: impl AsRef<Path>,
+    node_id: Option<&str>,
+) -> Result<RelayAbuseAudit, RelayError> {
+    let root = root.as_ref();
+    let node_id = node_id
+        .map(|value| validate_node_id(value.to_string()))
+        .transpose()?;
+    let mut audit = RelayAbuseAudit {
+        node_id,
+        records: 0,
+        window_started_unix: None,
+        admin_unauthorized: 0,
+        admin_failed: 0,
+        unauthorized_sessions: 0,
+        credential_denied_sessions: 0,
+        tenant_denied_sessions: 0,
+        rate_limited_sessions: 0,
+        session_expired: 0,
+        quota_denied_forwards: 0,
+        undelivered_forwards: 0,
+        mailbox_rejected_forwards: 0,
+        malformed_client_frames: 0,
+        payload_displayed: false,
+        token_displayed: false,
+        token_hash_displayed: false,
+        key_material_displayed: false,
+        session_id_displayed: false,
+        ciphertext_displayed: false,
+        contents_displayed: false,
+    };
+
+    if !root.exists() {
+        return Ok(audit);
+    }
+
+    let mut mixed_windows = false;
+    for entry in
+        fs::read_dir(root).map_err(|error| RelayError::io("read relay abuse directory", error))?
+    {
+        let entry = entry.map_err(|error| RelayError::io("read relay abuse entry", error))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("abuse") {
+            continue;
+        }
+
+        let Some(record) = read_abuse_file(&path)? else {
+            continue;
+        };
+        if audit
+            .node_id
+            .as_deref()
+            .is_some_and(|node_id| record.node_id.as_deref() != Some(node_id))
+        {
+            continue;
+        }
+
+        audit.records += 1;
+        if !mixed_windows {
+            audit.window_started_unix = match audit.window_started_unix {
+                None => Some(record.window_started_unix),
+                Some(existing) if existing == record.window_started_unix => Some(existing),
+                Some(_) => {
+                    mixed_windows = true;
+                    None
+                }
+            };
+        }
+        audit.admin_unauthorized = audit
+            .admin_unauthorized
+            .saturating_add(record.admin_unauthorized);
+        audit.admin_failed = audit.admin_failed.saturating_add(record.admin_failed);
+        audit.unauthorized_sessions = audit
+            .unauthorized_sessions
+            .saturating_add(record.unauthorized_sessions);
+        audit.credential_denied_sessions = audit
+            .credential_denied_sessions
+            .saturating_add(record.credential_denied_sessions);
+        audit.tenant_denied_sessions = audit
+            .tenant_denied_sessions
+            .saturating_add(record.tenant_denied_sessions);
+        audit.rate_limited_sessions = audit
+            .rate_limited_sessions
+            .saturating_add(record.rate_limited_sessions);
+        audit.session_expired = audit.session_expired.saturating_add(record.session_expired);
+        audit.quota_denied_forwards = audit
+            .quota_denied_forwards
+            .saturating_add(record.quota_denied_forwards);
+        audit.undelivered_forwards = audit
+            .undelivered_forwards
+            .saturating_add(record.undelivered_forwards);
+        audit.mailbox_rejected_forwards = audit
+            .mailbox_rejected_forwards
+            .saturating_add(record.mailbox_rejected_forwards);
+        audit.malformed_client_frames = audit
+            .malformed_client_frames
+            .saturating_add(record.malformed_client_frames);
+    }
+
+    Ok(audit)
 }
 
 fn hosted_tenant_registry_authorizes_node(
@@ -2593,6 +2812,8 @@ pub fn run_blocking(config: RelayConfig) -> Result<(), RelayError> {
         mailbox_storage: config.mailbox_storage,
         accounting_policy: config.accounting_policy,
         accounting_storage: config.accounting_storage,
+        abuse_policy: config.abuse_policy,
+        abuse_storage: config.abuse_storage,
         admin: config.admin,
     })?);
 
@@ -2640,6 +2861,8 @@ pub fn spawn_relay(config: RelayConfig) -> Result<RelayHandle, RelayError> {
         mailbox_storage: config.mailbox_storage,
         accounting_policy: config.accounting_policy,
         accounting_storage: config.accounting_storage,
+        abuse_policy: config.abuse_policy,
+        abuse_storage: config.abuse_storage,
         admin: config.admin,
     })?);
 
@@ -2690,6 +2913,8 @@ struct RelayHubConfig {
     mailbox_storage: RelayMailboxStorage,
     accounting_policy: RelayAccountingPolicy,
     accounting_storage: RelayAccountingStorage,
+    abuse_policy: RelayAbusePolicy,
+    abuse_storage: RelayAbuseStorage,
     admin: RelayAdminConfig,
 }
 
@@ -2702,11 +2927,14 @@ struct RelayHub {
     mailbox_storage: RelayMailboxStorage,
     accounting_policy: RelayAccountingPolicy,
     accounting_storage: RelayAccountingStorage,
+    abuse_policy: RelayAbusePolicy,
+    abuse_storage: RelayAbuseStorage,
     admin: RelayAdminConfig,
     connections: Mutex<ConnectionCounts>,
     state: Mutex<RelayHubState>,
     sessions: Mutex<RelaySessionState>,
     accounting: Mutex<RelayAccountingState>,
+    abuse: Mutex<RelayAbuseState>,
     admin_manifest: Mutex<()>,
 }
 
@@ -2722,11 +2950,14 @@ impl fmt::Debug for RelayHub {
             .field("mailbox_storage", &self.mailbox_storage)
             .field("accounting_policy", &self.accounting_policy)
             .field("accounting_storage", &self.accounting_storage)
+            .field("abuse_policy", &self.abuse_policy)
+            .field("abuse_storage", &self.abuse_storage)
             .field("admin", &self.admin)
             .field("connections", &"<connection-counts>")
             .field("state", &"<relay-hub-state>")
             .field("sessions", &"<relay-session-state>")
             .field("accounting", &"<relay-accounting-state>")
+            .field("abuse", &"<relay-abuse-state>")
             .field("admin_manifest", &"<admin-manifest-lock>")
             .finish()
     }
@@ -2738,6 +2969,7 @@ impl RelayHub {
         let sessions = RelaySessionState::load(&config.session_storage, config.session_policy)?;
         let accounting =
             RelayAccountingState::load(&config.accounting_storage, config.accounting_policy)?;
+        let abuse = RelayAbuseState::load(&config.abuse_storage, config.abuse_policy)?;
         Ok(Self {
             auth: config.auth,
             limits: config.limits,
@@ -2747,11 +2979,14 @@ impl RelayHub {
             mailbox_storage: config.mailbox_storage,
             accounting_policy: config.accounting_policy,
             accounting_storage: config.accounting_storage,
+            abuse_policy: config.abuse_policy,
+            abuse_storage: config.abuse_storage,
             admin: config.admin,
             connections: Mutex::new(ConnectionCounts::default()),
             state: Mutex::new(state),
             sessions: Mutex::new(sessions),
             accounting: Mutex::new(accounting),
+            abuse: Mutex::new(abuse),
             admin_manifest: Mutex::new(()),
         })
     }
@@ -2925,11 +3160,20 @@ impl RelayHub {
         )
     }
 
+    fn record_abuse(&self, node_id: Option<&str>, kind: RelayAbuseKind) -> Result<(), RelayError> {
+        let mut abuse = self
+            .abuse
+            .lock()
+            .map_err(|_| RelayError::Protocol("relay abuse counter lock failed".to_string()))?;
+        abuse.record_event(node_id, kind, self.abuse_policy, &self.abuse_storage)
+    }
+
     fn handle_admin_request(
         &self,
         request: &RelayAdminRequest,
     ) -> Result<RelayAdminResult, RelayError> {
         if !self.admin.authorize(&request.admin_token) {
+            let _ = self.record_abuse(None, RelayAbuseKind::AdminUnauthorized);
             return Err(RelayError::Protocol("admin_unauthorized".to_string()));
         }
         let credentials_file = self
@@ -3107,6 +3351,10 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
         if authenticated_at
             .is_some_and(|started| started.elapsed() >= hub.session_policy.max_session_ttl)
         {
+            let _ = hub.record_abuse(
+                session_node.as_ref().map(|(node_id, _)| node_id.as_str()),
+                RelayAbuseKind::SessionExpired,
+            );
             write_text_frame(
                 &mut stream,
                 &render_server_frame(&RelayServerFrame::Error {
@@ -3117,6 +3365,10 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
         }
 
         if !rate_limiter.allow() {
+            let _ = hub.record_abuse(
+                session_node.as_ref().map(|(node_id, _)| node_id.as_str()),
+                RelayAbuseKind::RateLimitedSession,
+            );
             write_text_frame(
                 &mut stream,
                 &render_server_frame(&RelayServerFrame::Error {
@@ -3154,6 +3406,7 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                         break;
                     }
                     Err(_) => {
+                        let _ = hub.record_abuse(None, RelayAbuseKind::AdminFailed);
                         write_text_frame(
                             &mut stream,
                             &render_server_frame(&RelayServerFrame::Error {
@@ -3175,6 +3428,10 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                     break;
                 }
                 if !hub.auth.authorize(&hello.node_id, &hello.auth_token) {
+                    let _ = hub.record_abuse(
+                        Some(&hello.node_id),
+                        RelayAbuseKind::CredentialDeniedSession,
+                    );
                     write_text_frame(
                         &mut stream,
                         &render_server_frame(&RelayServerFrame::Error {
@@ -3186,6 +3443,10 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                 if let Some(tenants_file) = hub.admin.tenants_file() {
                     if hosted_tenant_registry_authorizes_node(tenants_file, &hello.node_id).is_err()
                     {
+                        let _ = hub.record_abuse(
+                            Some(&hello.node_id),
+                            RelayAbuseKind::TenantDeniedSession,
+                        );
                         write_text_frame(
                             &mut stream,
                             &render_server_frame(&RelayServerFrame::Error {
@@ -3244,6 +3505,10 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                 };
                 let accounted_payload_bytes = forwarded.payload_bytes as u64;
                 if !hub.quota_allows_forward(&forwarded.from_node_id, accounted_payload_bytes) {
+                    let _ = hub.record_abuse(
+                        Some(&forwarded.from_node_id),
+                        RelayAbuseKind::QuotaDeniedForward,
+                    );
                     write_text_frame(
                         &mut stream,
                         &render_server_frame(&RelayServerFrame::Undelivered {
@@ -3294,6 +3559,16 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                         )?;
                     }
                     RelayForwardDelivery::Undelivered(reason) => {
+                        let _ = hub.record_abuse(
+                            Some(&forwarded.from_node_id),
+                            RelayAbuseKind::UndeliveredForward,
+                        );
+                        if reason.starts_with("mailbox_") {
+                            let _ = hub.record_abuse(
+                                Some(&forwarded.from_node_id),
+                                RelayAbuseKind::MailboxRejectedForward,
+                            );
+                        }
                         write_text_frame(
                             &mut stream,
                             &render_server_frame(&RelayServerFrame::Undelivered {
@@ -3309,6 +3584,7 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                 write_text_frame(&mut stream, &render_server_frame(&RelayServerFrame::Pong))?;
             }
             Err(error) => {
+                let _ = hub.record_abuse(None, RelayAbuseKind::MalformedClientFrame);
                 write_text_frame(
                     &mut stream,
                     &render_server_frame(&RelayServerFrame::Error {
@@ -3812,6 +4088,170 @@ impl RelayAccountingRecord {
             bytes_mailboxed: 0,
         }
     }
+}
+
+#[derive(Debug)]
+struct RelayAbuseState {
+    window_started_unix: u64,
+    records: HashMap<String, RelayAbuseRecord>,
+}
+
+impl RelayAbuseState {
+    fn load(storage: &RelayAbuseStorage, policy: RelayAbusePolicy) -> Result<Self, RelayError> {
+        let window_started_unix = policy.window_start_unix(current_unix_seconds());
+        let mut state = Self {
+            window_started_unix,
+            records: HashMap::new(),
+        };
+        let RelayAbuseStorage::FileBacked(root) = storage else {
+            return Ok(state);
+        };
+
+        fs::create_dir_all(root)
+            .map_err(|error| RelayError::io("create relay abuse directory", error))?;
+        for entry in fs::read_dir(root)
+            .map_err(|error| RelayError::io("read relay abuse directory", error))?
+        {
+            let entry = entry.map_err(|error| RelayError::io("read relay abuse entry", error))?;
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("abuse") {
+                continue;
+            }
+            let Some(record) = read_abuse_file(&path)? else {
+                let _ = remove_mailbox_file(&path);
+                continue;
+            };
+            if record.window_started_unix != window_started_unix {
+                let _ = remove_mailbox_file(&path);
+                continue;
+            }
+            state
+                .records
+                .insert(abuse_record_key(record.node_id.as_deref()), record);
+        }
+
+        Ok(state)
+    }
+
+    fn reset_window_if_needed(
+        &mut self,
+        policy: RelayAbusePolicy,
+        storage: &RelayAbuseStorage,
+    ) -> Result<(), RelayError> {
+        let window_started_unix = policy.window_start_unix(current_unix_seconds());
+        if self.window_started_unix != window_started_unix {
+            self.window_started_unix = window_started_unix;
+            self.records.clear();
+            purge_abuse_storage(storage)?;
+        }
+        Ok(())
+    }
+
+    fn record_event(
+        &mut self,
+        node_id: Option<&str>,
+        kind: RelayAbuseKind,
+        policy: RelayAbusePolicy,
+        storage: &RelayAbuseStorage,
+    ) -> Result<(), RelayError> {
+        self.reset_window_if_needed(policy, storage)?;
+        let node_id = node_id.and_then(|value| validate_node_id(value.to_string()).ok());
+        let key = abuse_record_key(node_id.as_deref());
+        let record = self
+            .records
+            .entry(key)
+            .or_insert_with(|| RelayAbuseRecord::new(node_id, self.window_started_unix));
+        record.record(kind);
+        persist_abuse_record(storage, record)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelayAbuseRecord {
+    node_id: Option<String>,
+    window_started_unix: u64,
+    admin_unauthorized: u64,
+    admin_failed: u64,
+    unauthorized_sessions: u64,
+    credential_denied_sessions: u64,
+    tenant_denied_sessions: u64,
+    rate_limited_sessions: u64,
+    session_expired: u64,
+    quota_denied_forwards: u64,
+    undelivered_forwards: u64,
+    mailbox_rejected_forwards: u64,
+    malformed_client_frames: u64,
+}
+
+impl RelayAbuseRecord {
+    fn new(node_id: Option<String>, window_started_unix: u64) -> Self {
+        Self {
+            node_id,
+            window_started_unix,
+            admin_unauthorized: 0,
+            admin_failed: 0,
+            unauthorized_sessions: 0,
+            credential_denied_sessions: 0,
+            tenant_denied_sessions: 0,
+            rate_limited_sessions: 0,
+            session_expired: 0,
+            quota_denied_forwards: 0,
+            undelivered_forwards: 0,
+            mailbox_rejected_forwards: 0,
+            malformed_client_frames: 0,
+        }
+    }
+
+    fn record(&mut self, kind: RelayAbuseKind) {
+        match kind {
+            RelayAbuseKind::AdminUnauthorized => {
+                self.admin_unauthorized = self.admin_unauthorized.saturating_add(1);
+            }
+            RelayAbuseKind::AdminFailed => {
+                self.admin_failed = self.admin_failed.saturating_add(1);
+            }
+            RelayAbuseKind::CredentialDeniedSession => {
+                self.unauthorized_sessions = self.unauthorized_sessions.saturating_add(1);
+                self.credential_denied_sessions = self.credential_denied_sessions.saturating_add(1);
+            }
+            RelayAbuseKind::TenantDeniedSession => {
+                self.unauthorized_sessions = self.unauthorized_sessions.saturating_add(1);
+                self.tenant_denied_sessions = self.tenant_denied_sessions.saturating_add(1);
+            }
+            RelayAbuseKind::RateLimitedSession => {
+                self.rate_limited_sessions = self.rate_limited_sessions.saturating_add(1);
+            }
+            RelayAbuseKind::SessionExpired => {
+                self.session_expired = self.session_expired.saturating_add(1);
+            }
+            RelayAbuseKind::QuotaDeniedForward => {
+                self.quota_denied_forwards = self.quota_denied_forwards.saturating_add(1);
+            }
+            RelayAbuseKind::UndeliveredForward => {
+                self.undelivered_forwards = self.undelivered_forwards.saturating_add(1);
+            }
+            RelayAbuseKind::MailboxRejectedForward => {
+                self.mailbox_rejected_forwards = self.mailbox_rejected_forwards.saturating_add(1);
+            }
+            RelayAbuseKind::MalformedClientFrame => {
+                self.malformed_client_frames = self.malformed_client_frames.saturating_add(1);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelayAbuseKind {
+    AdminUnauthorized,
+    AdminFailed,
+    CredentialDeniedSession,
+    TenantDeniedSession,
+    RateLimitedSession,
+    SessionExpired,
+    QuotaDeniedForward,
+    UndeliveredForward,
+    MailboxRejectedForward,
+    MalformedClientFrame,
 }
 
 #[derive(Debug)]
@@ -4333,6 +4773,159 @@ fn parse_optional_accounting_u64(contents: &str, key: &str) -> Result<Option<u64
             value
                 .parse::<u64>()
                 .map_err(|_| RelayError::Protocol("relay accounting entry is invalid".to_string()))
+        })
+        .transpose()
+}
+
+fn persist_abuse_record(
+    storage: &RelayAbuseStorage,
+    record: &RelayAbuseRecord,
+) -> Result<(), RelayError> {
+    let RelayAbuseStorage::FileBacked(root) = storage else {
+        return Ok(());
+    };
+
+    fs::create_dir_all(root)
+        .map_err(|error| RelayError::io("create relay abuse directory", error))?;
+    let path = abuse_record_path(root, record.node_id.as_deref());
+    let contents = render_abuse_file(record);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|error| RelayError::io("write relay abuse file", error))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| RelayError::io("write relay abuse file", error))
+}
+
+fn purge_abuse_storage(storage: &RelayAbuseStorage) -> Result<(), RelayError> {
+    let RelayAbuseStorage::FileBacked(root) = storage else {
+        return Ok(());
+    };
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in
+        fs::read_dir(root).map_err(|error| RelayError::io("read relay abuse directory", error))?
+    {
+        let entry = entry.map_err(|error| RelayError::io("read relay abuse entry", error))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("abuse") {
+            remove_mailbox_file(&path)
+                .map_err(|error| RelayError::io("remove relay abuse file", error))?;
+        }
+    }
+    Ok(())
+}
+
+fn abuse_record_key(node_id: Option<&str>) -> String {
+    match node_id {
+        Some(node_id) => format!("node:{node_id}"),
+        None => "global".to_string(),
+    }
+}
+
+fn abuse_record_path(root: &Path, node_id: Option<&str>) -> PathBuf {
+    match node_id {
+        Some(node_id) => root.join(format!("node-{}.abuse", sanitize_identifier(node_id))),
+        None => root.join("global.abuse"),
+    }
+}
+
+fn render_abuse_file(record: &RelayAbuseRecord) -> String {
+    let mut contents = format!(
+        "version = \"{}\"\nscope = \"{}\"\n",
+        RELAY_ABUSE_FILE_VERSION,
+        if record.node_id.is_some() {
+            "node"
+        } else {
+            "global"
+        }
+    );
+    if let Some(node_id) = record.node_id.as_deref() {
+        contents.push_str(&format!("node_id = \"{}\"\n", node_id));
+    }
+    contents.push_str(&format!(
+        "window_started_unix = {}\nadmin_unauthorized = {}\nadmin_failed = {}\nunauthorized_sessions = {}\ncredential_denied_sessions = {}\ntenant_denied_sessions = {}\nrate_limited_sessions = {}\nsession_expired = {}\nquota_denied_forwards = {}\nundelivered_forwards = {}\nmailbox_rejected_forwards = {}\nmalformed_client_frames = {}\npayload_displayed = false\ntoken_displayed = false\ntoken_hash_displayed = false\nkey_material_displayed = false\nsession_id_displayed = false\nciphertext_displayed = false\ncontents_displayed = false\n",
+        record.window_started_unix,
+        record.admin_unauthorized,
+        record.admin_failed,
+        record.unauthorized_sessions,
+        record.credential_denied_sessions,
+        record.tenant_denied_sessions,
+        record.rate_limited_sessions,
+        record.session_expired,
+        record.quota_denied_forwards,
+        record.undelivered_forwards,
+        record.mailbox_rejected_forwards,
+        record.malformed_client_frames
+    ));
+    contents
+}
+
+fn read_abuse_file(path: &Path) -> Result<Option<RelayAbuseRecord>, RelayError> {
+    let contents =
+        fs::read_to_string(path).map_err(|error| RelayError::io("read relay abuse file", error))?;
+    let version = mailbox_value(&contents, "version").unwrap_or_default();
+    if version != RELAY_ABUSE_FILE_VERSION {
+        return Ok(None);
+    }
+    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false")
+        || mailbox_value(&contents, "token_displayed").as_deref() != Some("false")
+        || mailbox_value(&contents, "token_hash_displayed").as_deref() != Some("false")
+        || mailbox_value(&contents, "key_material_displayed").as_deref() != Some("false")
+        || mailbox_value(&contents, "session_id_displayed").as_deref() != Some("false")
+        || mailbox_value(&contents, "ciphertext_displayed").as_deref() != Some("false")
+        || mailbox_value(&contents, "contents_displayed").as_deref() != Some("false")
+    {
+        return Ok(None);
+    }
+    let scope = mailbox_value(&contents, "scope").unwrap_or_else(|| "node".to_string());
+    let node_id = match scope.as_str() {
+        "global" => None,
+        "node" => {
+            let Some(node_id) = mailbox_value(&contents, "node_id") else {
+                return Ok(None);
+            };
+            let Ok(node_id) = validate_node_id(node_id) else {
+                return Ok(None);
+            };
+            Some(node_id)
+        }
+        _ => return Ok(None),
+    };
+
+    Ok(Some(RelayAbuseRecord {
+        node_id,
+        window_started_unix: parse_abuse_u64(&contents, "window_started_unix")?,
+        admin_unauthorized: parse_abuse_u64(&contents, "admin_unauthorized")?,
+        admin_failed: parse_abuse_u64(&contents, "admin_failed")?,
+        unauthorized_sessions: parse_abuse_u64(&contents, "unauthorized_sessions")?,
+        credential_denied_sessions: parse_abuse_u64(&contents, "credential_denied_sessions")?,
+        tenant_denied_sessions: parse_abuse_u64(&contents, "tenant_denied_sessions")?,
+        rate_limited_sessions: parse_abuse_u64(&contents, "rate_limited_sessions")?,
+        session_expired: parse_abuse_u64(&contents, "session_expired")?,
+        quota_denied_forwards: parse_abuse_u64(&contents, "quota_denied_forwards")?,
+        undelivered_forwards: parse_optional_abuse_u64(&contents, "undelivered_forwards")?
+            .unwrap_or(0),
+        mailbox_rejected_forwards: parse_abuse_u64(&contents, "mailbox_rejected_forwards")?,
+        malformed_client_frames: parse_abuse_u64(&contents, "malformed_client_frames")?,
+    }))
+}
+
+fn parse_abuse_u64(contents: &str, key: &str) -> Result<u64, RelayError> {
+    mailbox_value(contents, key)
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| RelayError::Protocol("relay abuse entry is invalid".to_string()))
+}
+
+fn parse_optional_abuse_u64(contents: &str, key: &str) -> Result<Option<u64>, RelayError> {
+    mailbox_value(contents, key)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| RelayError::Protocol("relay abuse entry is invalid".to_string()))
         })
         .transpose()
 }
@@ -5686,6 +6279,166 @@ token_displayed = true\n",
     }
 
     #[test]
+    fn relay_file_backed_abuse_records_denials_without_secret_material() {
+        let abuse_dir = test_home("relay-abuse-dashboard").join("abuse");
+        let abuse_storage =
+            RelayAbuseStorage::file_backed(abuse_dir.clone()).expect("abuse storage config");
+        let accounting_policy = RelayAccountingPolicy::new(Duration::from_secs(60), Some(2), None)
+            .expect("accounting policy");
+        let mailbox_policy =
+            RelayMailboxPolicy::new(1, Duration::from_secs(60)).expect("mailbox policy");
+        let relay = spawn_relay(
+            RelayConfig::new("127.0.0.1:0", "test-token")
+                .expect("valid config")
+                .with_abuse_storage(abuse_storage.clone())
+                .with_accounting_policy(accounting_policy)
+                .with_mailbox_policy(mailbox_policy),
+        )
+        .expect("relay starts");
+
+        let mut denied = connect_client(relay.local_addr());
+        write_client_text(
+            &mut denied,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new("node.denied", "wrong-secret-token").expect("hello"),
+            )),
+        );
+        let denied_response = read_server_text(&mut denied);
+        assert!(denied_response.contains("ERROR reason=unauthorized"));
+        assert!(!denied_response.contains("wrong-secret-token"));
+
+        let mut node_a = connect_client(relay.local_addr());
+        write_client_text(
+            &mut node_a,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new("node.a", "test-token").expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut node_a).contains("WELCOME"));
+
+        write_client_text(
+            &mut node_a,
+            &render_client_frame(&encrypted_forward_frame("node.offline", "env.abuse.1")),
+        );
+        assert!(read_server_text(&mut node_a).contains("SENT"));
+        write_client_text(
+            &mut node_a,
+            &render_client_frame(&encrypted_forward_frame("node.offline", "env.abuse.2")),
+        );
+        let mailbox_rejected = read_server_text(&mut node_a);
+        assert!(mailbox_rejected.contains("reason=mailbox_full"));
+
+        let mut node_b = connect_client(relay.local_addr());
+        write_client_text(
+            &mut node_b,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new("node.b", "test-token").expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut node_b).contains("WELCOME"));
+        write_client_text(
+            &mut node_a,
+            &render_client_frame(&encrypted_forward_frame("node.b", "env.quota.audit.1")),
+        );
+        assert!(read_server_text(&mut node_b).contains("ENVELOPE"));
+        assert!(read_server_text(&mut node_a).contains("SENT"));
+        write_client_text(
+            &mut node_a,
+            &render_client_frame(&encrypted_forward_frame("node.b", "env.quota.audit.2")),
+        );
+        let quota_rejected = read_server_text(&mut node_a);
+        assert!(quota_rejected.contains("reason=quota_exceeded"));
+        drop(node_a);
+        drop(node_b);
+        drop(denied);
+        drop(relay);
+
+        let rate_relay = spawn_relay(
+            RelayConfig::new("127.0.0.1:0", "test-token")
+                .expect("valid config")
+                .with_abuse_storage(abuse_storage.clone())
+                .with_limits(RelayLimits::new(8, 8, 1).expect("limits")),
+        )
+        .expect("rate relay starts");
+        let mut rate_client = connect_client(rate_relay.local_addr());
+        write_client_text(
+            &mut rate_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new("node.rate", "test-token").expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut rate_client).contains("WELCOME"));
+        write_client_text(
+            &mut rate_client,
+            "PING payload_text=private-message-contents",
+        );
+        let rate_limited = read_server_text(&mut rate_client);
+        assert!(rate_limited.contains("ERROR reason=rate_limited"));
+        drop(rate_client);
+        drop(rate_relay);
+
+        let session_policy =
+            RelaySessionPolicy::new(Duration::from_secs(5), Duration::from_millis(10))
+                .expect("session policy");
+        let expiring_relay = spawn_relay(
+            RelayConfig::new("127.0.0.1:0", "test-token")
+                .expect("valid config")
+                .with_abuse_storage(abuse_storage.clone())
+                .with_session_policy(session_policy),
+        )
+        .expect("expiring relay starts");
+        let mut expiring = connect_client(expiring_relay.local_addr());
+        write_client_text(
+            &mut expiring,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new("node.expiring", "test-token").expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut expiring).contains("WELCOME"));
+        thread::sleep(Duration::from_millis(50));
+        write_client_text(&mut expiring, "PING payload_text=private-message-contents");
+        assert!(read_server_text(&mut expiring).contains("ERROR reason=session_expired"));
+        drop(expiring);
+        drop(expiring_relay);
+
+        let audit = audit_relay_abuse_dir(&abuse_dir, None).expect("abuse audit reads");
+        assert_eq!(audit.unauthorized_sessions, 1);
+        assert_eq!(audit.credential_denied_sessions, 1);
+        assert_eq!(audit.mailbox_rejected_forwards, 1);
+        assert_eq!(audit.undelivered_forwards, 1);
+        assert_eq!(audit.quota_denied_forwards, 1);
+        assert_eq!(audit.rate_limited_sessions, 1);
+        assert_eq!(audit.session_expired, 1);
+        assert!(!audit.payload_displayed);
+        assert!(!audit.token_displayed);
+        assert!(!audit.token_hash_displayed);
+        assert!(!audit.key_material_displayed);
+        assert!(!audit.session_id_displayed);
+        assert!(!audit.ciphertext_displayed);
+        assert!(!audit.contents_displayed);
+
+        let node_a_audit =
+            audit_relay_abuse_dir(&abuse_dir, Some("node.a")).expect("node audit reads");
+        assert_eq!(node_a_audit.quota_denied_forwards, 1);
+        assert_eq!(node_a_audit.mailbox_rejected_forwards, 1);
+        assert_eq!(node_a_audit.credential_denied_sessions, 0);
+
+        let joined = read_abuse_texts(&abuse_dir).join("\n");
+        assert!(joined.contains("payload_displayed = false"));
+        assert!(joined.contains("token_displayed = false"));
+        assert!(joined.contains("token_hash_displayed = false"));
+        assert!(joined.contains("key_material_displayed = false"));
+        assert!(joined.contains("session_id_displayed = false"));
+        assert!(joined.contains("ciphertext_displayed = false"));
+        assert!(joined.contains("contents_displayed = false"));
+        assert!(!joined.contains("wrong-secret-token"));
+        assert!(!joined.contains("test-token"));
+        assert!(!joined.contains("private-message-contents"));
+        assert!(!joined.contains("ciphertext_body"));
+        assert!(!joined.contains("token_sha256_hex"));
+    }
+
+    #[test]
     fn relay_resumes_same_node_session_and_accounts_metadata_only() {
         let accounting_dir = test_home("relay-resume-accounting").join("accounting");
         let accounting_storage =
@@ -6725,6 +7478,20 @@ token_displayed = true\n",
             let path = entry.expect("session entry reads").path();
             if path.extension().and_then(|value| value.to_str()) == Some("session") {
                 contents.push(fs::read_to_string(path).expect("session file reads"));
+            }
+        }
+        contents
+    }
+
+    fn read_abuse_texts(root: &Path) -> Vec<String> {
+        let mut contents = Vec::new();
+        if !root.exists() {
+            return contents;
+        }
+        for entry in fs::read_dir(root).expect("abuse root reads") {
+            let path = entry.expect("abuse entry reads").path();
+            if path.extension().and_then(|value| value.to_str()) == Some("abuse") {
+                contents.push(fs::read_to_string(path).expect("abuse file reads"));
             }
         }
         contents

@@ -19,6 +19,8 @@ docker run --rm -p 8787:8787 \
   -e CONU_RELAY_ACCOUNTING_WINDOW_SECONDS=86400 \
   -e CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE=10000 \
   -e CONU_RELAY_MAX_BYTES_SENT_PER_NODE=1073741824 \
+  -e CONU_RELAY_ABUSE_DIR=/var/lib/conu-relay/abuse \
+  -e CONU_RELAY_ABUSE_WINDOW_SECONDS=86400 \
   -v conu-relay-data:/var/lib/conu-relay \
   conu-relay
 ```
@@ -54,6 +56,7 @@ Current relay limits still apply:
 - The relay can persist metadata-only per-node session files under `CONU_RELAY_SESSION_STATE_DIR` for same-node resume after relay restarts until the session TTL expires. Session files contain node ids, relay session ids, timestamps, and display guards only, not tokens, token hashes, payloads, ciphertext bodies, or private keys.
 - The relay has a bounded offline mailbox for peer-encrypted envelopes. The Docker image defaults `CONU_RELAY_MAILBOX_DIR` to `/var/lib/conu-relay/mailbox`; mount `/var/lib/conu-relay` to keep queued ciphertext envelopes across container restarts.
 - The relay can persist metadata-only per-node accounting files under `CONU_RELAY_ACCOUNTING_DIR` and enforce optional per-window sent-envelope or sent-byte quotas. Accounting files contain node ids, authenticated/resumed session counters, envelope counters, byte counters, and display guards only, not tokens, token hashes, session ids, or payload/ciphertext bodies.
+- The relay can persist metadata-only abuse/dashboard counter files under `CONU_RELAY_ABUSE_DIR` and render them with `conu-relay --abuse-audit --abuse-dir <path>`. Abuse files contain aggregate enforcement counters, optional node ids, window starts, and display guards only, not tokens, token hashes, admin tokens, session ids, payloads, ciphertext bodies, private keys, or frame contents.
 - Daemon reconnects to the same relay endpoint can resume a prior same-node relay session when the daemon still has the resume hint and the relay has in-memory or file-backed session state. Cross-node resume attempts receive a new session instead.
 - The relay supports offline scoped credential issuance and manifest upsert/rotate/revoke helpers through `conu-relay --issue-credential` and `conu-relay --revoke-credential`, account-scoped online issue/rotate/revoke/audit through `CONU_RELAY_ADMIN_TOKEN` plus `CONU_RELAY_CREDENTIALS_FILE`, live-reloaded per-node scoped credentials through a hashed `CONU_RELAY_CREDENTIALS_FILE`, compatibility `CONU_RELAY_CREDENTIALS`, and shared-token local tests through `CONU_RELAY_TOKEN`.
 - Non-loopback Docker binds require custom shared or scoped tokens with at least 24 characters; `local-dev-token` is loopback-only.

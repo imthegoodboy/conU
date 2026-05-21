@@ -38,6 +38,7 @@ Online admin lifecycle requires the live credential manifest:
 ```powershell
 $env:CONU_RELAY_CREDENTIALS_FILE = "C:\conu-relay\credentials.toml"
 $env:CONU_RELAY_TENANTS_FILE = "C:\conu-relay\tenants.toml"
+$env:CONU_RELAY_ABUSE_DIR = "C:\conu-relay\abuse"
 $env:CONU_RELAY_ADMIN_TOKEN = (Get-Content -Raw C:\secure\relay-admin.token).Trim()
 conu-relay --serve 0.0.0.0:8787
 ```
@@ -133,6 +134,24 @@ They never report raw node tokens, token hashes, admin tokens, payload plaintext
 - Rotate refuses to move an existing node credential to a different account.
 - Revoked, expired, missing, malformed, public-bind-invalid, or tenant-revoked credentials fail closed for new `HELLO` sessions.
 
+## Abuse Audit Foundation
+
+Managed relay operators can enable a local metadata-only abuse/dashboard counter store:
+
+```powershell
+$env:CONU_RELAY_ABUSE_DIR = "C:\conu-relay\abuse"
+$env:CONU_RELAY_ABUSE_WINDOW_SECONDS = "86400"
+
+conu-relay --abuse-audit `
+  --abuse-dir C:\conu-relay\abuse `
+  --node node-a-id `
+  --json
+```
+
+The relay increments counters for admin unauthorized attempts, admin failures, credential-denied sessions, tenant-denied sessions, rate-limited sessions, session expiry, quota-denied forwards, undelivered forwards, mailbox rejects, and malformed client frames. Abuse files and audit output contain aggregate counters, optional node ids, a window start, and false display guards only. They never contain raw node tokens, token hashes, admin tokens, private keys, session ids, payloads, ciphertext bodies, arbitrary frame contents, message text, stream chunks, or room-event plaintext.
+
+This is a single-relay file-backed foundation for operator visibility. It is not distributed alerting, adaptive throttling, account suspension, tenant-wide workflow automation, or a hosted dashboard service yet.
+
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds a single-writer hosted tenant registry foundation. Public managed hosting still needs distributed tenant lifecycle, hosted dashboards and abuse workflows, distributed multi-instance session migration, distributed accounting, hosted mailbox retention policy, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant and abuse-audit foundations. Public managed hosting still needs distributed tenant lifecycle, hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, hosted mailbox retention policy, full hosted identity/key administration, and managed direct NAT traversal.
