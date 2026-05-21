@@ -250,7 +250,7 @@ docker run --rm -p 8787:8787 \
   conu-relay
 ```
 
-For a managed relay, also provide `CONU_RELAY_ADMIN_TOKEN` from your secret manager and keep `CONU_RELAY_CREDENTIALS_FILE` enabled. The online admin commands in `docs/hosted-relay-account-auth.md` issue, rotate, revoke, and audit account-scoped node credentials by sending only token hash metadata to the relay.
+For a managed relay, also provide `CONU_RELAY_ADMIN_TOKEN` from your secret manager and keep `CONU_RELAY_CREDENTIALS_FILE` enabled. Optionally set `CONU_RELAY_TENANTS_FILE` to a protected tenant registry file. The online admin commands in `docs/hosted-relay-account-auth.md` issue, rotate, revoke, and audit account-scoped node credentials by sending only token hash metadata to the relay; the tenant commands in the same doc manage account, node, hosted permission, and public key-id metadata without granting local peer policy.
 
 ## Current Hosting Limit
 
@@ -258,11 +258,11 @@ The built-in client accepts `ws://` and `wss://` relay endpoints. `wss://` uses 
 
 Before running a managed public relay, conU still needs:
 
-- Distributed hosted account control planes and tenant lifecycle beyond the current single-relay file-backed account metadata, online credential issue/rotate/revoke/audit APIs, offline `conu-relay --issue-credential` helper, `--revoke-credential`, and live-reloaded credential manifest.
+- Distributed hosted account control planes and tenant lifecycle beyond the current single-relay file-backed account metadata, hosted tenant registry, online credential issue/rotate/revoke/audit APIs, offline `conu-relay --issue-credential` helper, `--revoke-credential`, and live-reloaded credential manifest.
 - Managed hosted quotas, abuse monitoring, dashboards, and adaptive response beyond the current self-hosted connection/frame caps and per-node accounting quotas.
 - Distributed hosted relay session migration and accounting beyond the current idle-timeout, max-TTL session policy, same-node resume hints, file-backed session records, and authenticated/resumed session counters.
 - Managed hosted mailbox retention/accounting dashboards beyond the current self-hosted durable ciphertext files and metadata-only mailbox counters.
-- Multi-tenant hosted permission administration beyond the current local peer and room topic policy files.
+- Hosted dashboards and distributed permission administration beyond the current single-writer tenant registry plus local peer and room topic policy files.
 - Hosted managed key administration and hardware-backed key policy. Windows local key and stored relay credential files wrap secret bytes with current-user DPAPI, macOS uses user Keychain, Linux uses Secret Service when available, and non-Windows operators can still configure `CONU_SECRET_WRAP_KEY_HEX` or `CONU_SECRET_WRAP_KEY_FILE` for a user-managed encrypted fallback. Secure Enclave, HSM, and hosted identity/key administration still need dedicated work.
 
 Until those are complete, the best real-world test setup is a self-hosted relay behind TLS on a trusted VPS or a private network relay, using signed peer-card trust, explicit peer policy grants, optional local room topic policy grants, and peer-encrypted messages, stream chunks, and room events only.

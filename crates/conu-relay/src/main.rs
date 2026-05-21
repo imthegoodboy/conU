@@ -9,10 +9,13 @@ use conu_core::relay::{
     RelayAdminRequest, RelayAdminResult, RelayClientFrame, RelayServerFrame, RelayWebSocketClient,
 };
 use conu_relay::{
-    CredentialManifestUpdate, IssuedRelayCredential, RelayAccountingPolicy, RelayAccountingStorage,
+    CredentialManifestUpdate, HostedTenantAudit, HostedTenantManifestUpdate,
+    HostedTenantPermissions, IssuedRelayCredential, RelayAccountingPolicy, RelayAccountingStorage,
     RelayConfig, RelayCredential, RelayMailboxPolicy, RelayMailboxStorage, RelaySessionPolicy,
-    RelaySessionStorage, issue_relay_credential, relay_credential_manifest_contains_node,
-    relay_token_sha256_hex, revoke_relay_credential_in_file,
+    RelaySessionStorage, audit_hosted_tenants_file, issue_relay_credential,
+    relay_credential_manifest_contains_node, relay_token_sha256_hex, revoke_hosted_tenant_in_file,
+    revoke_hosted_tenant_node_in_file, revoke_relay_credential_in_file,
+    upsert_hosted_tenant_in_file, upsert_hosted_tenant_node_in_file,
     upsert_issued_relay_credential_in_file, write_issued_relay_token_file,
 };
 
@@ -81,6 +84,41 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--tenant-upsert") => match tenant_upsert_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
+        Some("--tenant-revoke") => match tenant_revoke_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
+        Some("--tenant-node-upsert") => match tenant_node_upsert_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
+        Some("--tenant-node-revoke") => match tenant_node_revoke_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
+        Some("--tenant-audit") => match tenant_audit_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--serve") => {
             let addr = args.next().unwrap_or_else(|| "127.0.0.1:8787".to_string());
             let config = match relay_config_from_env(addr) {
@@ -133,6 +171,11 @@ Usage:
   conu-relay --admin-rotate-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin --token-out <path> [--expires-at-unix <seconds>] [--json]
   conu-relay --admin-revoke-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-audit-credentials --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
+  conu-relay --tenant-upsert <account-id> --tenants-file <path> [--json]
+  conu-relay --tenant-revoke <account-id> --tenants-file <path> [--json]
+  conu-relay --tenant-node-upsert <account-id> <node-id> --tenants-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
+  conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]
+  conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --check
   conu-relay --help
   conu-relay --version
@@ -159,6 +202,7 @@ Environment:
                                         optional per-node sent-envelope quota per accounting window
   CONU_RELAY_MAX_BYTES_SENT_PER_NODE  optional per-node sent-byte quota per accounting window
   CONU_RELAY_ADMIN_TOKEN              optional hosted admin token for online credential lifecycle; requires CONU_RELAY_CREDENTIALS_FILE
+  CONU_RELAY_TENANTS_FILE             optional hosted tenant metadata registry; requires CONU_RELAY_ADMIN_TOKEN and CONU_RELAY_CREDENTIALS_FILE
 
 CONU_RELAY_CREDENTIALS_FILE overrides CONU_RELAY_CREDENTIALS; CONU_RELAY_CREDENTIALS overrides
 CONU_RELAY_TOKEN. Non-loopback binds such as 0.0.0.0 require custom shared or scoped tokens
@@ -166,7 +210,9 @@ with at least 24 characters. Use --hash-token with stdin to generate credential-
 --issue-credential to generate a scoped token file and optional manifest update, or
 --revoke-credential to mark a scoped credential revoked without displaying tokens. Hosted admin
 commands authenticate with an admin token read from stdin, send only node-token hash metadata to the
-relay, and write the raw node token locally only after the relay confirms the update."
+relay, and write the raw node token locally only after the relay confirms the update. Tenant
+commands manage account, node, public key-id, and hosted permission metadata only; they never grant
+local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies."
     );
 }
 
@@ -987,6 +1033,458 @@ fn render_admin_result_json(result: &RelayAdminResult, relay: &str) -> String {
     )
 }
 
+fn tenant_upsert_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_tenant_account_args(args, "--tenant-upsert")?;
+    let update = upsert_hosted_tenant_in_file(&parsed.tenants_file, parsed.account_id)
+        .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!("{}", render_tenant_update_json(&update));
+    } else {
+        println!("{}", render_tenant_update_text(&update));
+    }
+    Ok(())
+}
+
+fn tenant_revoke_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_tenant_account_args(args, "--tenant-revoke")?;
+    let update = revoke_hosted_tenant_in_file(&parsed.tenants_file, parsed.account_id)
+        .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!("{}", render_tenant_update_json(&update));
+    } else {
+        println!("{}", render_tenant_update_text(&update));
+    }
+    Ok(())
+}
+
+struct TenantAccountArgs {
+    account_id: String,
+    tenants_file: PathBuf,
+    json: bool,
+}
+
+fn parse_tenant_account_args(
+    args: Vec<String>,
+    command: &'static str,
+) -> Result<TenantAccountArgs, String> {
+    let mut positional = Vec::new();
+    let mut tenants_file = None::<PathBuf>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--tenants-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_account_usage(command));
+                };
+                tenants_file = Some(PathBuf::from(value));
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(tenant_account_usage(command)),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 1 {
+        return Err(tenant_account_usage(command));
+    }
+    let Some(tenants_file) = tenants_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(tenant_account_usage(command));
+    };
+
+    Ok(TenantAccountArgs {
+        account_id: positional.remove(0),
+        tenants_file,
+        json,
+    })
+}
+
+fn tenant_account_usage(command: &str) -> String {
+    format!("usage: conu-relay {command} <account-id> --tenants-file <path> [--json]")
+}
+
+fn tenant_node_upsert_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_tenant_node_upsert_args(args)?;
+    let update = upsert_hosted_tenant_node_in_file(
+        &parsed.tenants_file,
+        parsed.account_id,
+        parsed.node_id,
+        parsed.permissions,
+        parsed.signing_key_id,
+        parsed.exchange_key_id,
+    )
+    .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!("{}", render_tenant_update_json(&update));
+    } else {
+        println!("{}", render_tenant_update_text(&update));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct TenantNodeUpsertArgs {
+    account_id: String,
+    node_id: String,
+    tenants_file: PathBuf,
+    permissions: HostedTenantPermissions,
+    signing_key_id: Option<String>,
+    exchange_key_id: Option<String>,
+    json: bool,
+}
+
+fn parse_tenant_node_upsert_args(args: Vec<String>) -> Result<TenantNodeUpsertArgs, String> {
+    let mut positional = Vec::new();
+    let mut tenants_file = None::<PathBuf>;
+    let mut permissions = HostedTenantPermissions::default();
+    let mut signing_key_id = None::<String>;
+    let mut exchange_key_id = None::<String>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--tenants-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_upsert_usage());
+                };
+                tenants_file = Some(PathBuf::from(value));
+            }
+            "--messages" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_upsert_usage());
+                };
+                permissions.messages = parse_cli_bool(value, "--messages")?;
+            }
+            "--streams" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_upsert_usage());
+                };
+                permissions.streams = parse_cli_bool(value, "--streams")?;
+            }
+            "--rooms" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_upsert_usage());
+                };
+                permissions.rooms = parse_cli_bool(value, "--rooms")?;
+            }
+            "--files" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_upsert_usage());
+                };
+                permissions.files = parse_cli_bool(value, "--files")?;
+            }
+            "--mailbox" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_upsert_usage());
+                };
+                permissions.mailbox = parse_cli_bool(value, "--mailbox")?;
+            }
+            "--signing-key-id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_upsert_usage());
+                };
+                signing_key_id = Some(value.to_string());
+            }
+            "--exchange-key-id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_upsert_usage());
+                };
+                exchange_key_id = Some(value.to_string());
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(tenant_node_upsert_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(tenant_node_upsert_usage());
+    }
+    let Some(tenants_file) = tenants_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(tenant_node_upsert_usage());
+    };
+
+    Ok(TenantNodeUpsertArgs {
+        account_id: positional.remove(0),
+        node_id: positional.remove(0),
+        tenants_file,
+        permissions,
+        signing_key_id,
+        exchange_key_id,
+        json,
+    })
+}
+
+fn tenant_node_upsert_usage() -> String {
+    "usage: conu-relay --tenant-node-upsert <account-id> <node-id> --tenants-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]".to_string()
+}
+
+fn tenant_node_revoke_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_tenant_node_revoke_args(args)?;
+    let update =
+        revoke_hosted_tenant_node_in_file(&parsed.tenants_file, parsed.account_id, parsed.node_id)
+            .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!("{}", render_tenant_update_json(&update));
+    } else {
+        println!("{}", render_tenant_update_text(&update));
+    }
+    Ok(())
+}
+
+struct TenantNodeRevokeArgs {
+    account_id: String,
+    node_id: String,
+    tenants_file: PathBuf,
+    json: bool,
+}
+
+fn parse_tenant_node_revoke_args(args: Vec<String>) -> Result<TenantNodeRevokeArgs, String> {
+    let mut positional = Vec::new();
+    let mut tenants_file = None::<PathBuf>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--tenants-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_node_revoke_usage());
+                };
+                tenants_file = Some(PathBuf::from(value));
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(tenant_node_revoke_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(tenant_node_revoke_usage());
+    }
+    let Some(tenants_file) = tenants_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(tenant_node_revoke_usage());
+    };
+
+    Ok(TenantNodeRevokeArgs {
+        account_id: positional.remove(0),
+        node_id: positional.remove(0),
+        tenants_file,
+        json,
+    })
+}
+
+fn tenant_node_revoke_usage() -> String {
+    "usage: conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]"
+        .to_string()
+}
+
+fn tenant_audit_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_tenant_audit_args(args)?;
+    let audit = audit_hosted_tenants_file(&parsed.tenants_file, parsed.account_id.as_deref())
+        .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!("{}", render_tenant_audit_json(&audit, &parsed.tenants_file));
+    } else {
+        println!("{}", render_tenant_audit_text(&audit, &parsed.tenants_file));
+    }
+    Ok(())
+}
+
+struct TenantAuditArgs {
+    account_id: Option<String>,
+    tenants_file: PathBuf,
+    json: bool,
+}
+
+fn parse_tenant_audit_args(args: Vec<String>) -> Result<TenantAuditArgs, String> {
+    let mut account_id = None::<String>;
+    let mut tenants_file = None::<PathBuf>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--account" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_audit_usage());
+                };
+                account_id = Some(value.to_string());
+            }
+            "--tenants-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(tenant_audit_usage());
+                };
+                tenants_file = Some(PathBuf::from(value));
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(tenant_audit_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(tenant_audit_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(tenants_file) = tenants_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(tenant_audit_usage());
+    };
+
+    Ok(TenantAuditArgs {
+        account_id,
+        tenants_file,
+        json,
+    })
+}
+
+fn tenant_audit_usage() -> String {
+    "usage: conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]"
+        .to_string()
+}
+
+fn parse_cli_bool(value: &str, flag: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("{flag} must be true or false")),
+    }
+}
+
+fn render_tenant_update_text(update: &HostedTenantManifestUpdate) -> String {
+    format!(
+        r"conU hosted tenant metadata {}
+
+account: {}
+node: {}
+tenants file: {}
+tenants: {}
+nodes: {}
+token displayed: {}
+key material displayed: {}
+payload displayed: no
+contents displayed: {}",
+        update.status.as_str(),
+        update.account_id,
+        update.node_id.as_deref().unwrap_or("none"),
+        update.path.display(),
+        update.tenants,
+        update.nodes,
+        yes_no(update.token_displayed),
+        yes_no(update.key_material_displayed),
+        yes_no(update.contents_displayed)
+    )
+}
+
+fn render_tenant_update_json(update: &HostedTenantManifestUpdate) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "accountId": "{}",
+  "nodeId": {},
+  "tenantsFile": "{}",
+  "tenants": {},
+  "nodes": {},
+  "tokenDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "payloadDisplayed": false,
+  "contentsDisplayed": {}
+}}"#,
+        update.status.as_str(),
+        json_escape(&update.account_id),
+        optional_string_json(update.node_id.as_deref()),
+        json_escape(&update.path.display().to_string()),
+        update.tenants,
+        update.nodes,
+        bool_json(update.token_displayed),
+        bool_json(update.key_material_displayed),
+        bool_json(update.contents_displayed)
+    )
+}
+
+fn render_tenant_audit_text(audit: &HostedTenantAudit, tenants_file: &Path) -> String {
+    format!(
+        r"conU hosted tenant audit
+
+account: {}
+tenants file: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+nodes: {}
+active nodes: {}
+revoked nodes: {}
+policies: {}
+token displayed: {}
+key material displayed: {}
+payload displayed: no
+contents displayed: {}",
+        audit.account_id.as_deref().unwrap_or("all"),
+        tenants_file.display(),
+        audit.tenants,
+        audit.active_tenants,
+        audit.revoked_tenants,
+        audit.nodes,
+        audit.active_nodes,
+        audit.revoked_nodes,
+        audit.policies,
+        yes_no(audit.token_displayed),
+        yes_no(audit.key_material_displayed),
+        yes_no(audit.contents_displayed)
+    )
+}
+
+fn render_tenant_audit_json(audit: &HostedTenantAudit, tenants_file: &Path) -> String {
+    format!(
+        r#"{{
+  "status": "audited",
+  "accountId": {},
+  "tenantsFile": "{}",
+  "tenants": {},
+  "activeTenants": {},
+  "revokedTenants": {},
+  "nodes": {},
+  "activeNodes": {},
+  "revokedNodes": {},
+  "policies": {},
+  "tokenDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "payloadDisplayed": false,
+  "contentsDisplayed": {}
+}}"#,
+        optional_string_json(audit.account_id.as_deref()),
+        json_escape(&tenants_file.display().to_string()),
+        audit.tenants,
+        audit.active_tenants,
+        audit.revoked_tenants,
+        audit.nodes,
+        audit.active_nodes,
+        audit.revoked_nodes,
+        audit.policies,
+        bool_json(audit.token_displayed),
+        bool_json(audit.key_material_displayed),
+        bool_json(audit.contents_displayed)
+    )
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
@@ -1047,6 +1545,10 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let tenants_file = env::var("CONU_RELAY_TENANTS_FILE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     let mut config = match credentials_file.clone() {
         Some(path) => RelayConfig::with_scoped_credentials_file(addr, path),
@@ -1086,6 +1588,16 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
         config = config
             .with_admin_token(admin_token, credentials_file)
             .map_err(|error| error.to_string())?;
+        if let Some(tenants_file) = tenants_file {
+            config = config
+                .with_admin_tenants_file(tenants_file)
+                .map_err(|error| error.to_string())?;
+        }
+    } else if tenants_file.is_some() {
+        return Err(
+            "CONU_RELAY_TENANTS_FILE requires CONU_RELAY_ADMIN_TOKEN and CONU_RELAY_CREDENTIALS_FILE"
+                .to_string(),
+        );
     }
 
     Ok(config)
@@ -1230,4 +1742,91 @@ fn parse_credentials(value: &str) -> Result<Vec<RelayCredential>, String> {
     }
 
     Ok(credentials)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use conu_relay::HostedTenantStatus;
+
+    #[test]
+    fn tenant_node_upsert_parser_defaults_permissions_to_false() {
+        let parsed = parse_tenant_node_upsert_args(vec![
+            "account.prod".to_string(),
+            "node.hosted".to_string(),
+            "--tenants-file".to_string(),
+            "tenants.toml".to_string(),
+            "--messages".to_string(),
+            "true".to_string(),
+            "--mailbox".to_string(),
+            "false".to_string(),
+        ])
+        .expect("tenant node args parse");
+
+        assert_eq!(parsed.account_id, "account.prod");
+        assert_eq!(parsed.node_id, "node.hosted");
+        assert!(parsed.permissions.messages);
+        assert!(!parsed.permissions.streams);
+        assert!(!parsed.permissions.rooms);
+        assert!(!parsed.permissions.files);
+        assert!(!parsed.permissions.mailbox);
+
+        let error = parse_tenant_node_upsert_args(vec![
+            "account.prod".to_string(),
+            "node.hosted".to_string(),
+            "--tenants-file".to_string(),
+            "tenants.toml".to_string(),
+            "--messages".to_string(),
+            "yes".to_string(),
+        ])
+        .expect_err("invalid bool should fail");
+        assert!(error.contains("must be true or false"));
+    }
+
+    #[test]
+    fn tenant_admin_renderers_are_metadata_only() {
+        let update = HostedTenantManifestUpdate {
+            path: PathBuf::from("tenants.toml"),
+            account_id: "account.prod".to_string(),
+            node_id: Some("node.hosted".to_string()),
+            status: HostedTenantStatus::Active,
+            tenants: 1,
+            nodes: 1,
+            token_displayed: false,
+            key_material_displayed: false,
+            contents_displayed: false,
+        };
+        let audit = HostedTenantAudit {
+            account_id: Some("account.prod".to_string()),
+            tenants: 1,
+            active_tenants: 1,
+            revoked_tenants: 0,
+            nodes: 1,
+            active_nodes: 1,
+            revoked_nodes: 0,
+            policies: 1,
+            token_displayed: false,
+            key_material_displayed: false,
+            contents_displayed: false,
+        };
+        let secret_token = "tenant-node-token-secret";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        let outputs = [
+            render_tenant_update_text(&update),
+            render_tenant_update_json(&update),
+            render_tenant_audit_text(&audit, Path::new("tenants.toml")),
+            render_tenant_audit_json(&audit, Path::new("tenants.toml")),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("token"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+    }
 }
