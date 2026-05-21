@@ -38,6 +38,7 @@ const DEFAULT_ACCOUNTING_WINDOW_SECS: u64 = 24 * 60 * 60;
 const RELAY_MAILBOX_FILE_VERSION: &str = "1";
 const RELAY_SESSION_FILE_VERSION: &str = "1";
 const RELAY_CREDENTIALS_FILE_VERSION: &str = "1";
+const RELAY_ADMIN_TOKENS_FILE_VERSION: &str = "1";
 const RELAY_ACCOUNTING_FILE_VERSION: &str = "1";
 const RELAY_ABUSE_FILE_VERSION: &str = "1";
 const HOSTED_TENANT_FILE_VERSION: &str = "1";
@@ -141,10 +142,12 @@ impl fmt::Debug for RelayAuth {
 #[derive(Clone, PartialEq, Eq)]
 pub enum RelayAdminConfig {
     Disabled,
-    Token {
-        token: String,
+    Enabled {
+        bind_addr: String,
+        primary_token: Option<String>,
         credentials_file: PathBuf,
         tenants_file: Option<PathBuf>,
+        tokens_file: Option<PathBuf>,
     },
 }
 
@@ -166,10 +169,38 @@ impl RelayAdminConfig {
                 "relay admin credentials file cannot be empty",
             ));
         }
-        Ok(Self::Token {
-            token,
+        Ok(Self::Enabled {
+            bind_addr: bind_addr.to_string(),
+            primary_token: Some(token),
             credentials_file,
             tenants_file: None,
+            tokens_file: None,
+        })
+    }
+
+    fn with_tokens_file(
+        bind_addr: &str,
+        tokens_file: impl Into<PathBuf>,
+        credentials_file: impl Into<PathBuf>,
+    ) -> Result<Self, RelayError> {
+        let credentials_file = credentials_file.into();
+        if credentials_file.as_os_str().is_empty() {
+            return Err(RelayError::InvalidConfig(
+                "relay admin credentials file cannot be empty",
+            ));
+        }
+        let tokens_file = tokens_file.into();
+        if tokens_file.as_os_str().is_empty() {
+            return Err(RelayError::InvalidConfig(
+                "relay admin tokens file cannot be empty",
+            ));
+        }
+        Ok(Self::Enabled {
+            bind_addr: bind_addr.to_string(),
+            primary_token: None,
+            credentials_file,
+            tenants_file: None,
+            tokens_file: Some(tokens_file),
         })
     }
 
@@ -184,7 +215,7 @@ impl RelayAdminConfig {
             Self::Disabled => Err(RelayError::InvalidConfig(
                 "relay admin tenants file requires admin token configuration",
             )),
-            Self::Token {
+            Self::Enabled {
                 tenants_file: slot, ..
             } => {
                 *slot = Some(tenants_file);
@@ -193,19 +224,61 @@ impl RelayAdminConfig {
         }
     }
 
-    fn authorize(&self, token: &str) -> bool {
+    fn with_admin_tokens_file(
+        mut self,
+        tokens_file: impl Into<PathBuf>,
+    ) -> Result<Self, RelayError> {
+        let tokens_file = tokens_file.into();
+        if tokens_file.as_os_str().is_empty() {
+            return Err(RelayError::InvalidConfig(
+                "relay admin tokens file cannot be empty",
+            ));
+        }
+        match &mut self {
+            Self::Disabled => Err(RelayError::InvalidConfig(
+                "relay admin tokens file requires admin configuration",
+            )),
+            Self::Enabled {
+                tokens_file: slot, ..
+            } => {
+                *slot = Some(tokens_file);
+                Ok(self)
+            }
+        }
+    }
+
+    fn authorize_action(
+        &self,
+        token: &str,
+        action: RelayAdminAction,
+    ) -> Result<RelayAdminAuthorization, RelayError> {
         match self {
-            Self::Disabled => false,
-            Self::Token {
-                token: expected, ..
-            } => constant_time_eq(expected.as_bytes(), token.as_bytes()),
+            Self::Disabled => Err(RelayError::Protocol("admin_unauthorized".to_string())),
+            Self::Enabled {
+                bind_addr,
+                primary_token,
+                tokens_file,
+                ..
+            } => {
+                if primary_token
+                    .as_deref()
+                    .is_some_and(|expected| constant_time_eq(expected.as_bytes(), token.as_bytes()))
+                {
+                    return Ok(RelayAdminAuthorization::full());
+                }
+                let Some(tokens_file) = tokens_file else {
+                    return Err(RelayError::Protocol("admin_unauthorized".to_string()));
+                };
+                let tokens = load_admin_tokens_file(tokens_file, bind_addr)?;
+                tokens.authorize(token, action)
+            }
         }
     }
 
     fn credentials_file(&self) -> Option<&Path> {
         match self {
             Self::Disabled => None,
-            Self::Token {
+            Self::Enabled {
                 credentials_file, ..
             } => Some(credentials_file.as_path()),
         }
@@ -214,7 +287,7 @@ impl RelayAdminConfig {
     fn tenants_file(&self) -> Option<&Path> {
         match self {
             Self::Disabled => None,
-            Self::Token { tenants_file, .. } => tenants_file.as_deref(),
+            Self::Enabled { tenants_file, .. } => tenants_file.as_deref(),
         }
     }
 }
@@ -223,15 +296,80 @@ impl fmt::Debug for RelayAdminConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Disabled => formatter.write_str("RelayAdminConfig::Disabled"),
-            Self::Token {
-                credentials_file, ..
+            Self::Enabled {
+                credentials_file,
+                primary_token,
+                tokens_file,
+                ..
             } => formatter
-                .debug_struct("RelayAdminConfig::Token")
-                .field("token", &"<redacted>")
+                .debug_struct("RelayAdminConfig::Enabled")
+                .field(
+                    "primary_token",
+                    &primary_token.as_ref().map(|_| "<redacted>"),
+                )
                 .field("credentials_file", credentials_file)
                 .field("tenants_file", &self.tenants_file())
+                .field("tokens_file", tokens_file)
                 .finish(),
         }
+    }
+}
+
+/// Action scopes for manifest-backed hosted relay admin tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RelayAdminTokenScopes {
+    pub credentials: bool,
+    pub tenants: bool,
+    pub dashboard: bool,
+    pub mailbox_audit: bool,
+    pub mailbox_purge: bool,
+}
+
+impl RelayAdminTokenScopes {
+    pub const fn full() -> Self {
+        Self {
+            credentials: true,
+            tenants: true,
+            dashboard: true,
+            mailbox_audit: true,
+            mailbox_purge: true,
+        }
+    }
+
+    fn allows(self, action: RelayAdminAction) -> bool {
+        match action {
+            RelayAdminAction::Issue
+            | RelayAdminAction::Rotate
+            | RelayAdminAction::Revoke
+            | RelayAdminAction::Audit => self.credentials,
+            RelayAdminAction::TenantUpsert
+            | RelayAdminAction::TenantRevoke
+            | RelayAdminAction::TenantNodeUpsert
+            | RelayAdminAction::TenantNodeRevoke
+            | RelayAdminAction::TenantAudit => self.tenants,
+            RelayAdminAction::Dashboard => self.dashboard,
+            RelayAdminAction::MailboxAudit => self.mailbox_audit,
+            RelayAdminAction::MailboxPurge => self.mailbox_purge,
+        }
+    }
+
+    fn any(self) -> bool {
+        self.credentials
+            || self.tenants
+            || self.dashboard
+            || self.mailbox_audit
+            || self.mailbox_purge
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelayAdminAuthorization {
+    account_id: Option<String>,
+}
+
+impl RelayAdminAuthorization {
+    fn full() -> Self {
+        Self { account_id: None }
     }
 }
 
@@ -1200,6 +1338,24 @@ impl RelayConfig {
         Ok(self)
     }
 
+    pub fn with_admin_tokens_file(
+        mut self,
+        tokens_file: impl Into<PathBuf>,
+        credentials_file: impl Into<PathBuf>,
+    ) -> Result<Self, RelayError> {
+        self.admin =
+            RelayAdminConfig::with_tokens_file(&self.bind_addr, tokens_file, credentials_file)?;
+        Ok(self)
+    }
+
+    pub fn with_additional_admin_tokens_file(
+        mut self,
+        tokens_file: impl Into<PathBuf>,
+    ) -> Result<Self, RelayError> {
+        self.admin = self.admin.with_admin_tokens_file(tokens_file)?;
+        Ok(self)
+    }
+
     pub fn with_admin_tenants_file(
         mut self,
         tenants_file: impl Into<PathBuf>,
@@ -1298,6 +1454,87 @@ fn parse_credential_file_records(contents: &str) -> Result<Vec<CredentialFileRec
     }
 
     Ok(records)
+}
+
+fn load_admin_tokens_file(
+    path: impl AsRef<Path>,
+    bind_addr: &str,
+) -> Result<RelayAdminTokenManifest, RelayError> {
+    let path = path.as_ref();
+    let contents = fs::read_to_string(path)
+        .map_err(|error| RelayError::io("read relay admin tokens file", error))?;
+    parse_admin_tokens_file(&contents, bind_addr)
+}
+
+fn parse_admin_tokens_file(
+    contents: &str,
+    bind_addr: &str,
+) -> Result<RelayAdminTokenManifest, RelayError> {
+    let mut version = None::<String>;
+    let mut current = None::<AdminTokenFileRecord>;
+    let mut records = Vec::new();
+
+    for (line_index, raw_line) in contents.lines().enumerate() {
+        let line_number = line_index + 1;
+        let line = strip_config_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "[[admin_token]]" {
+            if let Some(record) = current.take() {
+                records.push(record.into_token(bind_addr)?);
+            }
+            current = Some(AdminTokenFileRecord::default());
+            continue;
+        }
+
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            RelayError::InvalidConfigValue(format!(
+                "relay admin tokens file line {line_number} must use key = value"
+            ))
+        })?;
+        let key = key.trim();
+        let value = clean_config_value(value);
+
+        if let Some(record) = current.as_mut() {
+            record.set(key, &value, line_number)?;
+            continue;
+        }
+
+        match key {
+            "version" => version = Some(value),
+            _ => {
+                return Err(RelayError::InvalidConfigValue(format!(
+                    "relay admin tokens file line {line_number} has key before [[admin_token]]"
+                )));
+            }
+        }
+    }
+
+    if let Some(record) = current.take() {
+        records.push(record.into_token(bind_addr)?);
+    }
+
+    match version.as_deref() {
+        Some(RELAY_ADMIN_TOKENS_FILE_VERSION) => {}
+        Some(_) => {
+            return Err(RelayError::InvalidConfig(
+                "relay admin tokens file version is unsupported",
+            ));
+        }
+        None => {
+            return Err(RelayError::InvalidConfig(
+                "relay admin tokens file version is required",
+            ));
+        }
+    }
+    if records.is_empty() {
+        return Err(RelayError::InvalidConfig(
+            "relay admin tokens file must contain at least one admin token",
+        ));
+    }
+
+    Ok(RelayAdminTokenManifest { records })
 }
 
 /// Add or rotate a newly issued relay credential in a live-reload manifest.
@@ -2804,6 +3041,167 @@ impl fmt::Display for RelayError {
 
 impl std::error::Error for RelayError {}
 
+#[derive(Clone, PartialEq, Eq)]
+struct RelayAdminTokenManifest {
+    records: Vec<RelayAdminTokenRecord>,
+}
+
+impl RelayAdminTokenManifest {
+    fn authorize(
+        &self,
+        token: &str,
+        action: RelayAdminAction,
+    ) -> Result<RelayAdminAuthorization, RelayError> {
+        let now_unix = current_unix_seconds();
+        for record in &self.records {
+            if record.matches(token, now_unix) {
+                if !record.scopes.allows(action) {
+                    return Err(RelayError::Protocol("admin_scope_denied".to_string()));
+                }
+                return Ok(RelayAdminAuthorization {
+                    account_id: record.account_id.clone(),
+                });
+            }
+        }
+        Err(RelayError::Protocol("admin_unauthorized".to_string()))
+    }
+}
+
+impl fmt::Debug for RelayAdminTokenManifest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RelayAdminTokenManifest")
+            .field("records", &self.records.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RelayAdminTokenRecord {
+    account_id: Option<String>,
+    token_sha256_hex: String,
+    token_length: usize,
+    status: RelayCredentialStatus,
+    expires_at_unix: Option<u64>,
+    scopes: RelayAdminTokenScopes,
+}
+
+impl RelayAdminTokenRecord {
+    fn matches(&self, token: &str, now_unix: u64) -> bool {
+        self.status == RelayCredentialStatus::Active
+            && self
+                .expires_at_unix
+                .is_none_or(|expires_at| expires_at > now_unix)
+            && token.len() == self.token_length
+            && relay_token_sha256_hex(token).is_ok_and(|actual| {
+                constant_time_eq(actual.as_bytes(), self.token_sha256_hex.as_bytes())
+            })
+    }
+}
+
+impl fmt::Debug for RelayAdminTokenRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RelayAdminTokenRecord")
+            .field("account_id", &self.account_id)
+            .field("token_sha256_hex", &"<redacted>")
+            .field("token_length", &self.token_length)
+            .field("status", &self.status)
+            .field("expires_at_unix", &self.expires_at_unix)
+            .field("scopes", &self.scopes)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default)]
+struct AdminTokenFileRecord {
+    account_id: Option<String>,
+    token_sha256_hex: Option<String>,
+    token_length: Option<usize>,
+    status: Option<RelayCredentialStatus>,
+    expires_at_unix: Option<u64>,
+    scopes: RelayAdminTokenScopes,
+}
+
+impl AdminTokenFileRecord {
+    fn set(&mut self, key: &str, value: &str, line_number: usize) -> Result<(), RelayError> {
+        match key {
+            "account_id" => self.account_id = Some(validate_account_id(value.to_string())?),
+            "token_sha256_hex" => self.token_sha256_hex = Some(value.to_string()),
+            "token_length" => {
+                self.token_length = Some(value.parse::<usize>().map_err(|_| {
+                    RelayError::InvalidConfigValue(format!(
+                        "relay admin tokens file line {line_number} token_length must be an unsigned integer"
+                    ))
+                })?);
+            }
+            "status" => self.status = Some(RelayCredentialStatus::parse(value)?),
+            "expires_at_unix" => {
+                self.expires_at_unix = Some(value.parse::<u64>().map_err(|_| {
+                    RelayError::InvalidConfigValue(format!(
+                        "relay admin tokens file line {line_number} expires_at_unix must be an unsigned integer"
+                    ))
+                })?);
+            }
+            "scope_credentials" => {
+                self.scopes.credentials = parse_config_bool(value, line_number, key)?
+            }
+            "scope_tenants" => self.scopes.tenants = parse_config_bool(value, line_number, key)?,
+            "scope_dashboard" => {
+                self.scopes.dashboard = parse_config_bool(value, line_number, key)?
+            }
+            "scope_mailbox_audit" => {
+                self.scopes.mailbox_audit = parse_config_bool(value, line_number, key)?
+            }
+            "scope_mailbox_purge" => {
+                self.scopes.mailbox_purge = parse_config_bool(value, line_number, key)?
+            }
+            "payload_displayed"
+            | "token_displayed"
+            | "token_hash_displayed"
+            | "contents_displayed" => {
+                if value != "false" {
+                    return Err(RelayError::InvalidConfigValue(format!(
+                        "relay admin tokens file line {line_number} {key} must be false"
+                    )));
+                }
+            }
+            "label" | "created_at_unix" | "updated_at_unix" => {}
+            _ => {
+                return Err(RelayError::InvalidConfigValue(format!(
+                    "relay admin tokens file line {line_number} uses unsupported key {key}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn into_token(self, bind_addr: &str) -> Result<RelayAdminTokenRecord, RelayError> {
+        let token_sha256_hex = self.token_sha256_hex.ok_or(RelayError::InvalidConfig(
+            "relay admin tokens file entry is missing token_sha256_hex",
+        ))?;
+        let token_length = self.token_length.ok_or(RelayError::InvalidConfig(
+            "relay admin tokens file entry is missing token_length",
+        ))?;
+        let token_sha256_hex = validate_token_sha256_hex(token_sha256_hex)?;
+        validate_hashed_token_for_bind(bind_addr, &token_sha256_hex, token_length)?;
+        if !self.scopes.any() {
+            return Err(RelayError::InvalidConfig(
+                "relay admin tokens file entry must grant at least one scope",
+            ));
+        }
+
+        Ok(RelayAdminTokenRecord {
+            account_id: self.account_id,
+            token_sha256_hex,
+            token_length,
+            status: self.status.unwrap_or(RelayCredentialStatus::Active),
+            expires_at_unix: self.expires_at_unix,
+            scopes: self.scopes,
+        })
+    }
+}
+
 #[derive(Clone, Default)]
 struct CredentialFileRecord {
     account_id: Option<String>,
@@ -3572,10 +3970,16 @@ impl RelayHub {
         &self,
         request: &RelayAdminRequest,
     ) -> Result<RelayAdminResult, RelayError> {
-        if !self.admin.authorize(&request.admin_token) {
-            let _ = self.record_abuse(None, RelayAbuseKind::AdminUnauthorized);
-            return Err(RelayError::Protocol("admin_unauthorized".to_string()));
-        }
+        let authorization = match self
+            .admin
+            .authorize_action(&request.admin_token, request.action)
+        {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                let _ = self.record_abuse(None, RelayAbuseKind::AdminUnauthorized);
+                return Err(error);
+            }
+        };
         let credentials_file = self
             .admin
             .credentials_file()
@@ -3591,6 +3995,7 @@ impl RelayHub {
                 let account_id = request.account_id.as_deref().ok_or_else(|| {
                     RelayError::Protocol("relay admin account is required".to_string())
                 })?;
+                self.ensure_admin_account_allowed(&authorization, account_id)?;
                 let node_id = request.node_id.as_deref().ok_or_else(|| {
                     RelayError::Protocol("relay admin node is required".to_string())
                 })?;
@@ -3649,6 +4054,7 @@ impl RelayHub {
                 let account_id = request.account_id.as_deref().ok_or_else(|| {
                     RelayError::Protocol("relay admin account is required".to_string())
                 })?;
+                self.ensure_admin_account_allowed(&authorization, account_id)?;
                 let node_id = request.node_id.as_deref().ok_or_else(|| {
                     RelayError::Protocol("relay admin node is required".to_string())
                 })?;
@@ -3677,10 +4083,10 @@ impl RelayHub {
                 })
             }
             RelayAdminAction::Audit => {
-                let audit = audit_hosted_relay_credentials_file(
-                    &credentials_file,
-                    request.account_id.as_deref(),
-                )?;
+                let account_id =
+                    self.admin_account_filter(request.account_id.as_deref(), &authorization)?;
+                let audit =
+                    audit_hosted_relay_credentials_file(&credentials_file, account_id.as_deref())?;
                 Ok(RelayAdminResult {
                     action: request.action,
                     status: "audited".to_string(),
@@ -3698,20 +4104,31 @@ impl RelayHub {
                     ..RelayAdminResult::new(request.action, "audited")
                 })
             }
-            RelayAdminAction::Dashboard => self.admin_dashboard_result(request, &credentials_file),
+            RelayAdminAction::Dashboard => {
+                self.admin_dashboard_result(request, &credentials_file, &authorization)
+            }
             RelayAdminAction::TenantUpsert
             | RelayAdminAction::TenantRevoke
             | RelayAdminAction::TenantNodeUpsert
-            | RelayAdminAction::TenantNodeRevoke => self.admin_tenant_update_result(request),
-            RelayAdminAction::TenantAudit => self.admin_tenant_audit_result(request),
-            RelayAdminAction::MailboxAudit => self.admin_mailbox_audit_result(request),
-            RelayAdminAction::MailboxPurge => self.admin_mailbox_purge_result(request),
+            | RelayAdminAction::TenantNodeRevoke => {
+                self.admin_tenant_update_result(request, &authorization)
+            }
+            RelayAdminAction::TenantAudit => {
+                self.admin_tenant_audit_result(request, &authorization)
+            }
+            RelayAdminAction::MailboxAudit => {
+                self.admin_mailbox_audit_result(request, &authorization)
+            }
+            RelayAdminAction::MailboxPurge => {
+                self.admin_mailbox_purge_result(request, &authorization)
+            }
         }
     }
 
     fn admin_tenant_update_result(
         &self,
         request: &RelayAdminRequest,
+        authorization: &RelayAdminAuthorization,
     ) -> Result<RelayAdminResult, RelayError> {
         let Some(tenants_file) = self.admin.tenants_file() else {
             return Ok(RelayAdminResult {
@@ -3725,6 +4142,7 @@ impl RelayHub {
         let account_id = request.account_id.as_deref().ok_or_else(|| {
             RelayError::Protocol("relay admin tenant account is required".to_string())
         })?;
+        self.ensure_admin_account_allowed(authorization, account_id)?;
         let update = match request.action {
             RelayAdminAction::TenantUpsert => {
                 upsert_hosted_tenant_in_file(tenants_file, account_id)
@@ -3799,6 +4217,7 @@ impl RelayHub {
     fn admin_tenant_audit_result(
         &self,
         request: &RelayAdminRequest,
+        authorization: &RelayAdminAuthorization,
     ) -> Result<RelayAdminResult, RelayError> {
         let Some(tenants_file) = self.admin.tenants_file() else {
             return Ok(RelayAdminResult {
@@ -3808,7 +4227,8 @@ impl RelayHub {
                 ..RelayAdminResult::new(request.action, "tenant_unavailable")
             });
         };
-        let audit = audit_hosted_tenants_file(tenants_file, request.account_id.as_deref())?;
+        let account_id = self.admin_account_filter(request.account_id.as_deref(), authorization)?;
+        let audit = audit_hosted_tenants_file(tenants_file, account_id.as_deref())?;
 
         Ok(RelayAdminResult {
             action: request.action,
@@ -3831,6 +4251,7 @@ impl RelayHub {
     fn admin_mailbox_purge_result(
         &self,
         request: &RelayAdminRequest,
+        authorization: &RelayAdminAuthorization,
     ) -> Result<RelayAdminResult, RelayError> {
         let RelayMailboxStorage::FileBacked(mailbox_dir) = &self.mailbox_storage else {
             return Ok(RelayAdminResult {
@@ -3848,6 +4269,7 @@ impl RelayHub {
         let dry_run = request.mailbox_purge_dry_run.ok_or_else(|| {
             RelayError::Protocol("relay admin mailbox purge mode is required".to_string())
         })?;
+        self.ensure_admin_mailbox_node_allowed(request, authorization)?;
         let report = purge_relay_mailbox_dir(
             mailbox_dir,
             request.node_id.as_deref(),
@@ -3885,6 +4307,7 @@ impl RelayHub {
     fn admin_mailbox_audit_result(
         &self,
         request: &RelayAdminRequest,
+        authorization: &RelayAdminAuthorization,
     ) -> Result<RelayAdminResult, RelayError> {
         let RelayMailboxStorage::FileBacked(mailbox_dir) = &self.mailbox_storage else {
             return Ok(RelayAdminResult {
@@ -3895,6 +4318,7 @@ impl RelayHub {
                 ..RelayAdminResult::new(request.action, "mailbox_unavailable")
             });
         };
+        self.ensure_admin_mailbox_node_allowed(request, authorization)?;
         let retention_ttl = request.retention_ttl_seconds.map(Duration::from_secs);
         let audit =
             audit_relay_mailbox_dir(mailbox_dir, request.node_id.as_deref(), retention_ttl)?;
@@ -3923,30 +4347,102 @@ impl RelayHub {
         })
     }
 
+    fn ensure_admin_account_allowed(
+        &self,
+        authorization: &RelayAdminAuthorization,
+        account_id: &str,
+    ) -> Result<(), RelayError> {
+        if authorization
+            .account_id
+            .as_deref()
+            .is_some_and(|allowed| allowed != account_id)
+        {
+            return Err(RelayError::Protocol("admin_scope_denied".to_string()));
+        }
+        Ok(())
+    }
+
+    fn admin_account_filter(
+        &self,
+        request_account_id: Option<&str>,
+        authorization: &RelayAdminAuthorization,
+    ) -> Result<Option<String>, RelayError> {
+        let request_account_id = request_account_id
+            .map(|value| validate_account_id(value.to_string()))
+            .transpose()?;
+        match (authorization.account_id.as_deref(), request_account_id) {
+            (Some(allowed), Some(requested)) if allowed != requested => {
+                Err(RelayError::Protocol("admin_scope_denied".to_string()))
+            }
+            (Some(allowed), _) => Ok(Some(allowed.to_string())),
+            (None, requested) => Ok(requested),
+        }
+    }
+
+    fn ensure_admin_dashboard_node_allowed(
+        &self,
+        request: &RelayAdminRequest,
+        authorization: &RelayAdminAuthorization,
+    ) -> Result<(), RelayError> {
+        let Some(account_id) = authorization.account_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(node_id) = request.node_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(tenants_file) = self.admin.tenants_file() else {
+            return Err(RelayError::Protocol("admin_scope_denied".to_string()));
+        };
+        hosted_tenant_registry_authorizes_account_node(tenants_file, account_id, node_id)
+            .map_err(|_| RelayError::Protocol("admin_scope_denied".to_string()))
+    }
+
+    fn ensure_admin_mailbox_node_allowed(
+        &self,
+        request: &RelayAdminRequest,
+        authorization: &RelayAdminAuthorization,
+    ) -> Result<(), RelayError> {
+        let Some(account_id) = authorization.account_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(node_id) = request.node_id.as_deref() else {
+            return Err(RelayError::Protocol("admin_scope_denied".to_string()));
+        };
+        let Some(tenants_file) = self.admin.tenants_file() else {
+            return Err(RelayError::Protocol("admin_scope_denied".to_string()));
+        };
+        hosted_tenant_registry_authorizes_account_node(tenants_file, account_id, node_id)
+            .map_err(|_| RelayError::Protocol("admin_scope_denied".to_string()))
+    }
+
     fn admin_dashboard_result(
         &self,
         request: &RelayAdminRequest,
         credentials_file: &Path,
+        authorization: &RelayAdminAuthorization,
     ) -> Result<RelayAdminResult, RelayError> {
+        let account_id = self.admin_account_filter(request.account_id.as_deref(), authorization)?;
+        self.ensure_admin_dashboard_node_allowed(request, authorization)?;
+        let scoped_without_node = authorization.account_id.is_some() && request.node_id.is_none();
+        let node_filter = request.node_id.as_deref();
         let credentials =
-            audit_hosted_relay_credentials_file(credentials_file, request.account_id.as_deref())?;
+            audit_hosted_relay_credentials_file(credentials_file, account_id.as_deref())?;
         let tenants = self
             .admin
             .tenants_file()
-            .map(|path| audit_hosted_tenants_file(path, request.account_id.as_deref()))
+            .map(|path| audit_hosted_tenants_file(path, account_id.as_deref()))
             .transpose()?;
         let accounting = match &self.accounting_storage {
+            _ if scoped_without_node => None,
             RelayAccountingStorage::MemoryOnly => None,
-            RelayAccountingStorage::FileBacked(path) => Some(audit_relay_accounting_dir(
-                path,
-                request.node_id.as_deref(),
-            )?),
+            RelayAccountingStorage::FileBacked(path) => {
+                Some(audit_relay_accounting_dir(path, node_filter)?)
+            }
         };
         let abuse = match &self.abuse_storage {
+            _ if scoped_without_node => None,
             RelayAbuseStorage::MemoryOnly => None,
-            RelayAbuseStorage::FileBacked(path) => {
-                Some(audit_relay_abuse_dir(path, request.node_id.as_deref())?)
-            }
+            RelayAbuseStorage::FileBacked(path) => Some(audit_relay_abuse_dir(path, node_filter)?),
         };
 
         Ok(RelayAdminResult {
@@ -4234,12 +4730,12 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                             &render_server_frame(&RelayServerFrame::AdminResult(Box::new(result))),
                         )?;
                     }
-                    Err(RelayError::Protocol(reason)) if reason == "admin_unauthorized" => {
+                    Err(RelayError::Protocol(reason))
+                        if reason == "admin_unauthorized" || reason == "admin_scope_denied" =>
+                    {
                         write_text_frame(
                             &mut stream,
-                            &render_server_frame(&RelayServerFrame::Error {
-                                reason: "admin_unauthorized".to_string(),
-                            }),
+                            &render_server_frame(&RelayServerFrame::Error { reason }),
                         )?;
                         break;
                     }
@@ -5931,6 +6427,16 @@ fn clean_config_value(value: &str) -> String {
         .to_string()
 }
 
+fn parse_config_bool(value: &str, line_number: usize, key: &str) -> Result<bool, RelayError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(RelayError::InvalidConfigValue(format!(
+            "relay config file line {line_number} {key} must be true or false"
+        ))),
+    }
+}
+
 fn remove_entry_storage(entry: &QueuedRelayEnvelope) -> io::Result<()> {
     let Some(path) = entry.storage_path.as_deref() else {
         return Ok(());
@@ -6891,6 +7397,354 @@ token_displayed = false\n",
         assert!(response.contains("ERROR reason=admin_unauthorized"));
         assert!(!response.contains(admin_token));
         assert!(!response.contains(wrong_admin_token));
+    }
+
+    #[test]
+    fn hosted_admin_token_manifest_enforces_scopes_and_accounts_without_secret_leak() {
+        let home = test_home("hosted-admin-token-rbac");
+        let manifest_path = home.join("credentials.toml");
+        let tenants_path = home.join("tenants.toml");
+        let admin_tokens_path = home.join("admin-tokens.toml");
+        let credential_token = "credential-admin-token-1234567890";
+        let tenant_token = "tenant-admin-token-1234567890";
+        let dashboard_token = "dashboard-admin-token-1234567890";
+        let credential_hash = relay_token_sha256_hex(credential_token).expect("credential hash");
+        let tenant_hash = relay_token_sha256_hex(tenant_token).expect("tenant hash");
+        let dashboard_hash = relay_token_sha256_hex(dashboard_token).expect("dashboard hash");
+        fs::create_dir_all(&home).expect("test home creates");
+        let credential = issue_relay_credential_from_token_bytes(
+            "node.hosted",
+            &[47_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            3_000,
+        )
+        .and_then(|credential| credential.with_account_id("account.prod"))
+        .expect("credential issues");
+        let admin_manifest = format!(
+            "version = \"1\"\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{credential_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+scope_credentials = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{tenant_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+scope_tenants = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{dashboard_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+scope_dashboard = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n",
+            credential_token.len(),
+            tenant_token.len(),
+            dashboard_token.len()
+        );
+        fs::write(&admin_tokens_path, admin_manifest).expect("admin token manifest writes");
+        let manifest_contents = fs::read_to_string(&admin_tokens_path).expect("manifest reads");
+        assert!(manifest_contents.contains(&credential_hash));
+        assert!(manifest_contents.contains(&tenant_hash));
+        assert!(manifest_contents.contains(&dashboard_hash));
+        assert!(!manifest_contents.contains(credential_token));
+        assert!(!manifest_contents.contains(tenant_token));
+        assert!(!manifest_contents.contains(dashboard_token));
+
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("missing manifest starts fail-closed")
+                .with_admin_tokens_file(admin_tokens_path.clone(), manifest_path.clone())
+                .expect("admin token manifest configures")
+                .with_admin_tenants_file(tenants_path)
+                .expect("tenant registry configures");
+        let config_debug = format!("{config:?}");
+        assert!(!config_debug.contains(credential_token));
+        assert!(!config_debug.contains(&credential_hash));
+        let relay = spawn_relay(config).expect("relay starts");
+
+        let scope_denied = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::issue(
+                tenant_token,
+                "account.prod",
+                credential.node_id(),
+                credential.token_sha256_hex().to_string(),
+                credential.token_length(),
+                credential.expires_at_unix(),
+            )
+            .expect("issue request"),
+        );
+        assert!(
+            scope_denied.contains("ERROR reason=admin_scope_denied"),
+            "{scope_denied}"
+        );
+        assert!(!scope_denied.contains(tenant_token));
+        assert!(!scope_denied.contains(credential.token()));
+        assert!(!scope_denied.contains(credential.token_sha256_hex()));
+
+        let other_account_denied = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::audit(credential_token, Some("account.other".to_string()))
+                .expect("audit request"),
+        );
+        assert!(other_account_denied.contains("ERROR reason=admin_scope_denied"));
+        assert!(!other_account_denied.contains(credential_token));
+
+        let tenant = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_upsert(tenant_token, "account.prod")
+                .expect("tenant upsert request"),
+        );
+        assert!(tenant.contains("ADMIN_RESULT action=tenant_upsert status=upserted"));
+        assert!(tenant.contains("account=account.prod"));
+        assert!(!tenant.contains(tenant_token));
+
+        let node = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_node_upsert(
+                tenant_token,
+                "account.prod",
+                credential.node_id(),
+                true,
+                true,
+                false,
+                false,
+                true,
+                Some("signing.key.1".to_string()),
+                Some("exchange.key.1".to_string()),
+            )
+            .expect("tenant node upsert request"),
+        );
+        assert!(node.contains("ADMIN_RESULT action=tenant_node_upsert status=upserted"));
+        assert!(!node.contains(tenant_token));
+        assert!(!node.contains("signing.key.1"));
+        assert!(!node.contains("exchange.key.1"));
+
+        let issued = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::issue(
+                credential_token,
+                "account.prod",
+                credential.node_id(),
+                credential.token_sha256_hex().to_string(),
+                credential.token_length(),
+                credential.expires_at_unix(),
+            )
+            .expect("issue request"),
+        );
+        assert!(issued.contains("ADMIN_RESULT action=issue status=issued"));
+        assert!(issued.contains("account=account.prod"));
+        assert!(!issued.contains(credential_token));
+        assert!(!issued.contains(credential.token()));
+        assert!(!issued.contains(credential.token_sha256_hex()));
+
+        let audit = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::audit(credential_token, None).expect("audit request"),
+        );
+        assert!(audit.contains("ADMIN_RESULT action=audit status=audited"));
+        assert!(audit.contains("account=account.prod"));
+        assert!(audit.contains("credentials=1 active=1 revoked=0"));
+        assert!(!audit.contains(credential_token));
+        assert!(!audit.contains(credential.token_sha256_hex()));
+
+        let dashboard = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::dashboard(dashboard_token, None, None).expect("dashboard request"),
+        );
+        assert!(dashboard.contains("ADMIN_RESULT action=dashboard status=snapshotted"));
+        assert!(dashboard.contains("account=account.prod"));
+        assert!(dashboard.contains("credentials=1 active=1 revoked=0"));
+        assert!(dashboard.contains("tenants=1 active_tenants=1 revoked_tenants=0"));
+        assert!(dashboard.contains("accounting_records=0"));
+        assert!(dashboard.contains("abuse_records=0"));
+        assert!(!dashboard.contains(dashboard_token));
+        assert!(!dashboard.contains(credential.token()));
+        assert!(!dashboard.contains(credential.token_sha256_hex()));
+        assert!(!dashboard.contains("signing.key.1"));
+        assert!(!dashboard.contains("exchange.key.1"));
+    }
+
+    #[test]
+    fn hosted_admin_token_manifest_scopes_mailbox_actions_to_account_nodes_without_secret_leak() {
+        let home = test_home("hosted-admin-token-mailbox-rbac");
+        let manifest_path = home.join("credentials.toml");
+        let tenants_path = home.join("tenants.toml");
+        let admin_tokens_path = home.join("admin-tokens.toml");
+        let mailbox_dir = home.join("relay-mailbox");
+        let node_id = "node.hosted";
+        let audit_token = "mailbox-audit-admin-token-1234567890";
+        let purge_token = "mailbox-purge-admin-token-1234567890";
+        let audit_hash = relay_token_sha256_hex(audit_token).expect("audit hash");
+        let purge_hash = relay_token_sha256_hex(purge_token).expect("purge hash");
+        fs::create_dir_all(mailbox_dir.join(node_id)).expect("mailbox node dir");
+        upsert_hosted_tenant_in_file(&tenants_path, "account.prod").expect("tenant upserts");
+        upsert_hosted_tenant_node_in_file(
+            &tenants_path,
+            "account.prod",
+            node_id,
+            HostedTenantPermissions {
+                messages: false,
+                streams: false,
+                rooms: false,
+                files: false,
+                mailbox: true,
+            },
+            None,
+            None,
+        )
+        .expect("tenant node upserts");
+        fs::write(
+            &admin_tokens_path,
+            format!(
+                "version = \"1\"\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{audit_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+scope_mailbox_audit = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{purge_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+scope_mailbox_purge = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n",
+                audit_token.len(),
+                purge_token.len()
+            ),
+        )
+        .expect("admin token manifest writes");
+
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("missing manifest starts fail-closed")
+                .with_mailbox_storage(
+                    RelayMailboxStorage::file_backed(mailbox_dir).expect("mailbox storage"),
+                )
+                .with_admin_tokens_file(admin_tokens_path, manifest_path)
+                .expect("admin token manifest configures")
+                .with_admin_tenants_file(tenants_path)
+                .expect("tenant registry configures");
+        let relay = spawn_relay(config).expect("relay starts");
+
+        let missing_node = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_audit(audit_token, None, Some(1))
+                .expect("mailbox audit request"),
+        );
+        assert!(missing_node.contains("ERROR reason=admin_scope_denied"));
+        assert!(!missing_node.contains(audit_token));
+        assert!(!missing_node.contains(&audit_hash));
+
+        let wrong_scope = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_purge(audit_token, Some(node_id.to_string()), 1, true)
+                .expect("mailbox purge request"),
+        );
+        assert!(wrong_scope.contains("ERROR reason=admin_scope_denied"));
+        assert!(!wrong_scope.contains(audit_token));
+        assert!(!wrong_scope.contains(&audit_hash));
+
+        let wrong_node = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_audit(audit_token, Some("node.other".to_string()), Some(1))
+                .expect("mailbox audit request"),
+        );
+        assert!(wrong_node.contains("ERROR reason=admin_scope_denied"));
+        assert!(!wrong_node.contains(audit_token));
+        assert!(!wrong_node.contains(&audit_hash));
+
+        let audit = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_audit(audit_token, Some(node_id.to_string()), Some(1))
+                .expect("mailbox audit request"),
+        );
+        assert!(audit.contains("ADMIN_RESULT action=mailbox_audit status=audited"));
+        assert!(audit.contains("node=node.hosted"));
+        assert!(audit.contains("payload_displayed=false"));
+        assert!(audit.contains("token_displayed=false"));
+        assert!(audit.contains("token_hash_displayed=false"));
+        assert!(!audit.contains(audit_token));
+        assert!(!audit.contains(&audit_hash));
+        assert!(!audit.contains(purge_token));
+        assert!(!audit.contains(&purge_hash));
+
+        let purge = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_purge(purge_token, Some(node_id.to_string()), 1, true)
+                .expect("mailbox purge request"),
+        );
+        assert!(purge.contains("ADMIN_RESULT action=mailbox_purge status=dry_run"));
+        assert!(purge.contains("node=node.hosted"));
+        assert!(purge.contains("confirmed=false"));
+        assert!(purge.contains("token_hash_displayed=false"));
+        assert!(!purge.contains(audit_token));
+        assert!(!purge.contains(&audit_hash));
+        assert!(!purge.contains(purge_token));
+        assert!(!purge.contains(&purge_hash));
+    }
+
+    #[test]
+    fn admin_token_manifest_rejects_display_flags_and_empty_scopes() {
+        let token = "manifest-admin-token-1234567890";
+        let hash = relay_token_sha256_hex(token).expect("hash");
+        let displayed = format!(
+            "version = \"1\"\n\n\
+[[admin_token]]\n\
+token_sha256_hex = \"{hash}\"\n\
+token_length = {}\n\
+scope_dashboard = true\n\
+token_hash_displayed = true\n",
+            token.len()
+        );
+        let displayed_error = parse_admin_tokens_file(&displayed, "127.0.0.1:0")
+            .expect_err("token_hash_displayed true should be rejected");
+        assert!(
+            displayed_error
+                .to_string()
+                .contains("token_hash_displayed must be false")
+        );
+        assert!(!displayed_error.to_string().contains(token));
+        assert!(!displayed_error.to_string().contains(&hash));
+
+        let empty_scope = format!(
+            "version = \"1\"\n\n\
+[[admin_token]]\n\
+token_sha256_hex = \"{hash}\"\n\
+token_length = {}\n\
+token_displayed = false\n\
+token_hash_displayed = false\n",
+            token.len()
+        );
+        let empty_scope_error = parse_admin_tokens_file(&empty_scope, "127.0.0.1:0")
+            .expect_err("empty scope should be rejected");
+        assert!(empty_scope_error.to_string().contains("at least one scope"));
+        assert!(!empty_scope_error.to_string().contains(token));
+        assert!(!empty_scope_error.to_string().contains(&hash));
     }
 
     #[test]
