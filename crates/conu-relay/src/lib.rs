@@ -3649,6 +3649,7 @@ impl RelayHub {
                     expires_at_unix: request.expires_at_unix,
                     token_displayed: false,
                     contents_displayed: false,
+                    ..RelayAdminResult::new(request.action, status)
                 })
             }
             RelayAdminAction::Revoke => {
@@ -3679,6 +3680,7 @@ impl RelayHub {
                     expires_at_unix: None,
                     token_displayed: false,
                     contents_displayed: false,
+                    ..RelayAdminResult::new(request.action, "revoked")
                 })
             }
             RelayAdminAction::Audit => {
@@ -3700,9 +3702,194 @@ impl RelayHub {
                     expires_at_unix: None,
                     token_displayed: false,
                     contents_displayed: false,
+                    ..RelayAdminResult::new(request.action, "audited")
                 })
             }
+            RelayAdminAction::Dashboard => self.admin_dashboard_result(request, &credentials_file),
         }
+    }
+
+    fn admin_dashboard_result(
+        &self,
+        request: &RelayAdminRequest,
+        credentials_file: &Path,
+    ) -> Result<RelayAdminResult, RelayError> {
+        let credentials =
+            audit_hosted_relay_credentials_file(credentials_file, request.account_id.as_deref())?;
+        let tenants = self
+            .admin
+            .tenants_file()
+            .map(|path| audit_hosted_tenants_file(path, request.account_id.as_deref()))
+            .transpose()?;
+        let accounting = match &self.accounting_storage {
+            RelayAccountingStorage::MemoryOnly => None,
+            RelayAccountingStorage::FileBacked(path) => Some(audit_relay_accounting_dir(
+                path,
+                request.node_id.as_deref(),
+            )?),
+        };
+        let abuse = match &self.abuse_storage {
+            RelayAbuseStorage::MemoryOnly => None,
+            RelayAbuseStorage::FileBacked(path) => {
+                Some(audit_relay_abuse_dir(path, request.node_id.as_deref())?)
+            }
+        };
+
+        Ok(RelayAdminResult {
+            action: request.action,
+            status: "snapshotted".to_string(),
+            account_id: credentials.account_id,
+            node_id: request.node_id.clone(),
+            credentials: credentials.credentials,
+            active: credentials.active,
+            revoked: credentials.revoked,
+            expired: credentials.expired,
+            accounts: credentials.accounts,
+            tenants: tenants.as_ref().map(|audit| audit.tenants).unwrap_or(0),
+            active_tenants: tenants
+                .as_ref()
+                .map(|audit| audit.active_tenants)
+                .unwrap_or(0),
+            revoked_tenants: tenants
+                .as_ref()
+                .map(|audit| audit.revoked_tenants)
+                .unwrap_or(0),
+            nodes: tenants.as_ref().map(|audit| audit.nodes).unwrap_or(0),
+            active_nodes: tenants
+                .as_ref()
+                .map(|audit| audit.active_nodes)
+                .unwrap_or(0),
+            revoked_nodes: tenants
+                .as_ref()
+                .map(|audit| audit.revoked_nodes)
+                .unwrap_or(0),
+            tenant_policies: tenants.as_ref().map(|audit| audit.policies).unwrap_or(0),
+            accounting_records: accounting.as_ref().map(|audit| audit.records).unwrap_or(0),
+            accounting_window_started_unix: accounting
+                .as_ref()
+                .and_then(|audit| audit.window_started_unix),
+            sessions_authenticated: accounting
+                .as_ref()
+                .map(|audit| audit.sessions_authenticated)
+                .unwrap_or(0),
+            sessions_resumed: accounting
+                .as_ref()
+                .map(|audit| audit.sessions_resumed)
+                .unwrap_or(0),
+            envelopes_sent: accounting
+                .as_ref()
+                .map(|audit| audit.envelopes_sent)
+                .unwrap_or(0),
+            bytes_sent: accounting
+                .as_ref()
+                .map(|audit| audit.bytes_sent)
+                .unwrap_or(0),
+            envelopes_received: accounting
+                .as_ref()
+                .map(|audit| audit.envelopes_received)
+                .unwrap_or(0),
+            bytes_received: accounting
+                .as_ref()
+                .map(|audit| audit.bytes_received)
+                .unwrap_or(0),
+            envelopes_mailboxed: accounting
+                .as_ref()
+                .map(|audit| audit.envelopes_mailboxed)
+                .unwrap_or(0),
+            bytes_mailboxed: accounting
+                .as_ref()
+                .map(|audit| audit.bytes_mailboxed)
+                .unwrap_or(0),
+            abuse_records: abuse.as_ref().map(|audit| audit.records).unwrap_or(0),
+            abuse_window_started_unix: abuse.as_ref().and_then(|audit| audit.window_started_unix),
+            admin_unauthorized: abuse
+                .as_ref()
+                .map(|audit| audit.admin_unauthorized)
+                .unwrap_or(0),
+            admin_failed: abuse.as_ref().map(|audit| audit.admin_failed).unwrap_or(0),
+            unauthorized_sessions: abuse
+                .as_ref()
+                .map(|audit| audit.unauthorized_sessions)
+                .unwrap_or(0),
+            credential_denied_sessions: abuse
+                .as_ref()
+                .map(|audit| audit.credential_denied_sessions)
+                .unwrap_or(0),
+            tenant_denied_sessions: abuse
+                .as_ref()
+                .map(|audit| audit.tenant_denied_sessions)
+                .unwrap_or(0),
+            rate_limited_sessions: abuse
+                .as_ref()
+                .map(|audit| audit.rate_limited_sessions)
+                .unwrap_or(0),
+            session_expired: abuse
+                .as_ref()
+                .map(|audit| audit.session_expired)
+                .unwrap_or(0),
+            quota_denied_forwards: abuse
+                .as_ref()
+                .map(|audit| audit.quota_denied_forwards)
+                .unwrap_or(0),
+            undelivered_forwards: abuse
+                .as_ref()
+                .map(|audit| audit.undelivered_forwards)
+                .unwrap_or(0),
+            mailbox_rejected_forwards: abuse
+                .as_ref()
+                .map(|audit| audit.mailbox_rejected_forwards)
+                .unwrap_or(0),
+            malformed_client_frames: abuse
+                .as_ref()
+                .map(|audit| audit.malformed_client_frames)
+                .unwrap_or(0),
+            payload_displayed: accounting
+                .as_ref()
+                .is_some_and(|audit| audit.payload_displayed)
+                || abuse.as_ref().is_some_and(|audit| audit.payload_displayed),
+            token_displayed: credentials.token_displayed
+                || tenants.as_ref().is_some_and(|audit| audit.token_displayed)
+                || accounting
+                    .as_ref()
+                    .is_some_and(|audit| audit.token_displayed)
+                || abuse.as_ref().is_some_and(|audit| audit.token_displayed),
+            token_hash_displayed: accounting
+                .as_ref()
+                .is_some_and(|audit| audit.token_hash_displayed)
+                || abuse
+                    .as_ref()
+                    .is_some_and(|audit| audit.token_hash_displayed),
+            key_material_displayed: tenants
+                .as_ref()
+                .is_some_and(|audit| audit.key_material_displayed)
+                || accounting
+                    .as_ref()
+                    .is_some_and(|audit| audit.key_material_displayed)
+                || abuse
+                    .as_ref()
+                    .is_some_and(|audit| audit.key_material_displayed),
+            session_id_displayed: accounting
+                .as_ref()
+                .is_some_and(|audit| audit.session_id_displayed)
+                || abuse
+                    .as_ref()
+                    .is_some_and(|audit| audit.session_id_displayed),
+            ciphertext_displayed: accounting
+                .as_ref()
+                .is_some_and(|audit| audit.ciphertext_displayed)
+                || abuse
+                    .as_ref()
+                    .is_some_and(|audit| audit.ciphertext_displayed),
+            contents_displayed: credentials.contents_displayed
+                || tenants
+                    .as_ref()
+                    .is_some_and(|audit| audit.contents_displayed)
+                || accounting
+                    .as_ref()
+                    .is_some_and(|audit| audit.contents_displayed)
+                || abuse.as_ref().is_some_and(|audit| audit.contents_displayed),
+            ..RelayAdminResult::new(request.action, "snapshotted")
+        })
     }
 
     fn admin_result_for_update_error(
@@ -3732,6 +3919,7 @@ impl RelayHub {
             expires_at_unix: request.expires_at_unix,
             token_displayed: false,
             contents_displayed: false,
+            ..RelayAdminResult::new(request.action, status)
         })
     }
 }
@@ -3800,7 +3988,7 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                     Ok(result) => {
                         write_text_frame(
                             &mut stream,
-                            &render_server_frame(&RelayServerFrame::AdminResult(result)),
+                            &render_server_frame(&RelayServerFrame::AdminResult(Box::new(result))),
                         )?;
                     }
                     Err(RelayError::Protocol(reason)) if reason == "admin_unauthorized" => {
@@ -6460,6 +6648,118 @@ token_displayed = false\n",
         assert!(response.contains("ERROR reason=admin_unauthorized"));
         assert!(!response.contains(admin_token));
         assert!(!response.contains(wrong_admin_token));
+    }
+
+    #[test]
+    fn hosted_admin_dashboard_snapshots_metadata_with_admin_token() {
+        let home = test_home("hosted-admin-dashboard");
+        let manifest_path = home.join("credentials.toml");
+        let tenants_path = home.join("tenants.toml");
+        let accounting_storage =
+            RelayAccountingStorage::file_backed(home.join("accounting")).expect("accounting dir");
+        let abuse_storage = RelayAbuseStorage::file_backed(home.join("abuse")).expect("abuse dir");
+        let admin_token = "hosted-admin-dashboard-token-123456";
+        let wrong_admin_token = "wrong-hosted-dashboard-token-123456";
+        let credential = issue_relay_credential_from_token_bytes(
+            "node.hosted",
+            &[41_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            1_000,
+        )
+        .and_then(|credential| credential.with_account_id("account.prod"))
+        .expect("credential issues");
+
+        upsert_hosted_tenant_in_file(&tenants_path, "account.prod").expect("tenant upserts");
+        upsert_hosted_tenant_node_in_file(
+            &tenants_path,
+            "account.prod",
+            credential.node_id(),
+            HostedTenantPermissions {
+                messages: true,
+                streams: false,
+                rooms: false,
+                files: false,
+                mailbox: true,
+            },
+            Some("signing.key.1".to_string()),
+            Some("exchange.key.1".to_string()),
+        )
+        .expect("tenant node upserts");
+
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("missing manifest starts fail-closed")
+                .with_accounting_storage(accounting_storage)
+                .with_abuse_storage(abuse_storage)
+                .with_admin_token(admin_token, manifest_path.clone())
+                .expect("admin token configures")
+                .with_admin_tenants_file(tenants_path)
+                .expect("tenant registry configures");
+        let relay = spawn_relay(config).expect("relay starts");
+
+        let issued = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::issue(
+                admin_token,
+                "account.prod",
+                credential.node_id(),
+                credential.token_sha256_hex().to_string(),
+                credential.token_length(),
+                credential.expires_at_unix(),
+            )
+            .expect("issue request"),
+        );
+        assert!(issued.contains("ADMIN_RESULT action=issue status=issued"));
+
+        let mut active_client = connect_client(relay.local_addr());
+        write_client_text(
+            &mut active_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new(credential.node_id(), credential.token()).expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut active_client).contains("WELCOME"));
+
+        let rejected_dashboard = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::dashboard(
+                wrong_admin_token,
+                Some("account.prod".to_string()),
+                Some(credential.node_id().to_string()),
+            )
+            .expect("dashboard request"),
+        );
+        assert!(rejected_dashboard.contains("ERROR reason=admin_unauthorized"));
+        assert!(!rejected_dashboard.contains(admin_token));
+        assert!(!rejected_dashboard.contains(wrong_admin_token));
+        assert!(!rejected_dashboard.contains(credential.token()));
+        assert!(!rejected_dashboard.contains(credential.token_sha256_hex()));
+
+        let dashboard = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::dashboard(admin_token, Some("account.prod".to_string()), None)
+                .expect("dashboard request"),
+        );
+
+        assert!(dashboard.contains("ADMIN_RESULT action=dashboard status=snapshotted"));
+        assert!(dashboard.contains("credentials=1 active=1 revoked=0 expired=0 accounts=1"));
+        assert!(dashboard.contains("tenants=1 active_tenants=1 revoked_tenants=0"));
+        assert!(dashboard.contains("nodes=1 active_nodes=1 revoked_nodes=0 tenant_policies=1"));
+        assert!(dashboard.contains("accounting_records=1 sessions_authenticated=1"));
+        assert!(dashboard.contains("abuse_records=1 admin_unauthorized=1"));
+        assert!(dashboard.contains("payload_displayed=false"));
+        assert!(dashboard.contains("token_displayed=false"));
+        assert!(dashboard.contains("token_hash_displayed=false"));
+        assert!(dashboard.contains("key_material_displayed=false"));
+        assert!(dashboard.contains("session_id_displayed=false"));
+        assert!(dashboard.contains("ciphertext_displayed=false"));
+        assert!(dashboard.contains("contents_displayed=false"));
+        assert!(!dashboard.contains(admin_token));
+        assert!(!dashboard.contains(wrong_admin_token));
+        assert!(!dashboard.contains(credential.token()));
+        assert!(!dashboard.contains(credential.token_sha256_hex()));
+        assert!(!dashboard.contains("signing.key.1"));
+        assert!(!dashboard.contains("exchange.key.1"));
     }
 
     #[test]

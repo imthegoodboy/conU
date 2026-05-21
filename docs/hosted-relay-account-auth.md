@@ -108,6 +108,14 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --admin-token-stdin `
     --account account.prod `
     --json
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-hosted-dashboard `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --account account.prod `
+    --node node-a-id `
+    --json
 ```
 
 Admin results report only metadata:
@@ -115,12 +123,14 @@ Admin results report only metadata:
 - action and status
 - account id and node id where applicable
 - credential, active, revoked, expired, and account counts
+- dashboard credential, tenant, accounting, and abuse counts for `--admin-hosted-dashboard`
 - token length and expiry where applicable
+- `payloadDisplayed=false`, `tokenHashDisplayed=false`, `sessionIdDisplayed=false`, and `ciphertextDisplayed=false` on dashboard snapshots
 - `tokenDisplayed=false`
 - `contentsDisplayed=false`
 - `payload=not_observed` on relay frames
 
-They never report raw node tokens, token hashes, admin tokens, payload plaintext, ciphertext bodies, private keys, or manifest contents.
+They never report raw node tokens, token hashes, admin tokens, payload plaintext, ciphertext bodies, private keys, relay session ids, arbitrary frame contents, or manifest contents.
 
 ## Failure Behavior
 
@@ -207,8 +217,22 @@ conu-relay --hosted-dashboard `
 
 The snapshot is an audit surface, not a control plane. It aggregates credential counts, tenant/node counts, accounting counters, and abuse counters with display guards only. It does not show raw node tokens, admin tokens, token hashes, private keys, relay session ids, plaintext payloads, ciphertext bodies, arbitrary frame contents, message text, stream chunks, or room-event plaintext.
 
-This is still single-relay and file-backed. It is not distributed dashboard storage, RBAC, alert routing, adaptive response, billing, tenant-wide workflow automation, or managed hosted account suspension.
+The running relay can also return an admin-token-gated snapshot over the online admin control plane:
+
+```powershell
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-hosted-dashboard `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --account account.prod `
+    --node node-a-id `
+    --json
+```
+
+The online form requires `CONU_RELAY_ADMIN_TOKEN` and reads the admin token from stdin. It returns metadata-only counters from the running relay's configured credential, tenant, accounting, and abuse stores. It never echoes the admin token, raw node tokens, token hashes, private keys, relay session ids, payloads, ciphertext bodies, frame contents, or manifest contents.
+
+This is still single-relay and file-backed/admin-gated. It is not distributed dashboard storage, tenant-wide RBAC, alert routing, adaptive response, billing, workflow automation, or managed hosted account suspension.
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, mailbox-audit, mailbox-purge, relay-local scheduled mailbox purge, and dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, mailbox-audit, mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration, full hosted identity/key administration, and managed direct NAT traversal.
