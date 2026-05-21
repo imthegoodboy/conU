@@ -116,6 +116,14 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --account account.prod `
     --node node-a-id `
     --json
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-mailbox-audit `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --node node-a-id `
+    --ttl-seconds 3600 `
+    --json
 ```
 
 Admin results report only metadata:
@@ -124,6 +132,7 @@ Admin results report only metadata:
 - account id and node id where applicable
 - credential, active, revoked, expired, and account counts
 - dashboard credential, tenant, accounting, and abuse counts for `--admin-hosted-dashboard`
+- durable mailbox node/file/byte/timestamp and optional expired counts for `--admin-mailbox-audit`
 - token length and expiry where applicable
 - `payloadDisplayed=false`, `tokenHashDisplayed=false`, `sessionIdDisplayed=false`, and `ciphertextDisplayed=false` on dashboard snapshots
 - `tokenDisplayed=false`
@@ -175,6 +184,20 @@ conu-relay --mailbox-audit `
 ```
 
 The audit reports aggregate node/file counts, total mailbox bytes, oldest/newest queued timestamps, optional expired record and byte counts for the supplied TTL, invalid mailbox-file counts, and false display guards only. It never prints stored relay frames, ciphertext bodies, plaintext payloads, raw node tokens, token hashes, admin tokens, private keys, or relay session ids.
+
+The running relay can return the same class of retention metadata through the admin control plane without exposing the mailbox directory path:
+
+```powershell
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-mailbox-audit `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --node node-a-id `
+    --ttl-seconds 3600 `
+    --json
+```
+
+The online mailbox audit requires `CONU_RELAY_ADMIN_TOKEN`, reads the admin token from stdin, and reports only aggregate counts and display guards from the configured `CONU_RELAY_MAILBOX_DIR`. It is read-only and does not purge files.
 
 Operators can enforce that same local retention boundary with an explicit dry-run or confirmation:
 
@@ -235,4 +258,4 @@ This is still single-relay and file-backed/admin-gated. It is not distributed da
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, mailbox-audit, mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, local and admin-gated online mailbox-audit, mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, destructive distributed hosted mailbox retention orchestration, full hosted identity/key administration, and managed direct NAT traversal.

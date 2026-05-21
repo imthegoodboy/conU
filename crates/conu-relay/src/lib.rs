@@ -3706,7 +3706,49 @@ impl RelayHub {
                 })
             }
             RelayAdminAction::Dashboard => self.admin_dashboard_result(request, &credentials_file),
+            RelayAdminAction::MailboxAudit => self.admin_mailbox_audit_result(request),
         }
+    }
+
+    fn admin_mailbox_audit_result(
+        &self,
+        request: &RelayAdminRequest,
+    ) -> Result<RelayAdminResult, RelayError> {
+        let RelayMailboxStorage::FileBacked(mailbox_dir) = &self.mailbox_storage else {
+            return Ok(RelayAdminResult {
+                action: request.action,
+                status: "mailbox_unavailable".to_string(),
+                node_id: request.node_id.clone(),
+                retention_ttl_seconds: request.retention_ttl_seconds,
+                ..RelayAdminResult::new(request.action, "mailbox_unavailable")
+            });
+        };
+        let retention_ttl = request.retention_ttl_seconds.map(Duration::from_secs);
+        let audit =
+            audit_relay_mailbox_dir(mailbox_dir, request.node_id.as_deref(), retention_ttl)?;
+
+        Ok(RelayAdminResult {
+            action: request.action,
+            status: "audited".to_string(),
+            node_id: audit.node_id,
+            retention_ttl_seconds: audit.retention_ttl_seconds,
+            mailbox_nodes: audit.nodes,
+            mailbox_records: audit.records,
+            mailbox_invalid_records: audit.invalid_records,
+            mailbox_bytes: audit.bytes,
+            mailbox_oldest_queued_unix_millis: audit.oldest_queued_unix_millis,
+            mailbox_newest_queued_unix_millis: audit.newest_queued_unix_millis,
+            mailbox_expired_records: audit.expired_records,
+            mailbox_expired_bytes: audit.expired_bytes,
+            payload_displayed: audit.payload_displayed,
+            token_displayed: audit.token_displayed,
+            token_hash_displayed: audit.token_hash_displayed,
+            key_material_displayed: audit.key_material_displayed,
+            session_id_displayed: audit.session_id_displayed,
+            ciphertext_displayed: audit.ciphertext_displayed,
+            contents_displayed: audit.contents_displayed,
+            ..RelayAdminResult::new(request.action, "audited")
+        })
     }
 
     fn admin_dashboard_result(
@@ -6760,6 +6802,106 @@ token_displayed = false\n",
         assert!(!dashboard.contains(credential.token_sha256_hex()));
         assert!(!dashboard.contains("signing.key.1"));
         assert!(!dashboard.contains("exchange.key.1"));
+    }
+
+    #[test]
+    fn hosted_admin_mailbox_audit_snapshots_retention_metadata_with_admin_token() {
+        let home = test_home("hosted-admin-mailbox-audit");
+        let manifest_path = home.join("credentials.toml");
+        let mailbox_dir = home.join("relay-mailbox");
+        let node_dir = mailbox_dir.join("node.hosted");
+        let admin_token = "hosted-admin-mailbox-audit-token-123456";
+        let wrong_admin_token = "wrong-hosted-mailbox-audit-token-123456";
+
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("missing manifest starts fail-closed")
+                .with_mailbox_storage(
+                    RelayMailboxStorage::file_backed(mailbox_dir.clone()).expect("mailbox storage"),
+                )
+                .with_admin_token(admin_token, manifest_path)
+                .expect("admin token configures");
+        let relay = spawn_relay(config).expect("relay starts");
+        fs::create_dir_all(&node_dir).expect("mailbox node dir");
+        let now = current_unix_millis();
+        let expired_queued_at = now.saturating_sub(10_000);
+        let fresh_queued_at = now;
+
+        let expired = QueuedRelayEnvelope {
+            queued_at_millis: expired_queued_at,
+            queued_at_nanos: expired_queued_at.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.hosted", "env.admin.mailbox.expired"),
+            ),
+        };
+        let fresh = QueuedRelayEnvelope {
+            queued_at_millis: fresh_queued_at,
+            queued_at_nanos: fresh_queued_at.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.hosted", "env.admin.mailbox.fresh"),
+            ),
+        };
+        fs::write(
+            node_dir.join("expired.mailbox"),
+            render_mailbox_file(&expired),
+        )
+        .expect("expired mailbox file");
+        fs::write(node_dir.join("fresh.mailbox"), render_mailbox_file(&fresh))
+            .expect("fresh mailbox file");
+        fs::write(
+            node_dir.join("invalid.mailbox"),
+            "version = \"1\"\nqueued_at_millis = invalid\nframe = ENVELOPE from=node.a body_ciphertext=ciphertext_body\npayload_displayed = false\n",
+        )
+        .expect("invalid mailbox file");
+        fs::write(
+            node_dir.join("display-guard.mailbox"),
+            render_mailbox_file(&expired)
+                .replace("payload_displayed = false", "payload_displayed = true"),
+        )
+        .expect("display guard mailbox file");
+
+        let rejected = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_audit(
+                wrong_admin_token,
+                Some("node.hosted".to_string()),
+                Some(1),
+            )
+            .expect("mailbox audit request"),
+        );
+        assert!(rejected.contains("ERROR reason=admin_unauthorized"));
+        assert!(!rejected.contains(admin_token));
+        assert!(!rejected.contains(wrong_admin_token));
+
+        let audit = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_audit(admin_token, Some("node.hosted".to_string()), Some(1))
+                .expect("mailbox audit request"),
+        );
+
+        assert!(audit.contains("ADMIN_RESULT action=mailbox_audit status=audited"));
+        assert!(audit.contains("node=node.hosted"));
+        assert!(audit.contains("ttl_seconds=1"));
+        assert!(audit.contains("mailbox_nodes=1"));
+        assert!(audit.contains("mailbox_records=4"));
+        assert!(audit.contains("mailbox_invalid_records=2"));
+        assert!(audit.contains("mailbox_expired_records=1"));
+        assert!(audit.contains("payload_displayed=false"));
+        assert!(audit.contains("token_displayed=false"));
+        assert!(audit.contains("token_hash_displayed=false"));
+        assert!(audit.contains("key_material_displayed=false"));
+        assert!(audit.contains("session_id_displayed=false"));
+        assert!(audit.contains("ciphertext_displayed=false"));
+        assert!(audit.contains("contents_displayed=false"));
+        assert!(!audit.contains(admin_token));
+        assert!(!audit.contains(wrong_admin_token));
+        assert!(!audit.contains("ENVELOPE from=node.a"));
+        assert!(!audit.contains("ciphertext_body"));
+        assert!(!audit.contains("env.admin.mailbox"));
     }
 
     #[test]
