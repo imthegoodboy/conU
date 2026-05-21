@@ -4504,6 +4504,40 @@ Next recommendation:
 
 - Open and merge a PR for issue #105 while preserving the local and remote feature branch. Then continue with distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
+## Post Phase 15 GitHub Actions Node 24 Runtime Hardening (Completed)
+
+Objective: remove GitHub Actions Node 20 action-runtime deprecation warnings from CI and release workflows before GitHub-hosted runners force JavaScript actions to Node 24.
+
+Current status:
+
+- Created GitHub issue #107 for GitHub Actions Node 24 runtime hardening.
+- Created branch `codex/actions-node24-runtime` from `main`.
+- Confirmed `actions/checkout` latest release `v6.0.2` declares `using: node24` in `action.yml`.
+- Confirmed `actions/setup-node` latest release `v6.4.0` declares `using: node24` in `action.yml`.
+- Updated `.github/workflows/ci.yml` from `actions/checkout@v4` and `actions/setup-node@v4` to v6.
+- Updated `.github/workflows/release.yml` from `actions/checkout@v4` and `actions/setup-node@v4` to v6.
+- Updated the release checklist to keep CI/release action runtimes on Node 24-compatible versions.
+
+Validation:
+
+- `gh api repos/actions/checkout/releases/latest --jq '.tag_name'` returned `v6.0.2`.
+- `gh api repos/actions/setup-node/releases/latest --jq '.tag_name'` returned `v6.4.0`.
+- `gh api repos/actions/checkout/contents/action.yml?ref=v6.0.2 --jq '.content'` decoded to an action with `using: node24`.
+- `gh api repos/actions/setup-node/contents/action.yml?ref=v6.4.0 --jq '.content'` decoded to an action with `using: 'node24'`.
+- Python YAML parse passed for `.github/workflows/ci.yml` and `.github/workflows/release.yml`.
+- `rg -n "actions/(checkout|setup-node)@v4|actions/(checkout|setup-node)@v5" .github/workflows` returned no matches.
+- `npm run check --prefix sdk\typescript` passed.
+- `npm run check --prefix packaging\npm\conu-cli` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This update only hardens JavaScript action runtime compatibility. It does not change the package test Node version matrix, release signing secrets, or hosted/distributed product gaps.
+
+Next recommendation:
+
+- Open and merge a PR for issue #107 while preserving the local and remote feature branch. Then continue with release workflow hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -4592,4 +4626,5 @@ Add entries here when a phase is completed.
 2026-05-21 - Post Phase 15 relay session-state audit completed. Added payload-safe local `--session-audit` and admin-gated `--admin-session-audit`, relay admin `session_audit` frames, `scope_sessions` scoped admin-token RBAC, account-scoped node/tenant guardrails, docs/skills/plan updates, full GNU workspace validation, Python/package checks, conu-relay build, CLI help smoke, local session-audit smoke, and diff check. Next: distributed multi-instance session migration, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 hosted admin-token manifest audit completed. Added payload-safe local `conu-relay --admin-token-audit --admin-tokens-file <path> [--bind-addr <addr>] [--account <id>] [--json]`, metadata-only admin-token audit structs/counts, host:port-only bind parser hardening, stricter false display guard support for key material/session id/ciphertext markers, docs/skills/plan updates, full GNU workspace validation, Python/package checks, conu-relay build, CLI help smoke, local admin-token audit smoke, and diff check. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 hosted relay readiness preflight completed. Added payload-safe local `conu-relay --hosted-readiness` to combine credential, admin-token, tenant, session-state, mailbox, accounting, abuse, and bind checks with JSON/text output, warning counts, display guards, and optional `--fail-on-warning` exit code 3 after preserving stdout. Updated docs/skills/plan and validated with GNU fmt/check/clippy/workspace tests, focused readiness test, Python compile, TypeScript/package checks, conu-relay build, local readiness/fail-on-warning smoke, and diff check. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-22 - Post Phase 15 GitHub Actions Node 24 runtime hardening completed. Updated CI and release workflows to `actions/checkout@v6` and `actions/setup-node@v6`, confirmed both current action releases declare Node 24 runtimes, updated release checklist, and validated YAML parse, package checks, no stale v4/v5 action references, and diff check. Next: release workflow hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
