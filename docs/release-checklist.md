@@ -112,7 +112,7 @@ conu stop
 
 ## GitHub
 
-- CI passed on pull request or equivalent local validation is recorded.
+- CI passed on pull request or equivalent local validation is recorded, including the Rust OS matrix and the package job for `sdk/typescript` plus `packaging/npm/conu-cli`.
 - PR body lists validation commands.
 - GitHub Release has platform-named archives plus matching `.sha256` files before npm publishing.
 - `@conu/cli` is published only after the matching GitHub Release assets are available.

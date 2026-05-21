@@ -52,7 +52,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Linux systemd and macOS launchd service templates.
 - Docker relay hosting template.
 - npm native launcher package template under `packaging/npm/conu-cli`.
-- GitHub CI and release artifact workflows.
+- GitHub CI and release artifact workflows, including Rust matrix checks, Python wrapper compile, TypeScript SDK check, and npm launcher check.
 - Release checklist and observability docs.
 - Payload-safe logs, receipts, watch output, and CLI JSON.
 - Phase 11 security audit command, Phase 12 SDK/MCP receive path, Phase 13 route manager, and Phase 15 packaging layer.

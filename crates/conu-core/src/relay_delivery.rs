@@ -13,6 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use conu_protocol::OpaquePayload;
@@ -867,7 +868,13 @@ fn drain_relay_frames(
     while start.elapsed() < wait {
         match client.read()? {
             Some(frame) => handle_relay_frame(paths, report, frame)?,
-            None => break,
+            None => {
+                let remaining = wait.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
+                    break;
+                }
+                thread::sleep(remaining.min(Duration::from_millis(25)));
+            }
         }
     }
 
