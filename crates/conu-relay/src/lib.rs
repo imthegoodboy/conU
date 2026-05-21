@@ -347,6 +347,7 @@ impl RelayAdminTokenScopes {
             | RelayAdminAction::TenantNodeUpsert
             | RelayAdminAction::TenantNodeRevoke
             | RelayAdminAction::TenantAudit => self.tenants,
+            RelayAdminAction::AccountSuspend => self.credentials && self.tenants,
             RelayAdminAction::Dashboard => self.dashboard,
             RelayAdminAction::MailboxAudit => self.mailbox_audit,
             RelayAdminAction::MailboxPurge => self.mailbox_purge,
@@ -590,6 +591,29 @@ pub struct HostedTenantAudit {
     pub active_nodes: usize,
     pub revoked_nodes: usize,
     pub policies: usize,
+    pub token_displayed: bool,
+    pub key_material_displayed: bool,
+    pub contents_displayed: bool,
+}
+
+/// Metadata-only result of suspending one hosted account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedAccountSuspension {
+    pub account_id: String,
+    pub credentials_file: PathBuf,
+    pub tenants_file: PathBuf,
+    pub credentials: usize,
+    pub active: usize,
+    pub revoked: usize,
+    pub expired: usize,
+    pub accounts: usize,
+    pub tenants: usize,
+    pub active_tenants: usize,
+    pub revoked_tenants: usize,
+    pub nodes: usize,
+    pub active_nodes: usize,
+    pub revoked_nodes: usize,
+    pub tenant_policies: usize,
     pub token_displayed: bool,
     pub key_material_displayed: bool,
     pub contents_displayed: bool,
@@ -1750,6 +1774,86 @@ pub fn revoke_hosted_relay_credential_in_file(
         replaced: false,
         token_displayed: false,
         contents_displayed: false,
+    })
+}
+
+/// Revoke every credential for one hosted account without exposing hashes.
+pub fn revoke_hosted_relay_credentials_for_account_in_file(
+    path: impl AsRef<Path>,
+    account_id: impl Into<String>,
+) -> Result<HostedCredentialAudit, RelayError> {
+    let path = path.as_ref();
+    let account_id = validate_account_id(account_id.into())?;
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return audit_hosted_relay_credentials_file(path, Some(&account_id));
+        }
+        Err(error) => return Err(RelayError::io("read relay credential file", error)),
+    };
+    let mut records = parse_credential_file_records(&contents)?;
+    let updated_at_unix = current_unix_seconds();
+    let mut changed = false;
+
+    for record in &mut records {
+        if record.account_id()? == Some(account_id.as_str())
+            && record.status.unwrap_or(RelayCredentialStatus::Active)
+                != RelayCredentialStatus::Revoked
+        {
+            *record = record
+                .clone()
+                .with_status(RelayCredentialStatus::Revoked, updated_at_unix);
+            changed = true;
+        }
+    }
+
+    if changed {
+        write_credential_manifest_records(path, &records)?;
+    }
+    audit_hosted_relay_credentials_file(path, Some(&account_id))
+}
+
+/// Suspend one hosted account by revoking tenant access and account credentials.
+///
+/// The tenant registry is revoked first so new sessions fail closed even if a
+/// later credential-file update fails.
+pub fn suspend_hosted_account_in_files(
+    credentials_file: impl AsRef<Path>,
+    tenants_file: impl AsRef<Path>,
+    account_id: impl Into<String>,
+) -> Result<HostedAccountSuspension, RelayError> {
+    let credentials_file = credentials_file.as_ref();
+    let tenants_file = tenants_file.as_ref();
+    let account_id = validate_account_id(account_id.into())?;
+    let tenant_update = revoke_hosted_tenant_in_file(tenants_file, account_id.clone())?;
+    let credentials =
+        revoke_hosted_relay_credentials_for_account_in_file(credentials_file, account_id.clone())?;
+    let tenants = audit_hosted_tenants_file(tenants_file, Some(&account_id))?;
+
+    Ok(HostedAccountSuspension {
+        account_id,
+        credentials_file: credentials_file.to_path_buf(),
+        tenants_file: tenants_file.to_path_buf(),
+        credentials: credentials.credentials,
+        active: credentials.active,
+        revoked: credentials.revoked,
+        expired: credentials.expired,
+        accounts: credentials.accounts,
+        tenants: tenants.tenants,
+        active_tenants: tenants.active_tenants,
+        revoked_tenants: tenants.revoked_tenants,
+        nodes: tenants.nodes,
+        active_nodes: tenants.active_nodes,
+        revoked_nodes: tenants.revoked_nodes,
+        tenant_policies: tenants.policies,
+        token_displayed: credentials.token_displayed
+            || tenants.token_displayed
+            || tenant_update.token_displayed,
+        key_material_displayed: tenants.key_material_displayed
+            || tenant_update.key_material_displayed,
+        contents_displayed: credentials.contents_displayed
+            || tenants.contents_displayed
+            || tenant_update.contents_displayed,
     })
 }
 
@@ -4116,6 +4220,9 @@ impl RelayHub {
             RelayAdminAction::TenantAudit => {
                 self.admin_tenant_audit_result(request, &authorization)
             }
+            RelayAdminAction::AccountSuspend => {
+                self.admin_account_suspend_result(request, &credentials_file, &authorization)
+            }
             RelayAdminAction::MailboxAudit => {
                 self.admin_mailbox_audit_result(request, &authorization)
             }
@@ -4245,6 +4352,61 @@ impl RelayHub {
             key_material_displayed: audit.key_material_displayed,
             contents_displayed: audit.contents_displayed,
             ..RelayAdminResult::new(request.action, "audited")
+        })
+    }
+
+    fn admin_account_suspend_result(
+        &self,
+        request: &RelayAdminRequest,
+        credentials_file: &Path,
+        authorization: &RelayAdminAuthorization,
+    ) -> Result<RelayAdminResult, RelayError> {
+        let Some(tenants_file) = self.admin.tenants_file() else {
+            return Ok(RelayAdminResult {
+                action: request.action,
+                status: "tenant_unavailable".to_string(),
+                account_id: request.account_id.clone(),
+                ..RelayAdminResult::new(request.action, "tenant_unavailable")
+            });
+        };
+        let account_id = request.account_id.as_deref().ok_or_else(|| {
+            RelayError::Protocol("relay admin account suspension account is required".to_string())
+        })?;
+        self.ensure_admin_account_allowed(authorization, account_id)?;
+        let suspension =
+            match suspend_hosted_account_in_files(credentials_file, tenants_file, account_id) {
+                Ok(suspension) => suspension,
+                Err(error) => {
+                    return self.admin_tenant_result_for_update_error(
+                        request,
+                        account_id,
+                        None,
+                        tenants_file,
+                        error,
+                    );
+                }
+            };
+
+        Ok(RelayAdminResult {
+            action: request.action,
+            status: "suspended".to_string(),
+            account_id: Some(suspension.account_id),
+            credentials: suspension.credentials,
+            active: suspension.active,
+            revoked: suspension.revoked,
+            expired: suspension.expired,
+            accounts: suspension.accounts,
+            tenants: suspension.tenants,
+            active_tenants: suspension.active_tenants,
+            revoked_tenants: suspension.revoked_tenants,
+            nodes: suspension.nodes,
+            active_nodes: suspension.active_nodes,
+            revoked_nodes: suspension.revoked_nodes,
+            tenant_policies: suspension.tenant_policies,
+            token_displayed: suspension.token_displayed,
+            key_material_displayed: suspension.key_material_displayed,
+            contents_displayed: suspension.contents_displayed,
+            ..RelayAdminResult::new(request.action, "suspended")
         })
     }
 
@@ -7505,6 +7667,16 @@ contents_displayed = false\n",
         assert!(other_account_denied.contains("ERROR reason=admin_scope_denied"));
         assert!(!other_account_denied.contains(credential_token));
 
+        let suspend_scope_denied = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::account_suspend(tenant_token, "account.prod")
+                .expect("account suspend request"),
+        );
+        assert!(suspend_scope_denied.contains("ERROR reason=admin_scope_denied"));
+        assert!(!suspend_scope_denied.contains(tenant_token));
+        assert!(!suspend_scope_denied.contains(credential.token()));
+        assert!(!suspend_scope_denied.contains(credential.token_sha256_hex()));
+
         let tenant = send_admin_text(
             relay.local_addr(),
             RelayAdminRequest::tenant_upsert(tenant_token, "account.prod")
@@ -8049,6 +8221,218 @@ token_hash_displayed = false\n",
         assert!(!manifest.contains(credential.token_sha256_hex()));
         assert!(!manifest.contains("payload-body"));
         assert!(!manifest.contains("ciphertext_body"));
+    }
+
+    #[test]
+    fn hosted_admin_account_suspend_revokes_tenant_and_account_credentials_without_secret_leak() {
+        let home = test_home("hosted-account-suspend");
+        let manifest_path = home.join("credentials.toml");
+        let tenants_path = home.join("tenants.toml");
+        let admin_token = "hosted-admin-account-suspend-token-123456";
+        let wrong_admin_token = "wrong-hosted-account-suspend-token-123456";
+        let first = issue_relay_credential_from_token_bytes(
+            "node.hosted",
+            &[49_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            4_000,
+        )
+        .and_then(|credential| credential.with_account_id("account.prod"))
+        .expect("first credential issues");
+        let second = issue_relay_credential_from_token_bytes(
+            "node.second",
+            &[50_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            4_000,
+        )
+        .and_then(|credential| credential.with_account_id("account.prod"))
+        .expect("second credential issues");
+        let other = issue_relay_credential_from_token_bytes(
+            "node.other",
+            &[51_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            4_000,
+        )
+        .and_then(|credential| credential.with_account_id("account.other"))
+        .expect("other credential issues");
+
+        upsert_hosted_tenant_in_file(&tenants_path, "account.prod").expect("tenant upserts");
+        upsert_hosted_tenant_node_in_file(
+            &tenants_path,
+            "account.prod",
+            first.node_id(),
+            HostedTenantPermissions {
+                messages: true,
+                streams: false,
+                rooms: false,
+                files: false,
+                mailbox: true,
+            },
+            Some("signing.key.1".to_string()),
+            Some("exchange.key.1".to_string()),
+        )
+        .expect("first tenant node upserts");
+        upsert_hosted_tenant_node_in_file(
+            &tenants_path,
+            "account.prod",
+            second.node_id(),
+            HostedTenantPermissions {
+                messages: true,
+                streams: true,
+                rooms: false,
+                files: false,
+                mailbox: false,
+            },
+            None,
+            None,
+        )
+        .expect("second tenant node upserts");
+        upsert_hosted_tenant_in_file(&tenants_path, "account.other").expect("other tenant upserts");
+        upsert_hosted_tenant_node_in_file(
+            &tenants_path,
+            "account.other",
+            other.node_id(),
+            HostedTenantPermissions {
+                messages: true,
+                streams: false,
+                rooms: false,
+                files: false,
+                mailbox: false,
+            },
+            None,
+            None,
+        )
+        .expect("other tenant node upserts");
+        upsert_hosted_relay_credential_hash_in_file(
+            &manifest_path,
+            "account.prod",
+            first.node_id(),
+            first.token_sha256_hex(),
+            first.token_length(),
+            first.expires_at_unix(),
+            false,
+        )
+        .expect("first credential upserts");
+        upsert_hosted_relay_credential_hash_in_file(
+            &manifest_path,
+            "account.prod",
+            second.node_id(),
+            second.token_sha256_hex(),
+            second.token_length(),
+            second.expires_at_unix(),
+            false,
+        )
+        .expect("second credential upserts");
+        upsert_hosted_relay_credential_hash_in_file(
+            &manifest_path,
+            "account.other",
+            other.node_id(),
+            other.token_sha256_hex(),
+            other.token_length(),
+            other.expires_at_unix(),
+            false,
+        )
+        .expect("other credential upserts");
+
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("credential manifest configures")
+                .with_admin_token(admin_token, manifest_path.clone())
+                .expect("admin token configures")
+                .with_admin_tenants_file(tenants_path.clone())
+                .expect("tenant registry configures");
+        let relay = spawn_relay(config).expect("relay starts");
+
+        let mut active_client = connect_client(relay.local_addr());
+        write_client_text(
+            &mut active_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new(first.node_id(), first.token()).expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut active_client).contains("WELCOME"));
+
+        let rejected = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::account_suspend(wrong_admin_token, "account.prod")
+                .expect("account suspend request"),
+        );
+        assert!(rejected.contains("ERROR reason=admin_unauthorized"));
+        assert!(!rejected.contains(admin_token));
+        assert!(!rejected.contains(wrong_admin_token));
+
+        let suspended = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::account_suspend(admin_token, "account.prod")
+                .expect("account suspend request"),
+        );
+        assert!(suspended.contains("ADMIN_RESULT action=account_suspend status=suspended"));
+        assert!(suspended.contains("account=account.prod"));
+        assert!(suspended.contains("credentials=2 active=0 revoked=2 expired=0 accounts=2"));
+        assert!(suspended.contains("tenants=1 active_tenants=0 revoked_tenants=1"));
+        assert!(suspended.contains("nodes=2 active_nodes=2 revoked_nodes=0 tenant_policies=2"));
+        assert!(suspended.contains("payload_displayed=false"));
+        assert!(suspended.contains("token_displayed=false"));
+        assert!(suspended.contains("token_hash_displayed=false"));
+        assert!(suspended.contains("key_material_displayed=false"));
+        assert!(suspended.contains("contents_displayed=false"));
+        assert!(!suspended.contains(admin_token));
+        assert!(!suspended.contains(wrong_admin_token));
+        assert!(!suspended.contains(first.token()));
+        assert!(!suspended.contains(first.token_sha256_hex()));
+        assert!(!suspended.contains(second.token()));
+        assert!(!suspended.contains(second.token_sha256_hex()));
+        assert!(!suspended.contains(other.token()));
+        assert!(!suspended.contains(other.token_sha256_hex()));
+        assert!(!suspended.contains("signing.key.1"));
+        assert!(!suspended.contains("exchange.key.1"));
+
+        let mut suspended_client = connect_client(relay.local_addr());
+        write_client_text(
+            &mut suspended_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new(first.node_id(), first.token()).expect("hello"),
+            )),
+        );
+        let suspended_response = read_server_text(&mut suspended_client);
+        assert!(suspended_response.contains("ERROR reason=unauthorized"));
+        assert!(!suspended_response.contains(first.token()));
+        assert!(!suspended_response.contains(first.token_sha256_hex()));
+
+        let mut other_client = connect_client(relay.local_addr());
+        write_client_text(
+            &mut other_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new(other.node_id(), other.token()).expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut other_client).contains("WELCOME"));
+
+        let credential_manifest =
+            fs::read_to_string(&manifest_path).expect("credential manifest reads");
+        assert!(credential_manifest.contains("node_id = \"node.hosted\""));
+        assert!(credential_manifest.contains("node_id = \"node.second\""));
+        assert!(credential_manifest.contains("node_id = \"node.other\""));
+        assert_eq!(
+            credential_manifest.matches("status = \"revoked\"").count(),
+            2
+        );
+        assert_eq!(
+            credential_manifest.matches("status = \"active\"").count(),
+            1
+        );
+        assert!(!credential_manifest.contains(admin_token));
+        assert!(!credential_manifest.contains(first.token()));
+        assert!(!credential_manifest.contains(second.token()));
+        assert!(!credential_manifest.contains(other.token()));
+
+        let tenant_manifest = fs::read_to_string(&tenants_path).expect("tenant manifest reads");
+        assert!(tenant_manifest.contains("account_id = \"account.prod\""));
+        assert!(tenant_manifest.contains("account_id = \"account.other\""));
+        assert!(!tenant_manifest.contains(admin_token));
+        assert!(!tenant_manifest.contains(first.token()));
+        assert!(!tenant_manifest.contains(first.token_sha256_hex()));
+        assert!(!tenant_manifest.contains("payload-body"));
+        assert!(!tenant_manifest.contains("ciphertext_body"));
     }
 
     #[test]

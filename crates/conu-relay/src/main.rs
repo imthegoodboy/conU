@@ -9,16 +9,17 @@ use conu_core::relay::{
     RelayAdminRequest, RelayAdminResult, RelayClientFrame, RelayServerFrame, RelayWebSocketClient,
 };
 use conu_relay::{
-    CredentialManifestUpdate, HostedCredentialAudit, HostedTenantAudit, HostedTenantManifestUpdate,
-    HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy,
-    RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy, RelayAccountingStorage,
-    RelayConfig, RelayCredential, RelayMailboxAudit, RelayMailboxMaintenancePolicy,
-    RelayMailboxPolicy, RelayMailboxPurgeReport, RelayMailboxStorage, RelaySessionPolicy,
-    RelaySessionStorage, audit_hosted_relay_credentials_file, audit_hosted_tenants_file,
-    audit_relay_abuse_dir, audit_relay_accounting_dir, audit_relay_mailbox_dir,
-    issue_relay_credential, purge_relay_mailbox_dir, relay_credential_manifest_contains_node,
-    relay_token_sha256_hex, revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
-    revoke_relay_credential_in_file, upsert_hosted_tenant_in_file,
+    CredentialManifestUpdate, HostedAccountSuspension, HostedCredentialAudit, HostedTenantAudit,
+    HostedTenantManifestUpdate, HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit,
+    RelayAbusePolicy, RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy,
+    RelayAccountingStorage, RelayConfig, RelayCredential, RelayMailboxAudit,
+    RelayMailboxMaintenancePolicy, RelayMailboxPolicy, RelayMailboxPurgeReport,
+    RelayMailboxStorage, RelaySessionPolicy, RelaySessionStorage,
+    audit_hosted_relay_credentials_file, audit_hosted_tenants_file, audit_relay_abuse_dir,
+    audit_relay_accounting_dir, audit_relay_mailbox_dir, issue_relay_credential,
+    purge_relay_mailbox_dir, relay_credential_manifest_contains_node, relay_token_sha256_hex,
+    revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
+    revoke_relay_credential_in_file, suspend_hosted_account_in_files, upsert_hosted_tenant_in_file,
     upsert_hosted_tenant_node_in_file, upsert_issued_relay_credential_in_file,
     write_issued_relay_token_file,
 };
@@ -136,6 +137,15 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--admin-hosted-account-suspend") => {
+            match admin_hosted_account_suspend_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("--admin-mailbox-audit") => match admin_mailbox_audit_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -185,6 +195,15 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--hosted-account-suspend") => {
+            match hosted_account_suspend_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("--abuse-audit") => match abuse_audit_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -271,6 +290,7 @@ Usage:
   conu-relay --admin-tenant-node-upsert <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
   conu-relay --admin-tenant-node-revoke <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-tenant-audit --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
+  conu-relay --admin-hosted-account-suspend <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-mailbox-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--ttl-seconds <seconds>] [--json]
   conu-relay --admin-mailbox-purge --relay <ws://host:port/path> --admin-token-stdin --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
   conu-relay --tenant-upsert <account-id> --tenants-file <path> [--json]
@@ -278,6 +298,7 @@ Usage:
   conu-relay --tenant-node-upsert <account-id> <node-id> --tenants-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
   conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
+  conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--json]
   conu-relay --mailbox-purge --mailbox-dir <path> --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
@@ -324,7 +345,8 @@ commands authenticate with an admin token read from stdin, send only node-token 
 relay, and write the raw node token locally only after the relay confirms the update. CONU_RELAY_ADMIN_TOKEN
 remains a full-admin compatibility path; CONU_RELAY_ADMIN_TOKENS_FILE can grant hashed tokens narrower
 credentials, tenants, dashboard, mailbox-audit, and mailbox-purge scopes. Local and admin
-tenant commands manage account, node, public key-id, and hosted permission metadata only; they never
+tenant commands manage account, node, public key-id, and hosted permission metadata only; hosted
+account suspension revokes the tenant and all account credential records together. These commands never
 grant local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies.
 Admin hosted dashboard and tenant snapshots require the admin token over the relay control plane and
 return metadata-only credential, tenant, accounting, and abuse counters. Admin mailbox audits and
@@ -1499,6 +1521,88 @@ fn parse_admin_tenant_audit_args(args: Vec<String>) -> Result<AdminTenantAuditAr
 
 fn admin_tenant_audit_usage() -> String {
     "usage: conu-relay --admin-tenant-audit --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]".to_string()
+}
+
+fn admin_hosted_account_suspend_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_admin_account_suspend_args(args)?;
+    let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
+    let request = RelayAdminRequest::account_suspend(admin_token, parsed.account_id.clone())
+        .map_err(|error| error.to_string())?;
+    let result = send_admin_request(&parsed.relay, request)?;
+    if result.status != "suspended" {
+        return Err(format!(
+            "relay admin hosted account suspend did not complete: status={}",
+            result.status
+        ));
+    }
+
+    if parsed.json {
+        println!(
+            "{}",
+            render_admin_account_suspend_json(&result, &parsed.relay)
+        );
+    } else {
+        println!(
+            "{}",
+            render_admin_account_suspend_text(&result, &parsed.relay)
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct AdminAccountSuspendArgs {
+    account_id: String,
+    relay: String,
+    admin_token_stdin: bool,
+    json: bool,
+}
+
+fn parse_admin_account_suspend_args(args: Vec<String>) -> Result<AdminAccountSuspendArgs, String> {
+    let mut positional = Vec::new();
+    let mut relay = None::<String>;
+    let mut admin_token_stdin = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--relay" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_account_suspend_usage());
+                };
+                relay = Some(value.to_string());
+            }
+            "--admin-token-stdin" => admin_token_stdin = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(admin_account_suspend_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 1 {
+        return Err(admin_account_suspend_usage());
+    }
+    let Some(relay) = relay.filter(|value| !value.trim().is_empty()) else {
+        return Err(admin_account_suspend_usage());
+    };
+    if !admin_token_stdin {
+        return Err("--admin-token-stdin is required".to_string());
+    }
+
+    Ok(AdminAccountSuspendArgs {
+        account_id: positional.remove(0),
+        relay,
+        admin_token_stdin,
+        json,
+    })
+}
+
+fn admin_account_suspend_usage() -> String {
+    "usage: conu-relay --admin-hosted-account-suspend <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]".to_string()
 }
 
 fn admin_mailbox_audit_from_args(args: Vec<String>) -> Result<(), String> {
@@ -2720,6 +2824,86 @@ fn tenant_audit_usage() -> String {
         .to_string()
 }
 
+fn hosted_account_suspend_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_hosted_account_suspend_args(args)?;
+    let suspension = suspend_hosted_account_in_files(
+        &parsed.credentials_file,
+        &parsed.tenants_file,
+        parsed.account_id,
+    )
+    .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!("{}", render_hosted_account_suspend_json(&suspension));
+    } else {
+        println!("{}", render_hosted_account_suspend_text(&suspension));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct HostedAccountSuspendArgs {
+    account_id: String,
+    credentials_file: PathBuf,
+    tenants_file: PathBuf,
+    json: bool,
+}
+
+fn parse_hosted_account_suspend_args(
+    args: Vec<String>,
+) -> Result<HostedAccountSuspendArgs, String> {
+    let mut positional = Vec::new();
+    let mut credentials_file = None::<PathBuf>;
+    let mut tenants_file = None::<PathBuf>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--credentials-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_account_suspend_usage());
+                };
+                credentials_file = Some(PathBuf::from(value));
+            }
+            "--tenants-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_account_suspend_usage());
+                };
+                tenants_file = Some(PathBuf::from(value));
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(hosted_account_suspend_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 1 {
+        return Err(hosted_account_suspend_usage());
+    }
+    let Some(credentials_file) = credentials_file.filter(|path| !path.as_os_str().is_empty())
+    else {
+        return Err(hosted_account_suspend_usage());
+    };
+    let Some(tenants_file) = tenants_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(hosted_account_suspend_usage());
+    };
+
+    Ok(HostedAccountSuspendArgs {
+        account_id: positional.remove(0),
+        credentials_file,
+        tenants_file,
+        json,
+    })
+}
+
+fn hosted_account_suspend_usage() -> String {
+    "usage: conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]".to_string()
+}
+
 #[derive(Debug, Clone)]
 struct AbuseAuditArgs {
     abuse_dir: PathBuf,
@@ -3284,6 +3468,192 @@ fn render_tenant_audit_json(audit: &HostedTenantAudit, tenants_file: &Path) -> S
         bool_json(audit.token_displayed),
         bool_json(audit.key_material_displayed),
         bool_json(audit.contents_displayed)
+    )
+}
+
+fn render_hosted_account_suspend_text(suspension: &HostedAccountSuspension) -> String {
+    format!(
+        r"conU hosted account suspension
+
+status: suspended
+account: {}
+credentials file: {}
+tenants file: {}
+credentials: {}
+active credentials: {}
+revoked credentials: {}
+expired credentials: {}
+accounts: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+nodes: {}
+active nodes: {}
+revoked nodes: {}
+tenant policies: {}
+payload displayed: no
+token displayed: {}
+token hash displayed: no
+key material displayed: {}
+contents displayed: {}",
+        suspension.account_id,
+        suspension.credentials_file.display(),
+        suspension.tenants_file.display(),
+        suspension.credentials,
+        suspension.active,
+        suspension.revoked,
+        suspension.expired,
+        suspension.accounts,
+        suspension.tenants,
+        suspension.active_tenants,
+        suspension.revoked_tenants,
+        suspension.nodes,
+        suspension.active_nodes,
+        suspension.revoked_nodes,
+        suspension.tenant_policies,
+        yes_no(suspension.token_displayed),
+        yes_no(suspension.key_material_displayed),
+        yes_no(suspension.contents_displayed)
+    )
+}
+
+fn render_hosted_account_suspend_json(suspension: &HostedAccountSuspension) -> String {
+    format!(
+        r#"{{
+  "status": "suspended",
+  "accountId": "{}",
+  "credentialsFile": "{}",
+  "tenantsFile": "{}",
+  "credentials": {},
+  "active": {},
+  "revoked": {},
+  "expired": {},
+  "accounts": {},
+  "tenants": {},
+  "activeTenants": {},
+  "revokedTenants": {},
+  "nodes": {},
+  "activeNodes": {},
+  "revokedNodes": {},
+  "tenantPolicies": {},
+  "payloadDisplayed": false,
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": false,
+  "keyMaterialDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        json_escape(&suspension.account_id),
+        json_escape(&suspension.credentials_file.display().to_string()),
+        json_escape(&suspension.tenants_file.display().to_string()),
+        suspension.credentials,
+        suspension.active,
+        suspension.revoked,
+        suspension.expired,
+        suspension.accounts,
+        suspension.tenants,
+        suspension.active_tenants,
+        suspension.revoked_tenants,
+        suspension.nodes,
+        suspension.active_nodes,
+        suspension.revoked_nodes,
+        suspension.tenant_policies,
+        bool_json(suspension.token_displayed),
+        bool_json(suspension.key_material_displayed),
+        bool_json(suspension.contents_displayed)
+    )
+}
+
+fn render_admin_account_suspend_text(result: &RelayAdminResult, relay: &str) -> String {
+    format!(
+        r"conU hosted relay admin account suspension
+
+relay: {}
+status: {}
+account: {}
+credentials: {}
+active credentials: {}
+revoked credentials: {}
+expired credentials: {}
+accounts: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+nodes: {}
+active nodes: {}
+revoked nodes: {}
+tenant policies: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+contents displayed: {}",
+        relay,
+        result.status,
+        result.account_id.as_deref().unwrap_or("none"),
+        result.credentials,
+        result.active,
+        result.revoked,
+        result.expired,
+        result.accounts,
+        result.tenants,
+        result.active_tenants,
+        result.revoked_tenants,
+        result.nodes,
+        result.active_nodes,
+        result.revoked_nodes,
+        result.tenant_policies,
+        yes_no(result.payload_displayed),
+        yes_no(result.token_displayed),
+        yes_no(result.token_hash_displayed),
+        yes_no(result.key_material_displayed),
+        yes_no(result.contents_displayed)
+    )
+}
+
+fn render_admin_account_suspend_json(result: &RelayAdminResult, relay: &str) -> String {
+    format!(
+        r#"{{
+  "relay": "{}",
+  "status": "{}",
+  "accountId": {},
+  "credentials": {},
+  "active": {},
+  "revoked": {},
+  "expired": {},
+  "accounts": {},
+  "tenants": {},
+  "activeTenants": {},
+  "revokedTenants": {},
+  "nodes": {},
+  "activeNodes": {},
+  "revokedNodes": {},
+  "tenantPolicies": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        json_escape(relay),
+        json_escape(&result.status),
+        optional_string_json(result.account_id.as_deref()),
+        result.credentials,
+        result.active,
+        result.revoked,
+        result.expired,
+        result.accounts,
+        result.tenants,
+        result.active_tenants,
+        result.revoked_tenants,
+        result.nodes,
+        result.active_nodes,
+        result.revoked_nodes,
+        result.tenant_policies,
+        bool_json(result.payload_displayed),
+        bool_json(result.token_displayed),
+        bool_json(result.token_hash_displayed),
+        bool_json(result.key_material_displayed),
+        bool_json(result.contents_displayed)
     )
 }
 
@@ -4417,14 +4787,54 @@ mod tests {
             key_material_displayed: false,
             contents_displayed: false,
         };
+        let suspension = HostedAccountSuspension {
+            account_id: "account.prod".to_string(),
+            credentials_file: PathBuf::from("credentials.toml"),
+            tenants_file: PathBuf::from("tenants.toml"),
+            credentials: 2,
+            active: 0,
+            revoked: 2,
+            expired: 0,
+            accounts: 1,
+            tenants: 1,
+            active_tenants: 0,
+            revoked_tenants: 1,
+            nodes: 1,
+            active_nodes: 1,
+            revoked_nodes: 0,
+            tenant_policies: 1,
+            token_displayed: false,
+            key_material_displayed: false,
+            contents_displayed: false,
+        };
         let secret_token = "tenant-node-token-secret";
         let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        let parsed_suspend = parse_hosted_account_suspend_args(vec![
+            "account.prod".to_string(),
+            "--credentials-file".to_string(),
+            "credentials.toml".to_string(),
+            "--tenants-file".to_string(),
+            "tenants.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("hosted account suspend args parse");
+        assert_eq!(parsed_suspend.account_id, "account.prod");
+        assert_eq!(
+            parsed_suspend.credentials_file,
+            PathBuf::from("credentials.toml")
+        );
+        assert_eq!(parsed_suspend.tenants_file, PathBuf::from("tenants.toml"));
+        assert!(parsed_suspend.json);
+        assert!(parse_hosted_account_suspend_args(Vec::new()).is_err());
 
         let outputs = [
             render_tenant_update_text(&update),
             render_tenant_update_json(&update),
             render_tenant_audit_text(&audit, Path::new("tenants.toml")),
             render_tenant_audit_json(&audit, Path::new("tenants.toml")),
+            render_hosted_account_suspend_text(&suspension),
+            render_hosted_account_suspend_json(&suspension),
         ];
 
         for output in outputs {
@@ -4867,6 +5277,29 @@ mod tests {
         assert!(parsed_audit.admin_token_stdin);
         assert!(parsed_audit.json);
 
+        let parsed_suspend = parse_admin_account_suspend_args(vec![
+            "account.prod".to_string(),
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("admin account suspend args parse");
+        assert_eq!(parsed_suspend.account_id, "account.prod");
+        assert_eq!(parsed_suspend.relay, "ws://127.0.0.1:8787");
+        assert!(parsed_suspend.admin_token_stdin);
+        assert!(parsed_suspend.json);
+        assert!(parse_admin_account_suspend_args(Vec::new()).is_err());
+        assert!(
+            parse_admin_account_suspend_args(vec![
+                "account.prod".to_string(),
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+            ])
+            .expect_err("admin token stdin required")
+            .contains("--admin-token-stdin")
+        );
+
         let result = RelayAdminResult {
             action: conu_core::relay::RelayAdminAction::TenantNodeUpsert,
             status: "upserted".to_string(),
@@ -4882,6 +5315,25 @@ mod tests {
                 "upserted",
             )
         };
+        let suspension_result = RelayAdminResult {
+            action: conu_core::relay::RelayAdminAction::AccountSuspend,
+            status: "suspended".to_string(),
+            account_id: Some("account.prod".to_string()),
+            credentials: 2,
+            active: 0,
+            revoked: 2,
+            accounts: 1,
+            tenants: 1,
+            active_tenants: 0,
+            revoked_tenants: 1,
+            nodes: 1,
+            active_nodes: 1,
+            tenant_policies: 1,
+            ..RelayAdminResult::new(
+                conu_core::relay::RelayAdminAction::AccountSuspend,
+                "suspended",
+            )
+        };
         let secret_token = "relay-secret-token";
         let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let session_id = "relay_node.hosted_123456789";
@@ -4889,11 +5341,13 @@ mod tests {
         let outputs = [
             render_admin_tenant_text(&result, "ws://127.0.0.1:8787"),
             render_admin_tenant_json(&result, "ws://127.0.0.1:8787"),
+            render_admin_account_suspend_text(&suspension_result, "ws://127.0.0.1:8787"),
+            render_admin_account_suspend_json(&suspension_result, "ws://127.0.0.1:8787"),
         ];
 
         for output in outputs {
-            assert!(output.contains("tenant"));
-            assert!(output.contains("upserted"));
+            assert!(output.contains("tenant") || output.contains("suspension"));
+            assert!(output.contains("upserted") || output.contains("suspended"));
             assert!(output.contains("token"));
             assert!(output.contains("contents"));
             assert!(!output.contains(secret_token));
