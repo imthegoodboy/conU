@@ -299,6 +299,7 @@ pub enum RelayAdminAction {
     Audit,
     Dashboard,
     MailboxAudit,
+    MailboxPurge,
 }
 
 impl RelayAdminAction {
@@ -310,6 +311,7 @@ impl RelayAdminAction {
             Self::Audit => "audit",
             Self::Dashboard => "dashboard",
             Self::MailboxAudit => "mailbox_audit",
+            Self::MailboxPurge => "mailbox_purge",
         }
     }
 
@@ -321,6 +323,7 @@ impl RelayAdminAction {
             "audit" => Ok(Self::Audit),
             "dashboard" => Ok(Self::Dashboard),
             "mailbox_audit" => Ok(Self::MailboxAudit),
+            "mailbox_purge" => Ok(Self::MailboxPurge),
             _ => Err(RelayFrameError::new("unsupported relay admin action")),
         }
     }
@@ -341,6 +344,7 @@ pub struct RelayAdminRequest {
     pub token_length: Option<usize>,
     pub expires_at_unix: Option<u64>,
     pub retention_ttl_seconds: Option<u64>,
+    pub mailbox_purge_dry_run: Option<bool>,
 }
 
 impl RelayAdminRequest {
@@ -396,6 +400,7 @@ impl RelayAdminRequest {
             token_length: None,
             expires_at_unix: None,
             retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
         })
     }
 
@@ -414,6 +419,7 @@ impl RelayAdminRequest {
             token_length: None,
             expires_at_unix: None,
             retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
         })
     }
 
@@ -435,6 +441,7 @@ impl RelayAdminRequest {
             token_length: None,
             expires_at_unix: None,
             retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
         })
     }
 
@@ -456,6 +463,28 @@ impl RelayAdminRequest {
             retention_ttl_seconds: retention_ttl_seconds
                 .map(validate_positive_seconds)
                 .transpose()?,
+            mailbox_purge_dry_run: None,
+        })
+    }
+
+    pub fn mailbox_purge(
+        admin_token: impl Into<String>,
+        node_id: Option<String>,
+        retention_ttl_seconds: u64,
+        dry_run: bool,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::MailboxPurge,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: None,
+            node_id: node_id
+                .map(|value| validate_identifier(value, "node id"))
+                .transpose()?,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: Some(validate_positive_seconds(retention_ttl_seconds)?),
+            mailbox_purge_dry_run: Some(dry_run),
         })
     }
 
@@ -481,6 +510,7 @@ impl RelayAdminRequest {
             token_length: Some(validate_token_length(token_length)?),
             expires_at_unix,
             retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
         })
     }
 }
@@ -500,6 +530,7 @@ impl fmt::Debug for RelayAdminRequest {
             .field("token_length", &self.token_length)
             .field("expires_at_unix", &self.expires_at_unix)
             .field("retention_ttl_seconds", &self.retention_ttl_seconds)
+            .field("mailbox_purge_dry_run", &self.mailbox_purge_dry_run)
             .finish()
     }
 }
@@ -557,6 +588,10 @@ pub struct RelayAdminResult {
     pub mailbox_newest_queued_unix_millis: Option<u64>,
     pub mailbox_expired_records: Option<u64>,
     pub mailbox_expired_bytes: Option<u64>,
+    pub mailbox_dry_run: Option<bool>,
+    pub mailbox_confirmed: Option<bool>,
+    pub mailbox_purged_records: Option<u64>,
+    pub mailbox_purged_bytes: Option<u64>,
     pub payload_displayed: bool,
     pub token_displayed: bool,
     pub token_hash_displayed: bool,
@@ -619,6 +654,10 @@ impl RelayAdminResult {
             mailbox_newest_queued_unix_millis: None,
             mailbox_expired_records: None,
             mailbox_expired_bytes: None,
+            mailbox_dry_run: None,
+            mailbox_confirmed: None,
+            mailbox_purged_records: None,
+            mailbox_purged_bytes: None,
             payload_displayed: false,
             token_displayed: false,
             token_hash_displayed: false,
@@ -1003,6 +1042,9 @@ fn render_admin_request_line(request: &RelayAdminRequest) -> String {
     if let Some(retention_ttl_seconds) = request.retention_ttl_seconds {
         line.push_str(&format!(" ttl_seconds={retention_ttl_seconds}"));
     }
+    if let Some(dry_run) = request.mailbox_purge_dry_run {
+        line.push_str(&format!(" dry_run={dry_run}"));
+    }
     line.push_str(" token_displayed=false payload=not_observed");
     line
 }
@@ -1046,6 +1088,13 @@ fn parse_admin_request(
             required(values, "admin_token")?,
             values.get("node").cloned(),
             optional_u64(values, "ttl_seconds")?,
+        ),
+        RelayAdminAction::MailboxPurge => RelayAdminRequest::mailbox_purge(
+            required(values, "admin_token")?,
+            values.get("node").cloned(),
+            optional_u64(values, "ttl_seconds")?
+                .ok_or_else(|| RelayFrameError::new("ttl_seconds is required"))?,
+            required_bool(values, "dry_run")?,
         ),
     }
 }
@@ -1118,7 +1167,10 @@ fn render_admin_result_line(result: &RelayAdminResult) -> String {
             line.push_str(&format!(" abuse_window_started={window_started_unix}"));
         }
     }
-    if result.action == RelayAdminAction::MailboxAudit {
+    if matches!(
+        result.action,
+        RelayAdminAction::MailboxAudit | RelayAdminAction::MailboxPurge
+    ) {
         line.push_str(&format!(
             " mailbox_nodes={} mailbox_records={} mailbox_invalid_records={} mailbox_bytes={}",
             result.mailbox_nodes,
@@ -1144,6 +1196,18 @@ fn render_admin_result_line(result: &RelayAdminResult) -> String {
         }
         if let Some(expired_bytes) = result.mailbox_expired_bytes {
             line.push_str(&format!(" mailbox_expired_bytes={expired_bytes}"));
+        }
+        if let Some(dry_run) = result.mailbox_dry_run {
+            line.push_str(&format!(" dry_run={dry_run}"));
+        }
+        if let Some(confirmed) = result.mailbox_confirmed {
+            line.push_str(&format!(" confirmed={confirmed}"));
+        }
+        if let Some(purged_records) = result.mailbox_purged_records {
+            line.push_str(&format!(" mailbox_purged_records={purged_records}"));
+        }
+        if let Some(purged_bytes) = result.mailbox_purged_bytes {
+            line.push_str(&format!(" mailbox_purged_bytes={purged_bytes}"));
         }
     }
     line.push_str(&format!(
@@ -1220,6 +1284,10 @@ fn parse_admin_result(
         )?,
         mailbox_expired_records: optional_u64(values, "mailbox_expired_records")?,
         mailbox_expired_bytes: optional_u64(values, "mailbox_expired_bytes")?,
+        mailbox_dry_run: optional_bool(values, "dry_run")?,
+        mailbox_confirmed: optional_bool(values, "confirmed")?,
+        mailbox_purged_records: optional_u64(values, "mailbox_purged_records")?,
+        mailbox_purged_bytes: optional_u64(values, "mailbox_purged_bytes")?,
         payload_displayed: optional_bool(values, "payload_displayed")?.unwrap_or(false),
         token_displayed: optional_bool(values, "token_displayed")?.unwrap_or(false),
         token_hash_displayed: optional_bool(values, "token_hash_displayed")?.unwrap_or(false),
@@ -1298,6 +1366,13 @@ fn optional_bool(
         Some("false") => Ok(Some(false)),
         Some(_) => Err(RelayFrameError::new(format!("{key} must be true or false"))),
     }
+}
+
+fn required_bool(
+    values: &HashMap<String, String>,
+    key: &'static str,
+) -> Result<bool, RelayFrameError> {
+    optional_bool(values, key)?.ok_or_else(|| RelayFrameError::new(format!("{key} is required")))
 }
 
 fn parse_frame_values(line: &str) -> Result<(&str, HashMap<String, String>), RelayFrameError> {
@@ -2141,6 +2216,51 @@ mod tests {
         assert!(rendered_mailbox_result.contains("payload_displayed=false"));
         assert!(!rendered_mailbox_result.contains("admin-secret-token-1234567890"));
         assert!(!rendered_mailbox_result.contains(&token_hash));
+
+        let purge_request = RelayAdminRequest::mailbox_purge(
+            "admin-secret-token-1234567890",
+            Some("node.hosted".to_string()),
+            3600,
+            false,
+        )
+        .expect("mailbox purge request parses");
+        let purge_frame = RelayClientFrame::Admin(Box::new(purge_request));
+        let rendered_purge = render_client_frame(&purge_frame);
+        let parsed_purge =
+            parse_client_frame(&rendered_purge).expect("mailbox purge request parses");
+        let purge_debug = format!("{purge_frame:?}");
+        let purge_result = RelayServerFrame::AdminResult(Box::new(RelayAdminResult {
+            node_id: Some("node.hosted".to_string()),
+            retention_ttl_seconds: Some(3600),
+            mailbox_nodes: 1,
+            mailbox_records: 2,
+            mailbox_invalid_records: 1,
+            mailbox_bytes: 512,
+            mailbox_expired_records: Some(1),
+            mailbox_expired_bytes: Some(256),
+            mailbox_dry_run: Some(false),
+            mailbox_confirmed: Some(true),
+            mailbox_purged_records: Some(1),
+            mailbox_purged_bytes: Some(256),
+            ..RelayAdminResult::new(RelayAdminAction::MailboxPurge, "purged")
+        }));
+        let rendered_purge_result = render_server_frame(&purge_result);
+        let parsed_purge_result =
+            parse_server_frame(&rendered_purge_result).expect("mailbox purge result parses");
+
+        assert_eq!(parsed_purge, purge_frame);
+        assert!(rendered_purge.contains("ADMIN action=mailbox_purge"));
+        assert!(rendered_purge.contains("node=node.hosted"));
+        assert!(rendered_purge.contains("ttl_seconds=3600"));
+        assert!(rendered_purge.contains("dry_run=false"));
+        assert!(!purge_debug.contains("admin-secret-token-1234567890"));
+        assert_eq!(parsed_purge_result, purge_result);
+        assert!(rendered_purge_result.contains("ADMIN_RESULT action=mailbox_purge"));
+        assert!(rendered_purge_result.contains("mailbox_purged_records=1"));
+        assert!(rendered_purge_result.contains("confirmed=true"));
+        assert!(rendered_purge_result.contains("payload_displayed=false"));
+        assert!(!rendered_purge_result.contains("admin-secret-token-1234567890"));
+        assert!(!rendered_purge_result.contains(&token_hash));
     }
 
     #[test]
