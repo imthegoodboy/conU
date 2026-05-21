@@ -95,6 +95,10 @@ pub struct TrustedPeer {
     pub pairing_code_hash: String,
     pub exchange_public_key_hex: Option<String>,
     pub relay_endpoint: Option<String>,
+    pub signing_public_key_hex: Option<String>,
+    pub signature_algorithm: Option<String>,
+    pub signature_key_id: Option<String>,
+    pub signature_hex: Option<String>,
     pub created_at_unix: u64,
     pub updated_at_unix: u64,
 }
@@ -106,6 +110,10 @@ pub struct PeerCard {
     pub display_name: String,
     pub exchange_public_key_hex: String,
     pub relay_endpoint: String,
+    pub signing_public_key_hex: Option<String>,
+    pub signature_algorithm: Option<String>,
+    pub signature_key_id: Option<String>,
+    pub signature_hex: Option<String>,
 }
 
 /// Result of joining a local pairing invitation.
@@ -237,13 +245,23 @@ pub fn list_peers(home_override: Option<PathBuf>) -> Result<Vec<TrustedPeer>, Tr
 pub fn export_peer_card(home_override: Option<PathBuf>) -> Result<PeerCard, TrustError> {
     let init = state::init_state(home_override)?;
     let material = security::local_peer_key_material(&init.paths)?;
-
-    Ok(PeerCard {
+    let mut card = PeerCard {
         node_id: init.node.node_id,
         display_name: init.node.display_name,
         exchange_public_key_hex: material.local_exchange_public_key_hex,
         relay_endpoint: configured_relay_endpoint(&init.paths)?,
-    })
+        signing_public_key_hex: None,
+        signature_algorithm: None,
+        signature_key_id: None,
+        signature_hex: None,
+    };
+    let signature = security::sign_agent_card_from_paths(&init.paths, &canonical_peer_card(&card))?;
+    card.signing_public_key_hex = Some(signature.public_key_hex);
+    card.signature_algorithm = Some(signature.algorithm);
+    card.signature_key_id = Some(signature.key_id);
+    card.signature_hex = Some(signature.signature_hex);
+
+    Ok(card)
 }
 
 /// Trust a peer from an explicitly exchanged public card.
@@ -254,6 +272,7 @@ pub fn trust_peer_card(
     let init = state::init_state(home_override)?;
     let now = current_unix_seconds();
     let card = validate_peer_card(card)?;
+    verify_peer_card_signature(&card)?;
 
     if card.node_id == init.node.node_id {
         return Err(TrustError::InvalidRequest {
@@ -327,6 +346,10 @@ fn upsert_trusted_peer(
         pairing_code_hash: pairing_code_hash(&invite.code),
         exchange_public_key_hex: None,
         relay_endpoint: None,
+        signing_public_key_hex: None,
+        signature_algorithm: None,
+        signature_key_id: None,
+        signature_hex: None,
         created_at_unix: now,
         updated_at_unix: now,
     });
@@ -355,10 +378,18 @@ fn upsert_manual_trusted_peer(
         if peer.peer_node_id == card.node_id {
             peer.display_name = card.display_name.clone();
             peer.status = TrustStatus::Trusted;
-            peer.source = "manual_peer_card".to_string();
+            peer.source = if card.signature_hex.is_some() {
+                "manual_signed_peer_card".to_string()
+            } else {
+                "manual_peer_card".to_string()
+            };
             peer.pairing_code_hash = fingerprint.clone();
             peer.exchange_public_key_hex = Some(card.exchange_public_key_hex.clone());
             peer.relay_endpoint = Some(card.relay_endpoint.clone());
+            peer.signing_public_key_hex = card.signing_public_key_hex.clone();
+            peer.signature_algorithm = card.signature_algorithm.clone();
+            peer.signature_key_id = card.signature_key_id.clone();
+            peer.signature_hex = card.signature_hex.clone();
             peer.updated_at_unix = now;
             result = Some(peer.clone());
             break;
@@ -369,10 +400,18 @@ fn upsert_manual_trusted_peer(
         peer_node_id: card.node_id,
         display_name: card.display_name,
         status: TrustStatus::Trusted,
-        source: "manual_peer_card".to_string(),
+        source: if card.signature_hex.is_some() {
+            "manual_signed_peer_card".to_string()
+        } else {
+            "manual_peer_card".to_string()
+        },
         pairing_code_hash: fingerprint,
         exchange_public_key_hex: Some(card.exchange_public_key_hex),
         relay_endpoint: Some(card.relay_endpoint),
+        signing_public_key_hex: card.signing_public_key_hex,
+        signature_algorithm: card.signature_algorithm,
+        signature_key_id: card.signature_key_id,
+        signature_hex: card.signature_hex,
         created_at_unix: now,
         updated_at_unix: now,
     });
@@ -496,6 +535,22 @@ fn write_trust_store(paths: &StatePaths, peers: &[TrustedPeer]) -> Result<(), Tr
             "relay_endpoint = \"{}\"\n",
             escape_file_value(peer.relay_endpoint.as_deref().unwrap_or(""))
         ));
+        contents.push_str(&format!(
+            "signing_public_key_hex = \"{}\"\n",
+            escape_file_value(peer.signing_public_key_hex.as_deref().unwrap_or(""))
+        ));
+        contents.push_str(&format!(
+            "signature_algorithm = \"{}\"\n",
+            escape_file_value(peer.signature_algorithm.as_deref().unwrap_or(""))
+        ));
+        contents.push_str(&format!(
+            "signature_key_id = \"{}\"\n",
+            escape_file_value(peer.signature_key_id.as_deref().unwrap_or(""))
+        ));
+        contents.push_str(&format!(
+            "signature_hex = \"{}\"\n",
+            escape_file_value(peer.signature_hex.as_deref().unwrap_or(""))
+        ));
         contents.push_str(&format!("created_at_unix = {}\n", peer.created_at_unix));
         contents.push_str(&format!("updated_at_unix = {}\n", peer.updated_at_unix));
         contents.push_str("payload_displayed = false\n");
@@ -552,6 +607,16 @@ fn peer_from_values(values: &HashMap<String, String>) -> Result<TrustedPeer, Tru
         )?,
         exchange_public_key_hex: optional_hex(values.get("exchange_public_key_hex"))?,
         relay_endpoint: optional_endpoint(values.get("relay_endpoint"))?,
+        signing_public_key_hex: optional_hex_field(
+            values.get("signing_public_key_hex"),
+            "signing public key",
+        )?,
+        signature_algorithm: optional_identifier(
+            values.get("signature_algorithm"),
+            "signature algorithm",
+        )?,
+        signature_key_id: optional_identifier(values.get("signature_key_id"), "signature key id")?,
+        signature_hex: optional_hex_field(values.get("signature_hex"), "signature")?,
         created_at_unix: parse_u64(&required(values, "created_at_unix")?)?,
         updated_at_unix: parse_u64(&required(values, "updated_at_unix")?)?,
     })
@@ -668,9 +733,9 @@ fn validate_endpoint(value: String) -> Result<String, TrustError> {
             reason: "relay endpoint cannot be empty".to_string(),
         });
     }
-    if !value.starts_with("ws://") {
+    if !value.starts_with("ws://") && !value.starts_with("wss://") {
         return Err(TrustError::InvalidRequest {
-            reason: "relay endpoint must start with ws:// for the current relay client".to_string(),
+            reason: "relay endpoint must start with ws:// or wss://".to_string(),
         });
     }
     if value.len() > 220 || value.chars().any(char::is_whitespace) {
@@ -702,7 +767,70 @@ fn validate_peer_card(card: PeerCard) -> Result<PeerCard, TrustError> {
         display_name: validate_display_name(card.display_name)?,
         exchange_public_key_hex: validate_hex(card.exchange_public_key_hex, "exchange public key")?,
         relay_endpoint: validate_endpoint(card.relay_endpoint)?,
+        signing_public_key_hex: card
+            .signing_public_key_hex
+            .map(|value| validate_hex(value, "signing public key"))
+            .transpose()?,
+        signature_algorithm: card
+            .signature_algorithm
+            .map(|value| validate_identifier(value, "signature algorithm"))
+            .transpose()?,
+        signature_key_id: card
+            .signature_key_id
+            .map(|value| validate_identifier(value, "signature key id"))
+            .transpose()?,
+        signature_hex: card
+            .signature_hex
+            .map(|value| validate_hex(value, "signature"))
+            .transpose()?,
     })
+}
+
+fn verify_peer_card_signature(card: &PeerCard) -> Result<(), TrustError> {
+    let signature_fields = [
+        card.signing_public_key_hex.as_ref(),
+        card.signature_algorithm.as_ref(),
+        card.signature_key_id.as_ref(),
+        card.signature_hex.as_ref(),
+    ];
+    let present = signature_fields
+        .iter()
+        .filter(|value| value.is_some())
+        .count();
+    if present == 0 {
+        return Ok(());
+    }
+    if present != signature_fields.len() {
+        return Err(TrustError::InvalidRequest {
+            reason: "signed peer card is missing signature fields".to_string(),
+        });
+    }
+    if card.signature_algorithm.as_deref() != Some(security::AGENT_CARD_SIGNATURE_ALGORITHM) {
+        return Err(TrustError::InvalidRequest {
+            reason: "unsupported peer card signature algorithm".to_string(),
+        });
+    }
+
+    let public_key_hex = card.signing_public_key_hex.as_deref().unwrap_or_default();
+    let signature_hex = card.signature_hex.as_deref().unwrap_or_default();
+    if !security::verify_agent_card_signature(
+        &canonical_peer_card(card),
+        public_key_hex,
+        signature_hex,
+    )? {
+        return Err(TrustError::InvalidRequest {
+            reason: "peer card signature verification failed".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn canonical_peer_card(card: &PeerCard) -> String {
+    format!(
+        "conu-peer-card-v1\nnode_id={}\ndisplay_name={}\nexchange_public_key_hex={}\nrelay_endpoint={}\n",
+        card.node_id, card.display_name, card.exchange_public_key_hex, card.relay_endpoint
+    )
 }
 
 fn optional_hex(value: Option<&String>) -> Result<Option<String>, TrustError> {
@@ -710,6 +838,28 @@ fn optional_hex(value: Option<&String>) -> Result<Option<String>, TrustError> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .map(|value| validate_hex(value, "exchange public key"))
+        .transpose()
+}
+
+fn optional_hex_field(
+    value: Option<&String>,
+    field: &'static str,
+) -> Result<Option<String>, TrustError> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| validate_hex(value, field))
+        .transpose()
+}
+
+fn optional_identifier(
+    value: Option<&String>,
+    field: &'static str,
+) -> Result<Option<String>, TrustError> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(|value| validate_identifier(value, field))
         .transpose()
 }
 
@@ -852,6 +1002,60 @@ mod tests {
         assert!(report.changed);
         assert_eq!(report.peer.status, TrustStatus::Revoked);
         assert_eq!(peers[0].status, TrustStatus::Revoked);
+    }
+
+    #[test]
+    fn manual_peer_card_accepts_wss_relay_endpoint() {
+        let alice_home = test_home("wss-alice");
+        let bob_home = test_home("wss-bob");
+        let bob = state::init_state(Some(bob_home.clone())).expect("bob state initializes");
+        fs::write(
+            &bob.paths.config,
+            "version = \"1\"\ndefault_relay = \"wss://relay.example.com/conu\"\n",
+        )
+        .expect("bob config writes");
+        let bob_card = export_peer_card(Some(bob_home)).expect("bob card exports");
+
+        let peer = trust_peer_card(Some(alice_home), bob_card).expect("wss peer is trusted");
+
+        assert_eq!(peer.source, "manual_signed_peer_card");
+        assert!(peer.signing_public_key_hex.is_some());
+        assert!(peer.signature_hex.is_some());
+        assert_eq!(
+            peer.relay_endpoint.as_deref(),
+            Some("wss://relay.example.com/conu")
+        );
+    }
+
+    #[test]
+    fn signed_peer_card_rejects_tampering_without_echoing_secrets() {
+        let alice_home = test_home("signed-alice");
+        let bob_home = test_home("signed-bob");
+        let mut bob_card = export_peer_card(Some(bob_home)).expect("bob card exports");
+
+        bob_card.relay_endpoint = "wss://relay.example.com/tampered".to_string();
+        let error =
+            trust_peer_card(Some(alice_home), bob_card).expect_err("tampered card is rejected");
+
+        assert!(error.to_string().contains("signature verification failed"));
+        assert!(!error.to_string().contains("private message contents"));
+    }
+
+    #[test]
+    fn unsigned_legacy_peer_card_still_imports_with_unsigned_source() {
+        let alice_home = test_home("legacy-alice");
+        let bob_home = test_home("legacy-bob");
+        let mut bob_card = export_peer_card(Some(bob_home)).expect("bob card exports");
+        bob_card.signing_public_key_hex = None;
+        bob_card.signature_algorithm = None;
+        bob_card.signature_key_id = None;
+        bob_card.signature_hex = None;
+
+        let peer = trust_peer_card(Some(alice_home), bob_card).expect("legacy card imports");
+
+        assert_eq!(peer.source, "manual_peer_card");
+        assert!(peer.signing_public_key_hex.is_none());
+        assert!(peer.signature_hex.is_none());
     }
 
     fn test_home(label: &str) -> PathBuf {

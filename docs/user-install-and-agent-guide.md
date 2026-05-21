@@ -2,7 +2,7 @@
 
 This guide explains how a user can install the current conU app, start it on their PC, and let local agents use it.
 
-Current version status: Phase 14 and Phase 15 are complete for the current local-first app, with rooms/pub-sub metadata, encrypted-at-rest local room event fanout, a stronger CLI dashboard/connect flow, and a relay-backed message path that runs from conUD when configured. conU is usable for local agent registration, local encrypted-at-rest message submission, local agent connect streams, room/pub-sub metadata and local fanout, manual public peer-card exchange, peer-encrypted one-shot relay messages between trusted nodes, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, Rust SDK calls, a Python wrapper SDK, an MCP stdio adapter, repeatable release builds, service templates, a native-binary npm launcher template, Docker relay hosting template, and `conu doctor` readiness checks. It is not yet a managed public hosted internet release.
+Current version status: Phase 14 and Phase 15 are complete for the current local-first app, with rooms/pub/sub metadata, encrypted-at-rest local room event fanout, relay-backed room event fanout, a stronger CLI dashboard/connect flow, and relay-backed message, stream-chunk, and room-event paths that run from conUD when configured. conU is usable for local agent registration, signed public agent-card exchange after peer trust, automatic encrypted signed-agent-card exchange during session sync, peer-scoped permission grants, local encrypted-at-rest message submission, local identity-key rotation with peer-card refresh, local archived identity-key retirement after peer-card refresh, local storage-key rotation with message queue/inbox re-encryption, local archived storage-key retirement after dependency scanning, local agent connect streams, room/pub/sub metadata and local or remote fanout, signed manual public peer-card exchange, peer-encrypted one-shot relay messages, stream chunks, and room events between trusted nodes, bounded offline relay mailbox delivery with optional durable ciphertext files, configurable relay connection/frame/mailbox limits, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, payload-safe local log rotation, payload-safe local telemetry snapshots, Rust SDK calls, Python and TypeScript/JavaScript wrapper SDKs, an MCP stdio adapter, repeatable release builds, service templates, a native-binary npm launcher template, Docker relay hosting template, and `conu doctor` readiness checks. It is not yet a managed public hosted internet release.
 
 ## What Works Today
 
@@ -12,33 +12,40 @@ Current version status: Phase 14 and Phase 15 are complete for the current local
 - Register local agents by id.
 - Send local opaque payload bytes from one registered local agent to another.
 - Connect two local registered agents with `conu connect local`.
-- Create room metadata, join local or mirrored trusted remote agents, and publish opaque room events by topic and byte count with local inbox fanout for joined local participants.
+- Create room metadata, join local or mirrored trusted remote agents, and publish opaque room events by topic and byte count with local inbox fanout for joined local participants and relay-backed fanout for joined trusted remote participants.
 - Store new conU-owned local payload files encrypted at rest.
+- Rotate local identity signing/exchange keys with `conu security rotate identity --confirm-peer-refresh`, export the refreshed public card with `conu identity export`, and retire archived identity keys after peer-card refresh with `conu security retire identity --confirm-peer-refresh-complete`.
+- Rotate local storage keys and re-encrypt conU-owned encrypted-at-rest message queue/inbox payload files with `conu security rotate storage --confirm`.
+- Retire archived local storage keys that no scanned queue/inbox payload file still references with `conu security retire storage --confirm`.
 - List inbox, receipt, stream, peer, session, and security metadata.
-- Sync and inspect direct QUIC route candidates and relay fallback metadata.
-- Run a standalone `conu-relay` and let conUD move peer-encrypted one-shot messages through it when relay config or trusted peer relay endpoints exist.
-- Export/import public peer cards for manual cross-machine trust.
+- Sync and inspect direct QUIC route candidates and selected relay fallback metadata.
+- Run a standalone `conu-relay` and let conUD move peer-encrypted one-shot messages, stream chunks, and room events through it when relay config or trusted peer relay endpoints exist, including bounded mailbox delivery when the target node reconnects.
+- Configure basic `conu-relay` total connection, per-IP connection, and per-session frame-rate limits.
+- Export/import signed public peer cards for manual cross-machine trust.
+- Export/import signed public agent cards for trusted peers.
 - Let Rust agents use `conu_sdk::ConuClient`.
 - Let Python agents use `sdk/python/conu_sdk`.
+- Let TypeScript/JavaScript agents use `sdk/typescript` / `@conu/sdk`.
 - Let MCP-capable agents launch `conu-mcp` and call conU tools.
 - Run `conu doctor` to check local install readiness and payload-safe logs.
+- Rotate local metadata logs by size and archive count with `conu logs rotate`.
+- Export a local allowlisted aggregate telemetry snapshot with `conu telemetry snapshot --json`.
 - Use Windows, systemd, and launchd service templates.
 - Use the npm launcher packaging template once platform release assets are published.
-- Host the current relay yourself for controlled `ws://` tests.
+- Host the current relay yourself for controlled `ws://` tests or behind TLS termination for `wss://`.
 
 ## What Does Not Work Yet
 
 - No signed one-click installer yet.
 - No published `@conu/cli` package yet; the package template exists under `packaging/npm/conu-cli` and should be published after GitHub Release assets/checksums exist.
-- No TypeScript SDK yet.
 - No CLI command that reveals message contents. This is intentional; use SDK or MCP explicit receive APIs when the addressed local agent needs payload bytes.
-- Rooms currently provide local pub/sub coordination, encrypted-at-rest local fanout, and watch visibility. Relay-backed room event fanout is not implemented yet.
-- No hosted relay service, TLS client, or managed public relay auth yet. The current client supports reachable `ws://` relay endpoints.
-- No real QUIC socket or NAT hole punching yet; Phase 13 selects configured direct route candidates and relay fallback metadata.
+- Rooms provide local pub/sub coordination, encrypted-at-rest local fanout, relay-backed fanout to joined trusted remote agents, per-topic publish/subscribe grants for configured topics, and watch visibility.
+- No hosted relay service or managed public relay account auth yet. The client supports reachable `ws://` and certificate-valid `wss://` relay endpoints, and self-hosted relays can issue and use static scoped credentials, but the bundled relay server itself is still plain WebSocket and needs TLS termination for public use.
+- No real QUIC socket or NAT hole punching yet; configured direct route candidates are recorded as inactive metadata and relay remains selected for delivery.
 - Pairing and remote sessions are local metadata groundwork, not full cross-machine rendezvous.
-- Relay-backed one-shot message delivery exists through the conUD relay pump; persistent relay sessions, stream byte routing, hosted relay auth/TLS, and offline mailbox delivery are not implemented yet.
+- Relay-backed one-shot message, stream-chunk, room-event, and bounded offline-mailbox delivery exists through the conUD relay pump with a reusable daemon relay session and same-process same-node reconnect resume; set `CONU_RELAY_MAILBOX_DIR` on the relay for ciphertext persistence across relay restarts. Self-hosted relays can use offline scoped credential issuance, manifest upsert/rotation/revocation helpers, live-reloaded hashed scoped credential manifests with revocation/expiry metadata, and metadata-only accounting with optional sent quotas. Hosted account auth, online credential issuance APIs beyond the offline helper, distributed hosted dashboards/accounting, and distributed hosted session state are not implemented yet.
 - Service templates exist, but users still need to install/register them for their platform.
-- Local private keys are file-backed today; OS keychain/DPAPI/HSM support is still a release blocker.
+- On Windows, local signing, exchange, active storage, archived identity/storage, and stored relay credential secret bytes are wrapped with current-user DPAPI and older plaintext-hex key files migrate during `conu init` or `conu security audit`. `conu security rotate identity --confirm-peer-refresh` rotates active signing/exchange keys while keeping prior identity keys readable from `security/identity-keys/` for the peer-card refresh window; `conu security retire identity --confirm-peer-refresh-complete` removes those archived identity keys after old-key decrypt compatibility is no longer needed. `conu security rotate storage --confirm` rotates the active storage key and re-encrypts local encrypted-at-rest message queue/inbox payload files while keeping the prior key readable from `security/storage-keys/`; `conu security retire storage --confirm` removes only archived keys that no scanned local queue/inbox payload file still references. Non-Windows builds still rely on owner-only key files until platform keychain/HSM support lands.
 
 ## Install With npm
 
@@ -48,6 +55,8 @@ This is the best public install shape once the first GitHub Release and npm pack
 npm install -g @conu/cli
 conu doctor
 conu init
+conu logs rotate --max-bytes 1048576 --keep 5
+conu telemetry snapshot --json
 conu start
 ```
 
@@ -59,6 +68,8 @@ For local testing of the package template from this repo:
 $env:CONU_NPM_BINARY_DIR = "$PWD\dist\conu-0.1.0-windows-x64\bin"
 npm install -g .\packaging\npm\conu-cli
 conu doctor
+conu logs rotate --max-bytes 1048576 --keep 5
+conu telemetry snapshot --json
 ```
 
 See `docs/distribution-and-hosting.md` for the release asset names, publish flow, and relay hosting path.
@@ -69,6 +80,7 @@ See `docs/distribution-and-hosting.md` for the release asset names, publish flow
 
 - Git.
 - Rust from `rustup`.
+- On Linux source builds, OpenSSL development headers may be needed for the `wss://` relay client dependency.
 - On Windows without Visual Studio C++ Build Tools, install the GNU Rust toolchain:
 
 ```powershell
@@ -180,6 +192,23 @@ conu status
 conu doctor
 ```
 
+To rotate local identity keys and refresh public peer-card material:
+
+```powershell
+conu security rotate identity --confirm-peer-refresh
+conu identity export
+conu security retire identity --confirm-peer-refresh-complete
+```
+
+Run the retire command only after trusted peers have imported the refreshed public peer card and old-key decrypt compatibility is no longer needed.
+
+To rotate the local storage encryption key after messages have been queued or delivered:
+
+```powershell
+conu security rotate storage --confirm
+conu security retire storage --confirm
+```
+
 Start conUD:
 
 ```powershell
@@ -216,6 +245,8 @@ conu agents register agent.helper "Helper Agent" --kind coding-agent
 conu agents
 ```
 
+Default registration allows messages and presence. Add `--streams true` for stream/connect use and `--rooms true` for room/pub-sub use.
+
 If conUD is not running, process the queued registration requests:
 
 ```powershell
@@ -250,8 +281,8 @@ The inbox command shows metadata only: envelope id, sender, receiver, receipt id
 If two agents are on the same PC, register both and open a local metadata stream:
 
 ```powershell
-conu agents register agent.codex "Codex Desktop" --kind coding-agent
-conu agents register agent.hermes "Hermes" --kind coding-agent
+conu agents register agent.codex "Codex Desktop" --kind coding-agent --streams true --rooms true
+conu agents register agent.hermes "Hermes" --kind coding-agent --streams true --rooms true
 conud --process-ipc
 conu connect local agent.codex agent.hermes
 conu watch
@@ -272,13 +303,22 @@ Rooms are the current multi-agent coordination layer:
 ```powershell
 conu rooms create room.dev "Dev Room" --agent agent.codex
 conu rooms join room.dev agent.hermes
+conu rooms policy room.dev agent.hermes build --publish true --subscribe false
+conu rooms policy room.dev agent.codex build --publish false --subscribe true
 "opaque room bytes" | conu rooms publish room.dev agent.hermes build --stdin
 conu rooms
 conu rooms events
 conu watch
 ```
 
-Room commands show only room id, participants, topic, event id, route label, byte count, local delivery count, and timestamps. Room registry/events/log files do not store the room event payload; joined local recipients receive the opaque bytes as encrypted-at-rest event envelopes in their message inbox. Use rooms when several agents need a shared bus; use direct messages when one agent is addressing exactly one other agent.
+Room commands show only room id, participants, topic, event id, route label, byte count, local/remote delivery counts, topic grants, and timestamps. Room registry/events/policy/log files do not store the room event payload; joined local recipients receive the opaque bytes as encrypted-at-rest event envelopes in their message inbox, and joined trusted remote recipients receive peer-encrypted relay room-event envelopes. Use rooms when several agents need a shared bus; use direct messages when one agent is addressing exactly one other agent.
+
+`conu rooms policy` is optional until a topic needs stricter control. Unconfigured topics use room membership as the subscription boundary. Once any policy record exists for a room/topic, publishing and receiving that topic require explicit per-agent grants:
+
+```powershell
+conu rooms policy <room-id> <agent-id> <topic> --publish true --subscribe true
+conu rooms policy --json
+```
 
 ## Sync Routes
 
@@ -293,7 +333,7 @@ conu routes --json
 conu routes probes
 ```
 
-To test a direct route candidate, add a direct endpoint to `config.toml`:
+To record a future direct route candidate, add a direct endpoint to `config.toml`:
 
 ```toml
 default_relay = "ws://127.0.0.1:8787"
@@ -308,29 +348,75 @@ Use a peer-specific sanitized key when one peer needs its own endpoint:
 direct_quic_peer_abcd1234 = "quic://203.0.113.10:9443"
 ```
 
-`conu routes sync` writes only route metadata. It does not print, log, or inspect message contents.
+`conu routes sync` writes only route metadata. Until real direct QUIC transport exists, valid direct endpoints are recorded with `direct_quic_transport_inactive` and relay remains selected. The command does not print, log, or inspect message contents.
 
-## Send A Remote Relay Message
+## Send Remote Relay Messages And Streams
 
 Start a reachable relay. For local testing:
 
 ```powershell
-$env:CONU_RELAY_TOKEN = "local-dev-token"
+New-Item -ItemType Directory -Force C:\conu-relay | Out-Null
+conu-relay --issue-credential node-a-id --token-out C:\conu-relay\node-a.token --credentials-file C:\conu-relay\credentials.toml
+conu-relay --issue-credential node-b-id --token-out C:\conu-relay\node-b.token --credentials-file C:\conu-relay\credentials.toml
+$env:CONU_RELAY_CREDENTIALS_FILE = "C:\conu-relay\credentials.toml"
+$env:CONU_RELAY_MAX_CONNECTIONS = "512"
+$env:CONU_RELAY_MAX_CONNECTIONS_PER_IP = "64"
+$env:CONU_RELAY_MAX_FRAMES_PER_MINUTE = "600"
+$env:CONU_RELAY_IDLE_TIMEOUT_SECONDS = "120"
+$env:CONU_RELAY_SESSION_TTL_SECONDS = "3600"
+$env:CONU_RELAY_ACCOUNTING_DIR = "C:\conu-relay\accounting"
+$env:CONU_RELAY_ACCOUNTING_WINDOW_SECONDS = "86400"
+$env:CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE = "10000"
+$env:CONU_RELAY_MAX_BYTES_SENT_PER_NODE = "1073741824"
 conu-relay --serve 0.0.0.0:8787
 ```
 
-On each node, set `default_relay` in `config.toml` or pass the relay endpoint when trusting a peer. `relay_auto_sync = true` is the default for new state and lets conUD pump relay send/receive automatically when a relay route is configured. Then exchange public cards:
+`conu-relay --issue-credential <node-id> --token-out <path> --credentials-file <path>` writes the raw token only to a new token file and creates or updates `credentials.toml` with `version = "1"` plus one `[[credential]]` entry per node containing `node_id`, `token_sha256_hex`, `token_length`, lifecycle status, optional expiry, `payload_displayed = false`, and `token_displayed = false`. Use `--replace` on the issue command to rotate an existing node credential, or `conu-relay --revoke-credential <node-id> --credentials-file <path>` to mark a credential revoked. A revoked or expired credential is rejected for new sessions without restarting the relay. Existing authenticated sessions remain bounded by idle timeout and max TTL. Missing or invalid manifests fail closed for new sessions.
+
+`local-dev-token` is loopback-only. Use a custom shared token or scoped credential token with at least 24 characters before binding a relay to `0.0.0.0`. For a self-hosted relay with multiple known nodes, prefer `CONU_RELAY_CREDENTIALS_FILE` so each node has its own relay token without storing raw tokens on the server. On each node, either set `CONU_RELAY_TOKEN` to that node's assigned scoped token before starting conUD, or store it locally without printing the token:
+
+```powershell
+Get-Content -Raw <path-to-this-node-token-file> | conu relay credential set --stdin
+conu relay credential status
+```
+
+`CONU_RELAY_TOKEN` overrides the stored credential when both are present. `conu relay credential status` reports only whether a credential is configured and which secret backend protects it; it does not display the token.
+
+`CONU_RELAY_ACCOUNTING_DIR` writes per-node `.accounting` files with metadata counters only. These files are useful for self-hosted usage checks and quota enforcement, but they are not a managed billing, abuse-monitoring, or hosted dashboard system.
+
+On each node, set `default_relay` in `config.toml` or pass the relay endpoint when trusting a peer. `relay_auto_sync = true` is the default for new state and lets conUD pump relay send/receive automatically when a relay route is configured. Then exchange signed public cards:
 
 ```powershell
 conu identity export --json
-conu peers trust <peer-node-id> "<peer name>" --exchange-key <exchange-public-key-hex> --relay ws://<relay-host>:8787
+conu peers trust <peer-node-id> "<peer name>" --exchange-key <exchange-public-key-hex> --relay wss://relay.example.com/conu --signing-key <signing-public-key-hex> --signature <signature-hex> --signature-key-id <signature-key-id>
+conu peers policy <peer-node-id> --messages true --streams true --rooms true
 ```
 
-Start conUD and register a local agent on each side:
+The `signingPublicKeyHex`, `signatureHex`, and `signatureKeyId` values come from the peer's `conu identity export --json` output. conU verifies the signature before storing the trusted peer when those fields are supplied. Legacy unsigned imports still work for controlled tests, but signed peer cards are the production-oriented path. Trust does not grant communication by itself; `conu peers policy` grants only the peer surfaces you choose and missing policy records deny by default.
+
+After signed peer trust and policy are in place, conUD/session sync exchanges signed public agent cards automatically over peer-encrypted relay control envelopes. The relay sees routing metadata and ciphertext, not the signed-card contents. Manual signed agent-card import remains available for daemonless fallback:
+
+```powershell
+conu agents export agent.sender --json
+conu agents trust agent.remote "Remote Agent" --node <receiver-node-id> --kind test-agent --streams true --signing-key <agent-signing-public-key> --signature <agent-signature> --signature-key-id <agent-signature-key-id>
+```
+
+The signing fields, kind, and capability booleans come from the peer's `conu agents export <agent-id> --json` output. conU verifies the agent-card signature and rejects cards whose `nodeId` is not already trusted or whose signing key does not match the trusted peer card. Automatic exchange uses the same verification path before writing `agents/remote.toml`.
+
+Use `ws://127.0.0.1:8787` for same-machine tests. Use `wss://...` for public internet relay paths after TLS is terminated in front of `conu-relay`.
+
+Start conUD and register the addressed local agent on each side:
 
 ```powershell
 conu start
-conu agents register agent.local "Local Agent" --kind test-agent
+conu agents register agent.sender "Sender Agent" --kind test-agent --streams true
+```
+
+On the receiver:
+
+```powershell
+conu start
+conu agents register agent.remote "Remote Agent" --kind test-agent --streams true
 ```
 
 On the sender:
@@ -339,17 +425,24 @@ On the sender:
 "opaque bytes for the remote agent" | conu messages send agent.sender agent.remote --peer <receiver-node-id> --stdin
 ```
 
+Remote stream writes use the same relay route after the remote agent is visible through trusted discovery and advertises `streams=true`.
+
+```powershell
+conu streams open agent.sender <remote-agent-id-with-streams>
+"opaque stream bytes" | conu streams write <stream-id> --stdin
+```
+
 On the receiver:
 
 ```powershell
 conu messages inbox agent.remote --json
 ```
 
-The running daemon performs relay send/receive in bounded sync windows and retries on failures. The explicit `conu relay sync` command still exists for manual flushes, debugging, or daemonless scripts; it shows counts and route metadata only. It does not show message contents. For a full two-terminal walkthrough, see `docs/internet-relay-test.md`.
+The running daemon keeps a relay WebSocket session open across runtime ticks while the endpoint is stable, and reconnects after failures. Stream chunks arrive in the addressed inbox with `kind` and `streamId` metadata. Room events arrive as `kind = "event"` inbox entries and payload-safe room event metadata. The explicit `conu relay sync` command still exists for manual flushes, debugging, or daemonless scripts; it shows counts and route metadata only. It does not show message, stream, or room-event contents. For a full two-terminal walkthrough, see `docs/internet-relay-test.md`.
 
 ## Give conU To An Agent
 
-Agents can use conU through MCP, Rust, Python, or direct CLI calls.
+Agents can use conU through MCP, Rust, Python, TypeScript/JavaScript, or direct CLI calls.
 
 ### MCP Agent Setup
 
@@ -379,13 +472,16 @@ Rules:
 - Register once with conu_register_agent.
 - Use conu_set_presence when your state changes.
 - Discover local and trusted remote metadata with conu_list_agents and conu_list_peers.
-- Exchange public peer cards with conu_export_identity and conu_trust_peer when setting up remote trust.
+- Exchange signed public peer cards with conu_export_identity and conu_trust_peer when setting up remote trust.
+- Grant intended peer surfaces with conu_set_peer_policy before remote message, stream, or room traffic.
+- Let session sync exchange signed public agent cards automatically after signed peer trust and peer policy grants; use conu_export_agent_card and conu_trust_agent_card only for manual fallback.
 - Sync and inspect route metadata with conu_sync_routes and conu_list_routes.
 - Send opaque bytes with conu_send_message.
 - Send remote peer-encrypted bytes with conu_send_remote_message while conUD is running; call conu_relay_sync only for manual flush/debug flows.
 - Read inbox metadata first; request payloadHex only with conu_receive_message when you are the addressed local agent.
-- Use conu_open_stream, conu_write_stream, and conu_close_stream for stream metadata flows.
-- Use conu_create_room, conu_join_room, conu_publish_room_event, conu_list_rooms, and conu_list_room_events for shared room/pub-sub metadata and local fanout.
+- Use conu_open_stream, conu_write_stream, and conu_close_stream for stream metadata flows; remote writes to mirrored trusted peers are delivered as relay `stream_chunk` envelopes when a relay route exists.
+- Use conu_create_room, conu_join_room, conu_publish_room_event, conu_list_rooms, and conu_list_room_events for shared room/pub-sub metadata and local or trusted remote fanout.
+- Use conu_set_room_topic_policy and conu_list_room_topic_policies when a room topic needs explicit publish/subscribe grants.
 - Treat conU as the road, not the conversation.
 ```
 
@@ -400,16 +496,30 @@ conu-sdk = { path = "crates/conu-sdk" }
 Minimal usage:
 
 ```rust
-use conu_sdk::ConuClient;
+use conu_sdk::{ConuClient, PeerPolicyUpdate};
 
 let client = ConuClient::new();
 client.init()?;
 client.register_agent("agent.mybot", "My Bot", "local-agent")?;
 client.process_queued()?;
+let _local_agent_card = client.export_agent_card("agent.mybot")?;
+// Manual fallback for a SignedAgentCard received from an already trusted peer:
+// client.trust_remote_agent_card(remote_agent_card)?;
+client.set_peer_policy("node_peer", PeerPolicyUpdate {
+    messages: Some(true),
+    streams: Some(true),
+    rooms: Some(false),
+    files: Some(false),
+    mailbox: Some(false),
+})?;
 client.send_message_bytes("agent.mybot", "agent.other", b"opaque bytes")?;
 client.send_remote_message_bytes("agent.mybot", "agent.remote", "node_peer", b"opaque bytes")?;
 client.create_room("room.dev", "Dev Room", "agent.mybot")?;
 client.join_room("room.dev", "agent.other")?;
+client.set_room_topic_policy("room.dev", "agent.mybot", "build", conu_sdk::TopicPolicyUpdate {
+    publish: Some(true),
+    subscribe: Some(true),
+})?;
 client.publish_room_event_bytes("room.dev", "agent.mybot", "build", b"opaque bytes")?;
 client.relay_sync(std::time::Duration::from_millis(3000))?;
 ```
@@ -429,13 +539,48 @@ client = ConuClient(home=".conu-agent")
 client.init()
 client.register_agent("agent.mybot", "My Bot")
 client.process_queued()
+local_agent_card = client.export_agent_card("agent.mybot")
+# Manual fallback for a dict received from an already trusted peer:
+# client.trust_agent_card(remote_agent_card)
+client.set_peer_policy("node_peer", messages=True, streams=True)
 client.send_message("agent.mybot", "agent.other", b"opaque bytes")
 client.send_remote_message("agent.mybot", "agent.remote", "node_peer", b"opaque bytes")
 client.create_room("room.dev", "Dev Room", "agent.mybot")
 client.join_room("room.dev", "agent.other")
+client.set_room_topic_policy("room.dev", "agent.mybot", "build", publish=True, subscribe=True)
 client.publish_room_event("room.dev", "agent.mybot", "build", b"opaque bytes")
 client.relay_sync(wait_ms=3000)
 ```
+
+### TypeScript/JavaScript Agent Setup
+
+For local development:
+
+```powershell
+npm run check --prefix sdk/typescript
+```
+
+```javascript
+import { ConuClient } from "@conu/sdk";
+
+const client = new ConuClient({ home: ".conu-agent" });
+client.init();
+client.registerAgent("agent.mybot", "My Bot", { rooms: true, streams: true });
+client.processQueued();
+const localAgentCard = client.exportAgentCard("agent.mybot");
+// Manual fallback for a signed card received from an already trusted peer:
+// client.trustAgentCard(remoteAgentCard);
+client.setPeerPolicy("node_peer", { messages: true, streams: true, rooms: true });
+client.sendMessage("agent.mybot", "agent.other", "opaque bytes");
+client.sendRemoteMessage("agent.mybot", "agent.remote", "node_peer", "opaque bytes");
+client.createRoom("room.dev", "Dev Room", "agent.mybot");
+client.joinRoom("room.dev", "agent.other");
+client.setRoomTopicPolicy("room.dev", "agent.mybot", "build", { publish: true, subscribe: true });
+client.publishRoomEvent("room.dev", "agent.mybot", "build", "opaque bytes");
+client.relaySync(3000);
+```
+
+The wrapper passes payload bytes through stdin and returns CLI JSON metadata. It does not print payloads and does not add a raw payload receive helper beyond inbox metadata listing.
 
 ### CLI Agent Fallback
 
@@ -446,7 +591,7 @@ You may use conU as a local communication transport.
 
 Rules:
 - Register once at startup:
-  conu agents register <agent-id> <display-name> --kind <kind>
+  conu agents register <agent-id> <display-name> --kind <kind> [--streams true] [--rooms true]
 - Refresh presence when your state changes:
   conu agents heartbeat <agent-id> --presence <ready|busy|idle|offline>
 - Send payload bytes through stdin only:
@@ -456,18 +601,25 @@ Rules:
 - Use rooms for shared coordination:
   conu rooms create <room-id> <display-name> --agent <your-agent-id>
   conu rooms join <room-id> <target-agent-id>
+  conu rooms policy <room-id> <your-agent-id> <topic> --publish true --subscribe true
   <payload bytes> | conu rooms publish <room-id> <your-agent-id> <topic> --stdin
 - Use JSON commands for machine-readable metadata:
   conu status --json
   conu agents --json
   conu rooms --json
   conu rooms events --json
+  conu rooms policy --json
   conu identity export --json
+  conu agents export <agent-id> --json
   conu messages inbox <agent-id> --json
   conu messages receipts --json
   conu security audit --json
 - For remote delivery, import a peer card once:
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay <ws://host:port>
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay <ws://host:port|wss://host/path> --signing-key <hex> --signature <hex> --signature-key-id <id>
+- Grant the intended remote surfaces:
+  conu peers policy <peer-node-id> --messages true --streams true --rooms true
+- For remote agent discovery, keep conUD running so session sync can exchange signed agent cards automatically. Manual fallback:
+  conu agents trust <remote-agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id>
 - Send remote payload bytes through stdin only:
   <payload bytes> | conu messages send <your-agent-id> <target-agent-id> --peer <peer-node-id> --stdin
 - Keep conUD running for relay delivery:
@@ -481,8 +633,8 @@ Rules:
 For local testing, a wrapper script can call:
 
 ```powershell
-conu agents register agent.mybot "My Bot" --kind local-agent
-conu agents register agent.other "Other Agent" --kind local-agent
+conu agents register agent.mybot "My Bot" --kind local-agent --streams true --rooms true
+conu agents register agent.other "Other Agent" --kind local-agent --streams true --rooms true
 conud --process-ipc
 "hello as opaque bytes" | conu messages send agent.mybot agent.other --stdin
 conud --process-ipc
@@ -499,13 +651,14 @@ These are not hidden bugs; they are the honest state of the current app:
 | npm install | `@conu/cli` template exists but is not published until release assets are attached | `npm install -g @conu/cli` is the target path, not a live package guarantee yet | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
-| Agent API | Rust SDK, Python wrapper, and MCP adapter exist; TypeScript is later | Most agents can integrate now, TS apps need wrapper work | Use MCP, Rust SDK, Python SDK, or CLI/stdin |
-| Receiving payloads | CLI intentionally lists inbox metadata only | Agents needing bytes must use explicit receive APIs | Use Rust SDK `receive_message_bytes` or MCP `conu_receive_message` with `includePayload` |
-| Internet messaging | One-shot relay messages work through the conUD relay pump, but no hosted relay/TLS client, persistent relay session, stream byte routing, or offline mailbox exists | Users can test over reachable `ws://`; managed public network is not ready | Run `conu-relay` yourself on a trusted host or private network path |
+| Agent API | Rust SDK, Python wrapper, TypeScript/JavaScript wrapper, and MCP adapter exist | Most agents can integrate now; browser-native and hosted SDK permission work still need future design | Use MCP, Rust SDK, Python SDK, TypeScript SDK, or CLI/stdin |
+| Receiving payloads | CLI and wrapper SDKs intentionally list inbox metadata only | Agents needing bytes must use explicit receive APIs | Use Rust SDK `receive_message_bytes` or MCP `conu_receive_message` with `includePayload`; TypeScript currently wraps metadata surfaces only |
+| Internet messaging | One-shot relay messages, stream chunks, room events, same-process same-node relay-session resume, and bounded offline mailbox delivery work through the conUD relay pump, the client accepts `ws://` plus certificate-valid `wss://`, and self-hosted relays support offline scoped credential issuance, manifest upsert/rotation/revocation helpers, live-reloaded scoped credentials, hashed credential manifests, metadata-only accounting/quotas, and optional durable ciphertext mailbox files; no hosted relay service, hosted account auth, online credential issuance APIs, distributed hosted session state, or distributed hosted dashboard/accounting exists | Users can test over private `ws://` or public `wss://` with TLS termination; managed public network is not ready | Run `conu-relay` yourself on a trusted host with relay limit/session/mailbox/accounting env vars, issue scoped tokens with `conu-relay --issue-credential --credentials-file`, persist `CONU_RELAY_MAILBOX_DIR` and `CONU_RELAY_ACCOUNTING_DIR`, and put TLS termination in front of it for public endpoints |
 | Direct transport | Route selection exists, but real QUIC sockets and NAT hole punching do not | Direct routes show as metadata only | Configure direct endpoints for route scoring tests |
 | Pairing | Pair/join are local trust groundwork | Not real cross-machine pairing yet | Use for metadata/trust testing |
 | Service install | Service templates exist but need local edits/admin steps | User must choose service path/user | Use `packaging/windows`, `packaging/linux`, or `packaging/macos` templates |
-| Key storage | Keys are local files | Not ready for high-security public release | Keep user profile protected; future OS keychain work required |
+| Key storage | Windows wraps local key, archived identity/storage key, and stored relay credential secret bytes with current-user DPAPI; non-Windows secrets are owner-only local files; identity-key rotation, identity archive retirement, storage-key rotation, and unused storage archive retirement exist for local state | Windows local secret exposure is reduced, public peer-card material can be refreshed after identity rotation, archived old identity keys can be removed after peer-card refresh, local storage payloads can be re-encrypted under a new key, and unused archived storage keys can be retired after dependency scanning; non-Windows high-security release still needs platform keychain/HSM support | Run `conu security audit --json`, `conu security rotate identity --confirm-peer-refresh`, `conu identity export`, `conu security retire identity --confirm-peer-refresh-complete`, `conu security rotate storage --confirm`, `conu security retire storage --confirm`, and `conu relay credential status --json`; keep user profile protected |
+| Logs and telemetry | Local metadata logs can be rotated by size and archive count, and local structured telemetry can be exported as allowlisted aggregate counters | Rotation reports filenames and counts only; telemetry reports schema, field allowlist, aggregate counters, and `contentsDisplayed=false` only | Run `conu logs rotate --max-bytes 1048576 --keep 5`, `conu doctor --json`, and `conu telemetry snapshot --json` |
 | IPC | File-backed queues | Good for development, not final hot path | Use current gateway until named pipe/socket IPC lands |
 
 ## Recommended User Flow Today
@@ -516,6 +669,8 @@ For a developer testing conU locally:
 conu init
 conu security audit
 conu doctor
+conu logs rotate --max-bytes 1048576 --keep 5
+conu telemetry snapshot --json
 conu start
 conu agents register agent.a "Agent A" --kind test-agent
 conu agents register agent.b "Agent B" --kind test-agent
@@ -543,9 +698,9 @@ conu messages inbox agent.b --json
 
 To make conU genuinely useful over the internet, the next phase should build:
 
-- Rooms, pub/sub, and multi-agent session metadata.
-- Hosted relay auth/TLS hardening, persistent relay sessions, offline mailbox, and stream byte delivery.
+- Hosted relay account auth, online credential issuance APIs beyond the offline helper, distributed session lifecycle, distributed hosted dashboards/accounting, and hosted mailbox retention policy.
 - Published npm package backed by platform release assets and checksums.
+- Hosted multi-tenant room permission administration beyond the current local topic policy file.
 - Real QUIC socket transport and NAT candidate exchange after the room/session model is stable.
-- TypeScript SDK after the protocol surface stabilizes.
-- Signed installers and OS keychain-backed secret storage after local packaging stabilizes.
+- TypeScript explicit payload receive helper if JavaScript agents need raw local inbox bytes without MCP.
+- Signed installers plus non-Windows OS keychain-backed secret storage after local packaging stabilizes.

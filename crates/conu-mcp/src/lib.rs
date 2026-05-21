@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use conu_sdk::{
-    Capabilities, ConuClient, PeerCard, Presence, Room, RoomBusEvent, Route, SdkError, Stream,
+    Capabilities, ConuClient, PeerCard, PeerPolicyUpdate, Presence, Room, RoomBusEvent, Route,
+    SdkError, SignedAgentCard, Stream, TopicPolicy, TopicPolicyUpdate,
 };
 use serde_json::{Map, Value, json};
 
@@ -149,9 +150,12 @@ impl McpServer {
             "conu_sync_routes" => self.tool_sync_routes(),
             "conu_list_routes" => self.tool_list_routes(args),
             "conu_list_agents" => self.tool_list_agents(args),
+            "conu_export_agent_card" => self.tool_export_agent_card(args),
+            "conu_trust_agent_card" => self.tool_trust_agent_card(args),
             "conu_list_peers" => self.tool_list_peers(),
             "conu_export_identity" => self.tool_export_identity(),
             "conu_trust_peer" => self.tool_trust_peer(args),
+            "conu_set_peer_policy" => self.tool_set_peer_policy(args),
             "conu_send_message" => self.tool_send_message(args),
             "conu_send_remote_message" => self.tool_send_remote_message(args),
             "conu_relay_sync" => self.tool_relay_sync(args),
@@ -164,6 +168,8 @@ impl McpServer {
             "conu_list_rooms" => self.tool_list_rooms(),
             "conu_publish_room_event" => self.tool_publish_room_event(args),
             "conu_list_room_events" => self.tool_list_room_events(),
+            "conu_set_room_topic_policy" => self.tool_set_room_topic_policy(args),
+            "conu_list_room_topic_policies" => self.tool_list_room_topic_policies(),
             _ => Err(format!("unknown conU tool: {name}")),
         }
     }
@@ -202,6 +208,8 @@ impl McpServer {
             "localPayloadEncryption": audit.local_payload_encryption,
             "signedAgentCards": audit.signed_agent_cards,
             "peerKeyExchange": audit.peer_key_exchange,
+            "secretStorageBackend": audit.secret_storage_backend,
+            "secretsOsProtected": audit.secrets_os_protected,
             "contentsDisplayed": audit.contents_displayed
         }))
     }
@@ -323,7 +331,8 @@ impl McpServer {
                 "presence": agent.presence.as_str(),
                 "nodeId": &agent.node_id,
                 "lastSeenUnix": agent.last_seen_unix,
-                "capabilities": capabilities_to_json(&agent.capabilities)
+                "capabilities": capabilities_to_json(&agent.capabilities),
+                "agentCardSigned": agent.signature_hex.is_some()
             })).collect::<Vec<_>>(),
             "remote": directory.remote.iter().map(|agent| json!({
                 "agentId": &agent.agent_id,
@@ -333,8 +342,49 @@ impl McpServer {
                 "nodeId": &agent.node_id,
                 "peerNodeId": &agent.peer_node_id,
                 "lastSeenUnix": agent.last_seen_unix,
-                "capabilities": capabilities_to_json(&agent.capabilities)
+                "capabilities": capabilities_to_json(&agent.capabilities),
+                "agentCardSigned": agent.agent_card_signed()
             })).collect::<Vec<_>>(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_export_agent_card(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let agent_id = required_string(args, "agentId")?;
+        self.ensure_agent_allowed(&agent_id)?;
+        let card = self
+            .client
+            .export_agent_card(&agent_id)
+            .map_err(safe_sdk_error)?;
+
+        Ok(signed_agent_card_to_json(&card))
+    }
+
+    fn tool_trust_agent_card(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let card = SignedAgentCard {
+            agent_id: required_string(args, "agentId")?,
+            display_name: required_string(args, "displayName")?,
+            node_id: required_string(args, "nodeId")?,
+            kind: required_string(args, "kind")?,
+            capabilities: capabilities_from_args(args)?,
+            signature_algorithm: optional_string(args, "signatureAlgorithm")?
+                .unwrap_or_else(|| "ed25519-v1".to_string()),
+            signature_key_id: required_string(args, "signatureKeyId")?,
+            signing_public_key_hex: required_string(args, "signingPublicKeyHex")?,
+            signature_hex: required_string(args, "signatureHex")?,
+        };
+        let agent = self
+            .client
+            .trust_remote_agent_card(card)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": "trusted_remote_agent",
+            "agentId": agent.agent_id,
+            "nodeId": agent.node_id,
+            "peerNodeId": agent.peer_node_id,
+            "capabilities": capabilities_to_json(&agent.capabilities),
+            "agentCardSigned": agent.agent_card_signed(),
             "contentsDisplayed": false
         }))
     }
@@ -348,6 +398,7 @@ impl McpServer {
                 "status": peer.status.as_str(),
                 "source": &peer.source,
                 "exchangeKeyTrusted": peer.exchange_public_key_hex.is_some(),
+                "peerCardSigned": peer.signature_hex.is_some(),
                 "relayEndpoint": peer.relay_endpoint.as_deref(),
                 "createdAtUnix": peer.created_at_unix,
                 "updatedAtUnix": peer.updated_at_unix
@@ -363,6 +414,11 @@ impl McpServer {
             "displayName": card.display_name,
             "exchangePublicKeyHex": card.exchange_public_key_hex,
             "relayEndpoint": card.relay_endpoint,
+            "signingPublicKeyHex": card.signing_public_key_hex,
+            "signatureAlgorithm": card.signature_algorithm,
+            "signatureKeyId": card.signature_key_id,
+            "signatureHex": card.signature_hex,
+            "peerCardSigned": card.signature_hex.is_some(),
             "contentsDisplayed": false
         }))
     }
@@ -374,6 +430,10 @@ impl McpServer {
             exchange_public_key_hex: required_string(args, "exchangePublicKeyHex")?,
             relay_endpoint: optional_string(args, "relayEndpoint")?
                 .unwrap_or_else(|| "ws://127.0.0.1:8787".to_string()),
+            signing_public_key_hex: optional_string(args, "signingPublicKeyHex")?,
+            signature_algorithm: optional_string(args, "signatureAlgorithm")?,
+            signature_key_id: optional_string(args, "signatureKeyId")?,
+            signature_hex: optional_string(args, "signatureHex")?,
         };
         let peer = self.client.trust_peer_card(card).map_err(safe_sdk_error)?;
 
@@ -382,7 +442,37 @@ impl McpServer {
             "peerNodeId": peer.peer_node_id,
             "displayName": peer.display_name,
             "exchangeKeyTrusted": peer.exchange_public_key_hex.is_some(),
+            "peerCardSigned": peer.signature_hex.is_some(),
             "relayEndpoint": peer.relay_endpoint,
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_set_peer_policy(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let peer_node_id = required_string(args, "peerNodeId")?;
+        let update = PeerPolicyUpdate {
+            messages: optional_bool_arg(args, "messages")?,
+            streams: optional_bool_arg(args, "streams")?,
+            rooms: optional_bool_arg(args, "rooms")?,
+            files: optional_bool_arg(args, "files")?,
+            mailbox: optional_bool_arg(args, "mailbox")?,
+        };
+        let policy = self
+            .client
+            .set_peer_policy(&peer_node_id, update)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": "updated",
+            "peerNodeId": policy.peer_node_id,
+            "policy": {
+                "messages": policy.messages,
+                "streams": policy.streams,
+                "rooms": policy.rooms,
+                "files": policy.files,
+                "mailbox": policy.mailbox
+            },
+            "updatedAtUnix": policy.updated_at_unix,
             "contentsDisplayed": false
         }))
     }
@@ -616,6 +706,7 @@ impl McpServer {
             "eventsPublished": report.room.events_published,
             "bytesPublished": report.room.bytes_published,
             "localDeliveries": report.local_deliveries,
+            "remoteDeliveries": report.remote_deliveries,
             "event": room_event_to_json(&report.event),
             "contentsDisplayed": false
         }))
@@ -626,6 +717,42 @@ impl McpServer {
 
         Ok(json!({
             "events": events.iter().map(room_event_to_json).collect::<Vec<_>>(),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_set_room_topic_policy(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let room_id = required_string(args, "roomId")?;
+        let agent_id = required_string(args, "agentId")?;
+        self.ensure_agent_allowed(&agent_id)?;
+        let topic = required_string(args, "topic")?;
+        let update = TopicPolicyUpdate {
+            publish: optional_bool_arg(args, "publish")?,
+            subscribe: optional_bool_arg(args, "subscribe")?,
+        };
+        let policy = self
+            .client
+            .set_room_topic_policy(&room_id, &agent_id, &topic, update)
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "status": "updated",
+            "policy": room_topic_policy_to_json(&policy),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_list_room_topic_policies(&self) -> Result<Value, String> {
+        let policies = self
+            .client
+            .list_room_topic_policies()
+            .map_err(safe_sdk_error)?;
+
+        Ok(json!({
+            "topicPolicies": policies
+                .iter()
+                .map(room_topic_policy_to_json)
+                .collect::<Vec<_>>(),
             "contentsDisplayed": false
         }))
     }
@@ -689,6 +816,43 @@ impl McpServer {
                 schema(json!({ "process": { "type": "boolean" } }), vec![]),
             ),
             tool(
+                "conu_export_agent_card",
+                "Export a signed public local agent card for a trusted peer.",
+                schema(
+                    json!({
+                        "agentId": { "type": "string" }
+                    }),
+                    vec!["agentId"],
+                ),
+            ),
+            tool(
+                "conu_trust_agent_card",
+                "Trust a signed remote agent card from an already trusted peer.",
+                schema(
+                    json!({
+                        "agentId": { "type": "string" },
+                        "displayName": { "type": "string" },
+                        "nodeId": { "type": "string" },
+                        "kind": { "type": "string" },
+                        "capabilities": capability_schema(),
+                        "signingPublicKeyHex": { "type": "string" },
+                        "signatureAlgorithm": { "type": "string" },
+                        "signatureKeyId": { "type": "string" },
+                        "signatureHex": { "type": "string" }
+                    }),
+                    vec![
+                        "agentId",
+                        "displayName",
+                        "nodeId",
+                        "kind",
+                        "capabilities",
+                        "signingPublicKeyHex",
+                        "signatureKeyId",
+                        "signatureHex",
+                    ],
+                ),
+            ),
+            tool(
                 "conu_list_peers",
                 "List trusted and revoked peer metadata.",
                 schema(json!({}), vec![]),
@@ -706,9 +870,28 @@ impl McpServer {
                         "peerNodeId": { "type": "string" },
                         "displayName": { "type": "string" },
                         "exchangePublicKeyHex": { "type": "string" },
-                        "relayEndpoint": { "type": "string" }
+                        "relayEndpoint": { "type": "string" },
+                        "signingPublicKeyHex": { "type": "string" },
+                        "signatureAlgorithm": { "type": "string" },
+                        "signatureKeyId": { "type": "string" },
+                        "signatureHex": { "type": "string" }
                     }),
                     vec!["peerNodeId", "displayName", "exchangePublicKeyHex"],
+                ),
+            ),
+            tool(
+                "conu_set_peer_policy",
+                "Grant or revoke communication surfaces for a trusted peer.",
+                schema(
+                    json!({
+                        "peerNodeId": { "type": "string" },
+                        "messages": { "type": "boolean" },
+                        "streams": { "type": "boolean" },
+                        "rooms": { "type": "boolean" },
+                        "files": { "type": "boolean" },
+                        "mailbox": { "type": "boolean" }
+                    }),
+                    vec!["peerNodeId"],
                 ),
             ),
             tool(
@@ -833,6 +1016,25 @@ impl McpServer {
             tool(
                 "conu_list_room_events",
                 "List payload-safe room events.",
+                schema(json!({}), vec![]),
+            ),
+            tool(
+                "conu_set_room_topic_policy",
+                "Set one agent's metadata-only publish/subscribe grants for a room topic.",
+                schema(
+                    json!({
+                        "roomId": { "type": "string" },
+                        "agentId": { "type": "string" },
+                        "topic": { "type": "string" },
+                        "publish": { "type": "boolean" },
+                        "subscribe": { "type": "boolean" }
+                    }),
+                    vec!["roomId", "agentId", "topic"],
+                ),
+            ),
+            tool(
+                "conu_list_room_topic_policies",
+                "List explicit room topic policy records without payload contents.",
                 schema(json!({}), vec![]),
             ),
         ]
@@ -978,6 +1180,14 @@ fn optional_bool(
     }
 }
 
+fn optional_bool_arg(args: &Map<String, Value>, key: &'static str) -> Result<Option<bool>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(format!("{key} must be a boolean")),
+    }
+}
+
 fn optional_u64(args: &Map<String, Value>, key: &'static str, default: u64) -> Result<u64, String> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(default),
@@ -1047,6 +1257,22 @@ fn capabilities_to_json(capabilities: &Capabilities) -> Value {
     })
 }
 
+fn signed_agent_card_to_json(card: &SignedAgentCard) -> Value {
+    json!({
+        "agentId": &card.agent_id,
+        "displayName": &card.display_name,
+        "nodeId": &card.node_id,
+        "kind": &card.kind,
+        "capabilities": capabilities_to_json(&card.capabilities),
+        "signatureAlgorithm": &card.signature_algorithm,
+        "signatureKeyId": &card.signature_key_id,
+        "signingPublicKeyHex": &card.signing_public_key_hex,
+        "signatureHex": &card.signature_hex,
+        "agentCardSigned": true,
+        "contentsDisplayed": false
+    })
+}
+
 fn stream_to_json(stream: &Stream) -> Value {
     json!({
         "streamId": &stream.stream_id,
@@ -1093,6 +1319,18 @@ fn room_event_to_json(event: &RoomBusEvent) -> Value {
         "route": &event.route,
         "payloadBytes": event.payload_bytes,
         "createdAtUnix": event.created_at_unix,
+        "contentsDisplayed": false
+    })
+}
+
+fn room_topic_policy_to_json(policy: &TopicPolicy) -> Value {
+    json!({
+        "roomId": &policy.room_id,
+        "agentId": &policy.agent_id,
+        "topic": &policy.topic,
+        "publish": policy.publish,
+        "subscribe": policy.subscribe,
+        "updatedAtUnix": policy.updated_at_unix,
         "contentsDisplayed": false
     })
 }
@@ -1187,13 +1425,19 @@ mod tests {
         let body = response.to_string();
 
         assert!(body.contains("conu_register_agent"));
+        assert!(body.contains("conu_security_audit"));
         assert!(body.contains("conu_send_message"));
         assert!(body.contains("conu_receive_message"));
         assert!(body.contains("conu_open_stream"));
         assert!(body.contains("conu_create_room"));
         assert!(body.contains("conu_publish_room_event"));
+        assert!(body.contains("conu_set_room_topic_policy"));
+        assert!(body.contains("conu_list_room_topic_policies"));
         assert!(body.contains("conu_sync_routes"));
         assert!(body.contains("conu_list_routes"));
+        assert!(body.contains("conu_export_agent_card"));
+        assert!(body.contains("conu_trust_agent_card"));
+        assert!(body.contains("conu_set_peer_policy"));
     }
 
     #[test]
@@ -1215,6 +1459,153 @@ mod tests {
         assert_eq!(sync_json["contentsDisplayed"], Value::Bool(false));
         assert_eq!(routes_json["contentsDisplayed"], Value::Bool(false));
         assert_eq!(routes_json["routes"], json!([]));
+        assert!(!body.contains("private message contents"));
+    }
+
+    #[test]
+    fn signed_agent_card_tools_export_and_trust_metadata_only() {
+        let alice = McpServer::with_home(test_home("signed-agent-card-alice"));
+        let bob = McpServer::with_home(test_home("signed-agent-card-bob"));
+        let bob_identity = call_tool(&bob, 1, "conu_export_identity", json!({}));
+        let bob_identity_json: Value =
+            serde_json::from_str(&tool_text(&bob_identity)).expect("bob identity json");
+
+        call_tool(
+            &alice,
+            2,
+            "conu_trust_peer",
+            json!({
+                "peerNodeId": bob_identity_json["nodeId"].clone(),
+                "displayName": bob_identity_json["displayName"].clone(),
+                "exchangePublicKeyHex": bob_identity_json["exchangePublicKeyHex"].clone(),
+                "relayEndpoint": bob_identity_json["relayEndpoint"].clone(),
+                "signingPublicKeyHex": bob_identity_json["signingPublicKeyHex"].clone(),
+                "signatureAlgorithm": bob_identity_json["signatureAlgorithm"].clone(),
+                "signatureKeyId": bob_identity_json["signatureKeyId"].clone(),
+                "signatureHex": bob_identity_json["signatureHex"].clone()
+            }),
+        );
+        call_tool(
+            &bob,
+            3,
+            "conu_register_agent",
+            json!({
+                "agentId": "agent.bob",
+                "displayName": "Bob",
+                "kind": "test-agent",
+                "capabilities": {
+                    "messages": true,
+                    "streams": true,
+                    "rooms": true,
+                    "files": false,
+                    "presence": true
+                },
+                "process": true
+            }),
+        );
+
+        let exported = call_tool(
+            &bob,
+            4,
+            "conu_export_agent_card",
+            json!({ "agentId": "agent.bob" }),
+        );
+        let card_json: Value =
+            serde_json::from_str(&tool_text(&exported)).expect("agent card json");
+        let trusted = call_tool(
+            &alice,
+            5,
+            "conu_trust_agent_card",
+            json!({
+                "agentId": card_json["agentId"].clone(),
+                "displayName": card_json["displayName"].clone(),
+                "nodeId": card_json["nodeId"].clone(),
+                "kind": card_json["kind"].clone(),
+                "capabilities": card_json["capabilities"].clone(),
+                "signingPublicKeyHex": card_json["signingPublicKeyHex"].clone(),
+                "signatureAlgorithm": card_json["signatureAlgorithm"].clone(),
+                "signatureKeyId": card_json["signatureKeyId"].clone(),
+                "signatureHex": card_json["signatureHex"].clone()
+            }),
+        );
+        let agents = call_tool(&alice, 6, "conu_list_agents", json!({}));
+        let trusted_json: Value =
+            serde_json::from_str(&tool_text(&trusted)).expect("trusted agent json");
+        let agents_json: Value = serde_json::from_str(&tool_text(&agents)).expect("agents json");
+        let body = format!("{exported}\n{trusted}\n{agents}");
+
+        assert_eq!(card_json["agentCardSigned"], Value::Bool(true));
+        assert_eq!(card_json["contentsDisplayed"], Value::Bool(false));
+        assert_eq!(
+            trusted_json["agentId"],
+            Value::String("agent.bob".to_string())
+        );
+        assert_eq!(trusted_json["agentCardSigned"], Value::Bool(true));
+        assert_eq!(trusted_json["capabilities"]["streams"], Value::Bool(true));
+        assert_eq!(trusted_json["capabilities"]["rooms"], Value::Bool(true));
+        assert_eq!(
+            agents_json["remote"][0]["agentCardSigned"],
+            Value::Bool(true)
+        );
+        assert!(!body.contains("private message contents"));
+        assert!(!body.contains("Review this code"));
+    }
+
+    #[test]
+    fn peer_policy_tool_sets_scoped_grants_without_payloads() {
+        let alice = McpServer::with_home(test_home("peer-policy-alice"));
+        let bob = McpServer::with_home(test_home("peer-policy-bob"));
+        let bob_identity = call_tool(&bob, 1, "conu_export_identity", json!({}));
+        let bob_identity_json: Value =
+            serde_json::from_str(&tool_text(&bob_identity)).expect("bob identity json");
+        call_tool(
+            &alice,
+            2,
+            "conu_trust_peer",
+            json!({
+                "peerNodeId": bob_identity_json["nodeId"].clone(),
+                "displayName": bob_identity_json["displayName"].clone(),
+                "exchangePublicKeyHex": bob_identity_json["exchangePublicKeyHex"].clone(),
+                "relayEndpoint": bob_identity_json["relayEndpoint"].clone(),
+                "signingPublicKeyHex": bob_identity_json["signingPublicKeyHex"].clone(),
+                "signatureAlgorithm": bob_identity_json["signatureAlgorithm"].clone(),
+                "signatureKeyId": bob_identity_json["signatureKeyId"].clone(),
+                "signatureHex": bob_identity_json["signatureHex"].clone()
+            }),
+        );
+
+        let policy = call_tool(
+            &alice,
+            3,
+            "conu_set_peer_policy",
+            json!({
+                "peerNodeId": bob_identity_json["nodeId"].clone(),
+                "messages": true,
+                "streams": true,
+                "rooms": false
+            }),
+        );
+        let policy_json: Value = serde_json::from_str(&tool_text(&policy)).expect("policy json");
+
+        assert_eq!(policy_json["contentsDisplayed"], Value::Bool(false));
+        assert_eq!(policy_json["policy"]["messages"], Value::Bool(true));
+        assert_eq!(policy_json["policy"]["streams"], Value::Bool(true));
+        assert_eq!(policy_json["policy"]["rooms"], Value::Bool(false));
+        assert!(!policy.to_string().contains("private message contents"));
+    }
+
+    #[test]
+    fn security_audit_tool_reports_backend_without_secret_material() {
+        let server = McpServer::with_home(test_home("security-audit"));
+        let response = call_tool(&server, 1, "conu_security_audit", json!({}));
+        let audit_json: Value = serde_json::from_str(&tool_text(&response)).expect("audit json");
+        let body = audit_json.to_string();
+
+        assert_eq!(audit_json["contentsDisplayed"], Value::Bool(false));
+        assert!(audit_json["secretStorageBackend"].is_string());
+        assert!(audit_json["secretsOsProtected"].is_boolean());
+        assert!(!body.contains("secret_key_hex"));
+        assert!(!body.contains("dpapi_hex"));
         assert!(!body.contains("private message contents"));
     }
 
@@ -1280,13 +1671,21 @@ mod tests {
             &server,
             1,
             "conu_register_agent",
-            json!({ "agentId": "agent.codex", "displayName": "Codex" }),
+            json!({
+                "agentId": "agent.codex",
+                "displayName": "Codex",
+                "capabilities": { "rooms": true }
+            }),
         );
         call_tool(
             &server,
             2,
             "conu_register_agent",
-            json!({ "agentId": "agent.hermes", "displayName": "Hermes" }),
+            json!({
+                "agentId": "agent.hermes",
+                "displayName": "Hermes",
+                "capabilities": { "rooms": true }
+            }),
         );
         call_tool(
             &server,
@@ -1327,6 +1726,73 @@ mod tests {
         assert!(events_text.contains("\"topic\": \"build\""));
         assert!(!publish.to_string().contains("private message contents"));
         assert!(!events.to_string().contains("private message contents"));
+    }
+
+    #[test]
+    fn room_topic_policy_tool_sets_grants_without_payloads() {
+        let server = McpServer::with_home(test_home("room-topic-policy"));
+        call_tool(
+            &server,
+            1,
+            "conu_register_agent",
+            json!({
+                "agentId": "agent.codex",
+                "displayName": "Codex",
+                "capabilities": { "rooms": true }
+            }),
+        );
+        call_tool(
+            &server,
+            2,
+            "conu_register_agent",
+            json!({
+                "agentId": "agent.hermes",
+                "displayName": "Hermes",
+                "capabilities": { "rooms": true }
+            }),
+        );
+        call_tool(
+            &server,
+            3,
+            "conu_create_room",
+            json!({
+                "roomId": "room.dev",
+                "displayName": "Dev Room",
+                "agentId": "agent.codex"
+            }),
+        );
+        call_tool(
+            &server,
+            4,
+            "conu_join_room",
+            json!({
+                "roomId": "room.dev",
+                "agentId": "agent.hermes"
+            }),
+        );
+        let policy = call_tool(
+            &server,
+            5,
+            "conu_set_room_topic_policy",
+            json!({
+                "roomId": "room.dev",
+                "agentId": "agent.hermes",
+                "topic": "build",
+                "publish": true,
+                "subscribe": false
+            }),
+        );
+        let policies = call_tool(&server, 6, "conu_list_room_topic_policies", json!({}));
+        let policy_json: Value = serde_json::from_str(&tool_text(&policy)).expect("policy json");
+        let policies_json: Value =
+            serde_json::from_str(&tool_text(&policies)).expect("policies json");
+        let body = format!("{policy}\n{policies}");
+
+        assert_eq!(policy_json["contentsDisplayed"], Value::Bool(false));
+        assert_eq!(policy_json["policy"]["publish"], Value::Bool(true));
+        assert_eq!(policy_json["policy"]["subscribe"], Value::Bool(false));
+        assert_eq!(policies_json["topicPolicies"][0]["topic"], "build");
+        assert!(!body.contains("private message contents"));
     }
 
     #[test]

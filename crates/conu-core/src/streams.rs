@@ -15,6 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use conu_protocol::OpaquePayload;
 
 use crate::agents;
+use crate::policy::{self, PeerPermission, PolicyError};
+use crate::relay_delivery::{self, RemoteStreamChunk};
 use crate::routes;
 use crate::sessions;
 use crate::state::{self, StateError, StatePaths};
@@ -100,7 +102,9 @@ pub enum StreamError {
     State(StateError),
     Agent(agents::AgentError),
     Session(sessions::SessionError),
+    Policy(PolicyError),
     Route(routes::RouteError),
+    Relay(relay_delivery::RelayDeliveryError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -127,7 +131,9 @@ impl fmt::Display for StreamError {
             Self::State(error) => write!(formatter, "{error}"),
             Self::Agent(error) => write!(formatter, "{error}"),
             Self::Session(error) => write!(formatter, "{error}"),
+            Self::Policy(error) => write!(formatter, "{error}"),
             Self::Route(error) => write!(formatter, "{error}"),
+            Self::Relay(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -160,9 +166,21 @@ impl From<sessions::SessionError> for StreamError {
     }
 }
 
+impl From<PolicyError> for StreamError {
+    fn from(error: PolicyError) -> Self {
+        Self::Policy(error)
+    }
+}
+
 impl From<routes::RouteError> for StreamError {
     fn from(error: routes::RouteError) -> Self {
         Self::Route(error)
+    }
+}
+
+impl From<relay_delivery::RelayDeliveryError> for StreamError {
+    fn from(error: relay_delivery::RelayDeliveryError) -> Self {
+        Self::Relay(error)
     }
 }
 
@@ -178,7 +196,7 @@ pub fn open_stream(
     let to_agent_id = validate_identifier(to_agent_id.to_string(), "to agent id")?;
     let kind = validate_identifier(kind.to_string(), "stream kind")?;
 
-    validate_stream_agents(home_override, &from_agent_id, &to_agent_id)?;
+    validate_stream_agents(Some(init.paths.home.clone()), &from_agent_id, &to_agent_id)?;
     let route = stream_route_for_target(&init.paths, &to_agent_id)?;
 
     let now = current_unix_seconds();
@@ -254,6 +272,35 @@ pub fn write_stream(
             reason: "chunk exceeds stream backpressure window".to_string(),
         });
     }
+    validate_stream_agents(
+        Some(init.paths.home.clone()),
+        &streams[index].from_agent_id,
+        &streams[index].to_agent_id,
+    )?;
+
+    let remote_peer_node_id = remote_peer_for_stream_target(&init.paths, &streams[index])?;
+    if let Some(peer_node_id) = remote_peer_node_id {
+        if !matches!(
+            streams[index].route.as_str(),
+            "relay-websocket" | "metadata-relay"
+        ) {
+            return Err(StreamError::InvalidRequest {
+                reason: "relay-backed stream bytes require a relay route".to_string(),
+            });
+        }
+        let chunk = RemoteStreamChunk::new(
+            streams[index].stream_id.clone(),
+            streams[index].from_agent_id.clone(),
+            streams[index].to_agent_id.clone(),
+            peer_node_id,
+            payload,
+        )?;
+        relay_delivery::submit_remote_stream_chunk_from_paths(
+            &init.paths,
+            &init.node.node_id,
+            chunk,
+        )?;
+    }
 
     streams[index].chunks_written = streams[index].chunks_written.saturating_add(1);
     streams[index].bytes_written = streams[index].bytes_written.saturating_add(payload_bytes);
@@ -315,25 +362,70 @@ fn validate_stream_agents(
     from_agent_id: &str,
     to_agent_id: &str,
 ) -> Result<(), StreamError> {
-    if !agents::agent_exists(home_override.clone(), from_agent_id)? {
+    let local_agents = agents::list_local_agents(home_override.clone())?;
+    let Some(source) = local_agents
+        .iter()
+        .find(|agent| agent.agent_id == from_agent_id)
+    else {
         return Err(StreamError::InvalidRequest {
             reason: "source agent is not registered locally".to_string(),
         });
-    }
+    };
 
-    let local_target = agents::agent_exists(home_override.clone(), to_agent_id)?;
-    let remote_target = sessions::list_remote_agents(home_override)?
-        .into_iter()
-        .any(|agent| agent.agent_id == to_agent_id);
-
-    if !local_target && !remote_target {
+    if !source.capabilities.streams {
         return Err(StreamError::InvalidRequest {
-            reason: "target agent is not visible locally or through trusted remote discovery"
-                .to_string(),
+            reason: "source agent is not allowed to open streams".to_string(),
         });
     }
 
-    Ok(())
+    if let Some(target) = local_agents
+        .iter()
+        .find(|agent| agent.agent_id == to_agent_id)
+    {
+        if !target.capabilities.streams {
+            return Err(StreamError::InvalidRequest {
+                reason: "target agent is not allowed to receive streams".to_string(),
+            });
+        }
+        return Ok(());
+    }
+
+    if let Some(remote_target) = sessions::list_remote_agents(home_override.clone())?
+        .into_iter()
+        .find(|agent| agent.agent_id == to_agent_id)
+    {
+        if !remote_target.capabilities.streams {
+            return Err(StreamError::InvalidRequest {
+                reason: "target remote agent is not advertised for streams".to_string(),
+            });
+        }
+        let paths = StatePaths::resolve(home_override)?;
+        policy::ensure_peer_allowed_from_paths(
+            &paths,
+            &remote_target.peer_node_id,
+            PeerPermission::Streams,
+        )?;
+        return Ok(());
+    }
+
+    Err(StreamError::InvalidRequest {
+        reason: "target agent is not visible locally or through trusted remote discovery"
+            .to_string(),
+    })
+}
+
+fn remote_peer_for_stream_target(
+    paths: &StatePaths,
+    stream: &StreamRecord,
+) -> Result<Option<String>, StreamError> {
+    if agents::agent_exists(Some(paths.home.clone()), &stream.to_agent_id)? {
+        return Ok(None);
+    }
+
+    Ok(sessions::list_remote_agents(Some(paths.home.clone()))?
+        .into_iter()
+        .find(|agent| agent.agent_id == stream.to_agent_id)
+        .map(|agent| agent.peer_node_id))
 }
 
 fn read_streams(paths: &StatePaths) -> Result<Vec<StreamRecord>, StreamError> {
@@ -678,6 +770,7 @@ fn current_unix_nanos() -> u128 {
 mod tests {
     use super::*;
     use crate::agents::{AgentRegistration, process_gateway_requests, submit_registration};
+    use crate::trust;
     use std::env;
     use std::process;
 
@@ -727,6 +820,54 @@ mod tests {
     }
 
     #[test]
+    fn remote_stream_write_queues_peer_encrypted_chunk_without_payload() {
+        let alice_home = test_home("remote-stream-alice");
+        let bob_home = test_home("remote-stream-bob");
+        let bob_card = trust::export_peer_card(Some(bob_home.clone())).expect("bob card exports");
+        let bob_peer =
+            trust::trust_peer_card(Some(alice_home.clone()), bob_card).expect("alice trusts bob");
+        grant_peer_policy(&alice_home, &bob_peer.peer_node_id, false, true, false);
+        fs::write(
+            StatePaths::from_home(alice_home.clone()).config,
+            "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\nnat_profile = \"public\"\ndirect_quic_endpoint = \"quic://127.0.0.1:9443\"\n",
+        )
+        .expect("config writes");
+        routes::sync_routes(Some(alice_home.clone())).expect("routes sync");
+        register_agent(&alice_home, "agent.alice");
+        write_remote_agent(&alice_home, "agent.bob", &node_id(&bob_home));
+
+        let opened = open_stream(
+            Some(alice_home.clone()),
+            "agent.alice",
+            "agent.bob",
+            "message",
+        )
+        .expect("remote stream opens");
+        let written = write_stream(
+            Some(alice_home.clone()),
+            &opened.stream.stream_id,
+            OpaquePayload::from_bytes(b"private stream chunk".to_vec()),
+        )
+        .expect("remote stream chunk queues");
+        let paths = StatePaths::from_home(alice_home);
+        let requests = fs::read_dir(&paths.relay_outbox_dir)
+            .expect("relay outbox reads")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("relay entries read");
+        let contents = fs::read_to_string(requests[0].path()).expect("request reads");
+
+        assert_eq!(opened.stream.route, "relay-websocket");
+        assert_eq!(written.stream.chunks_written, 1);
+        assert_eq!(written.stream.bytes_written, 20);
+        assert_eq!(requests.len(), 1);
+        assert!(contents.contains("type = \"relay_stream_chunk\""));
+        assert!(contents.contains("kind = \"stream_chunk\""));
+        assert!(contents.contains(&format!("stream_id = \"{}\"", opened.stream.stream_id)));
+        assert!(contents.contains("payload_ciphertext_hex"));
+        assert!(!contents.contains("private stream chunk"));
+    }
+
+    #[test]
     fn stream_requires_visible_target_agent() {
         let home = test_home("stream-target");
         register_agent(&home, "agent.a");
@@ -737,11 +878,85 @@ mod tests {
         assert!(error.to_string().contains("target agent"));
     }
 
+    #[test]
+    fn stream_open_requires_source_stream_capability() {
+        let home = test_home("stream-source-capability");
+        register_basic_agent(&home, "agent.a");
+        register_agent(&home, "agent.b");
+
+        let error = open_stream(Some(home), "agent.a", "agent.b", "message")
+            .expect_err("source without stream capability fails");
+
+        assert!(error.to_string().contains("not allowed to open streams"));
+    }
+
+    #[test]
+    fn stream_open_requires_target_stream_capability() {
+        let home = test_home("stream-target-capability");
+        register_agent(&home, "agent.a");
+        register_basic_agent(&home, "agent.b");
+
+        let error = open_stream(Some(home), "agent.a", "agent.b", "message")
+            .expect_err("target without stream capability fails");
+
+        assert!(error.to_string().contains("not allowed to receive streams"));
+    }
+
     fn register_agent(home: &Path, agent_id: &str) {
+        let mut registration =
+            AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid agent");
+        registration.capabilities.streams = true;
+        submit_registration(Some(home.to_path_buf()), registration).expect("submits");
+        process_gateway_requests(Some(home.to_path_buf())).expect("processes");
+    }
+
+    fn register_basic_agent(home: &Path, agent_id: &str) {
         let registration =
             AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid agent");
         submit_registration(Some(home.to_path_buf()), registration).expect("submits");
         process_gateway_requests(Some(home.to_path_buf())).expect("processes");
+    }
+
+    fn write_remote_agent(home: &Path, agent_id: &str, peer_node_id: &str) {
+        let paths = StatePaths::from_home(home.to_path_buf());
+        fs::create_dir_all(&paths.agents_dir).expect("agents dir");
+        fs::write(
+            &paths.remote_agent_registry,
+            format!(
+                "# conU remote agent registry\nversion = \"1\"\n\n[[remote_agent]]\nagent_id = \"{agent_id}\"\ndisplay_name = \"Remote Bob\"\npeer_node_id = \"{peer_node_id}\"\nnode_id = \"{peer_node_id}\"\nkind = \"remote-agent\"\npresence = \"ready\"\nlast_seen_unix = {}\ncap_messages = true\ncap_streams = true\ncap_rooms = false\ncap_files = false\ncap_presence = true\npayload_displayed = false\n",
+                current_unix_seconds()
+            ),
+        )
+        .expect("remote agent writes");
+    }
+
+    fn grant_peer_policy(
+        home: &Path,
+        peer_node_id: &str,
+        messages: bool,
+        streams: bool,
+        rooms: bool,
+    ) {
+        policy::set_peer_policy(
+            Some(home.to_path_buf()),
+            peer_node_id,
+            policy::PeerPolicyUpdate {
+                messages: Some(messages),
+                streams: Some(streams),
+                rooms: Some(rooms),
+                files: Some(false),
+                mailbox: Some(false),
+            },
+        )
+        .expect("peer policy grants");
+    }
+
+    fn node_id(home: &Path) -> String {
+        state::read_state(Some(home.to_path_buf()))
+            .expect("state reads")
+            .node
+            .expect("node exists")
+            .node_id
     }
 
     fn test_home(name: &str) -> PathBuf {

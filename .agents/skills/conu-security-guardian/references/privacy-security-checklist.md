@@ -5,6 +5,7 @@
 - Payload content is opaque to conU runtime surfaces unless the local agent intentionally handles it.
 - CLI does not print payload text.
 - SDK and MCP list/send/status/stream/room outputs do not print payload text.
+- TypeScript/JavaScript SDK payload helpers pass bytes through stdin and do not put payload contents in argv, logs, or wrapper output.
 - Logs do not include payload text.
 - Metrics do not include payload text.
 - Route registry, probe history, and route logs include only metadata.
@@ -15,7 +16,12 @@
 - Node identity is generated locally.
 - Agent identity is bound to a trusted node.
 - Pairing is explicit.
-- Manual peer-card trust must import only public node id, display name, public exchange key, and relay endpoint.
+- Manual peer-card trust must import only public node id, display name, public exchange key, relay endpoint, and public signature metadata.
+- Manual peer-card trust should verify signed peer-card metadata when present and must store only public signature material.
+- Identity-key rotation must archive old signing/exchange key files with the configured secret backend, require refreshed public peer-card distribution, and keep CLI output to old/new key ids plus refresh booleans only.
+- Manual remote agent-card trust must import only public agent id, display name, node id, kind, capabilities, and public signature metadata.
+- Remote agent-card trust must verify the signature, require the card node id to already be trusted as a peer, and require the signing key to match the trusted peer card.
+- Automatic agent-card exchange must carry signed card metadata as peer-encrypted relay control envelopes and must use the same verification checks as manual import.
 - Trust is revocable.
 - Discovery is scoped by trust and policy.
 
@@ -23,6 +29,10 @@
 
 - Agent actions require grants where appropriate.
 - Sending, streaming, subscribing, room joining, file transfer, and mailbox use are separately controllable.
+- Core routing must enforce local agent capability booleans: `messages` for message send/receive, `streams` for stream open/write and inbound stream chunks, and `rooms` for room create/join/publish and local or relay-backed room fanout.
+- Core routing must enforce peer-scoped policy grants for trusted remote peers; missing peer policy records deny by default.
+- Peer policy records must contain only peer node ids, boolean grants, timestamps, and `payload_displayed = false`.
+- Room topic policy records must contain only room id, agent id, topic, publish/subscribe booleans, timestamps, and `payload_displayed = false`; configured topics must require explicit grants for publish, local fanout, remote fanout, and inbound relay room delivery.
 - "Full access" means full communication within trust boundaries, not raw system access.
 - SDK/MCP receive APIs return payload bytes only to the addressed local agent and only after an explicit receive request.
 
@@ -32,30 +42,41 @@
 - Relay logs metadata only.
 - Relay cannot impersonate a peer.
 - Relay fallback does not weaken trust checks.
-- Relay message delivery must decrypt only after the sender exchange public key matches the trusted peer card.
+- Relay message, stream-chunk, room-event, and signed-card control delivery must decrypt only after the sender exchange public key matches the trusted peer card.
 - Relay frames may carry ciphertext bodies, never plaintext payload fields.
-- The conUD relay pump may retry, count, and route envelopes, but runtime logs must stay metadata-only and must not include relay tokens or plaintext payloads.
+- The default `local-dev-token` must be limited to loopback relay binds; exposed relay binds require explicit custom shared or scoped tokens.
+- Self-hosted relay deployments should prefer offline issuance through `conu-relay --issue-credential --credentials-file` plus live-reloaded per-node credentials through a hashed `CONU_RELAY_CREDENTIALS_FILE` with status/expiry metadata. Issuance output must write the raw token only to the requested token file; manifest upsert/rotation/revocation output must report only counts/paths/status, not raw tokens or hashes. Missing or invalid manifests fail closed for new sessions and must not echo tokens or token hashes. `CONU_RELAY_CREDENTIALS` remains compatibility config, runtime clients may use `CONU_RELAY_TOKEN` or `conu relay credential set --stdin`, and shared server-side `CONU_RELAY_TOKEN` remains for local or tightly controlled tests.
+- Relay idle timeout and max session TTL must stay configurable and must close sessions without exposing payloads or tokens.
+- Relay connection/rate-limit errors must stay generic and must not echo tokens, payloads, or arbitrary frame contents.
+- Relay session resume may use a session id only as same-node same-endpoint reconnect metadata. Cross-node resume attempts must not inherit the requested session id, and runtime Debug/log surfaces must not display relay session ids.
+- Relay accounting files may contain node ids, authenticated/resumed session counts, sent/received envelope counts, byte counts, mailbox counters, accounting windows, and display guards only. They must not contain relay tokens, token hashes, plaintext payloads, ciphertext bodies, session ids, private keys, or frame bodies.
+- Relay clients may use `wss://` only through certificate-validated TLS. Public deployments must terminate TLS before the plain `conu-relay` service and must not disable hostname/certificate verification in production.
+- The conUD relay pump may maintain a reusable relay session, retry, count, and route envelopes, but runtime logs must stay metadata-only and must not include relay session ids, relay tokens, or plaintext payloads.
+- The relay offline mailbox may store only peer-encrypted message, stream-chunk, room-event, or signed-card control envelopes in bounded memory or in the configured `CONU_RELAY_MAILBOX_DIR`; it must not store plaintext payloads and must expire/drop envelopes without echoing contents.
 
 ## Storage
 
 - Trust store avoids plaintext secrets when possible.
+- Peer policy store contains metadata-only grants and no payloads or secrets.
 - Message request and inbox files use encrypted-at-rest payload fields.
-- Room registry, room events, and room logs contain metadata only; local room fanout payloads live only as encrypted-at-rest inbox envelopes for joined local participants.
-- Mailbox stores encrypted envelopes when mailbox delivery is implemented.
-- Relay outbox stores peer-encrypted envelope bodies, not plaintext payloads.
+- Room registry, room events, room topic policy, and room logs contain metadata only; local room fanout payloads live only as encrypted-at-rest inbox envelopes for joined local participants, and remote room fanout payloads live only inside peer-encrypted relay envelopes until delivered to the addressed local inbox.
+- Relay mailbox stores encrypted envelopes only; relay accounting stores metadata counters only. Hosted mailbox retention dashboards remain future work.
+- Relay outbox stores peer-encrypted message, stream-chunk, room-event, and signed-card control envelope bodies, not plaintext payloads.
+- Stored relay client credentials must live under `security/relay-credential.key`, use OS wrapping when available, and never appear in CLI output, logs, docs examples, or tests except artificial field-name checks.
 - Logs are payload-safe.
 - Config does not store private keys.
-- Security key files remain local-only and must not appear in CLI output, logs, docs examples, or tests except artificial field-name checks.
+- Security key files remain local-only and must not appear in CLI output, logs, docs examples, or tests except artificial field-name checks. On Windows, local signing, exchange, and storage secret bytes should be wrapped with current-user DPAPI fields, and older plaintext-hex key files should migrate during security-state ensure.
 
 ## Replay And Signatures
 
 - Local agent cards are signed and signature verification fails on tampering.
+- Remote signed agent-card imports reject tampered cards and cross-peer agent-id collisions.
 - Replay cache rejects duplicate message request and envelope ids before duplicate delivery.
 - Revoked peers must not remain visible or routeable.
 
 ## Routes
 
-- Direct routes are selected only for trusted peers.
+- Direct route candidates are recorded only for trusted peers and must remain unavailable until a real direct data plane exists.
 - Relay fallback does not weaken trust checks.
 - Direct endpoint config must not contain tokens, private keys, or payload material.
 - Route failure reasons stay generic and must not echo arbitrary payload-bearing input.
@@ -64,10 +85,15 @@
 
 - Release archives do not include local state, private keys, logs, inboxes, message stores, routes, or payload-bearing files.
 - `conu doctor` reports readiness and scan counts only; it must not print log contents.
+- `conu logs rotate` reports only metadata such as file names, byte sizes, rotation counts, and archive removals. It must not read, print, upload, or classify log contents.
+- `conu telemetry snapshot` reports only schema, explicit allowlist, aggregate counters, and display guards. It must not print node ids, agent ids, peer ids, endpoints, file paths, log lines, key ids, private keys, shared secrets, auth tokens, plaintext payloads, decrypted payloads, or ciphertext bodies.
+- `conu security rotate storage --confirm` reports only key ids and migration counts. It must not print key bytes, DPAPI blobs, plaintext payloads, or decrypted payloads.
+- `conu security rotate identity --confirm-peer-refresh` and `conu security retire identity --confirm-peer-refresh-complete` report only key ids, archive counts, refresh/confirmation booleans, compatibility status, and `contentsDisplayed=false`. They must not print private keys, DPAPI blobs, shared secrets, plaintext payloads, or decrypted payloads.
+- `conu security retire storage --confirm` reports only archived-key, migrated-file, and dependent-file counts. It must not print key bytes, DPAPI blobs, plaintext payloads, or decrypted payloads.
 - CI and release workflows upload binaries/docs/templates only.
 - Service templates must not bake in developer-specific secrets, tokens, or private paths beyond editable placeholders.
 - npm packaging must verify release checksums by default and must not package or inspect local `CONU_HOME` state.
-- Docker relay templates must keep relay tokens in environment/configuration, not committed files.
+- Docker relay templates must keep relay tokens in runtime configuration or explicit issued token files only; credential manifests may store token hashes and lifecycle metadata, but never raw relay tokens, and examples should prefer `--credentials-file`, `--replace`, and `--revoke-credential` over hand-editing where possible.
 
 ## CLI Watch
 

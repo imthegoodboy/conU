@@ -218,15 +218,17 @@ try {
     $cardA = Invoke-ConuJson -StateHome $homeA -Arguments @("identity", "export", "--json")
     $cardB = Invoke-ConuJson -StateHome $homeB -Arguments @("identity", "export", "--json")
 
-    Invoke-Conu -StateHome $homeA -Arguments @("peers", "trust", $cardB.nodeId, $cardB.displayName, "--exchange-key", $cardB.exchangePublicKeyHex, "--relay", $relayEndpoint) | Out-Null
-    Invoke-Conu -StateHome $homeB -Arguments @("peers", "trust", $cardA.nodeId, $cardA.displayName, "--exchange-key", $cardA.exchangePublicKeyHex, "--relay", $relayEndpoint) | Out-Null
-    Write-Host "peer cards trusted"
+    Invoke-Conu -StateHome $homeA -Arguments @("peers", "trust", $cardB.nodeId, $cardB.displayName, "--exchange-key", $cardB.exchangePublicKeyHex, "--relay", $relayEndpoint, "--signing-key", $cardB.signingPublicKeyHex, "--signature", $cardB.signatureHex, "--signature-key-id", $cardB.signatureKeyId) | Out-Null
+    Invoke-Conu -StateHome $homeB -Arguments @("peers", "trust", $cardA.nodeId, $cardA.displayName, "--exchange-key", $cardA.exchangePublicKeyHex, "--relay", $relayEndpoint, "--signing-key", $cardA.signingPublicKeyHex, "--signature", $cardA.signatureHex, "--signature-key-id", $cardA.signatureKeyId) | Out-Null
+    Invoke-Conu -StateHome $homeA -Arguments @("peers", "policy", $cardB.nodeId, "--messages", "true", "--streams", "true", "--rooms", "true") | Out-Null
+    Invoke-Conu -StateHome $homeB -Arguments @("peers", "policy", $cardA.nodeId, "--messages", "true", "--streams", "true", "--rooms", "true") | Out-Null
+    Write-Host "peer cards trusted and relay policy granted"
 
     $conudProcessA = Start-ConuRuntime -StateHome $homeA
     $conudProcessB = Start-ConuRuntime -StateHome $homeB
     Write-Host "conUD runtimes started"
-    Invoke-Conu -StateHome $homeA -Arguments @("agents", "register", "agent.daemon.a", "Daemon Agent A", "--kind", "smoke") | Out-Null
-    Invoke-Conu -StateHome $homeB -Arguments @("agents", "register", "agent.daemon.b", "Daemon Agent B", "--kind", "smoke") | Out-Null
+    Invoke-Conu -StateHome $homeA -Arguments @("agents", "register", "agent.daemon.a", "Daemon Agent A", "--kind", "smoke", "--rooms", "true") | Out-Null
+    Invoke-Conu -StateHome $homeB -Arguments @("agents", "register", "agent.daemon.b", "Daemon Agent B", "--kind", "smoke", "--rooms", "true") | Out-Null
     Write-Host "agents registered"
 
     $secret = "daemon relay smoke " + [guid]::NewGuid().ToString("N")

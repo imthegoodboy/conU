@@ -24,7 +24,8 @@ Agent
 - Agent Gateway: local API/IPC/SDK/MCP adapter for agents.
 - Protocol: control plane and data plane.
 - Relay: pairing, discovery, NAT fallback, offline handoff.
-- Trust Store: local identities, trusted peers, permissions, revocations.
+- Trust Store: local identities, trusted peers, revocations.
+- Policy Store: peer-scoped communication grants.
 
 ## Control Plane
 

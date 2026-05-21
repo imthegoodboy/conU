@@ -15,11 +15,13 @@ use conu_core::agents::{
 use conu_core::messages::{
     self, DeliveryReceipt, InboxEntry, LocalMessage, MessageProcessReport, MessageSubmission,
 };
+use conu_core::policy;
 use conu_core::relay_delivery::{
     self, RelayQueueSummary, RelaySyncReport, RemoteMessage, RemoteMessageSubmission,
 };
 use conu_core::rooms::{
     self, RoomCreateReport, RoomEvent, RoomJoinReport, RoomPublishReport, RoomRecord,
+    RoomTopicPolicyRecord, RoomTopicPolicyUpdate,
 };
 use conu_core::routes::{self, RouteProbe, RouteRecord, RouteSyncReport};
 use conu_core::runtime::{self, RuntimeStatus};
@@ -33,8 +35,12 @@ use conu_core::trust::{self, JoinReport, PairingInvite, RevokeReport, TrustedPee
 use conu_protocol::{AgentCapabilities, OpaquePayload};
 use std::time::Duration;
 
-pub use conu_core::agents::AgentPresence as Presence;
-pub use conu_core::rooms::{RoomEvent as RoomBusEvent, RoomRecord as Room};
+pub use conu_core::agents::{AgentPresence as Presence, SignedAgentCard};
+pub use conu_core::policy::{PeerPolicyRecord, PeerPolicyUpdate};
+pub use conu_core::rooms::{
+    RoomEvent as RoomBusEvent, RoomRecord as Room, RoomTopicPolicyRecord as TopicPolicy,
+    RoomTopicPolicyUpdate as TopicPolicyUpdate,
+};
 pub use conu_core::routes::RouteRecord as Route;
 pub use conu_core::streams::StreamRecord as Stream;
 pub use conu_core::trust::PeerCard;
@@ -180,9 +186,25 @@ impl ConuClient {
         Ok(trust::export_peer_card(self.home_override())?)
     }
 
+    /// Export a signed public local agent card for a trusted peer.
+    pub fn export_agent_card(&self, agent_id: &str) -> Result<SignedAgentCard, SdkError> {
+        Ok(agents::export_agent_card(self.home_override(), agent_id)?)
+    }
+
     /// Trust a remote node from its public peer card.
     pub fn trust_peer_card(&self, card: PeerCard) -> Result<TrustedPeer, SdkError> {
         Ok(trust::trust_peer_card(self.home_override(), card)?)
+    }
+
+    /// Trust a remote agent from a signed card exported by an already trusted peer.
+    pub fn trust_remote_agent_card(
+        &self,
+        card: SignedAgentCard,
+    ) -> Result<RemoteAgentRecord, SdkError> {
+        Ok(sessions::trust_remote_agent_card(
+            self.home_override(),
+            card,
+        )?)
     }
 
     /// Join a local pairing code.
@@ -193,6 +215,29 @@ impl ConuClient {
     /// Revoke a trusted peer.
     pub fn revoke_peer(&self, peer_node_id: &str) -> Result<RevokeReport, SdkError> {
         Ok(trust::revoke_peer(self.home_override(), peer_node_id)?)
+    }
+
+    /// List explicit peer-scoped communication policies.
+    pub fn list_peer_policies(&self) -> Result<Vec<PeerPolicyRecord>, SdkError> {
+        Ok(policy::list_peer_policies(self.home_override())?)
+    }
+
+    /// Read one peer's effective policy. Missing policy records deny all surfaces.
+    pub fn peer_policy(&self, peer_node_id: &str) -> Result<PeerPolicyRecord, SdkError> {
+        Ok(policy::peer_policy(self.home_override(), peer_node_id)?)
+    }
+
+    /// Set one trusted peer's communication policy.
+    pub fn set_peer_policy(
+        &self,
+        peer_node_id: &str,
+        update: PeerPolicyUpdate,
+    ) -> Result<PeerPolicyRecord, SdkError> {
+        Ok(policy::set_peer_policy(
+            self.home_override(),
+            peer_node_id,
+            update,
+        )?)
     }
 
     /// List remote runtime sessions.
@@ -388,6 +433,43 @@ impl ConuClient {
         Ok(rooms::list_room_events(self.home_override())?)
     }
 
+    /// List explicit room topic policy records.
+    pub fn list_room_topic_policies(&self) -> Result<Vec<RoomTopicPolicyRecord>, SdkError> {
+        Ok(rooms::list_room_topic_policies(self.home_override())?)
+    }
+
+    /// Read one explicit room topic policy record.
+    pub fn room_topic_policy(
+        &self,
+        room_id: &str,
+        agent_id: &str,
+        topic: &str,
+    ) -> Result<Option<RoomTopicPolicyRecord>, SdkError> {
+        Ok(rooms::room_topic_policy(
+            self.home_override(),
+            room_id,
+            agent_id,
+            topic,
+        )?)
+    }
+
+    /// Set one joined agent's publish/subscribe grants for a room topic.
+    pub fn set_room_topic_policy(
+        &self,
+        room_id: &str,
+        agent_id: &str,
+        topic: &str,
+        update: RoomTopicPolicyUpdate,
+    ) -> Result<RoomTopicPolicyRecord, SdkError> {
+        Ok(rooms::set_room_topic_policy(
+            self.home_override(),
+            room_id,
+            agent_id,
+            topic,
+            update,
+        )?)
+    }
+
     fn home_override(&self) -> Option<PathBuf> {
         self.home.clone()
     }
@@ -415,6 +497,7 @@ pub enum SdkError {
     Security(security::SecurityError),
     Agent(agents::AgentError),
     Message(messages::MessageError),
+    Policy(policy::PolicyError),
     Runtime(runtime::RuntimeError),
     Route(routes::RouteError),
     RelayDelivery(relay_delivery::RelayDeliveryError),
@@ -439,6 +522,7 @@ impl fmt::Display for SdkError {
             Self::Security(error) => write!(formatter, "{error}"),
             Self::Agent(error) => write!(formatter, "{error}"),
             Self::Message(error) => write!(formatter, "{error}"),
+            Self::Policy(error) => write!(formatter, "{error}"),
             Self::Runtime(error) => write!(formatter, "{error}"),
             Self::Route(error) => write!(formatter, "{error}"),
             Self::RelayDelivery(error) => write!(formatter, "{error}"),
@@ -487,6 +571,12 @@ impl From<agents::AgentError> for SdkError {
 impl From<messages::MessageError> for SdkError {
     fn from(error: messages::MessageError) -> Self {
         Self::Message(error)
+    }
+}
+
+impl From<policy::PolicyError> for SdkError {
+    fn from(error: policy::PolicyError) -> Self {
+        Self::Policy(error)
     }
 }
 
@@ -605,11 +695,18 @@ mod tests {
     fn sdk_room_flow_returns_metadata_only() {
         let client = ConuClient::with_home(test_home("rooms"));
         client.init().expect("state initializes");
+        let mut capabilities = AgentCapabilities::basic();
+        capabilities.rooms = true;
         client
-            .register_agent("agent.codex", "Codex", "test-agent")
+            .register_agent_with_capabilities(
+                "agent.codex",
+                "Codex",
+                "test-agent",
+                capabilities.clone(),
+            )
             .expect("codex registers");
         client
-            .register_agent("agent.hermes", "Hermes", "test-agent")
+            .register_agent_with_capabilities("agent.hermes", "Hermes", "test-agent", capabilities)
             .expect("hermes registers");
         client.process_queued().expect("registrations process");
 
@@ -636,6 +733,150 @@ mod tests {
         assert_eq!(rooms[0].participants.len(), 2);
         assert_eq!(events.len(), 1);
         assert!(!debug.contains("private message contents"));
+    }
+
+    #[test]
+    fn sdk_room_topic_policy_controls_publish_and_subscribe() {
+        let client = ConuClient::with_home(test_home("room-topic-policy"));
+        client.init().expect("state initializes");
+        let mut capabilities = AgentCapabilities::basic();
+        capabilities.rooms = true;
+        client
+            .register_agent_with_capabilities(
+                "agent.codex",
+                "Codex",
+                "test-agent",
+                capabilities.clone(),
+            )
+            .expect("codex registers");
+        client
+            .register_agent_with_capabilities("agent.hermes", "Hermes", "test-agent", capabilities)
+            .expect("hermes registers");
+        client.process_queued().expect("registrations process");
+        client
+            .create_room("room.dev", "Dev Room", "agent.codex")
+            .expect("room creates");
+        client
+            .join_room("room.dev", "agent.hermes")
+            .expect("room joins");
+
+        let publisher = client
+            .set_room_topic_policy(
+                "room.dev",
+                "agent.hermes",
+                "build",
+                TopicPolicyUpdate {
+                    publish: Some(true),
+                    subscribe: Some(false),
+                },
+            )
+            .expect("publisher grant writes");
+        let subscriber = client
+            .set_room_topic_policy(
+                "room.dev",
+                "agent.codex",
+                "build",
+                TopicPolicyUpdate {
+                    publish: Some(false),
+                    subscribe: Some(true),
+                },
+            )
+            .expect("subscriber grant writes");
+        let policies = client
+            .list_room_topic_policies()
+            .expect("topic policies list");
+        let published = client
+            .publish_room_event_bytes(
+                "room.dev",
+                "agent.hermes",
+                "build",
+                b"private message contents",
+            )
+            .expect("event publishes");
+        let debug = format!("{publisher:?}\n{subscriber:?}\n{policies:?}\n{published:?}");
+
+        assert!(publisher.publish);
+        assert!(subscriber.subscribe);
+        assert_eq!(policies.len(), 2);
+        assert_eq!(published.local_deliveries, 1);
+        assert!(!debug.contains("private message contents"));
+    }
+
+    #[test]
+    fn sdk_exports_and_trusts_signed_remote_agent_cards_without_payloads() {
+        let alice = ConuClient::with_home(test_home("signed-agent-card-alice"));
+        let bob = ConuClient::with_home(test_home("signed-agent-card-bob"));
+        alice.init().expect("alice state initializes");
+        bob.init().expect("bob state initializes");
+
+        let bob_peer_card = bob.export_peer_card().expect("bob peer card exports");
+        alice
+            .trust_peer_card(bob_peer_card)
+            .expect("alice trusts bob peer");
+
+        let mut capabilities = AgentCapabilities::basic();
+        capabilities.streams = true;
+        capabilities.rooms = true;
+        bob.register_agent_with_capabilities(
+            "agent.bob",
+            "Bob",
+            "test-agent",
+            capabilities.clone(),
+        )
+        .expect("bob agent registers");
+        bob.process_queued().expect("bob registration processes");
+
+        let agent_card = bob
+            .export_agent_card("agent.bob")
+            .expect("agent card exports");
+        let imported = alice
+            .trust_remote_agent_card(agent_card.clone())
+            .expect("alice trusts bob agent");
+        let remote_agents = alice
+            .list_remote_agents()
+            .expect("alice remote agent list reads");
+        let debug = format!("{agent_card:?}\n{imported:?}\n{remote_agents:?}");
+
+        assert_eq!(imported.agent_id, "agent.bob");
+        assert!(imported.agent_card_signed());
+        assert_eq!(imported.capabilities, capabilities);
+        assert_eq!(remote_agents.len(), 1);
+        assert!(remote_agents[0].agent_card_signed());
+        assert!(!debug.contains("private message contents"));
+        assert!(!debug.contains("Review this code"));
+    }
+
+    #[test]
+    fn sdk_sets_peer_policy_metadata_only() {
+        let alice = ConuClient::with_home(test_home("peer-policy-alice"));
+        let bob = ConuClient::with_home(test_home("peer-policy-bob"));
+        alice.init().expect("alice state initializes");
+        bob.init().expect("bob state initializes");
+        let bob_card = bob.export_peer_card().expect("bob peer card exports");
+        let bob_peer = alice.trust_peer_card(bob_card).expect("alice trusts bob");
+
+        let policy = alice
+            .set_peer_policy(
+                &bob_peer.peer_node_id,
+                PeerPolicyUpdate {
+                    messages: Some(true),
+                    streams: Some(true),
+                    rooms: Some(false),
+                    files: Some(false),
+                    mailbox: Some(false),
+                },
+            )
+            .expect("policy updates");
+        let policies = alice.list_peer_policies().expect("policies list");
+        let debug = format!("{policy:?}\n{policies:?}");
+
+        assert_eq!(policy.peer_node_id, bob_peer.peer_node_id);
+        assert!(policy.messages);
+        assert!(policy.streams);
+        assert!(!policy.rooms);
+        assert_eq!(policies.len(), 1);
+        assert!(!debug.contains("private message contents"));
+        assert!(!debug.contains("Review this code"));
     }
 
     #[test]

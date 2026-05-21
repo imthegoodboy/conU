@@ -20,6 +20,7 @@ use conu_protocol::PROTOCOL_VERSION;
 const NODE_FILE: &str = "node.toml";
 const CONFIG_FILE: &str = "config.toml";
 const TRUST_FILE: &str = "trust.toml";
+const POLICY_FILE: &str = "policy.toml";
 const AGENTS_DIR: &str = "agents";
 const AGENT_REGISTRY_FILE: &str = "registry.toml";
 const REMOTE_AGENT_REGISTRY_FILE: &str = "remote.toml";
@@ -37,6 +38,7 @@ const STREAM_EVENTS_FILE: &str = "events.toml";
 const ROOMS_DIR: &str = "rooms";
 const ROOM_REGISTRY_FILE: &str = "registry.toml";
 const ROOM_EVENTS_FILE: &str = "events.toml";
+const ROOM_POLICY_FILE: &str = "policy.toml";
 const ROUTES_DIR: &str = "routes";
 const ROUTE_REGISTRY_FILE: &str = "registry.toml";
 const ROUTE_PROBES_FILE: &str = "probes.toml";
@@ -55,6 +57,8 @@ const SECURITY_DIR: &str = "security";
 const IDENTITY_SIGNING_KEY_FILE: &str = "identity-signing.key";
 const IDENTITY_EXCHANGE_KEY_FILE: &str = "identity-exchange.key";
 const STORAGE_KEY_FILE: &str = "storage.key";
+const STORAGE_KEY_ARCHIVE_DIR: &str = "storage-keys";
+const RELAY_CREDENTIAL_FILE: &str = "relay-credential.key";
 const REPLAY_CACHE_FILE: &str = "replay.toml";
 const KEY_ROTATION_PLAN_FILE: &str = "key-rotation.md";
 
@@ -65,6 +69,7 @@ pub struct StatePaths {
     pub node_identity: PathBuf,
     pub config: PathBuf,
     pub trust_store: PathBuf,
+    pub policy_store: PathBuf,
     pub agents_dir: PathBuf,
     pub agent_registry: PathBuf,
     pub remote_agent_registry: PathBuf,
@@ -89,6 +94,7 @@ pub struct StatePaths {
     pub rooms_dir: PathBuf,
     pub room_registry: PathBuf,
     pub room_events: PathBuf,
+    pub room_policy: PathBuf,
     pub routes_dir: PathBuf,
     pub route_registry: PathBuf,
     pub route_probes: PathBuf,
@@ -107,6 +113,8 @@ pub struct StatePaths {
     pub identity_signing_key: PathBuf,
     pub identity_exchange_key: PathBuf,
     pub storage_key: PathBuf,
+    pub storage_key_archive_dir: PathBuf,
+    pub relay_credential: PathBuf,
     pub replay_cache: PathBuf,
     pub key_rotation_plan: PathBuf,
 }
@@ -141,6 +149,7 @@ impl StatePaths {
             node_identity: home.join(NODE_FILE),
             config: home.join(CONFIG_FILE),
             trust_store: home.join(TRUST_FILE),
+            policy_store: home.join(POLICY_FILE),
             agent_registry: agents_dir.join(AGENT_REGISTRY_FILE),
             remote_agent_registry: agents_dir.join(REMOTE_AGENT_REGISTRY_FILE),
             agents_dir,
@@ -164,6 +173,7 @@ impl StatePaths {
             streams_dir,
             room_registry: rooms_dir.join(ROOM_REGISTRY_FILE),
             room_events: rooms_dir.join(ROOM_EVENTS_FILE),
+            room_policy: rooms_dir.join(ROOM_POLICY_FILE),
             rooms_dir,
             route_registry: routes_dir.join(ROUTE_REGISTRY_FILE),
             route_probes: routes_dir.join(ROUTE_PROBES_FILE),
@@ -182,6 +192,8 @@ impl StatePaths {
             identity_signing_key: security_dir.join(IDENTITY_SIGNING_KEY_FILE),
             identity_exchange_key: security_dir.join(IDENTITY_EXCHANGE_KEY_FILE),
             storage_key: security_dir.join(STORAGE_KEY_FILE),
+            storage_key_archive_dir: security_dir.join(STORAGE_KEY_ARCHIVE_DIR),
+            relay_credential: security_dir.join(RELAY_CREDENTIAL_FILE),
             replay_cache: security_dir.join(REPLAY_CACHE_FILE),
             key_rotation_plan: security_dir.join(KEY_ROTATION_PLAN_FILE),
             security_dir,
@@ -300,6 +312,7 @@ pub fn init_state(home_override: Option<PathBuf>) -> Result<InitReport, StateErr
 
     let config_created = write_if_missing(&paths.config, &render_config(&node))?;
     let trust_store_created = write_if_missing(&paths.trust_store, &render_trust_store())?;
+    write_if_missing(&paths.policy_store, &render_policy_store())?;
     let agent_registry_created = write_if_missing(&paths.agent_registry, &render_agent_registry())?;
 
     Ok(InitReport {
@@ -370,6 +383,7 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.relay_rejected_dir,
         &paths.logs_dir,
         &paths.security_dir,
+        &paths.storage_key_archive_dir,
     ] {
         fs::create_dir_all(directory)
             .map_err(|error| StateError::io("create state directory", directory, error))?;
@@ -493,6 +507,10 @@ fn render_trust_store() -> String {
         .to_string()
 }
 
+fn render_policy_store() -> String {
+    "# conU peer policy store\nversion = \"1\"\n".to_string()
+}
+
 fn render_agent_registry() -> String {
     "# conU local agent registry\nversion = \"1\"\n".to_string()
 }
@@ -593,6 +611,7 @@ mod tests {
         assert!(home.join(NODE_FILE).exists());
         assert!(home.join(CONFIG_FILE).exists());
         assert!(home.join(TRUST_FILE).exists());
+        assert!(home.join(POLICY_FILE).exists());
         assert!(home.join(AGENTS_DIR).join(AGENT_REGISTRY_FILE).exists());
         assert!(home.join(RUNTIME_DIR).exists());
         assert!(

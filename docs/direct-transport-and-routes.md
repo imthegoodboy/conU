@@ -1,6 +1,6 @@
 # conU Direct Transport And Routes
 
-Phase 13 adds the conUD-owned route manager. It lets conU choose between a configured direct QUIC candidate and relay WebSocket fallback for each trusted peer, while keeping all payloads opaque.
+Phase 13 adds the conUD-owned route manager. It records configured direct QUIC candidates and relay WebSocket fallback for each trusted peer, while keeping all payloads opaque.
 
 ```txt
 Agents own the conversation.
@@ -34,7 +34,7 @@ For each trusted peer, conUD creates:
 - one `direct-quic` candidate from config, when available
 - one `relay-websocket` fallback candidate
 
-The direct route is selected when it has a valid endpoint and its score is at least as high as relay. Otherwise relay is selected and marked as the fallback path.
+Configured direct endpoints are recorded and NAT-scored, but direct QUIC transport is not active yet. Until a real direct data plane exists, valid direct endpoints remain `unavailable` with `direct_quic_transport_inactive`, relay is selected, and relay is marked as the fallback path. Invalid or missing direct endpoints also keep relay selected.
 
 NAT profile scoring:
 
@@ -63,7 +63,7 @@ Peer-specific keys use a sanitized peer node id:
 direct_quic_peer_abcd1234 = "quic://203.0.113.10:9443"
 ```
 
-Accepted direct endpoint schemes are `quic://` and `udp://` with a host and port. Invalid or missing direct endpoints keep relay selected.
+Accepted direct endpoint schemes are `quic://` and `udp://` with a host and port. Valid endpoints are retained as future direct candidates; invalid or missing direct endpoints keep relay selected.
 
 ## Agent Use
 
@@ -76,7 +76,7 @@ Python:   ConuClient.sync_routes()
 MCP:      conu_sync_routes
 ```
 
-Agents can inspect route metadata to understand whether conU will prefer direct or relay, but they still own the conversation and payload bytes.
+Agents can inspect route metadata to understand whether conU recorded a direct candidate and which relay route is selected, but they still own the conversation and payload bytes.
 
 ## Current Boundary
 

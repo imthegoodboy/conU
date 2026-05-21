@@ -30,8 +30,8 @@ needs_revision
 ```txt
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
-Last updated: 2026-05-13
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, and Phase 14 local rooms/pub-sub passes are complete. Public hosted internet readiness remains scoped by the known relay TLS/auth/session gaps.
+Last updated: 2026-05-21
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-process same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, live-reloaded hashed relay credential manifest, relay accounting/quotas, direct route selection guard, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, Windows DPAPI secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, and TypeScript/JavaScript SDK wrapper passes are complete. Public hosted internet readiness remains scoped by the known managed hosted account auth, online credential issuance APIs, distributed hosted session state, distributed hosted accounting/dashboards, direct transport, multi-tenant hosted permission administration, managed hosted identity/key administration, and non-Windows keychain gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -895,7 +895,7 @@ Known gaps:
 - Local private key files are protected by filesystem permissions/profile ACL only; production release still needs OS keychain, DPAPI, Secure Enclave, HSM, or user-managed secret backend support.
 - Automated key rotation, multi-key reads, and storage re-encryption migration are documented but not implemented.
 - Remote session mirrors do not yet exchange signed remote agent cards over a live transport.
-- Relay-backed encrypted message/stream byte delivery is not active yet; Phase 11 provides the key agreement and encryption helpers for that next transport phase.
+- Relay-backed encrypted remote data-plane delivery is not active yet; Phase 11 provides the key agreement and encryption helpers for that next transport phase.
 - Capability grants and full permission policy remain future work.
 
 Next:
@@ -914,7 +914,7 @@ Deliverables:
 
 - Rust SDK
 - Python SDK
-- TypeScript SDK later
+- TypeScript SDK, completed by the post-Phase-15 wrapper pass below
 - MCP adapter exposing conU communication tools
 - examples for local agents
 
@@ -978,7 +978,7 @@ Validation:
 
 Known gaps:
 
-- TypeScript SDK remains future work.
+- Superseded by the post-Phase-15 TypeScript SDK wrapper pass below; TypeScript/JavaScript agents now have a dependency-free Node wrapper around installed `conu`/`conud` binaries.
 - MCP adapter is stdio-only; no HTTP MCP transport is implemented.
 - SDK/MCP local receive returns payload bytes only for local addressed inboxes; real remote data-plane delivery remains future work.
 - Capability grants and richer permission policy are not complete yet.
@@ -1007,7 +1007,7 @@ Deliverables:
 
 Exit criteria:
 
-- [x] Direct route is preferred when a valid direct endpoint is configured.
+- [x] Direct route candidate is recorded when a valid direct endpoint is configured; later production guard keeps relay selected until live direct transport exists.
 - [x] Relay fallback keeps route selection reliable when direct is unavailable.
 
 Completed work:
@@ -1058,10 +1058,10 @@ Validation:
 
 Known gaps:
 
-- Real QUIC packet transport is not implemented yet; Phase 13 selects and records `direct-quic` route candidates.
+- Real QUIC packet transport is not implemented yet; Phase 13 records `direct-quic` route candidates, and the later direct route selection guard keeps relay selected until direct transport exists.
 - NAT traversal is config/profile based; live ICE-style candidate gathering, STUN/TURN, and hole punching remain future transport work.
 - Route probes are metadata/config probes with latency estimates, not real RTT measurements.
-- conUD still does not own live relay-backed encrypted message or stream byte delivery.
+- conUD still does not own live relay-backed encrypted message or stream-chunk delivery.
 - Direct endpoint config is manual today.
 
 Next:
@@ -1140,14 +1140,14 @@ Validation:
 
 Known gaps:
 
-- Relay-backed room event fanout is not implemented yet; remote room participants are metadata-visible only.
-- Room membership is the current subscription model; per-topic subscription grants and policy are still future work.
-- Live relay-backed stream byte routing, persistent relay sessions, hosted relay auth/rate limits, `wss://` client support, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, offline mailbox, and OS-backed key storage remain future hardening work.
+- Superseded by the post-Phase-15 relay-backed room event fanout pass below: joined trusted remote room participants now receive peer-encrypted relay room-event envelopes.
+- Superseded by the post-Phase-15 room topic policy pass below: unconfigured topics keep room membership as the compatibility boundary, while configured room/topic pairs require explicit publish/subscribe grants.
+- Relay-backed stream-chunk routing, hosted relay auth/TLS policy, hosted quotas/monitoring, hosted session resume/policy, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, offline mailbox, and OS-backed key storage remain future hardening work.
 - Public managed online release remains blocked until the hosted relay/TLS/auth/session work is complete.
 
 Next recommendation:
 
-- Prioritize `wss://` client support, hosted relay auth/rate limits, persistent relay sessions, and then remote room fanout/stream byte routing before advertising conU as a managed public internet service.
+- Prioritize hosted relay auth/TLS policy, hosted quotas/monitoring, hosted session resume/policy, and then remote room fanout/stream-chunk routing before advertising conU as a managed public internet service.
 
 ## Phase 15 - Packaging And Production Readiness
 
@@ -1338,15 +1338,15 @@ Validation:
 
 Known gaps:
 
-- The relay client supports `ws://`; public `wss://` requires client support plus hosted TLS termination in front of `conu-relay`.
+- Superseded by the `wss://` relay-client pass below: relay clients now accept `ws://` and certificate-valid `wss://`; public `wss://` still requires TLS termination in front of `conu-relay`.
 - Superseded by the daemon relay production hardening pass below: conUD now owns bounded relay sync windows when configured.
-- Relay-backed stream byte routing, offline mailbox delivery, hosted relay auth/rate limits, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
+- Relay-backed stream-chunk routing, offline mailbox delivery, hosted relay auth/TLS policy, hosted quotas/monitoring, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
 - Phase 14 rooms/pub-sub remains not started.
 
 Next recommendation:
 
 - For user testing, run `docs/internet-relay-test.md` locally or over a reachable `ws://` relay.
-- For product hardening, add a conUD-owned relay pump with reconnect/backoff, then stream byte routing and hosted relay auth/TLS strategy.
+- For product hardening, add a conUD-owned relay pump with reconnect/backoff, then stream-chunk routing and hosted relay auth/TLS strategy.
 
 ## Post Phase 15 Daemon Relay Production Hardening
 
@@ -1403,14 +1403,14 @@ Validation:
 
 Known gaps:
 
-- Relay pump uses bounded reconnect/sync windows, not a single long-lived persistent relay session.
-- Public `wss://` still requires client support plus hosted TLS termination in front of `conu-relay`.
-- Relay-backed stream byte routing, offline mailbox delivery, hosted relay auth/rate limits, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
+- Superseded by the reusable daemon relay-session pass below: conUD now keeps a relay WebSocket session alive across serve ticks when the endpoint is stable.
+- Superseded by the `wss://` relay-client pass below: public `wss://` now has client support, while the plain relay server still needs hosted TLS termination in front of it.
+- Relay-backed stream-chunk routing, offline mailbox delivery, hosted relay auth/TLS policy, hosted quotas/monitoring, hosted session resume/policy, direct QUIC sockets, NAT traversal, signed remote agent-card exchange, capability policy, and OS-backed key storage remain future work.
 - Phase 14 rooms/pub-sub remains not started.
 
 Next recommendation:
 
-- Run full validation, merge the daemon relay hardening branch, then choose between Phase 14 rooms/pub-sub or deeper hosted relay auth/TLS plus persistent relay session work.
+- Run full validation, merge the daemon relay hardening branch, then choose between Phase 14 rooms/pub-sub or deeper hosted relay auth/TLS/session-policy work.
 
 ## Post Phase 15 Distribution And Hosting
 
@@ -1430,7 +1430,7 @@ Completed work:
 - Updated release scripts to create platform-suffixed artifacts and matching `.sha256` files.
 - Updated GitHub release workflow to build/upload `windows-x64`, `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64` artifacts.
 - Updated README, user guide, packaging docs, production readiness, release checklist, internet relay test, repo memory, repo map, implementation guardrails, and security checklist.
-- Kept public-hosting guidance honest: the current client supports `ws://`; managed public relay still requires `wss://`, hosted auth/rate limits, persistent sessions, stream byte routing, offline mailbox, capability policy, signed remote cards, and OS-backed key storage.
+- Kept public-hosting guidance honest: the current client supported `ws://` at this point; managed public relay still required `wss://`, hosted auth/TLS policy, hosted quotas/monitoring, hosted session policy/resume, stream-chunk routing, offline mailbox, capability policy, signed remote cards, and OS-backed key storage.
 
 Files changed:
 
@@ -1488,12 +1488,1994 @@ Known gaps:
 - GitHub Release assets must be attached before users can run `npm install -g @conu/cli` successfully.
 - Release artifacts are checksummed but not signed/notarized.
 - The relay host path remains controlled self-hosting over reachable `ws://`, not a managed public relay network.
-- Hosted relay auth/rate limits, `wss://` client support, persistent relay sessions, stream byte routing, offline mailbox, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
+- Hosted relay auth/rate limits, hosted session policy/resume, stream-chunk routing, offline mailbox, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
 - Phase 14 rooms/pub-sub remains not started.
 
 Next recommendation:
 
-- Publish the first GitHub Release with platform artifacts/checksums, then publish `@conu/cli`; after that, prioritize `wss://` client support and hosted relay auth before advertising a public managed relay.
+- Publish the first GitHub Release with platform artifacts/checksums, then publish `@conu/cli`; after that, prioritize hosted relay auth/session policy before advertising a public managed relay.
+
+## Post Phase 15 Relay Abuse Controls
+
+Status: completed
+
+Goal:
+
+Reduce the self-hosted relay's production risk by adding basic in-process abuse controls while preserving relay blindness and payload-safe outputs.
+
+Completed work:
+
+- Added `RelayLimits` to `crates/conu-relay` with configurable total connection, per-IP connection, and per-session frame-rate caps.
+- Enforced connection caps before WebSocket handshake processing so unauthenticated TCP sessions cannot grow without bound inside one relay process.
+- Enforced per-session frame-rate checks before parsing frame contents, returning a generic `rate_limited` error without echoing arbitrary frame text.
+- Changed relay client tracking to store session ids and avoid stale same-node disconnect cleanup removing a newer session mapping.
+- Added relay CLI environment knobs: `CONU_RELAY_MAX_CONNECTIONS`, `CONU_RELAY_MAX_CONNECTIONS_PER_IP`, and `CONU_RELAY_MAX_FRAMES_PER_MINUTE`.
+- Added a regression test confirming rate-limit errors stay metadata-only and do not echo payload-looking frame contents.
+- Updated README, user install, hosting, Docker, production-readiness, release-checklist, repo memory, guardrails, gateway contract, and security checklist docs.
+
+Files changed:
+
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `plan.md`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed and confirmed daemon-owned relay delivery.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and created `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Relay abuse controls are local in-process caps, not hosted account quotas, distributed rate limits, abuse analytics, or adaptive banning.
+- Relay authentication remains shared-token local/dev auth; public managed hosting still needs stronger auth, token rotation, TLS strategy, and operational policy.
+- Superseded by the `wss://` relay-client pass below: the built-in client now supports certificate-valid `wss://`, while public deployments still need TLS termination in front of the plain relay server.
+- Hosted session resume/policy, stream-chunk routing, offline mailbox delivery, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
+
+Next recommendation:
+
+- Prioritize hosted relay auth/TLS and hosted session resume/policy before advertising conU as a public managed relay network.
+
+## Post Phase 15 Reusable Daemon Relay Sessions
+
+Status: completed
+
+Goal:
+
+Move conUD's relay path from repeated short WebSocket windows to a reusable daemon-owned relay session while preserving the manual one-shot sync command and relay payload opacity.
+
+Completed work:
+
+- Added `RelayRuntimePump` in `conu_core::relay_delivery` to hold a relay WebSocket client, endpoint, and session id across daemon ticks.
+- Wired `RuntimeLease::serve_until_stop` to use the reusable relay pump while keeping `conu relay sync` and `conud --once` on the existing one-shot path.
+- Reconnects now happen when the relay endpoint changes or the relay session fails; disabling relay auto-sync disconnects the reusable pump.
+- Kept relay logs and runtime logs metadata-only and did not add relay session ids, tokens, or payload contents to log surfaces.
+- Added a relay E2E regression test that opens a daemon-style relay pump, sends two peer-encrypted messages across ticks, and verifies the receiver kept the same relay session id.
+- Updated README, user guide, SDK/MCP docs, production readiness, packaging notes, release checklist, repo memory, guardrails, gateway contract, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `crates/conu-core/src/relay.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/runtime.rs`
+- `crates/conu-relay/src/lib.rs`
+- `plan.md`
+
+Validation:
+
+- Targeted relay/runtime tests passed during implementation: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay` and `cargo +stable-x86_64-pc-windows-gnu test -p conu-core runtime::tests::process_once_keeps_relay_idle_without_relay_config`.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed and confirmed daemon-owned relay delivery.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and created `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+- `git diff --check` passed.
+
+Known gaps:
+
+- The reusable daemon relay session is local runtime behavior; it is not hosted account/session resume, distributed session migration, or managed relay policy.
+- Superseded by the `wss://` relay-client pass below: the built-in client now supports certificate-valid `wss://`, while public deployments still need TLS termination in front of the plain relay server.
+- Relay-backed stream-chunk routing, offline mailbox delivery, hosted relay auth/TLS policy, hosted quotas/monitoring, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
+
+Next recommendation:
+
+- Prioritize hosted relay auth/session policy before advertising conU as a public managed relay network.
+
+## Post Phase 15 Public Relay Token Guard
+
+Status: completed
+
+Goal:
+
+Prevent accidental public exposure of the relay with the default local development token while keeping loopback development and local smoke tests simple.
+
+Completed work:
+
+- Added relay bind-address classification in `crates/conu-relay` to distinguish loopback binds from exposed binds.
+- Kept `local-dev-token` valid for loopback binds such as `127.0.0.1`.
+- Rejected non-loopback relay binds such as `0.0.0.0:8787` when the token is `local-dev-token`.
+- Rejected non-loopback relay binds when the custom token is shorter than 24 characters.
+- Kept relay auth errors generic and avoided echoing rejected token values.
+- Updated `conu-relay --help`, internet relay test docs, user guide, Docker/package docs, production readiness, release checklist, repo memory, guardrails, gateway contract, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `plan.md`
+
+Validation:
+
+- Targeted relay validation passed during implementation: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay`.
+- Stale unsafe-token scans passed: no public-bind docs/package examples still use `CONU_RELAY_TOKEN=replace-me` or `CONU_RELAY_TOKEN=replace-with-a-shared-test-token`; remaining `local-dev-token` references are loopback guidance.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and created `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This is a local configuration guard, not hosted account auth, token rotation, scoped credentials, mTLS, or signed relay sessions.
+- Superseded by the `wss://` relay-client pass below: the built-in client now supports certificate-valid `wss://`, while public deployments still need TLS termination in front of the plain relay server.
+- Relay-backed stream-chunk routing, offline mailbox delivery, hosted relay auth/TLS policy, hosted quotas/monitoring, hosted session resume/policy, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
+
+Next recommendation:
+
+- Prioritize stronger hosted relay auth/session policy before advertising conU as a public managed relay network.
+
+## Post Phase 15 WSS Relay Client Support
+
+Status: completed
+
+Goal:
+
+Allow conUD and manual relay sync to connect to certificate-valid `wss://` relay endpoints while preserving local `ws://` development, relay payload opacity, and the existing plain `conu-relay` server deployment model.
+
+Completed work:
+
+- Added TLS-capable relay client streams in `conu_core::relay` while keeping the relay frame parser and WebSocket framing metadata-only.
+- Extended relay endpoint parsing to accept `ws://` and `wss://`, with default ports `80` and `443` respectively.
+- Added certificate-validated `wss://` connection support through platform TLS via `native-tls`.
+- Pinned `native-tls` and Windows `schannel` versions so the repository's current `stable-x86_64-pc-windows-gnu` validation does not require missing `dlltool.exe` or `gcc.exe`.
+- Updated relay delivery config validation and manual peer-card trust validation to accept `wss://` endpoints.
+- Updated CLI peer-trust usage text to advertise `ws://host:port|wss://host/path`.
+- Updated README, internet relay test, distribution/hosting, user guide, production readiness, release checklist, packaging docs, repo memory, guardrails, gateway contract, and security checklist.
+- Kept the server-side `conu-relay` scope honest: it still listens as plain WebSocket; public `wss://` requires TLS termination in front of it.
+
+Files changed:
+
+- `Cargo.lock`
+- `README.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/Cargo.toml`
+- `crates/conu-core/src/relay.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/trust.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted WSS tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core relay::tests::endpoint_parser`.
+- Targeted relay config validation passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core relay_delivery::tests::relay_endpoint_validation_accepts_wss`.
+- Targeted trust validation passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core trust::tests::manual_peer_card_accepts_wss_relay_endpoint`.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and created `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+- Stale docs scan found no remaining live ws-only relay-client claims or live statements that TLS relay clients are still future work.
+- `git diff --check` passed.
+
+Known gaps:
+
+- `wss://` support is client-side only. The bundled relay server still needs a reverse proxy or load balancer for TLS termination.
+- Superseded by the scoped relay credential/session-policy pass below: static per-node relay credentials and idle/TTL policy now exist, while managed account auth, credential rotation/revocation, distributed quotas, hosted monitoring, and hosted session resume/accounting remain future work.
+- Superseded by the relay stream-chunk pass below: relay-backed stream chunks now move as peer-encrypted envelopes, while remote room fanout, offline mailbox delivery, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
+- The Windows TLS dependency is pinned to preserve the current GNU validation path; revisit the pin when the project moves to a toolchain/CI path that can consume newer Windows TLS bindings without local binutils gaps.
+
+Next recommendation:
+
+- Continue with managed hosted relay account auth, credential rotation/revocation, session resume/accounting, stream-chunk routing, offline mailbox, and OS-backed key storage before advertising conU as a managed public relay network.
+
+## Post Phase 15 Scoped Relay Credentials And Session Policy
+
+Status: completed
+
+Goal:
+
+Move the current self-hosted relay beyond a single shared server token by adding static per-node credentials, configurable authenticated-session policy, token-safe comparisons, and payload-safe documentation while keeping the local shared-token path compatible.
+
+Completed work:
+
+- Added `RelayAuth`, `RelayCredential`, and redacted Debug output in `crates/conu-relay`.
+- Kept `RelayConfig::new(bind, token)` for shared-token compatibility and added `RelayConfig::with_scoped_credentials`.
+- Added token-safe authorization comparisons for shared and scoped relay credentials.
+- Added `RelaySessionPolicy` with configurable idle timeout and max session TTL.
+- Wired `conu-relay --serve` to read `CONU_RELAY_CREDENTIALS`, `CONU_RELAY_IDLE_TIMEOUT_SECONDS`, and `CONU_RELAY_SESSION_TTL_SECONDS`.
+- Kept `CONU_RELAY_TOKEN` as the shared-token server mode and as the runtime client token env var.
+- Preserved the loopback-only `local-dev-token` guard and applied the public-bind minimum token length to scoped credentials.
+- Added regression tests for scoped credential authorization, public scoped dev-token rejection, redacted config/credential Debug output, and session TTL expiry without payload echo.
+- Updated README, hosting docs, internet relay test docs, production readiness, release checklist, SDK/MCP docs, packaging docs, repo memory, implementation guardrails, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `architecture.md`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted scoped auth test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay scoped_credentials_accept_only_matching_node_token`.
+- Targeted relay session TTL test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_session_ttl_expires_without_echoing_payloads`.
+- Targeted redaction test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_config_debug_redacts_tokens`.
+- Full relay crate tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay`.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed and confirmed daemon-owned relay delivery.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and created `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+- Stale code/docs scans found no `config.auth_token` relay test references and no live docs still saying hosted relay auth/session policy is entirely future work.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Static scoped credentials are not managed hosted accounts, dynamic token issuance, token rotation, revocation, mTLS, or signed relay sessions.
+- Superseded by the relay credential storage pass below: runtime clients can now use `CONU_RELAY_TOKEN` or store a local relay credential, while managed hosted credential lifecycle and non-Windows keychain support remain future work.
+- Hosted relay session resume/accounting, distributed quotas, hosted mailbox accounting/quotas, hosted monitoring, and adaptive abuse response remain future work.
+- Superseded by the relay stream-chunk pass below: relay-backed stream chunks now move as peer-encrypted envelopes, while remote room fanout, offline mailbox delivery, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
+- `wss://` support remains client-side; the bundled relay server still needs a reverse proxy or load balancer for TLS termination.
+
+Next recommendation:
+
+- Prioritize hosted relay account/credential lifecycle work, hosted session resume/accounting, offline mailbox delivery, and OS-backed key storage before public managed relay claims.
+
+## Post Phase 15 Relay Stream-Chunk Delivery
+
+Status: completed
+
+Goal:
+
+Move stream writes for trusted remote agents from metadata-only local counters to relay-backed peer-encrypted stream-chunk delivery while preserving payload opacity and honest public-hosting limits.
+
+Completed work:
+
+- Added relay envelope kind metadata for `message` and `stream_chunk`, including stream id validation for stream chunks and rejection of stream ids on normal message frames.
+- Added relay outbox support for peer-encrypted stream chunks with stream-specific authenticated data and metadata-only `.relay` request files.
+- Wired `conu streams write` so remote streams on relay routes queue peer-encrypted chunks to the trusted peer instead of only counting local bytes.
+- Delivered inbound stream chunks as addressed inbox envelopes with `kind = "stream_chunk"`, `stream_id`, metadata-only receipts, encrypted-at-rest payload storage, and `delivered_relay_stream` status.
+- Updated message inbox, receipt, and log metadata so stream chunks are visible by kind and stream id without displaying bytes.
+- Added relay E2E coverage proving a stream chunk moves through a live relay between two isolated conU homes and arrives as an encrypted inbox envelope.
+- Reduced relay frame enum size and constructor argument width so the workspace stays clippy-clean under `-D warnings`.
+- Updated README, user/install docs, hosting docs, release checklist, SDK/MCP docs, security docs, packaging docs, repo memory, repo map, implementation guardrails, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/messages.rs`
+- `crates/conu-core/src/relay.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/streams.rs`
+- `crates/conu-relay/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted relay frame stream-kind test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core relay::tests::stream_chunk_frame_carries_stream_metadata_only`.
+- Targeted stream inbox metadata test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core messages::tests::remote_stream_chunk_delivers_kind_and_stream_metadata`.
+- Targeted stream outbox encryption test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core streams::tests::remote_stream_write_queues_peer_encrypted_chunk_without_payload`.
+- Targeted relay request consistency test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core relay_delivery::tests::relay_request_rejects_type_kind_mismatch`.
+- Targeted relay E2E stream test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_delivers_peer_encrypted_stream_chunk_between_two_state_homes`.
+- Targeted relay metadata-forwarding regression passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_forwards_metadata_between_two_runtime_sessions`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and created `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+- Stale docs scan found no remaining live outdated stream-route claims.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Relay stream chunks are point-in-time peer-encrypted envelopes, not full bidirectional direct stream sessions.
+- Direct QUIC sockets, NAT traversal, and direct stream transport remain future work.
+- Superseded by the offline and durable relay mailbox passes below: bounded offline relay mailbox delivery with optional durable ciphertext files now exists, while remote room fanout, hosted mailbox accounting, managed hosted relay accounts, credential rotation/revocation, hosted session resume/accounting, hosted quotas/monitoring, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
+- Superseded by the relay credential storage pass below: runtime clients can now use `CONU_RELAY_TOKEN` or store a local relay credential, while managed hosted credential lifecycle and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted relay account/credential lifecycle, hosted session resume/accounting, hosted mailbox accounting, OS-backed key storage, and remote room fanout before public managed relay claims.
+
+## Post Phase 15 Offline Relay Mailbox
+
+Status: completed
+
+Goal:
+
+Let the self-hosted relay hold peer-encrypted message and stream-chunk envelopes for temporarily offline trusted nodes, without giving the relay plaintext payload access or claiming durable hosted mailbox behavior.
+
+Completed work:
+
+- Added `RelayMailboxPolicy` with configurable per-node envelope cap and envelope TTL.
+- Added bounded in-memory relay mailbox queues keyed by target node id.
+- Mailboxed peer-encrypted `message` and `stream_chunk` forwards when the target node is offline and the frame carries a ciphertext body.
+- Drained queued envelopes immediately after the target node authenticates with `HELLO`.
+- Preserved `UNDELIVERED reason=peer_offline` for metadata-only forwards and `UNDELIVERED reason=mailbox_full` when the bounded queue cannot accept another envelope.
+- Added relay env vars `CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE` and `CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS`.
+- Added regression coverage for offline mailbox delivery, per-node mailbox bounds, TTL expiry, and payload-safe errors.
+- Updated README, user/install docs, hosting docs, production/readiness docs, release checklist, packaging docs, repo memory, implementation guardrails, agent gateway contract, and security checklist so public claims describe the in-memory limit honestly.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted mailbox policy tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_offline_mailbox -- --nocapture`.
+- Targeted offline E2E relay mailbox test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_mailboxes_peer_encrypted_message_until_receiver_connects -- --nocapture`.
+- Full relay crate tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- Stale docs scan found no remaining live claims that offline mailbox delivery is unimplemented; older phase history still records earlier limitations.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Superseded by the durable relay mailbox pass below: `CONU_RELAY_MAILBOX_DIR` now persists queued peer-encrypted envelopes across relay restarts, while hosted mailbox accounting, managed retention policy, and session resume integration remain future work.
+- Relay mailbox delivery is only for peer-encrypted relay envelopes; the relay still must not accept plaintext payloads.
+- Remote room fanout, direct QUIC sockets, NAT traversal, capability policy, signed remote agent-card exchange, managed hosted accounts, credential rotation/revocation, hosted quotas/monitoring, and OS-backed key storage remain future work.
+- Superseded by the relay credential storage pass below: runtime clients can now use `CONU_RELAY_TOKEN` or store a local relay credential, while managed hosted credential lifecycle and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted relay account/credential lifecycle, hosted session resume/accounting, hosted mailbox accounting, OS-backed key storage, and remote room fanout before public managed relay claims.
+
+## Post Phase 15 Durable Relay Mailbox
+
+Status: completed
+
+Goal:
+
+Make self-hosted relay offline mailbox delivery survive relay process restarts while preserving payload opacity and avoiding managed public-relay claims.
+
+Completed work:
+
+- Added `RelayMailboxStorage` with memory-only default behavior and optional file-backed storage.
+- Added `CONU_RELAY_MAILBOX_DIR` to `conu-relay --serve` so operators can persist peer-encrypted mailbox envelopes on disk.
+- Loaded valid persisted mailbox entries when a relay starts, pruned expired entries by mailbox TTL, and removed invalid or expired entries without echoing contents.
+- Enforced the current per-node mailbox cap while loading persisted entries, removing excess stored envelope files without echoing contents.
+- Persisted only rendered relay `ENVELOPE` metadata plus ciphertext body fields and `payload_displayed = false`; no plaintext payload fields are accepted or stored.
+- Removed stored mailbox files after successful drain to the target node.
+- Added a relay restart regression proving a peer-encrypted offline envelope survives relay restart, is delivered after the target authenticates, and does not store or output private payload text.
+- Updated Docker relay image/template to create `/var/lib/conu-relay/mailbox`, default `CONU_RELAY_MAILBOX_DIR` inside the container, and document a persistent volume mount.
+- Updated README, internet relay test docs, hosting docs, production readiness, release checklist, SDK/MCP docs, packaging docs, repo memory, implementation guardrails, agent gateway contract, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/docker/relay.Dockerfile`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted durable relay restart test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_file_backed_mailbox_survives_relay_restart_without_payloads -- --nocapture`.
+- Targeted durable mailbox load-cap test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_file_backed_mailbox_load_respects_current_cap_without_payloads -- --nocapture`.
+- Targeted mailbox policy tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_offline_mailbox -- --nocapture`.
+- Full relay crate tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+- Docker image build was not run because Docker is not installed in this Windows environment.
+
+Known gaps:
+
+- Durable relay mailbox storage is self-hosted filesystem storage, not managed hosted mailbox accounting, quotas, or retention dashboards.
+- Relay mailbox persistence still stores relay-visible metadata, public key material, and ciphertext; it must not be marketed as hiding metadata from the relay.
+- Superseded by the Windows DPAPI secret wrapping pass below for local Windows private-key bytes; hosted relay account auth, credential rotation/revocation, hosted session resume/accounting, hosted quotas/monitoring, remote room fanout, direct QUIC sockets, NAT traversal, capability policy, signed remote agent-card exchange, and non-Windows OS-backed key storage remain future work.
+- Superseded by the relay credential storage pass below: runtime clients can now use `CONU_RELAY_TOKEN` or store a local relay credential, while managed hosted credential lifecycle and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted relay account/credential lifecycle, hosted session resume/accounting, hosted mailbox accounting/quotas, non-Windows OS-backed key storage, and remote room fanout before public managed relay claims.
+
+## Post Phase 15 Windows DPAPI Secret Wrapping
+
+Status: completed
+
+Goal:
+
+Reduce local private-key exposure on supported Windows installs by wrapping conU-owned local signing, exchange, and storage secret bytes with the OS user secret backend while preserving older state compatibility and payload opacity.
+
+Completed work:
+
+- Added Windows current-user DPAPI wrapping for local Ed25519 signing secret bytes, X25519 exchange secret bytes, and XChaCha20Poly1305 storage key bytes.
+- Kept migration-compatible reads for existing plaintext-hex key files and migrated those files to DPAPI-wrapped fields during `ensure_security_state`.
+- Added security audit fields for `secretStorageBackend` and `secretsOsProtected` without exposing private keys, DPAPI blobs, shared secrets, plaintext payloads, or decrypted payloads.
+- Added regression coverage for new wrapped key files, plaintext-key migration, CLI audit redaction, and MCP audit redaction.
+- Updated README, security hardening docs, production readiness docs, install guide, release checklist, SDK/MCP docs, distribution docs, repo memory, implementation guardrails, agent gateway contract, and security checklist.
+
+Files changed:
+
+- `Cargo.lock`
+- `README.md`
+- `crates/conu-core/Cargo.toml`
+- `crates/conu-core/src/security.rs`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `scripts/smoke-relay-daemon.ps1`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted security key creation test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security::tests::security_state_creates_key_material_without_plaintext_payloads -- --nocapture`.
+- Targeted plaintext migration test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security::tests::existing_plaintext_secret_files_are_read_and_migrated_when_supported -- --nocapture`.
+- Focused security module tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security -- --nocapture`.
+- Focused CLI security audit test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli security -- --nocapture`.
+- Focused MCP audit redaction test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-mcp security_audit_tool_reports_backend_without_secret_material -- --nocapture`.
+- Manual isolated audit run confirmed `secretStorageBackend = "windows-dpapi-user"`, `secretsOsProtected = true`, wrapped key files contain `*_dpapi_hex`, and CLI JSON does not expose private key fields.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and recreated `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+
+Known gaps:
+
+- DPAPI support covers Windows current-user local secrets only; Linux/macOS still need platform keychain, Secure Enclave, HSM, or user-managed secret backend integration.
+- Superseded by the storage-key rotation, storage-key retirement, and identity-key rotation passes below for local key lifecycle operations; hosted managed identity/key administration remains future work.
+- Superseded by the relay credential storage pass below: runtime clients can now use `CONU_RELAY_TOKEN` or store a local relay credential, while managed hosted credential lifecycle and non-Windows keychain support remain future work.
+- Hosted relay account auth, credential rotation/revocation, hosted session resume/accounting, hosted mailbox accounting/quotas, remote room fanout, direct QUIC sockets, NAT traversal, capability policy, and signed remote agent-card exchange remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted relay account/credential lifecycle, capability policy, signed remote agent-card exchange, and non-Windows keychain support before public managed relay claims.
+
+## Post Phase 15 Relay Credential Storage
+
+Status: completed
+
+Goal:
+
+Let runtime clients store a scoped relay token in conU local security state instead of relying only on process environment, while preserving token opacity across CLI, logs, tests, and docs.
+
+Completed work:
+
+- Added `security/relay-credential.key` to local state paths for an optional runtime relay client token.
+- Added relay credential store/read/status/clear helpers that use the same secret-field backend as other security files: current-user DPAPI on Windows and owner-only local file fallback on non-Windows.
+- Kept `CONU_RELAY_TOKEN` as the runtime override, then fall back to the stored credential, then `local-dev-token` for loopback tests.
+- Added `conu relay credential set --stdin`, `status`, and `clear` with JSON/text output that reports configured/backend/protection status but never displays token material.
+- Updated relay delivery so daemon and manual sync paths resolve tokens through environment, stored credential, then loopback default.
+- Added regression tests for storage redaction, runtime token precedence, and CLI stdin/status behavior.
+- Updated README, security hardening docs, install guide, hosting docs, production readiness, release checklist, SDK/MCP docs, repo memory, guardrails, repo map, agent gateway contract, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/security.rs`
+- `crates/conu-core/src/state.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `scripts/smoke-identity-retirement.ps1`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted relay credential storage test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security::tests::relay_credential_storage_hides_token_and_reports_backend -- --nocapture`.
+- Targeted relay token precedence test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core relay_delivery::tests::relay_token_prefers_env_then_stored_credential_without_echoing_secret -- --nocapture`.
+- Focused CLI relay credential test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli relay_credential_cli_uses_stdin_and_never_prints_token -- --nocapture`.
+- Focused security module tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security -- --nocapture`.
+- Focused relay delivery tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core relay_delivery -- --nocapture`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed and confirmed daemon-owned relay delivery.
+- `powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Profile release -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed and recreated `dist/conu-0.1.0-windows-x64.zip` plus `.sha256`.
+- `git diff --check` passed.
+- Docker image build was not run because Docker is not installed in this Windows environment.
+
+Known gaps:
+
+- Stored relay client credentials are local runtime configuration, not managed hosted account auth, dynamic credential issuance, token rotation, revocation, or tenant accounting.
+- Non-Windows stored relay credentials still use owner-only local files until platform keychain, Secure Enclave, HSM, or user-managed secret backend support lands.
+- Hosted relay session resume/accounting, hosted mailbox accounting/quotas, remote room fanout, direct QUIC sockets, NAT traversal, capability policy, and signed remote agent-card exchange remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted relay account/credential lifecycle, capability policy, signed remote agent-card exchange, and non-Windows keychain support before public managed relay claims.
+
+## Post Phase 15 Signed Peer Cards
+
+Status: completed
+
+Goal:
+
+Add cryptographic integrity checks to manual public peer-card exchange so cross-machine trust imports can detect modified node id, exchange key, display name, or relay endpoint fields without exposing private keys or payloads.
+
+Completed work:
+
+- Added Ed25519 signature fields to exported `PeerCard` values using the existing local node signing key.
+- Added peer-card canonicalization and signature verification in `trust_peer_card`; tampered signed cards are rejected before trust storage.
+- Stored public peer-card signature metadata in `trust.toml` and exposed payload-safe `peerCardSigned` status through CLI and MCP peer surfaces.
+- Kept unsigned peer-card imports as legacy controlled-test compatibility while preferring signed cards in docs and examples.
+- Added CLI flags for signed peer-card import: `--signing-key`, `--signature`, `--signature-key-id`, and optional `--signature-algorithm`.
+- Updated Python SDK trust helper and MCP `conu_export_identity`/`conu_trust_peer` tool fields for signed peer-card exchange.
+- Updated README, install guide, relay test guide, hosting docs, security hardening docs, SDK/MCP docs, production readiness, release checklist, repo memory, guardrails, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/trust.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `sdk/python/conu_sdk/__init__.py`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted trust tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core trust -- --nocapture`.
+- Targeted CLI peer test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli peers -- --nocapture`.
+- Targeted MCP metadata test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-mcp route_tools_return_metadata_only -- --nocapture`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed and confirmed signed peer-card trust plus daemon-owned relay delivery.
+
+Known gaps:
+
+- Signed peer cards are local/manual trust setup integrity, not a managed hosted account identity system, certificate transparency log, revocation service, or web-of-trust.
+- Remote agent-card exchange over real sessions is still future work; current remote agents are still metadata mirrors or explicit local trust artifacts.
+- Peer-scoped permission grants, hosted relay account/credential lifecycle, hosted accounting, direct QUIC sockets, NAT traversal, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize signed remote agent-card exchange, peer-scoped permission policy, managed hosted relay account/credential lifecycle, and non-Windows keychain support before public managed relay claims.
+
+## Post Phase 15 Local Capability Enforcement
+
+Status: completed
+
+Goal:
+
+Make agent capability booleans user-visible and enforce them in the core message, stream, and room routing paths without exposing payload contents.
+
+Completed work:
+
+- Added explicit `conu agents register` capability flags for `messages`, `streams`, `rooms`, `files`, and `presence`, preserving message/presence defaults.
+- Enforced local recipient capabilities for inbound remote messages, stream chunks, and room event fanout.
+- Enforced stream capability on local stream source/target agents, remote stream target metadata, and relay-backed stream chunk submission.
+- Enforced room capability on room create, join, publish, and local room-event recipients.
+- Updated the Python wrapper registration API to pass explicit capability booleans.
+- Added regression coverage for stream source/target capability denial, relay stream sender denial, room create/join denial, inbound stream/room delivery denial, and CLI capability persistence.
+- Updated README, install guide, relay test guide, hosting docs, SDK/MCP docs, security hardening docs, production readiness, release checklist, repo memory, guardrails, agent gateway contract, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/messages.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/rooms.rs`
+- `crates/conu-core/src/streams.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-sdk/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `sdk/python/README.md`
+- `sdk/python/conu_sdk/__init__.py`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted stream tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core streams`.
+- Targeted room tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core rooms`.
+- Targeted message tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core messages`.
+- Targeted relay stream capability test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core relay_delivery::tests::remote_stream_chunk_requires_sender_stream_capability`.
+- Targeted CLI capability test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli agents_register_persists_explicit_capabilities`.
+- Targeted MCP room capability test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-mcp room_tools_keep_publish_payload_safe`.
+- Targeted relay stream E2E capability test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_delivers_peer_encrypted_stream_chunk_between_two_state_homes`.
+- Targeted SDK room capability test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-sdk sdk_room_flow_returns_metadata_only`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-core` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed and confirmed daemon-owned relay delivery after capability enforcement.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Capability enforcement is now backed by manual signed remote agent-card import for trusted peers; automatic live agent-card exchange and peer-scoped permission grants remain future work.
+- Superseded by later passes below: relay-backed room fanout and room topic policy are now implemented. Hosted account/credential lifecycle, hosted accounting, direct QUIC sockets, NAT traversal, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize peer-scoped permission policy, automatic live agent-card exchange, managed hosted relay account/credential lifecycle, and non-Windows keychain support before public managed relay claims.
+
+## Post Phase 15 Signed Remote Agent Cards
+
+Status: completed
+
+Goal:
+
+Add a verified remote agent-card exchange path so remote agent capability metadata can be imported from a trusted peer's signed public agent card instead of relying only on placeholder mirrors.
+
+Completed work:
+
+- Added `SignedAgentCard` export and verification helpers in `conu_core::agents`.
+- Added `trust_remote_agent_card` in `conu_core::sessions`, including signature verification, trusted-peer node/signing-key binding, cross-peer agent-id collision checks, and preservation of imported signed cards during session sync.
+- Added `conu agents export` and `conu agents trust` CLI commands with JSON/text output that stays payload-safe.
+- Exposed signed agent-card export/import through the Rust SDK, Python wrapper SDK, and MCP tools.
+- Added regression coverage for signed-card export, import, session sync preservation, tamper rejection, trusted-peer signing-key mismatch rejection, CLI, SDK, and MCP paths.
+- Updated README, install guide, relay test guide, hosting docs, SDK/MCP docs, security hardening docs, production readiness, release checklist, repo memory, guardrails, agent gateway contract, Python SDK docs, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/agents.rs`
+- `crates/conu-core/src/sessions.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `crates/conu-sdk/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `sdk/python/README.md`
+- `sdk/python/conu_sdk/__init__.py`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted core signed-card tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core signed`.
+- Targeted CLI signed-card test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli signed_agent_card_cli_export_and_import_verifies_without_payloads`.
+- Targeted SDK signed-card test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-sdk signed_remote_agent_cards`.
+- Targeted MCP signed-card test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-mcp signed_agent_card_tools_export_and_trust_metadata_only`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Signed remote agent cards are manual public card exchange after peer trust; automatic live agent-card distribution over sessions remains future work.
+- Superseded by the peer-scoped permission policy pass below: trusted peers now require explicit local policy grants before remote message, stream, or room surfaces are accepted.
+- Superseded by later passes below: relay-backed room fanout and room topic policy are now implemented. Hosted account/credential lifecycle, hosted accounting, direct QUIC sockets, NAT traversal, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize automatic live agent-card exchange, remote room fanout/per-topic policy, managed hosted relay account/credential lifecycle, and non-Windows keychain support before public managed relay claims.
+
+## Post Phase 15 Peer-Scoped Permission Policy
+
+Status: completed
+
+Goal:
+
+Add a local default-deny peer policy layer so trusting a peer establishes identity, while explicit metadata-only grants authorize messages, streams, rooms, files, and mailbox surfaces.
+
+Completed work:
+
+- Added `conu_core::policy` with `PeerPolicyRecord`, `PeerPolicyUpdate`, `PeerPermission`, `policy.toml` persistence, trusted-peer validation, default-deny effective policy reads, and payload-safe record rendering.
+- Enforced peer policy on relay-backed outbound and inbound message envelopes, relay-backed stream chunks, remote stream opens/writes, and remote room participant visibility.
+- Added `conu peers policy` CLI read/list/update flows with JSON/text output and updated help/next-command guidance.
+- Exposed peer policy through the Rust SDK, Python wrapper SDK, and MCP `conu_set_peer_policy` tool.
+- Updated relay E2E helpers and `scripts/smoke-relay-daemon.ps1` so relay flows grant scoped message/stream policy after peer-card trust.
+- Updated README, architecture, install guide, relay test guide, hosting docs, SDK/MCP docs, security hardening, production readiness, release checklist, repo memory, guardrails, gateway contract, Python SDK docs, and the security checklist.
+
+Files changed:
+
+- `README.md`
+- `architecture.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/policy.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/rooms.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conu-core/src/streams.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-sdk/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `scripts/smoke-relay-daemon.ps1`
+- `sdk/python/README.md`
+- `sdk/python/conu_sdk/__init__.py`
+- `.agents/Pr/SKILL.MD`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted CLI peer-policy test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli peer_policy_cli_sets_scoped_grants_without_payloads`.
+- Targeted SDK peer-policy test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-sdk sdk_sets_peer_policy_metadata_only`.
+- Targeted MCP peer-policy test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-mcp peer_policy_tool_sets_scoped_grants_without_payloads`.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-core` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay` passed.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed with explicit peer policy grants before remote delivery.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Peer policy is local file-backed policy, not hosted multi-tenant permission administration.
+- File and mailbox policy bits are stored for forward compatibility; no active file-transfer or user-controlled remote mailbox surface is implemented yet.
+- Superseded by the automatic signed agent-card exchange pass below: session sync now exchanges signed public agent cards over peer-encrypted relay control envelopes for signed trusted peers with policy grants.
+- Superseded by later passes below: relay-backed room fanout and room topic policy are now implemented. Hosted account/credential lifecycle, hosted accounting, direct QUIC sockets, NAT traversal, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize remote room fanout/per-topic policy, managed hosted relay account/credential lifecycle, direct transport, and non-Windows keychain support before public managed relay claims.
+
+## Post Phase 15 Automatic Signed Agent-Card Exchange
+
+Status: completed
+
+Goal:
+
+Remove the manual signed-agent-card exchange requirement for normal trusted relay sessions by sending signed local agent cards as encrypted control-plane relay envelopes during session sync.
+
+Completed work:
+
+- Added metadata render/parse helpers for signed agent cards in `conu_core::agents`.
+- Added `agent_card` relay envelope kind and a ciphertext-only relay frame path for signed-card control envelopes.
+- Added session-sync queuing of signed local agent cards for signed trusted peers that have at least one peer policy grant.
+- Added inbound automatic card import in relay delivery, using the existing signature verification, trusted-node binding, signing-key match, and cross-peer collision checks before replacing placeholder remote-agent records.
+- Kept relay-visible data to node ids, agent ids, envelope ids, byte counts, public exchange key material, and ciphertext.
+- Added core and relay E2E coverage proving encrypted card queuing and two-node automatic signed-card import.
+- Updated the relay daemon smoke to trust signed peer cards and keep the explicit peer policy grant step.
+- Updated README, install guide, relay test guide, hosting docs, SDK/MCP docs, security hardening, production readiness, release checklist, repo memory, guardrails, gateway contract, Python SDK docs, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-core/src/agents.rs`
+- `crates/conu-core/src/relay.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/sessions.rs`
+- `crates/conu-relay/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `scripts/smoke-relay-daemon.ps1`
+- `sdk/python/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted core automatic-card queue test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core session_sync_queues_signed_agent_cards_without_payloads`.
+- Targeted relay automatic-card E2E test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_exchanges_signed_agent_cards_during_session_sync`.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-core` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay` passed.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed with signed peer-card trust, explicit peer policy grants, daemon relay delivery, and payload leak checks.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Automatic signed-card exchange requires signed peer-card trust, at least one local peer policy grant, and a relay route/pump; manual signed-card import remains the fallback for daemonless or unsigned controlled tests.
+- The relay control envelope is still relay-routed, not direct QUIC.
+- Superseded by the remote room fanout and room topic policy passes below: relay-backed room events now fan out to joined trusted remote agents, and configured topics require explicit publish/subscribe grants. Hosted account/credential lifecycle, hosted accounting, direct QUIC sockets, NAT traversal, multi-tenant hosted permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted relay account/credential lifecycle next, then direct QUIC/NAT traversal, hosted multi-tenant permission administration, and non-Windows keychain support.
+
+## Post Phase 15 Relay-Backed Room Event Fanout
+
+Status: completed
+
+Goal:
+
+Move room publishes for joined trusted remote participants from metadata-only representation to relay-backed peer-encrypted event delivery while preserving payload opacity and default-deny room policy.
+
+Completed work:
+
+- Added a `room_event` relay envelope kind and ciphertext-only relay frame constructor.
+- Added peer-encrypted remote room event outbox queuing with room event packets that keep room id, topic, event id, and event bytes inside the encrypted body rather than relay-visible frame metadata.
+- Added room publish fanout to joined trusted remote participants when remote signed agent metadata advertises `rooms=true` and peer policy grants `rooms=true`.
+- Added inbound relay room event delivery to the addressed local agent inbox as encrypted-at-rest `kind = "event"` envelopes, with payload-safe room event metadata recorded locally after delivery.
+- Kept room publish responses metadata-only while reporting both local and remote delivery counts.
+- Added core relay-outbox privacy coverage and relay E2E coverage for two-node peer-encrypted room event delivery.
+- Updated the relay daemon smoke setup to grant room policy and register room-capable smoke agents.
+- Updated README, install guide, relay test guide, hosting docs, SDK/MCP docs, security hardening, production readiness, release checklist, repo memory, guardrails, gateway contract, repo map, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/relay.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-core/src/rooms.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `crates/conu-relay/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted relay frame privacy test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core room_event_frame_carries_ciphertext_only`.
+- Targeted core remote-room outbox privacy test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core room_publish_queues_remote_relay_events_without_payloads`.
+- Targeted relay room E2E test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_delivers_peer_encrypted_room_event_between_two_state_homes`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed with signed peer-card trust, explicit peer policy grants including rooms, daemon relay delivery, and payload leak checks.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Superseded by the room topic policy pass below: configured room/topic pairs now require explicit publish/subscribe grants; unconfigured topics retain the room membership boundary for compatibility. Hosted multi-tenant room permission administration remains future work.
+- Relay room events are point-in-time peer-encrypted envelopes, not direct QUIC room sessions.
+- Hosted account/credential lifecycle, hosted accounting, direct QUIC sockets, NAT traversal, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted relay account/credential lifecycle next, then hosted accounting, direct QUIC/NAT traversal, hosted multi-tenant permission administration, and non-Windows keychain support.
+
+## Post Phase 15 Room Topic Policy
+
+Status: completed
+
+Goal:
+
+Add metadata-only per-topic room publish/subscribe authorization across local room publishes, local fanout, relay fanout, and inbound relay room-event delivery without exposing payload bytes.
+
+Completed work:
+
+- Added `rooms/policy.toml` state path support and a metadata-only `RoomTopicPolicyRecord` with room id, agent id, topic, publish/subscribe booleans, timestamps, and `payload_displayed = false`.
+- Added `RoomTopicPolicyUpdate`, list/read/set core APIs, and `conu rooms policy` text/JSON CLI surfaces.
+- Added Rust SDK, Python SDK, and MCP room topic policy methods/tools.
+- Enforced configured topic policy on local publish, local subscriber fanout, remote subscriber fanout, and inbound relay room-event delivery.
+- Preserved compatibility for unconfigured topics: room membership remains the subscription boundary until any policy record exists for that exact room/topic.
+- Added local core tests for allowed subscriber fanout, denied publisher behavior, and inbound relay publish denial.
+- Added CLI, SDK, MCP, and relay E2E coverage proving metadata-only topic grants and relay denial without leaking room-event payloads.
+- Updated README, install guide, relay test guide, SDK/MCP docs, security hardening, production readiness, release checklist, architecture, repo memory, guardrails, gateway contract, repo map, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `architecture.md`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-core/src/rooms.rs`
+- `crates/conu-core/src/state.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-sdk/src/lib.rs`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `sdk/python/conu_sdk/__init__.py`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted core room topic policy tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core room_topic_policy -- --nocapture`.
+- Targeted CLI room policy test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli rooms_policy_cli_sets_topic_grants_without_payloads -- --nocapture`.
+- Targeted SDK room topic policy test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-sdk sdk_room_topic_policy_controls_publish_and_subscribe -- --nocapture`.
+- Targeted MCP room topic policy test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-mcp room_topic_policy_tool_sets_grants_without_payloads -- --nocapture`.
+- Targeted relay room topic denial test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_rejects_room_event_when_inbound_topic_policy_denies_sender -- --nocapture`.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Unconfigured room topics intentionally keep the existing membership boundary for compatibility; strict default-deny for every new topic would need an explicit room-level strict-mode migration.
+- Room topic policy is local file-backed administration only, not hosted multi-tenant permission management.
+- Relay room events are still point-in-time peer-encrypted envelopes, not direct QUIC room sessions.
+- Hosted account/credential lifecycle, hosted accounting, direct QUIC sockets, NAT traversal, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted relay account/credential lifecycle and hosted accounting next, then direct QUIC/NAT traversal, hosted multi-tenant permission administration, non-Windows keychain support, and optional strict room topic default-deny mode.
+
+## Post Phase 15 Relay Credential Manifest Lifecycle
+
+Status: completed
+
+Goal:
+
+Move self-hosted relay credential lifecycle beyond raw static server tokens by adding a token-safe manifest with per-node hashed credentials, revocation, and expiry metadata while preserving the existing relay protocol and local compatibility paths.
+
+Completed work:
+
+- Added hashed scoped relay credentials through `RelayCredential::from_sha256_hex`, with token-safe constant-time hash comparisons and redacted Debug output.
+- Added `RelayCredentialStatus` with `active` and `revoked` lifecycle states, plus optional `expires_at_unix` denial for expired credentials.
+- Added `CONU_RELAY_CREDENTIALS_FILE` support in `conu-relay --serve`; the file path overrides `CONU_RELAY_CREDENTIALS`, which still overrides shared `CONU_RELAY_TOKEN`.
+- Added a versioned `[[credential]]` manifest parser that accepts `node_id`, `token_sha256_hex`, `token_length`, `status`, optional `expires_at_unix`, and token/payload display guards.
+- Added `conu-relay --hash-token`, which reads a token from stdin and prints only `token_sha256_hex`, `token_length`, and `token_displayed = false`.
+- Extended the public-bind guard to hashed credentials by rejecting the `local-dev-token` hash and token length metadata under 24 characters for non-loopback binds.
+- Added relay tests for hashed credential acceptance, manifest revocation/expiry, public-bind rejection without hash echo, and manifest display-guard validation.
+- Updated relay hosting, Docker, npm, install, production-readiness, release-checklist, architecture, repo memory, guardrail, gateway-contract, and security-checklist docs to describe the manifest as self-hosted lifecycle hardening rather than managed hosted account auth.
+
+Files changed:
+
+- `Cargo.lock`
+- `README.md`
+- `architecture.md`
+- `crates/conu-relay/Cargo.toml`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/docker/relay.Dockerfile`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted relay credential tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay credential -- --nocapture`.
+- Focused relay check passed: `cargo +stable-x86_64-pc-windows-gnu check -p conu-relay --all-targets`.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --hash-token` with stdin passed and printed only hash/length/display metadata.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This is self-hosted static manifest lifecycle, not managed hosted account auth, tenant identity, or online credential issuance.
+- Superseded by the live credential manifest reload pass below: manifest revocation/expiry now affects new `HELLO` authentications without relay restart; no admin API, audit log, hosted account auth, or hosted credential issuance service exists yet.
+- Token hashes reduce raw server-side token storage but remain brute-forceable if operators choose weak tokens; public binds still require custom tokens with at least 24 characters.
+- Hosted relay quotas/accounting, hosted mailbox accounting, hosted session resume/accounting, direct QUIC/NAT traversal, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize hosted relay accounting/quotas and session accounting next, then direct QUIC/NAT traversal, hosted multi-tenant permission administration, non-Windows keychain support, and managed hosted account APIs.
+
+## Post Phase 15 Relay Accounting And Quotas
+
+Status: completed
+
+Goal:
+
+Add payload-safe self-hosted relay accounting and per-node quota enforcement so operators can track usage and cap abuse without inspecting message, stream, room-event, or signed-card payloads.
+
+Completed work:
+
+- Added `RelayAccountingPolicy` with a configurable accounting window plus optional per-node sent-envelope and sent-byte quotas.
+- Added `RelayAccountingStorage` with optional file-backed accounting under `CONU_RELAY_ACCOUNTING_DIR`.
+- Added metadata-only per-node accounting records with authenticated session counts, sent/received envelope counts, byte counters, mailbox counters, `payload_displayed = false`, and `token_displayed = false`.
+- Wired the relay hub to record authenticated sessions, accepted online forwards, accepted mailbox forwards, receiver counters, and persisted accounting files without storing tokens, token hashes, payload text, ciphertext bodies, or frame bodies.
+- Added quota denial before forwarding; over-quota sends return `UNDELIVERED reason=quota_exceeded` without echoing payload or token material.
+- Added env knobs: `CONU_RELAY_ACCOUNTING_DIR`, `CONU_RELAY_ACCOUNTING_WINDOW_SECONDS`, `CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE`, and `CONU_RELAY_MAX_BYTES_SENT_PER_NODE`.
+- Updated Docker defaults to create and persist `/var/lib/conu-relay/accounting`.
+- Updated README, hosting docs, install guide, Docker/npm docs, production-readiness, release checklist, architecture, repo memory, guardrails, gateway contract, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `architecture.md`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/docker/relay.Dockerfile`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Targeted relay accounting tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay accounting -- --nocapture`.
+- Focused relay check passed: `cargo +stable-x86_64-pc-windows-gnu check -p conu-relay --all-targets`.
+- Focused relay clippy passed: `cargo +stable-x86_64-pc-windows-gnu clippy -p conu-relay --all-targets -- -D warnings`.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This is self-hosted relay accounting, not hosted billing, tenant management, distributed dashboards, adaptive abuse response, or a managed account service.
+- Accounting files contain metadata counters and node ids; operators should treat them as usage metadata, not payload-private from the relay operator.
+- Quotas apply per relay process/accounting file window and do not yet coordinate across a horizontally scaled relay fleet.
+- Superseded by the relay session resume semantics pass below for same-process same-node reconnects; distributed hosted session state, distributed hosted accounting dashboards, managed hosted mailbox retention policy, direct QUIC/NAT traversal, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize direct QUIC/NAT traversal or managed hosted account APIs next, then distributed hosted session/accounting state, hosted multi-tenant permission administration, and non-Windows keychain support.
+
+## Post Phase 15 Relay Session Resume Semantics
+
+Status: completed
+
+Goal:
+
+Add payload-safe relay session resume semantics for same-process daemon reconnects without turning self-hosted relay state into a managed hosted session service.
+
+Completed work:
+
+- Extended the relay frame contract so `HELLO` can carry an optional `resume=<session-id>` hint and `WELCOME` reports `resumed=<true|false>`, while legacy `WELCOME` frames still parse as `resumed = false`.
+- Added relay-side same-node validation for resume hints. A resume id is accepted only when it belongs to the authenticated node and the node does not already have an active client; cross-node or stale active-session attempts get a new session id instead.
+- Updated `RelayRuntimePump` to remember the prior session id only for the same endpoint after disconnects and to redact active/resume session ids from Debug output.
+- Added `sessions_resumed` to metadata-only relay accounting files with backward-compatible reads for older accounting files.
+- Added protocol, relay, accounting, and daemon pump regression coverage for resume round trips, cross-node resume rejection, resumed-session accounting, and Debug redaction.
+- Updated README, hosting docs, production readiness, release checklist, SDK/MCP boundaries, install guide, packaging docs, architecture, repo memory, guardrails, gateway contract, and security checklist.
+
+Files changed:
+
+- `README.md`
+- `architecture.md`
+- `crates/conu-core/src/relay.rs`
+- `crates/conu-core/src/relay_delivery.rs`
+- `crates/conu-relay/src/lib.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused core resume tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core resume -- --nocapture`.
+- Focused relay resume tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay resume -- --nocapture`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Resume hints are same-process and same-endpoint only; conUD does not persist relay session ids across daemon restarts.
+- Session ids are relay metadata visible on the wire to the relay process. They are not stored in relay accounting files and Debug/runtime log surfaces should not display them.
+- This is not distributed hosted session migration, multi-region relay state, hosted billing/accounting, managed account auth, online credential issuance APIs, adaptive abuse response, or hosted tenant administration.
+- Direct QUIC/NAT traversal, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize direct QUIC/NAT traversal or managed hosted relay account/credential lifecycle next, then distributed hosted session/accounting state, hosted multi-tenant permission administration, and non-Windows keychain support.
+
+## Post Phase 15 Live Relay Credential Manifest Reload
+
+Status: completed
+
+Goal:
+
+Reduce self-hosted relay credential lifecycle downtime by applying hashed manifest revocation and expiry to new relay sessions without restarting `conu-relay`, while keeping token and payload material out of logs, errors, docs, and relay storage.
+
+Completed work:
+
+- Added a live-reloaded `RelayAuth::ScopedCredentialsFile` mode that stores only the manifest path and bind address in relay config.
+- Added `RelayConfig::with_scoped_credentials_file`, which validates the initial manifest at startup and then reloads the manifest on each new `HELLO` authentication attempt.
+- Kept `CONU_RELAY_CREDENTIALS_FILE` precedence over `CONU_RELAY_CREDENTIALS` and shared `CONU_RELAY_TOKEN`, but changed the environment path to use the live-reloaded file mode.
+- Added fail-closed behavior for missing, unreadable, invalid, duplicate-node, revoked, expired, weak public-bind, or malformed live manifest updates. Existing authenticated sessions remain governed by idle timeout and max TTL.
+- Added credential manifest regression coverage for revoking a token without relay restart, fail-closed invalid manifest updates, and token/hash redaction in responses and Debug output.
+- Updated README, hosting docs, internet test docs, production readiness, release checklist, user guide, SDK/MCP boundaries, packaging docs, repo memory, implementation guardrails, gateway contract, security checklist, and repo map.
+
+Files changed:
+
+- `README.md`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused credential tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay credential -- --nocapture`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This is live self-hosted manifest reload, not managed hosted account auth, tenant lifecycle, online credential issuance APIs, hosted audit logs, hosted revocation workflows, or a hosted admin service.
+- Manifest updates should use atomic replacement. Invalid or missing manifests fail closed for new sessions until a valid manifest is restored.
+- Existing authenticated sessions are not forcibly disconnected by manifest edits; configure idle timeout and max TTL for revocation latency bounds.
+- Direct QUIC/NAT traversal, distributed hosted session/accounting state, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize direct QUIC/NAT traversal or managed hosted account/credential issuance APIs next, then hosted audit/admin controls, distributed hosted session/accounting state, hosted multi-tenant permission administration, and non-Windows keychain support.
+
+## Post Phase 15 Direct Route Selection Guard
+
+Status: completed
+
+Goal:
+
+Keep the production route manager honest by preventing configured direct QUIC metadata from becoming a selected delivery route before a real direct data plane exists.
+
+Completed work:
+
+- Changed route sync so valid configured `quic://` and `udp://` endpoints are still recorded and NAT-scored, but remain `unavailable` with `direct_quic_transport_inactive`.
+- Kept relay selected for trusted-peer delivery when direct transport is inactive, preserving relay-backed remote stream chunk delivery instead of opening streams on an unusable direct route label.
+- Added CLI route text output for failure reasons so users can see why a direct candidate was not selected without inspecting payloads.
+- Updated route, stream, and CLI tests for inactive direct candidates, relay selection, payload-safe probe history, and relay-backed remote stream chunks.
+- Updated README, direct-route docs, production readiness, user guide, SDK/MCP docs, release checklist, and future-agent guardrails to describe direct candidates as inactive metadata until real QUIC/NAT transport lands.
+
+Files changed:
+
+- `crates/conu-core/src/routes.rs`
+- `crates/conu-core/src/streams.rs`
+- `crates/conu-cli/src/lib.rs`
+- `README.md`
+- `docs/direct-transport-and-routes.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused route tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core routes -- --nocapture`.
+- Focused remote stream test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core streams::tests::remote_stream_write_queues_peer_encrypted_chunk_without_payload -- --nocapture`.
+- Focused CLI route tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli routes_sync -- --nocapture`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed after formatting.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This is a selection guard, not direct QUIC implementation. Real QUIC sockets, peer authentication over direct transport, ICE-style candidate exchange, STUN/TURN, NAT hole punching, and direct stream byte routing remain future work.
+- Direct endpoint probes remain metadata-only route records; they do not validate that a QUIC peer is reachable or authenticated.
+- Relay remains the only active remote data-plane path for peer-encrypted one-shot messages, stream chunks, room events, and signed-card control envelopes.
+- Managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Implement a real authenticated direct QUIC/NAT traversal data plane before allowing direct routes to become selected, or prioritize managed hosted account/credential issuance APIs if hosted relay readiness is more urgent.
+
+## Post Phase 15 Payload-Safe Log Rotation
+
+Status: completed
+
+Goal:
+
+Add a production maintenance path for long-running local deployments to rotate conU metadata logs without reading, printing, classifying, uploading, or otherwise exposing log contents.
+
+Completed work:
+
+- Added `conu_core::observability` with `LogRotationPolicy`, `LogRotationReport`, and `rotate_logs`, rotating active `.log` files by byte threshold while keeping a bounded number of `.log.N` archives.
+- Added `conu logs rotate [--max-bytes <bytes>] [--keep <count>] [--json]` with payload-safe text/JSON reports containing only log filenames, byte sizes, rotated booleans, archive-removal counts, and `contentsDisplayed=false`.
+- Updated `conu doctor` log scanning to include rotated `.log.N` archives, so rotation cannot hide a payload leak from the readiness scanner.
+- Added core and CLI regression coverage for archive bounds, no-content reporting, and doctor detection of payload text in rotated archives.
+- Updated README, observability docs, production readiness, release checklist, user guide, repo memory, repo map, builder guardrails, and security checklist.
+
+Files changed:
+
+- `crates/conu-core/src/lib.rs`
+- `crates/conu-core/src/observability.rs`
+- `crates/conu-cli/src/lib.rs`
+- `README.md`
+- `docs/observability.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused observability tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core observability -- --nocapture`.
+- Focused CLI log tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli logs -- --nocapture`.
+- Focused doctor tests passed during the CLI log test and full workspace test, including rotated archive scanning.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This is local file rotation only, not a structured telemetry exporter, hosted log pipeline, retention dashboard, or alerting system.
+- Rotation uses local active `.log` files in `CONU_HOME`; relay-host operating-system log management remains the host operator's responsibility.
+- Managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted multi-tenant permission administration, real direct QUIC/NAT traversal, managed hosted identity/key administration, signed package publishing, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize structured telemetry with field allowlists, managed hosted account/credential issuance APIs, or direct QUIC/NAT traversal next, depending on whether local release hardening or hosted-relay readiness is more urgent.
+
+## Post Phase 15 Storage-Key Rotation Migration
+
+Status: completed
+
+Summary:
+
+- Added `security/storage-keys/` as the archived local storage-key ring.
+- Added multi-key storage payload reads so encrypted-at-rest local payload files can remain readable after active storage-key rotation.
+- Added `conu security rotate storage --confirm [--json]` to archive the old storage key, create a new active storage key, and re-encrypt conU-owned encrypted-at-rest message queue and inbox payload files.
+- Kept rotation output payload-safe: only key ids, file counts, archive counts, and `contentsDisplayed=false`; no key bytes, DPAPI blobs, plaintext payloads, or decrypted payloads.
+- Updated security, release, user, and future-agent docs to move storage-key migration tooling from a blocker to an implemented local hardening control.
+
+Files changed:
+
+- `crates/conu-core/src/state.rs`
+- `crates/conu-core/src/security.rs`
+- `crates/conu-cli/src/lib.rs`
+- `README.md`
+- `docs/security-hardening.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused storage rotation tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security::tests::storage_key_rotation_reencrypts_local_payload_files`.
+- Focused archived old-key read test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security::tests::storage_key_archive_keeps_old_payloads_readable_after_rotation`.
+- Focused older archived-key migration retry test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security::tests::storage_key_rotation_migrates_older_archived_key_payloads`.
+- Focused CLI storage rotation test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli security_rotate_storage_requires_confirmation_and_hides_payloads`.
+- Focused security suites passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security -- --nocapture` and `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli security -- --nocapture`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Storage-key rotation currently migrates local encrypted-at-rest message queue and inbox files. Relay durable mailbox ciphertext is peer-encrypted and intentionally not re-encrypted by local storage-key rotation.
+- Superseded by the storage-key retirement pass below: unused archived storage keys can now be deleted after local queue/inbox dependency scanning.
+- Superseded by the identity-key rotation pass below: local signing/exchange keys can be rotated with explicit peer-card refresh requirements.
+- Non-Windows local secret storage still needs platform keychain, Secure Enclave, HSM, or a user-managed secret backend before high-security public release claims.
+
+Next recommendation:
+
+- Prioritize structured telemetry with payload-safe field allowlists, managed hosted account/credential issuance APIs, or direct QUIC/NAT traversal.
+
+## Post Phase 15 Storage-Key Retirement
+
+Status: completed
+
+Summary:
+
+- Added `conu security retire storage --confirm [--json]` to remove archived storage keys only when no scanned local encrypted-at-rest message queue or inbox payload still references them.
+- Added core retirement reporting for archived keys scanned, retired keys, retained keys, scanned files, dependent files, and `contentsDisplayed=false`.
+- Kept dependent archived keys readable and retained when local queue/inbox payload metadata still references them.
+- Updated security, release, user, and future-agent docs to move old storage-key retirement from a known gap to an implemented local hardening control.
+
+Files changed:
+
+- `crates/conu-core/src/security.rs`
+- `crates/conu-cli/src/lib.rs`
+- `README.md`
+- `docs/security-hardening.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused unused-archive retirement test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security::tests::storage_key_retirement_removes_unused_archives_after_migration`.
+- Focused dependent-archive retention test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core security::tests::storage_key_retirement_retains_archives_with_dependencies`.
+- Focused CLI retirement test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli security_retire_storage_requires_confirmation_and_hides_payloads`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Retirement scans conU-owned local message queue and inbox payload metadata only; relay durable mailbox ciphertext is peer-encrypted and intentionally outside local storage-key retirement.
+- Superseded by the identity-key rotation pass below: local signing/exchange keys can be rotated with explicit peer-card refresh requirements.
+- Non-Windows local secret storage still needs platform keychain, Secure Enclave, HSM, or a user-managed secret backend before high-security public release claims.
+
+Next recommendation:
+
+- Prioritize managed hosted account/credential issuance APIs, hosted telemetry/dashboard pipelines, or direct QUIC/NAT traversal.
+
+## Post Phase 15 Structured Telemetry Snapshot
+
+Status: completed
+
+Summary:
+
+- Added `conu telemetry snapshot [--json]` for local structured telemetry with schema `conu.telemetry.snapshot.v1`.
+- Added `TELEMETRY_FIELD_ALLOWLIST` in `conu_core::observability` and wired CLI output to report only allowlisted aggregate counters.
+- Telemetry covers local state readiness, runtime health, local/remote agent counts, sessions, streams, rooms, selected routes, relay queue counts, log scan counts, and security readiness booleans.
+- Kept telemetry payload-safe: no node ids, agent ids, peer ids, endpoints, file paths, log lines, key ids, private keys, shared secrets, auth tokens, plaintext payloads, decrypted payloads, or ciphertext bodies.
+- Updated docs and future-agent memory to move local structured telemetry from a known gap to an implemented local hardening control while leaving hosted telemetry pipelines/dashboards as future work.
+
+Files changed:
+
+- `crates/conu-core/src/observability.rs`
+- `crates/conu-cli/src/lib.rs`
+- `README.md`
+- `architecture.md`
+- `docs/observability.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused telemetry CLI tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli telemetry_snapshot -- --nocapture`.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Telemetry is local CLI snapshot output only; there is no hosted telemetry collector, OTLP exporter, retention policy engine, alerting, or distributed dashboard.
+- The log privacy scan remains a guardrail for known forbidden terms, not a substitute for code review or a comprehensive DLP engine.
+- Managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted multi-tenant permission administration, direct transport, managed hosted identity/key administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted account APIs, online credential issuance/rotation workflows beyond the offline helper, hosted telemetry/dashboard pipelines, direct QUIC/NAT traversal, managed hosted identity/key administration, or non-Windows keychain support.
+
+## Post Phase 15 Offline Relay Credential Issuance
+
+Status: completed
+
+Summary:
+
+- Added `conu-relay --issue-credential <node-id> --token-out <path> [--expires-at-unix <seconds>] [--json]` for offline scoped relay credential issuance.
+- Added `IssuedRelayCredential`, token generation, manifest-entry rendering, and token-file writing in `conu-relay`.
+- Kept the secret split explicit: the raw generated token is written only to a new token file, while stdout reports only node id, token path, token length, optional expiry, display guards, and the hashed manifest entry.
+- Kept manifest compatibility with the live-reloaded `CONU_RELAY_CREDENTIALS_FILE` parser, including `token_sha256_hex`, `token_length`, `status`, optional `expires_at_unix`, `payload_displayed = false`, and `token_displayed = false`.
+- Updated relay hosting, Docker, internet test, security, production-readiness, release-checklist, architecture, and future-agent docs to describe offline issuance as self-hosted lifecycle hardening, not managed hosted account auth.
+
+Files changed:
+
+- `crates/conu-relay/Cargo.toml`
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `README.md`
+- `architecture.md`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/docker/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused issuance tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay issued_relay -- --nocapture`.
+- Command smoke passed: `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --issue-credential node.issue --token-out <temp> --json`; the token file was non-empty and stdout did not contain the raw token.
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This is offline self-hosted credential issuance, not hosted account auth, online issuance APIs, tenant lifecycle, hosted audit logs, online token rotation, or a hosted admin service.
+- Issued token files are explicit local secret artifacts; operators still need secure delivery and lifecycle practices outside conU.
+- Managed hosted account auth, distributed hosted session/accounting state, hosted telemetry/dashboards, direct transport, managed hosted identity/key administration, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted account APIs, online credential rotation/revocation workflows, hosted telemetry/dashboard pipelines, direct QUIC/NAT traversal, managed hosted identity/key administration, or non-Windows keychain support.
+
+## Post Phase 15 Relay Credential Manifest Operations
+
+Status: completed
+
+Summary:
+
+- Added helper-driven self-hosted relay credential manifest updates through `upsert_issued_relay_credential_in_file` and `revoke_relay_credential_in_file`.
+- Extended `conu-relay --issue-credential` with `--credentials-file` and `--replace` so operators can create, append, or rotate hashed manifest entries without hand-editing.
+- Added `conu-relay --revoke-credential <node-id> --credentials-file <path>` to mark a scoped credential revoked without displaying raw tokens, token hashes, payloads, or manifest contents.
+- Preserved the existing live-reload manifest shape while parsing and rendering `created_at_unix` / `updated_at_unix` metadata and enforcing token/payload display guards.
+- Updated relay hosting, Docker, internet test, security, production-readiness, release-checklist, SDK/MCP, and future-agent docs to prefer helper-driven manifest lifecycle operations for self-hosted relays.
+
+Files changed:
+
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/internet-relay-test.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused manifest reload/revoke tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay credential_manifest -- --nocapture`.
+- Focused issuance/upsert tests passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay issued_relay_credential -- --nocapture`.
+- Relay credential lifecycle command smoke passed: `conu-relay --issue-credential node.smoke --token-out <temp> --credentials-file <temp> --json`, duplicate issue without `--replace`, then `conu-relay --revoke-credential node.smoke --credentials-file <temp> --json`; stdout and manifest did not contain the raw token, duplicate issue did not create a token file, and the manifest ended revoked.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This is self-hosted offline manifest lifecycle tooling, not managed hosted account auth, tenant identity, online issuance APIs, hosted audit logs, hosted revocation workflows, or a hosted admin service.
+- Issued token files are still explicit local secret artifacts; operators remain responsible for secure delivery to the intended node.
+- Managed hosted account auth, distributed hosted session/accounting state, hosted telemetry/dashboards, direct transport, managed hosted identity/key administration, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize managed hosted account APIs, online credential issuance/rotation workflows, hosted telemetry/dashboard pipelines, direct QUIC/NAT traversal, managed hosted identity/key administration, or non-Windows keychain support.
+
+## Post Phase 15 Identity-Key Rotation
+
+Status: completed
+
+Summary:
+
+- Added `conu security rotate identity --confirm-peer-refresh [--json]` for explicit local Ed25519 signing-key and X25519 exchange-key rotation.
+- Archived the previous signing and exchange private keys under `security/identity-keys/` using the same secret-field backend as active key files: current-user DPAPI on Windows and owner-only secret files on non-Windows.
+- Generated fresh active signing/exchange key material and reported old/new key ids, archive counts, peer-card refresh requirements, signed-agent-card refresh requirements, and `contentsDisplayed=false`.
+- Kept archived exchange keys available for decrypting peer envelopes addressed to the previous public exchange key during the peer-card refresh window.
+- Updated the key-rotation plan and public docs so local identity-key rotation is implemented while hosted managed identity/key administration and non-Windows keychain integration remain future work.
+
+Files changed:
+
+- `crates/conu-core/src/security.rs`
+- `crates/conu-cli/src/lib.rs`
+- `README.md`
+- `docs/security-hardening.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused identity-key rotation core test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core identity_key_rotation_archives_old_exchange_key_without_secret_output -- --nocapture`.
+- Focused identity-key rotation CLI test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli security_rotate_identity_requires_peer_refresh_and_hides_keys -- --nocapture`.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- Manual isolated identity rotation smoke passed: initialized a fresh `CONU_HOME`, ran `conu security rotate identity --confirm-peer-refresh --json`, verified no secret/DPAPI/private/plaintext markers in output, and verified `conu identity export --json` produced new public signing and exchange material.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Peer-card refresh distribution is explicit and local through `conu identity export`; there is no hosted managed key-publication, revocation, or account administration service.
+- Superseded by the identity archive-retirement pass below: archived identity keys can now be removed after operators confirm peer-card refresh is complete.
+- Managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted telemetry/dashboards, direct transport, hosted multi-tenant permission administration, signed package publishing, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize non-Windows OS-backed secret storage, managed hosted account/key administration, or real direct QUIC/NAT traversal depending on the next release target.
+
+## Post Phase 15 Identity Archive Retirement
+
+Status: completed
+
+Summary:
+
+- Added `conu security retire identity --confirm-peer-refresh-complete [--json]` for explicitly deleting archived old identity signing/exchange keys after refreshed public peer cards have been redistributed.
+- Added `IdentityKeyRetirementReport` with archive counts, peer-card refresh confirmation, old-key decrypt compatibility status, and `contentsDisplayed=false`.
+- Kept the command payload-safe: it reports counts and booleans only, and does not print private keys, DPAPI blobs, shared secrets, plaintext payloads, or decrypted payloads.
+- Preserved the active signing/exchange keys while deleting archived old identity keys from `security/identity-keys/`; after retirement, peer envelopes encrypted to the old exchange public key no longer decrypt locally.
+- Updated README, security hardening docs, production readiness docs, release checklist, user guide, repo memory, guardrails, repo map, and security checklist.
+
+Files changed:
+
+- `crates/conu-core/src/security.rs`
+- `crates/conu-cli/src/lib.rs`
+- `README.md`
+- `docs/security-hardening.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- Focused identity archive-retirement core test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-core identity_key_retirement_removes_archives_after_refresh_confirmation -- --nocapture`.
+- Focused identity archive-retirement CLI test passed: `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli security_retire_identity_requires_refresh_confirmation_and_hides_keys -- --nocapture`.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check` passed in `packaging/npm/conu-cli`.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-identity-retirement.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- Peer-card refresh distribution is still explicit and local through `conu identity export`; there is no hosted managed key-publication, revocation, or account administration service.
+- Identity archive retirement intentionally removes old-key decrypt compatibility for envelopes addressed to old exchange public keys; operators must run it only after refresh is complete.
+- Managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted telemetry/dashboards, direct transport, hosted multi-tenant permission administration, signed package publishing, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Prioritize non-Windows OS-backed secret storage, managed hosted identity/key administration, or real direct QUIC/NAT traversal depending on the next release target.
+
+## Post Phase 15 TypeScript SDK Wrapper
+
+Status: completed
+
+Summary:
+
+- Added `sdk/typescript`, a dependency-free Node 18+ TypeScript/JavaScript wrapper package named `@conu/sdk` around installed `conu` and `conud` binaries.
+- Added typed wrappers for status, security audit, identity/storage rotation and retirement, agent registration/presence/cards, peer trust/policy, route sync/listing, local and remote messages, relay sync/credential status/set/clear, streams, rooms, room topic policy, telemetry snapshot, log rotation, and queued processing.
+- Kept payload-bearing helpers on stdin-only command paths for message, remote message, stream write, room publish, and relay credential set. The smoke test asserts private payload/token bytes are passed as process input and are not present in argv.
+- Added a local TypeScript example that registers two agents, sends opaque bytes, processes queued work, and prints metadata only with `contentsDisplayed=false`.
+- Updated public docs, release checklists, security docs, repo memory, guardrails, and SDK/MCP docs so TypeScript is no longer described as future work.
+- Aligned the TypeScript and Python signed-agent-card helper default signature algorithm with the current core/CLI `Ed25519` contract.
+
+Files changed:
+
+- `sdk/typescript/package.json`
+- `sdk/typescript/src/index.js`
+- `sdk/typescript/src/index.d.ts`
+- `sdk/typescript/test/smoke.mjs`
+- `sdk/typescript/README.md`
+- `examples/typescript/local_agent_pair.mjs`
+- `sdk/python/conu_sdk/__init__.py`
+- `README.md`
+- `docs/sdk-and-mcp.md`
+- `docs/user-install-and-agent-guide.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/security-hardening.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-repo-steward/references/repo-map.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `npm run check --prefix sdk/typescript` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-local.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-identity-retirement.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- The TypeScript wrapper currently follows CLI metadata surfaces and does not expose a raw payload receive helper. JavaScript agents that need raw addressed inbox bytes should use MCP `conu_receive_message` with `includePayload` or the Rust SDK until a TypeScript explicit receive helper is added.
+- The TypeScript package wraps local installed binaries; it is not a browser-native SDK, hosted API client, or direct protocol implementation.
+- Package publishing is not done in this pass; release publication still depends on signed/package release decisions and matching version management.
+- Managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted telemetry/dashboards, direct transport, hosted multi-tenant permission administration, signed package publishing, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Open a PR for the TypeScript SDK wrapper slice, then prioritize either a TypeScript explicit receive helper or managed hosted relay/account work depending on the next release target.
 
 ## Phase Completion Log
 
@@ -1520,5 +3502,36 @@ Add entries here when a phase is completed.
 2026-05-11 - Post Phase 15 internet data-plane and CLI polish completed. Added public peer-card trust, peer-encrypted relay message queueing, explicit relay sync, richer watch animation, SDK/Python/MCP remote helpers, relay E2E tests, and internet relay test docs. Phase 14 remains not started.
 2026-05-11 - Post Phase 15 daemon relay production hardening completed. Added conUD-owned relay pump, retry/backoff, relay daemon smoke script, Windows start hardening, docs/skill updates, and daemon-owned remote message validation. Phase 14 remains not started.
 2026-05-11 - Post Phase 15 distribution and hosting completed. Added native npm launcher package template, platform release artifact naming/checksums, Docker relay hosting template, distribution/hosting docs, release workflow updates, and installer validation. Phase 14 remains not started.
-2026-05-13 - Phase 14 completed after the Phase 15 skip-ahead. Added local rooms/pub-sub metadata, encrypted-at-rest local room event fanout, room CLI/SDK/Python/MCP surfaces, connect/dashboard/watch polish, docs, and GNU-toolchain validation. Next: hosted relay TLS/auth, persistent relay sessions, remote room fanout, and stream byte routing.
+2026-05-13 - Phase 14 completed after the Phase 15 skip-ahead. Added local rooms/pub-sub metadata, encrypted-at-rest local room event fanout, room CLI/SDK/Python/MCP surfaces, connect/dashboard/watch polish, docs, and GNU-toolchain validation. Next: hosted relay TLS/auth, hosted session policy, remote room fanout, and stream-chunk routing.
+2026-05-20 - Post Phase 15 relay abuse controls completed. Added configurable relay total connection, per-IP connection, and per-session frame-rate caps; generic metadata-only rate-limit errors; same-node session cleanup hardening; docs/skill updates; and GNU-toolchain release validation. Next: hosted relay auth/TLS and reusable daemon relay sessions.
+2026-05-20 - Post Phase 15 reusable daemon relay sessions completed. Added daemon-owned relay session reuse across serve ticks, reconnect-on-failure behavior, endpoint-change handling, relay E2E session-reuse coverage, docs/skill updates, and validation. Next then: hosted relay auth/TLS policy, `wss://`, stream-chunk routing, and hosted session resume.
+2026-05-20 - Post Phase 15 public relay token guard completed. Added non-loopback relay bind rejection for `local-dev-token` and short tokens, docs/skill updates, stale-token doc scans, and full release validation. Next then: `wss://`, stronger hosted relay auth/session policy, stream-chunk routing, and OS-backed key storage.
+2026-05-20 - Post Phase 15 WSS relay client support completed. Added certificate-validated `wss://` relay client support, endpoint validation across relay delivery and peer-card trust, CLI/docs updates, Windows GNU-compatible TLS dependency pins, and full release validation. Next: stronger hosted relay auth/session policy, stream-chunk routing, offline mailbox, and OS-backed key storage.
+2026-05-20 - Post Phase 15 scoped relay credentials and session policy completed. Added static per-node relay credentials, token-safe authorization, idle timeout and max session TTL controls, redacted auth Debug output, docs/skill updates, focused relay auth/session tests, and full release validation. Next: stream-chunk routing, managed hosted account/credential lifecycle, hosted session resume/accounting, and OS-backed key storage.
+2026-05-21 - Post Phase 15 relay stream-chunk delivery completed. Added relay envelope kind/stream metadata, peer-encrypted stream chunk outbox and delivery, inbox/receipt stream metadata, live relay E2E coverage, docs/skill updates, and full release validation. Next: hosted relay account/credential lifecycle, hosted session resume/accounting, offline mailbox, OS-backed key storage, and remote room fanout.
+2026-05-21 - Post Phase 15 offline relay mailbox completed. Added bounded in-memory relay mailbox delivery for peer-encrypted message and stream-chunk envelopes, mailbox cap/TTL env controls, mailbox TTL regression coverage, docs/skill updates, and GNU-toolchain validation. Next: hosted account/credential lifecycle, hosted session resume/accounting, durable hosted mailbox storage/accounting, OS-backed key storage, and remote room fanout.
+2026-05-21 - Post Phase 15 durable relay mailbox completed. Added optional `CONU_RELAY_MAILBOX_DIR` file-backed ciphertext envelope persistence, relay restart mailbox delivery coverage, Docker mailbox volume defaults/docs, docs/skill updates, and GNU-toolchain validation. Next: hosted account/credential lifecycle, hosted session resume/accounting, hosted mailbox accounting/quotas, OS-backed key storage, and remote room fanout.
+2026-05-21 - Post Phase 15 Windows DPAPI secret wrapping completed. Added current-user DPAPI wrapping for local signing/exchange/storage secret bytes, migration-compatible reads for older plaintext-hex key files, audit/backend reporting without secret material, CLI/MCP redaction coverage, docs/skill updates, and GNU-toolchain release validation. Next: managed hosted relay account/credential lifecycle, relay credential storage, capability policy, signed remote agent-card exchange, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 relay credential storage completed. Added local runtime relay client credential storage, DPAPI-backed token fields on Windows, `conu relay credential set/status/clear`, env-over-stored token resolution, docs/skill updates, and GNU-toolchain release validation. Next: managed hosted relay account/credential lifecycle, capability policy, signed remote agent-card exchange, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 signed peer cards completed. Added Ed25519-signed public peer-card export, signed-card verification on trust import, trust-store signature metadata, CLI/MCP/Python signed-card fields, tamper regression coverage, docs/skill updates, and GNU-toolchain validation. Next: signed remote agent-card exchange, capability policy, managed hosted relay account/credential lifecycle, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 local capability enforcement completed. Added explicit agent capability registration flags, core enforcement for messages/streams/rooms, stream/room denial tests, docs/skill updates, and GNU-toolchain targeted validation. Next: signed remote agent-card exchange, peer-scoped permission policy, managed hosted relay account/credential lifecycle, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 signed remote agent cards completed. Added signed public agent-card export/import for trusted peers, session-sync preservation of signed remote cards, tamper and collision checks, CLI/SDK/Python/MCP surfaces, docs/skill updates, and GNU-toolchain validation. Next: peer-scoped permission policy, automatic live agent-card exchange, managed hosted relay account/credential lifecycle, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 peer-scoped permission policy completed. Added default-deny peer policy records, `conu peers policy`, SDK/Python/MCP policy controls, relay message/stream and remote room policy enforcement, docs/skill updates, and full GNU-toolchain validation. Next: automatic live agent-card exchange, remote room fanout/per-topic policy, managed hosted relay lifecycle, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 automatic signed agent-card exchange completed. Added peer-encrypted relay control envelopes for signed local agent cards, session-sync queueing for signed trusted peers with policy grants, inbound verification/import, relay E2E coverage, docs/skill updates, and full GNU-toolchain validation. Next: remote room fanout/per-topic policy, managed hosted relay lifecycle, direct transport, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 relay-backed room event fanout completed. Added `room_event` relay envelopes, peer-encrypted room event packets with room id/topic hidden from relay frames, remote room publish fanout with `rooms=true` peer policy and agent capability checks, inbound encrypted-at-rest event delivery, docs/skill updates, and full GNU-toolchain validation. Next: per-topic room policy, managed hosted relay lifecycle, direct transport, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 room topic policy completed. Added metadata-only per-topic room publish/subscribe grants, `conu rooms policy`, SDK/Python/MCP topic policy surfaces, local and relay inbound enforcement, docs/skill updates, and targeted GNU-toolchain validation. Next: managed hosted relay lifecycle/accounting, direct transport, hosted multi-tenant permission administration, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 relay credential manifest lifecycle completed. Added hashed self-hosted relay credential manifests with active/revoked status, optional expiry, token-safe hash generation, public-bind guard coverage, docs/skill updates, and full GNU-toolchain validation. Next: hosted relay accounting/quotas, session accounting, direct transport, hosted multi-tenant permission administration, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 relay accounting and quotas completed. Added metadata-only per-node relay accounting files, authenticated-session/sent/received/mailbox counters, optional sent-envelope and sent-byte quotas, quota denial coverage, docs/skill updates, and GNU-toolchain validation. Next: hosted session resume semantics, direct QUIC/NAT traversal, hosted multi-tenant permission administration, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 relay session resume semantics completed. Added optional HELLO resume hints and WELCOME resumed status, same-node relay validation with cross-node fallback to a new session, daemon pump same-endpoint resume after same-process disconnects, sessions_resumed accounting, docs/skill updates, and full GNU-toolchain validation. Next: direct QUIC/NAT traversal, managed hosted relay account lifecycle, distributed hosted session/accounting state, hosted multi-tenant permission administration, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 live relay credential manifest reload completed. Added live-reloaded `CONU_RELAY_CREDENTIALS_FILE` auth for new HELLO sessions, fail-closed invalid manifest updates, revoke-without-restart coverage, token/hash redaction checks, docs/skill updates, and validation. Next: direct QUIC/NAT traversal, managed hosted relay account/credential issuance APIs, hosted audit/admin controls, distributed hosted session/accounting state, hosted multi-tenant permission administration, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 direct route selection guard completed. Configured direct QUIC/UDP endpoints now remain inactive metadata with `direct_quic_transport_inactive`, relay stays selected for remote delivery, remote stream chunks continue over relay, docs/skills were updated, and full validation passed. Next: real authenticated direct QUIC/NAT traversal data plane or managed hosted account/credential issuance APIs.
+2026-05-21 - Post Phase 15 payload-safe log rotation completed. Added `conu logs rotate` and core observability rotation for local metadata logs, bounded `.log.N` archives, doctor scanning for rotated archives, docs/skill updates, and full validation. Next: storage-key rotation migration tooling, structured telemetry allowlists, managed hosted credential issuance, direct QUIC/NAT traversal, hosted multi-tenant permission administration, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 storage-key rotation migration completed. Added archived storage-key ring reads, `conu security rotate storage --confirm`, local encrypted-at-rest message queue/inbox re-encryption, payload-safe rotation reports, docs/skill updates, and full validation. Next: old storage-key retirement, structured telemetry allowlists, managed hosted credential issuance, direct QUIC/NAT traversal, hosted multi-tenant permission administration, identity-key rotation, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 storage-key retirement completed. Added `conu security retire storage --confirm`, unused archived storage-key deletion after local queue/inbox dependency scanning, dependent-key retention, payload-safe retirement reports, docs/skill updates, and validation. Next: structured telemetry allowlists, managed hosted credential issuance, direct QUIC/NAT traversal, hosted multi-tenant permission administration, identity-key rotation, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 structured telemetry snapshot completed. Added `conu telemetry snapshot`, `conu.telemetry.snapshot.v1`, explicit allowlisted aggregate telemetry fields, payload-safe JSON/text output, privacy regression tests, docs/skill updates, and full validation. Next: managed hosted credential issuance, hosted telemetry/dashboard pipelines, direct QUIC/NAT traversal, hosted multi-tenant permission administration, identity-key rotation, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 offline relay credential issuance completed. Added `conu-relay --issue-credential`, strong offline scoped token generation, raw-token file output with hashed manifest stdout, manifest compatibility tests, docs/skill updates, and full validation. Next: managed hosted account APIs, online credential rotation/revocation workflows, hosted telemetry/dashboard pipelines, direct QUIC/NAT traversal, identity-key rotation, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 relay credential manifest operations completed. Added `conu-relay --issue-credential --credentials-file`, `--replace`, and `--revoke-credential` for self-hosted manifest upsert/rotation/revocation without raw-token output, token-safe manifest lifecycle tests, docs/skill updates, and full validation. Next: managed hosted account APIs, online credential issuance/rotation workflows, hosted telemetry/dashboard pipelines, direct QUIC/NAT traversal, identity-key rotation, and non-Windows keychain support.
+2026-05-21 - Post Phase 15 identity-key rotation completed. Added `conu security rotate identity --confirm-peer-refresh`, archived old signing/exchange keys with secret-backend protection, refreshed active peer-card material, old exchange-key decrypt compatibility during refresh, payload-safe CLI/JSON reports, docs/skill updates, and validation. Next: managed hosted identity/key administration, non-Windows keychain support, direct QUIC/NAT traversal, and managed hosted account APIs.
+2026-05-21 - Post Phase 15 identity archive retirement completed. Added `conu security retire identity --confirm-peer-refresh-complete`, payload-safe archive retirement reports, active-key preservation with old-key decrypt compatibility removal after refresh, docs/skill updates, and validation. Next: managed hosted identity/key administration, non-Windows keychain support, direct QUIC/NAT traversal, and managed hosted account APIs.
+2026-05-21 - Post Phase 15 TypeScript SDK wrapper completed. Added dependency-free `@conu/sdk` wrapper around installed `conu`/`conud`, stdin-only payload helpers, TypeScript declarations, smoke tests, a local example, docs/skill updates, and full validation. Next: TypeScript explicit receive helper or managed hosted relay/account work.
 ```

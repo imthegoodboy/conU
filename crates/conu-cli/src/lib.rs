@@ -14,19 +14,24 @@ use std::thread;
 use std::time::Duration;
 
 use conu_core::agents::{
-    self, AgentPresence, AgentRegistration, LocalAgentRecord, PresenceHeartbeat,
+    self, AgentPresence, AgentRegistration, LocalAgentRecord, PresenceHeartbeat, SignedAgentCard,
 };
 use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
+use conu_core::observability::{self, LogRotationPolicy, LogRotationReport};
+use conu_core::policy::{self, PeerPolicyRecord, PeerPolicyUpdate};
 use conu_core::relay_delivery::{self, RemoteMessage};
-use conu_core::rooms::{self, RoomEvent, RoomRecord};
+use conu_core::rooms::{self, RoomEvent, RoomRecord, RoomTopicPolicyRecord, RoomTopicPolicyUpdate};
 use conu_core::routes::{self, RouteProbe, RouteRecord, RouteSyncReport, RouteTransport};
 use conu_core::runtime::{self, RuntimeState, RuntimeStatus, StopReport};
-use conu_core::security::{self, SecurityAudit, SecurityReport};
+use conu_core::security::{
+    self, IdentityKeyRetirementReport, IdentityKeyRotationReport, SecurityAudit, SecurityReport,
+    StorageKeyRetirementReport, StorageKeyRotationReport,
+};
 use conu_core::sessions::{self, RemoteAgentRecord, RemoteSession, SessionSyncReport};
 use conu_core::state::{self, InitReport, StateSnapshot};
 use conu_core::streams::{self, StreamEvent, StreamRecord};
 use conu_core::trust::{self, PeerCard, TrustStatus, TrustedPeer};
-use conu_protocol::OpaquePayload;
+use conu_protocol::{AgentCapabilities, OpaquePayload};
 
 /// A rendered CLI command result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +117,7 @@ where
         "agents" => render_agents(&args[1..], home_override),
         "peers" => render_peers(&args[1..], home_override),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
-        "relay" => render_relay(&args[1..], home_override),
+        "relay" => render_relay(&args[1..], home_override, stdin_payload),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
         "rooms" => render_rooms(&args[1..], home_override, stdin_payload),
         "sessions" => render_sessions(&args[1..], home_override),
@@ -124,6 +129,8 @@ where
         "connect" => render_connect(&args[1..], home_override),
         "watch" => render_watch(&args[1..], home_override),
         "doctor" => render_doctor(&args[1..], home_override),
+        "logs" => render_logs(&args[1..], home_override),
+        "telemetry" => render_telemetry(&args[1..], home_override),
         "components" => render_components(&args[1..]),
         "start" => render_start(&args[1..], home_override),
         "stop" => render_stop(&args[1..], home_override),
@@ -217,18 +224,26 @@ quick commands
   conu start
   conu status
   conu agents
-  conu agents register <agent-id> <display-name>
+  conu agents register <agent-id> <display-name> [--streams true] [--rooms true]
   conu connect local <from-agent> <to-agent>
   conu rooms create <room-id> <display-name> --agent <agent-id>
   conu rooms join <room-id> <agent-id>
+  conu rooms policy <room-id> <agent-id> <topic> --publish true --subscribe true
   conu rooms publish <room-id> <from-agent> <topic> --stdin
   conu messages send <from-agent> <to-agent> --stdin
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
   conu relay sync --wait-ms 3000
+  conu relay credential set --stdin
   conu identity export
   conu streams open <from-agent> <to-agent>
   conu routes sync
+  conu logs rotate
+  conu telemetry snapshot --json
   conu security audit
+  conu security rotate storage --confirm
+  conu security rotate identity --confirm-peer-refresh
+  conu security retire identity --confirm-peer-refresh-complete
+  conu security retire storage --confirm
   conu doctor
   conu pair
   conu peers
@@ -368,6 +383,8 @@ fn render_agents(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("register") => render_agent_register(&args[1..], home_override),
         Some("heartbeat") => render_agent_heartbeat(&args[1..], home_override),
+        Some("export") => render_agent_export(&args[1..], home_override),
+        Some("trust") => render_agent_trust(&args[1..], home_override),
         _ => render_agents_list(args, home_override),
     }
 }
@@ -409,13 +426,14 @@ fn render_agent_register(args: &[String], home_override: Option<PathBuf>) -> Cli
         Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    let registration =
+    let mut registration =
         match AgentRegistration::new(&parsed.agent_id, &parsed.display_name, &parsed.kind) {
             Ok(registration) => registration,
             Err(error) => {
                 return CliOutput::failure(2, format!("conU agents register failed\n\n{error}"));
             }
         };
+    registration.capabilities = parsed.capabilities.clone();
 
     let submission = match agents::submit_registration(home_override.clone(), registration) {
         Ok(submission) => submission,
@@ -433,12 +451,24 @@ fn render_agent_register(args: &[String], home_override: Option<PathBuf>) -> Cli
   "agentId": "{}",
   "requestId": "{}",
   "processed": {},
+  "capabilities": {{
+    "messages": {},
+    "streams": {},
+    "rooms": {},
+    "files": {},
+    "presence": {}
+  }},
   "contentsDisplayed": false
 }}"#,
             status,
             json_escape(&parsed.agent_id),
             json_escape(&submission.request_id),
-            processed
+            processed,
+            parsed.capabilities.messages,
+            parsed.capabilities.streams,
+            parsed.capabilities.rooms,
+            parsed.capabilities.files,
+            parsed.capabilities.presence
         ));
     }
 
@@ -449,12 +479,106 @@ status: {status}
 agent: {}
 name: {}
 kind: {}
+capabilities: {}
 request: {}
 gateway: file IPC
 
 privacy
   payload view  contents are not displayed by conU",
-        parsed.agent_id, parsed.display_name, parsed.kind, submission.request_id
+        parsed.agent_id,
+        parsed.display_name,
+        parsed.kind,
+        capabilities_summary(&parsed.capabilities),
+        submission.request_id
+    ))
+}
+
+fn render_agent_export(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_agent_export_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let card = match agents::export_agent_card(home_override, &parsed.agent_id) {
+        Ok(card) => card,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU agents export failed\n\n{error}"));
+        }
+    };
+
+    if parsed.json {
+        return CliOutput::success(render_signed_agent_card_json(&card));
+    }
+
+    CliOutput::success(render_signed_agent_card_text(&card))
+}
+
+fn render_agent_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_agent_trust_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let json = parsed.json;
+    let card = SignedAgentCard {
+        agent_id: parsed.agent_id,
+        display_name: parsed.display_name,
+        node_id: parsed.node_id,
+        kind: parsed.kind,
+        capabilities: parsed.capabilities,
+        signature_algorithm: parsed.signature_algorithm,
+        signature_key_id: parsed.signature_key_id,
+        signing_public_key_hex: parsed.signing_public_key_hex,
+        signature_hex: parsed.signature_hex,
+    };
+    let record = match sessions::trust_remote_agent_card(home_override, card) {
+        Ok(record) => record,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU agents trust failed\n\n{error}"));
+        }
+    };
+
+    if json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "trusted_remote_agent",
+  "agentId": "{}",
+  "nodeId": "{}",
+  "peerNodeId": "{}",
+  "agentCardSigned": {},
+  "capabilities": {{
+    "messages": {},
+    "streams": {},
+    "rooms": {},
+    "files": {},
+    "presence": {}
+  }},
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&record.agent_id),
+            json_escape(&record.node_id),
+            json_escape(&record.peer_node_id),
+            record.agent_card_signed(),
+            record.capabilities.messages,
+            record.capabilities.streams,
+            record.capabilities.rooms,
+            record.capabilities.files,
+            record.capabilities.presence
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU agents trust
+
+status: trusted remote agent
+agent: {}
+node: {}
+capabilities: {}
+agent card: signed
+
+privacy
+  payload view  contents are not displayed by conU",
+        record.agent_id,
+        record.node_id,
+        capabilities_summary(&record.capabilities)
     ))
 }
 
@@ -533,6 +657,7 @@ fn render_agents_json(
       "kind": "{}",
       "presence": "{}",
       "nodeId": "{}",
+      "agentCardSigned": {},
       "capabilities": {{
         "messages": {},
         "streams": {},
@@ -546,6 +671,7 @@ fn render_agents_json(
                 json_escape(&agent.kind),
                 agent.presence.as_str(),
                 json_escape(&agent.node_id),
+                agent.signature_hex.is_some(),
                 agent.capabilities.messages,
                 agent.capabilities.streams,
                 agent.capabilities.rooms,
@@ -571,6 +697,7 @@ fn render_agents_json(
       "presence": "{}",
       "nodeId": "{}",
       "peerNodeId": "{}",
+      "agentCardSigned": {},
       "capabilities": {{
         "messages": {},
         "streams": {},
@@ -585,6 +712,7 @@ fn render_agents_json(
                 agent.presence.as_str(),
                 json_escape(&agent.node_id),
                 json_escape(&agent.peer_node_id),
+                agent.agent_card_signed(),
                 agent.capabilities.messages,
                 agent.capabilities.streams,
                 agent.capabilities.rooms,
@@ -645,11 +773,16 @@ fn render_agents_text(
             .iter()
             .map(|agent| {
                 format!(
-                    "  {}  {}  {}  peer {}",
+                    "  {}  {}  {}  peer {}  card {}",
                     agent.agent_id,
                     agent.presence.as_str(),
                     agent.display_name,
-                    agent.peer_node_id
+                    agent.peer_node_id,
+                    if agent.agent_card_signed() {
+                        "signed"
+                    } else {
+                        "placeholder"
+                    }
                 )
             })
             .collect::<Vec<_>>()
@@ -668,7 +801,9 @@ remote agents
 {remote}
 
 next
-  conu agents register <agent-id> <display-name>
+  conu agents register <agent-id> <display-name> [--streams true] [--rooms true]
+  conu agents export <agent-id> --json
+  conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id>
   conu agents heartbeat <agent-id>
   conu sessions sync",
         registry, registry_path
@@ -679,6 +814,7 @@ struct RegisterArgs {
     agent_id: String,
     display_name: String,
     kind: String,
+    capabilities: AgentCapabilities,
     json: bool,
 }
 
@@ -688,9 +824,57 @@ struct HeartbeatArgs {
     json: bool,
 }
 
-fn parse_register_args(args: &[String]) -> Result<RegisterArgs, CliOutput> {
+struct AgentExportArgs {
+    agent_id: String,
+    json: bool,
+}
+
+struct AgentTrustArgs {
+    agent_id: String,
+    display_name: String,
+    node_id: String,
+    kind: String,
+    capabilities: AgentCapabilities,
+    signature_algorithm: String,
+    signature_key_id: String,
+    signing_public_key_hex: String,
+    signature_hex: String,
+    json: bool,
+}
+
+fn parse_agent_export_args(args: &[String]) -> Result<AgentExportArgs, CliOutput> {
     let mut json = false;
-    let mut kind = "local-agent".to_string();
+    let mut positional = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+
+    if positional.len() != 1 {
+        return Err(CliOutput::failure(2, render_agents_export_usage()));
+    }
+
+    Ok(AgentExportArgs {
+        agent_id: positional.remove(0),
+        json,
+    })
+}
+
+fn parse_agent_trust_args(args: &[String]) -> Result<AgentTrustArgs, CliOutput> {
+    let mut json = false;
+    let mut node_id = None;
+    let mut kind = None;
+    let mut capabilities = AgentCapabilities::basic();
+    let mut signature_algorithm = None;
+    let mut signature_key_id = None;
+    let mut signing_public_key_hex = None;
+    let mut signature_hex = None;
     let mut positional = Vec::new();
     let mut index = 0;
 
@@ -700,14 +884,72 @@ fn parse_register_args(args: &[String]) -> Result<RegisterArgs, CliOutput> {
                 json = true;
                 index += 1;
             }
+            "--node" => {
+                node_id = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_trust_usage(),
+                )?);
+                index += 2;
+            }
             "--kind" => {
-                let Some(value) = args.get(index + 1) else {
-                    return Err(CliOutput::failure(
-                        2,
-                        "usage: conu agents register <agent-id> <display-name> [--kind <kind>] [--json]",
-                    ));
-                };
-                kind = value.clone();
+                kind = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_trust_usage(),
+                )?);
+                index += 2;
+            }
+            "--messages" => {
+                capabilities.messages = parse_agent_trust_bool(args.get(index + 1), "--messages")?;
+                index += 2;
+            }
+            "--streams" => {
+                capabilities.streams = parse_agent_trust_bool(args.get(index + 1), "--streams")?;
+                index += 2;
+            }
+            "--rooms" => {
+                capabilities.rooms = parse_agent_trust_bool(args.get(index + 1), "--rooms")?;
+                index += 2;
+            }
+            "--files" => {
+                capabilities.files = parse_agent_trust_bool(args.get(index + 1), "--files")?;
+                index += 2;
+            }
+            "--presence" => {
+                capabilities.presence = parse_agent_trust_bool(args.get(index + 1), "--presence")?;
+                index += 2;
+            }
+            "--signature-algorithm" => {
+                signature_algorithm = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_trust_usage(),
+                )?);
+                index += 2;
+            }
+            "--signature-key-id" => {
+                signature_key_id = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_trust_usage(),
+                )?);
+                index += 2;
+            }
+            "--signing-key" => {
+                signing_public_key_hex = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_trust_usage(),
+                )?);
+                index += 2;
+            }
+            "--signature" => {
+                signature_hex = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_trust_usage(),
+                )?);
                 index += 2;
             }
             value if value.starts_with("--") => {
@@ -721,18 +963,217 @@ fn parse_register_args(args: &[String]) -> Result<RegisterArgs, CliOutput> {
     }
 
     if positional.len() != 2 {
-        return Err(CliOutput::failure(
-            2,
-            "usage: conu agents register <agent-id> <display-name> [--kind <kind>] [--json]",
-        ));
+        return Err(CliOutput::failure(2, render_agents_trust_usage()));
+    }
+
+    Ok(AgentTrustArgs {
+        agent_id: positional.remove(0),
+        display_name: positional.remove(0),
+        node_id: node_id.ok_or_else(|| CliOutput::failure(2, render_agents_trust_usage()))?,
+        kind: kind.ok_or_else(|| CliOutput::failure(2, render_agents_trust_usage()))?,
+        capabilities,
+        signature_algorithm: signature_algorithm
+            .unwrap_or_else(|| security::AGENT_CARD_SIGNATURE_ALGORITHM.to_string()),
+        signature_key_id: signature_key_id
+            .ok_or_else(|| CliOutput::failure(2, render_agents_trust_usage()))?,
+        signing_public_key_hex: signing_public_key_hex
+            .ok_or_else(|| CliOutput::failure(2, render_agents_trust_usage()))?,
+        signature_hex: signature_hex
+            .ok_or_else(|| CliOutput::failure(2, render_agents_trust_usage()))?,
+        json,
+    })
+}
+
+fn required_option_value(
+    args: &[String],
+    index: usize,
+    usage: String,
+) -> Result<String, CliOutput> {
+    args.get(index + 1)
+        .cloned()
+        .ok_or_else(|| CliOutput::failure(2, usage))
+}
+
+fn render_signed_agent_card_json(card: &SignedAgentCard) -> String {
+    format!(
+        r#"{{
+  "agentId": "{}",
+  "displayName": "{}",
+  "nodeId": "{}",
+  "kind": "{}",
+  "capabilities": {{
+    "messages": {},
+    "streams": {},
+    "rooms": {},
+    "files": {},
+    "presence": {}
+  }},
+  "signatureAlgorithm": "{}",
+  "signatureKeyId": "{}",
+  "signingPublicKeyHex": "{}",
+  "signatureHex": "{}",
+  "agentCardSigned": true,
+  "contentsDisplayed": false
+}}"#,
+        json_escape(&card.agent_id),
+        json_escape(&card.display_name),
+        json_escape(&card.node_id),
+        json_escape(&card.kind),
+        card.capabilities.messages,
+        card.capabilities.streams,
+        card.capabilities.rooms,
+        card.capabilities.files,
+        card.capabilities.presence,
+        json_escape(&card.signature_algorithm),
+        json_escape(&card.signature_key_id),
+        json_escape(&card.signing_public_key_hex),
+        json_escape(&card.signature_hex)
+    )
+}
+
+fn render_signed_agent_card_text(card: &SignedAgentCard) -> String {
+    format!(
+        r"conU agents export
+
+agent: {}
+name: {}
+node: {}
+kind: {}
+capabilities: {}
+signature algorithm: {}
+signature key id: {}
+signing public key: {}
+signature: {}
+
+share this public card with a trusted peer, then import it with:
+  conu agents trust <agent-id> <display-name> --node {} --kind {} --signing-key <hex> --signature <hex> --signature-key-id <id>
+
+privacy
+  payload view  contents are not displayed by conU",
+        card.agent_id,
+        card.display_name,
+        card.node_id,
+        card.kind,
+        capabilities_summary(&card.capabilities),
+        card.signature_algorithm,
+        card.signature_key_id,
+        card.signing_public_key_hex,
+        card.signature_hex,
+        card.node_id,
+        card.kind
+    )
+}
+
+fn render_agents_export_usage() -> String {
+    "usage: conu agents export <agent-id> [--json]".to_string()
+}
+
+fn render_agents_trust_usage() -> String {
+    "usage: conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--signature-algorithm <algorithm>] [--json]".to_string()
+}
+
+fn parse_register_args(args: &[String]) -> Result<RegisterArgs, CliOutput> {
+    let mut json = false;
+    let mut kind = "local-agent".to_string();
+    let mut capabilities = AgentCapabilities::basic();
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--kind" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_agents_register_usage()));
+                };
+                kind = value.clone();
+                index += 2;
+            }
+            "--messages" => {
+                capabilities.messages = parse_register_bool(args.get(index + 1), "--messages")?;
+                index += 2;
+            }
+            "--streams" => {
+                capabilities.streams = parse_register_bool(args.get(index + 1), "--streams")?;
+                index += 2;
+            }
+            "--rooms" => {
+                capabilities.rooms = parse_register_bool(args.get(index + 1), "--rooms")?;
+                index += 2;
+            }
+            "--files" => {
+                capabilities.files = parse_register_bool(args.get(index + 1), "--files")?;
+                index += 2;
+            }
+            "--presence" => {
+                capabilities.presence = parse_register_bool(args.get(index + 1), "--presence")?;
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => {
+                positional.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_agents_register_usage()));
     }
 
     Ok(RegisterArgs {
         agent_id: positional.remove(0),
         display_name: positional.remove(0),
         kind,
+        capabilities,
         json,
     })
+}
+
+fn parse_register_bool(value: Option<&String>, option: &'static str) -> Result<bool, CliOutput> {
+    parse_bool_option(value, option, render_agents_register_usage())
+}
+
+fn parse_agent_trust_bool(value: Option<&String>, option: &'static str) -> Result<bool, CliOutput> {
+    parse_bool_option(value, option, render_agents_trust_usage())
+}
+
+fn parse_bool_option(
+    value: Option<&String>,
+    option: &'static str,
+    usage: String,
+) -> Result<bool, CliOutput> {
+    let Some(value) = value else {
+        return Err(CliOutput::failure(2, usage));
+    };
+    match value.as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(CliOutput::failure(
+            2,
+            format!("{option} expects true or false\n\n{usage}"),
+        )),
+    }
+}
+
+fn render_agents_register_usage() -> String {
+    "usage: conu agents register <agent-id> <display-name> [--kind <kind>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--json]".to_string()
+}
+
+fn capabilities_summary(capabilities: &AgentCapabilities) -> String {
+    format!(
+        "messages={} streams={} rooms={} files={} presence={}",
+        capabilities.messages,
+        capabilities.streams,
+        capabilities.rooms,
+        capabilities.files,
+        capabilities.presence
+    )
 }
 
 fn parse_heartbeat_args(args: &[String]) -> Result<HeartbeatArgs, CliOutput> {
@@ -1076,6 +1517,8 @@ fn render_inbox_json(agent_id: &str, entries: &[InboxEntry]) -> String {
       "envelopeId": "{}",
       "fromAgentId": "{}",
       "toAgentId": "{}",
+      "kind": "{}",
+      "streamId": {},
       "receiptId": "{}",
       "payloadBytes": {},
       "deliveredAtUnix": {}
@@ -1083,6 +1526,8 @@ fn render_inbox_json(agent_id: &str, entries: &[InboxEntry]) -> String {
                 json_escape(&entry.envelope_id),
                 json_escape(&entry.from_agent_id),
                 json_escape(&entry.to_agent_id),
+                json_escape(&entry.kind),
+                optional_json_string(entry.stream_id.as_deref()),
                 json_escape(&entry.receipt_id),
                 entry.payload_bytes,
                 entry.delivered_at_unix
@@ -1114,9 +1559,19 @@ fn render_inbox_text(agent_id: &str, entries: &[InboxEntry]) -> String {
         entries
             .iter()
             .map(|entry| {
+                let stream = entry
+                    .stream_id
+                    .as_deref()
+                    .map(|stream_id| format!("  stream {stream_id}"))
+                    .unwrap_or_default();
                 format!(
-                    "  {}  from {}  bytes {}  receipt {}",
-                    entry.envelope_id, entry.from_agent_id, entry.payload_bytes, entry.receipt_id
+                    "  {}  {}{}  from {}  bytes {}  receipt {}",
+                    entry.envelope_id,
+                    entry.kind,
+                    stream,
+                    entry.from_agent_id,
+                    entry.payload_bytes,
+                    entry.receipt_id
                 )
             })
             .collect::<Vec<_>>()
@@ -1145,6 +1600,8 @@ fn render_receipts_json(receipts: &[DeliveryReceipt]) -> String {
       "envelopeId": "{}",
       "fromAgentId": "{}",
       "toAgentId": "{}",
+      "kind": "{}",
+      "streamId": {},
       "status": "{}",
       "payloadBytes": {},
       "deliveredAtUnix": {}
@@ -1153,6 +1610,8 @@ fn render_receipts_json(receipts: &[DeliveryReceipt]) -> String {
                 json_escape(&receipt.envelope_id),
                 json_escape(&receipt.from_agent_id),
                 json_escape(&receipt.to_agent_id),
+                json_escape(&receipt.kind),
+                optional_json_string(receipt.stream_id.as_deref()),
                 json_escape(&receipt.status),
                 receipt.payload_bytes,
                 receipt.delivered_at_unix
@@ -1182,10 +1641,17 @@ fn render_receipts_text(receipts: &[DeliveryReceipt]) -> String {
         receipts
             .iter()
             .map(|receipt| {
+                let stream = receipt
+                    .stream_id
+                    .as_deref()
+                    .map(|stream_id| format!("  stream {stream_id}"))
+                    .unwrap_or_default();
                 format!(
-                    "  {}  {}  {} -> {}  bytes {}",
+                    "  {}  {}  {}{}  {} -> {}  bytes {}",
                     receipt.receipt_id,
                     receipt.status,
+                    receipt.kind,
+                    stream,
                     receipt.from_agent_id,
                     receipt.to_agent_id,
                     receipt.payload_bytes
@@ -1674,6 +2140,7 @@ fn render_rooms(
         Some("join") => render_room_join(&args[1..], home_override),
         Some("publish") => render_room_publish(&args[1..], home_override, stdin_payload),
         Some("events") => render_room_events(&args[1..], home_override),
+        Some("policy") => render_room_policy(&args[1..], home_override),
         _ => render_rooms_list(args, home_override),
     }
 }
@@ -1760,12 +2227,14 @@ fn render_room_publish(
                     &report.room,
                     &report.event,
                     report.local_deliveries,
+                    report.remote_deliveries,
                 ))
             } else {
                 CliOutput::success(render_room_publish_text(
                     &report.room,
                     &report.event,
                     report.local_deliveries,
+                    report.remote_deliveries,
                 ))
             }
         }
@@ -1800,6 +2269,68 @@ fn render_room_events(args: &[String], home_override: Option<PathBuf>) -> CliOut
         CliOutput::success(render_room_events_json(&events))
     } else {
         CliOutput::success(render_room_events_text(&events))
+    }
+}
+
+fn render_room_policy(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_room_policy_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match (&parsed.room_id, &parsed.agent_id, &parsed.topic) {
+        (Some(room_id), Some(agent_id), Some(topic)) if parsed.update.has_changes() => {
+            let record = match rooms::set_room_topic_policy(
+                home_override,
+                room_id,
+                agent_id,
+                topic,
+                parsed.update,
+            ) {
+                Ok(record) => record,
+                Err(error) => {
+                    return CliOutput::failure(1, format!("conU rooms policy failed\n\n{error}"));
+                }
+            };
+            if parsed.json {
+                CliOutput::success(render_room_policy_json(&record, "updated"))
+            } else {
+                CliOutput::success(render_room_policy_text(&record, "updated"))
+            }
+        }
+        (Some(room_id), Some(agent_id), Some(topic)) => {
+            let record = match rooms::room_topic_policy(home_override, room_id, agent_id, topic) {
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    return CliOutput::failure(
+                        1,
+                        "conU rooms policy failed\n\nroom topic policy is not configured",
+                    );
+                }
+                Err(error) => {
+                    return CliOutput::failure(1, format!("conU rooms policy failed\n\n{error}"));
+                }
+            };
+            if parsed.json {
+                CliOutput::success(render_room_policy_json(&record, "read"))
+            } else {
+                CliOutput::success(render_room_policy_text(&record, "read"))
+            }
+        }
+        (None, None, None) => {
+            let policies = match rooms::list_room_topic_policies(home_override) {
+                Ok(policies) => policies,
+                Err(error) => {
+                    return CliOutput::failure(1, format!("conU rooms policy failed\n\n{error}"));
+                }
+            };
+            if parsed.json {
+                CliOutput::success(render_room_policies_json(&policies))
+            } else {
+                CliOutput::success(render_room_policies_text(&policies))
+            }
+        }
+        _ => CliOutput::failure(2, render_rooms_usage()),
     }
 }
 
@@ -1951,6 +2482,7 @@ fn render_room_publish_text(
     room: &RoomRecord,
     event: &RoomEvent,
     local_deliveries: usize,
+    remote_deliveries: usize,
 ) -> String {
     format!(
         r"conU rooms publish
@@ -1964,6 +2496,7 @@ route: {}
 bytes: {}
 room events: {}
 local deliveries: {}
+remote deliveries: {}
 
 privacy
   payload view  contents are not displayed by conU",
@@ -1974,7 +2507,8 @@ privacy
         event.route,
         event.payload_bytes,
         room.events_published,
-        local_deliveries
+        local_deliveries,
+        remote_deliveries
     )
 }
 
@@ -1992,7 +2526,12 @@ fn render_room_json(room: &RoomRecord, status: &str) -> String {
     )
 }
 
-fn render_room_event_json(room: &RoomRecord, event: &RoomEvent, local_deliveries: usize) -> String {
+fn render_room_event_json(
+    room: &RoomRecord,
+    event: &RoomEvent,
+    local_deliveries: usize,
+    remote_deliveries: usize,
+) -> String {
     format!(
         r#"{{
   "status": "published",
@@ -2000,6 +2539,7 @@ fn render_room_event_json(room: &RoomRecord, event: &RoomEvent, local_deliveries
   "eventsPublished": {},
   "bytesPublished": {},
   "localDeliveries": {},
+  "remoteDeliveries": {},
   "event": {},
   "contentsDisplayed": false
 }}"#,
@@ -2007,7 +2547,114 @@ fn render_room_event_json(room: &RoomRecord, event: &RoomEvent, local_deliveries
         room.events_published,
         room.bytes_published,
         local_deliveries,
+        remote_deliveries,
         room_event_json_object(event)
+    )
+}
+
+fn render_room_policy_json(record: &RoomTopicPolicyRecord, status: &str) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "roomId": "{}",
+  "agentId": "{}",
+  "topic": "{}",
+  "policy": {{
+    "publish": {},
+    "subscribe": {}
+  }},
+  "updatedAtUnix": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(status),
+        json_escape(&record.room_id),
+        json_escape(&record.agent_id),
+        json_escape(&record.topic),
+        record.publish,
+        record.subscribe,
+        record.updated_at_unix
+    )
+}
+
+fn render_room_policy_text(record: &RoomTopicPolicyRecord, status: &str) -> String {
+    format!(
+        r"conU rooms policy
+
+status: {}
+room: {}
+agent: {}
+topic: {}
+publish: {}
+subscribe: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        status, record.room_id, record.agent_id, record.topic, record.publish, record.subscribe
+    )
+}
+
+fn render_room_policies_json(policies: &[RoomTopicPolicyRecord]) -> String {
+    let items = policies
+        .iter()
+        .map(|policy| {
+            format!(
+                r#"    {{
+      "roomId": "{}",
+      "agentId": "{}",
+      "topic": "{}",
+      "publish": {},
+      "subscribe": {},
+      "updatedAtUnix": {}
+    }}"#,
+                json_escape(&policy.room_id),
+                json_escape(&policy.agent_id),
+                json_escape(&policy.topic),
+                policy.publish,
+                policy.subscribe,
+                policy.updated_at_unix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let policies = if items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "topicPolicies": {},
+  "contentsDisplayed": false
+}}"#,
+        policies
+    )
+}
+
+fn render_room_policies_text(policies: &[RoomTopicPolicyRecord]) -> String {
+    let rows = if policies.is_empty() {
+        "  no room topic policies configured".to_string()
+    } else {
+        policies
+            .iter()
+            .map(|policy| {
+                format!(
+                    "  {}  topic={} agent={} publish={} subscribe={}",
+                    policy.room_id, policy.topic, policy.agent_id, policy.publish, policy.subscribe
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU rooms policy
+
+topic policies
+{rows}
+
+next
+  conu rooms policy <room-id> <agent-id> <topic> --publish true --subscribe true"
     )
 }
 
@@ -2118,6 +2765,14 @@ struct RoomPublishArgs {
     json: bool,
 }
 
+struct RoomPolicyArgs {
+    room_id: Option<String>,
+    agent_id: Option<String>,
+    topic: Option<String>,
+    update: RoomTopicPolicyUpdate,
+    json: bool,
+}
+
 fn parse_room_create_args(args: &[String]) -> Result<RoomCreateArgs, CliOutput> {
     let mut json = false;
     let mut agent_id = None;
@@ -2211,12 +2866,68 @@ fn parse_room_publish_args(args: &[String]) -> Result<RoomPublishArgs, CliOutput
     })
 }
 
+fn parse_room_policy_args(args: &[String]) -> Result<RoomPolicyArgs, CliOutput> {
+    let mut json = false;
+    let mut update = RoomTopicPolicyUpdate::empty();
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--publish" => {
+                update.publish = Some(parse_bool_option(
+                    args.get(index + 1),
+                    "--publish",
+                    render_rooms_usage(),
+                )?);
+                index += 2;
+            }
+            "--subscribe" => {
+                update.subscribe = Some(parse_bool_option(
+                    args.get(index + 1),
+                    "--subscribe",
+                    render_rooms_usage(),
+                )?);
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => {
+                positional.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if !(positional.is_empty() || positional.len() == 3) {
+        return Err(CliOutput::failure(2, render_rooms_usage()));
+    }
+    if positional.is_empty() && update.has_changes() {
+        return Err(CliOutput::failure(2, render_rooms_usage()));
+    }
+
+    let mut positional = positional.into_iter();
+    Ok(RoomPolicyArgs {
+        room_id: positional.next(),
+        agent_id: positional.next(),
+        topic: positional.next(),
+        update,
+        json,
+    })
+}
+
 fn render_rooms_usage() -> String {
     r"usage:
   conu rooms [--json]
   conu rooms create <room-id> <display-name> --agent <agent-id> [--json]
   conu rooms join <room-id> <agent-id> [--json]
   conu rooms publish <room-id> <from-agent> <topic> --stdin [--json]
+  conu rooms policy [<room-id> <agent-id> <topic> [--publish <true|false>] [--subscribe <true|false>]] [--json]
   conu rooms events [--json]"
         .to_string()
 }
@@ -2567,15 +3278,22 @@ fn render_route_line(route: &RouteRecord) -> String {
     } else {
         route.state.as_str()
     };
+    let reason = route
+        .failure_reason
+        .as_deref()
+        .filter(|reason| !reason.trim().is_empty())
+        .map(|reason| format!("  reason {reason}"))
+        .unwrap_or_default();
 
     format!(
-        "  {}  {}  {}  score {}  latency {}  endpoint {}",
+        "  {}  {}  {}  score {}  latency {}  endpoint {}{}",
         route.peer_node_id,
         route.transport.as_str(),
         state,
         route.score,
         latency,
-        route.endpoint
+        route.endpoint,
+        reason
     )
 }
 
@@ -2721,11 +3439,145 @@ fn render_routes_usage() -> String {
         .to_string()
 }
 
-fn render_relay(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+fn render_relay(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("sync") => render_relay_sync(&args[1..], home_override),
+        Some("credential") => render_relay_credential(&args[1..], home_override, stdin_payload),
         _ => CliOutput::failure(2, render_relay_usage()),
     }
+}
+
+fn render_relay_credential(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("set") => render_relay_credential_set(&args[1..], home_override, stdin_payload),
+        Some("clear") => render_relay_credential_clear(&args[1..], home_override),
+        Some("status") | None => render_relay_credential_status(&args[1..], home_override),
+        _ => CliOutput::failure(2, render_relay_usage()),
+    }
+}
+
+fn render_relay_credential_set(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let parsed = match parse_relay_credential_set_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.stdin {
+        return CliOutput::failure(2, render_relay_usage());
+    }
+    let token = match String::from_utf8(stdin_payload) {
+        Ok(token) => token.trim().to_string(),
+        Err(_) => {
+            return CliOutput::failure(
+                2,
+                "conU relay credential set failed\n\nrelay token must be UTF-8",
+            );
+        }
+    };
+    let status = match security::store_relay_credential(home_override, &token) {
+        Ok(status) => status,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU relay credential set failed\n\n{error}"));
+        }
+    };
+
+    if parsed.json {
+        return CliOutput::success(render_relay_credential_status_json("stored", &status));
+    }
+
+    CliOutput::success(render_relay_credential_status_text("stored", &status))
+}
+
+fn render_relay_credential_clear(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+    let status = match security::clear_relay_credential(home_override) {
+        Ok(status) => status,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU relay credential clear failed\n\n{error}"));
+        }
+    };
+
+    if json {
+        return CliOutput::success(render_relay_credential_status_json("cleared", &status));
+    }
+
+    CliOutput::success(render_relay_credential_status_text("cleared", &status))
+}
+
+fn render_relay_credential_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+    let status = match security::relay_credential_status(home_override) {
+        Ok(status) => status,
+        Err(error) => {
+            return CliOutput::failure(
+                1,
+                format!("conU relay credential status failed\n\n{error}"),
+            );
+        }
+    };
+
+    if json {
+        return CliOutput::success(render_relay_credential_status_json("status", &status));
+    }
+
+    CliOutput::success(render_relay_credential_status_text("status", &status))
+}
+
+fn render_relay_credential_status_json(
+    status_label: &str,
+    status: &security::RelayCredentialStatus,
+) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "configured": {},
+  "secretStorageBackend": "{}",
+  "secretsOsProtected": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(status_label),
+        status.configured,
+        json_escape(&status.secret_storage_backend),
+        status.os_protected
+    )
+}
+
+fn render_relay_credential_status_text(
+    status_label: &str,
+    status: &security::RelayCredentialStatus,
+) -> String {
+    format!(
+        r"conU relay credential
+
+status: {status_label}
+configured: {}
+secret store: {}
+os protected: {}
+
+privacy
+  token view     not displayed
+  runtime use    env CONU_RELAY_TOKEN overrides stored credential",
+        yes_no(status.configured),
+        status.secret_storage_backend,
+        yes_no(status.os_protected)
+    )
 }
 
 fn render_relay_sync(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -2800,6 +3652,11 @@ struct RelaySyncArgs {
     json: bool,
 }
 
+struct RelayCredentialSetArgs {
+    stdin: bool,
+    json: bool,
+}
+
 fn parse_relay_sync_args(args: &[String]) -> Result<RelaySyncArgs, CliOutput> {
     let mut wait_ms = 1000;
     let mut json = false;
@@ -2829,17 +3686,48 @@ fn parse_relay_sync_args(args: &[String]) -> Result<RelaySyncArgs, CliOutput> {
     Ok(RelaySyncArgs { wait_ms, json })
 }
 
+fn parse_relay_credential_set_args(args: &[String]) -> Result<RelayCredentialSetArgs, CliOutput> {
+    let mut stdin = false;
+    let mut json = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--stdin" => stdin = true,
+            "--json" => json = true,
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            _ => return Err(CliOutput::failure(2, render_relay_usage())),
+        }
+    }
+
+    Ok(RelayCredentialSetArgs { stdin, json })
+}
+
 fn render_relay_usage() -> String {
-    "usage: conu relay sync [--wait-ms <milliseconds>] [--json]".to_string()
+    r"usage:
+  conu relay sync [--wait-ms <milliseconds>] [--json]
+  conu relay credential status [--json]
+  conu relay credential set --stdin [--json]
+  conu relay credential clear [--json]"
+        .to_string()
 }
 
 fn render_security(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
-    let remaining = match args.first().map(String::as_str) {
-        None => args,
-        Some("audit") => &args[1..],
-        Some(_) => return CliOutput::failure(2, render_security_usage()),
-    };
-    let json = match json_flag(remaining) {
+    match args.first().map(String::as_str) {
+        None | Some("audit") => {
+            let remaining = if args.is_empty() { args } else { &args[1..] };
+            render_security_audit(remaining, home_override)
+        }
+        Some("rotate") => render_security_rotate(&args[1..], home_override),
+        Some("retire") => render_security_retire(&args[1..], home_override),
+        Some("--help") | Some("-h") => CliOutput::success(render_security_usage()),
+        Some(_) => CliOutput::failure(2, render_security_usage()),
+    }
+}
+
+fn render_security_audit(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
         Ok(json) => json,
         Err(error) => return error,
     };
@@ -2870,6 +3758,247 @@ fn render_security(args: &[String], home_override: Option<PathBuf>) -> CliOutput
     }
 }
 
+fn render_security_rotate(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("storage") => render_security_rotate_storage(&args[1..], home_override),
+        Some("identity") => render_security_rotate_identity(&args[1..], home_override),
+        Some("--help") | Some("-h") => CliOutput::success(render_security_usage()),
+        _ => CliOutput::failure(2, render_security_usage()),
+    }
+}
+
+fn render_security_retire(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("storage") => render_security_retire_storage(&args[1..], home_override),
+        Some("identity") => render_security_retire_identity(&args[1..], home_override),
+        Some("--help") | Some("-h") => CliOutput::success(render_security_usage()),
+        _ => CliOutput::failure(2, render_security_usage()),
+    }
+}
+
+fn render_security_rotate_storage(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_security_rotate_storage_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.confirm {
+        return CliOutput::failure(
+            2,
+            "conU security rotate storage requires --confirm\n\n".to_string()
+                + &render_security_usage(),
+        );
+    }
+
+    let report = match security::rotate_storage_key(home_override) {
+        Ok(report) => report,
+        Err(error) => {
+            return CliOutput::failure(
+                1,
+                format!("conU security rotate storage failed\n\n{error}"),
+            );
+        }
+    };
+
+    if parsed.json {
+        CliOutput::success(render_security_rotate_storage_json(&report))
+    } else {
+        CliOutput::success(render_security_rotate_storage_text(&report))
+    }
+}
+
+fn render_security_rotate_identity(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_security_rotate_identity_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.confirm_peer_refresh {
+        return CliOutput::failure(
+            2,
+            "conU security rotate identity requires --confirm-peer-refresh\n\n".to_string()
+                + &render_security_usage(),
+        );
+    }
+
+    let report = match security::rotate_identity_keys(home_override) {
+        Ok(report) => report,
+        Err(error) => {
+            return CliOutput::failure(
+                1,
+                format!("conU security rotate identity failed\n\n{error}"),
+            );
+        }
+    };
+
+    if parsed.json {
+        CliOutput::success(render_security_rotate_identity_json(&report))
+    } else {
+        CliOutput::success(render_security_rotate_identity_text(&report))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SecurityRotateStorageArgs {
+    confirm: bool,
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SecurityRotateIdentityArgs {
+    confirm_peer_refresh: bool,
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SecurityRetireStorageArgs {
+    confirm: bool,
+    json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SecurityRetireIdentityArgs {
+    confirm_peer_refresh_complete: bool,
+    json: bool,
+}
+
+fn parse_security_rotate_storage_args(
+    args: &[String],
+) -> Result<SecurityRotateStorageArgs, CliOutput> {
+    let mut confirm = false;
+    let mut json = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--confirm" => confirm = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(CliOutput::success(render_security_usage())),
+            _ => return Err(CliOutput::failure(2, render_security_usage())),
+        }
+    }
+
+    Ok(SecurityRotateStorageArgs { confirm, json })
+}
+
+fn parse_security_rotate_identity_args(
+    args: &[String],
+) -> Result<SecurityRotateIdentityArgs, CliOutput> {
+    let mut confirm_peer_refresh = false;
+    let mut json = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--confirm-peer-refresh" => confirm_peer_refresh = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(CliOutput::success(render_security_usage())),
+            _ => return Err(CliOutput::failure(2, render_security_usage())),
+        }
+    }
+
+    Ok(SecurityRotateIdentityArgs {
+        confirm_peer_refresh,
+        json,
+    })
+}
+
+fn render_security_retire_storage(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_security_retire_storage_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.confirm {
+        return CliOutput::failure(
+            2,
+            "conU security retire storage requires --confirm\n\n".to_string()
+                + &render_security_usage(),
+        );
+    }
+
+    let report = match security::retire_unused_storage_keys(home_override) {
+        Ok(report) => report,
+        Err(error) => {
+            return CliOutput::failure(
+                1,
+                format!("conU security retire storage failed\n\n{error}"),
+            );
+        }
+    };
+
+    if parsed.json {
+        CliOutput::success(render_security_retire_storage_json(&report))
+    } else {
+        CliOutput::success(render_security_retire_storage_text(&report))
+    }
+}
+
+fn render_security_retire_identity(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_security_retire_identity_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.confirm_peer_refresh_complete {
+        return CliOutput::failure(
+            2,
+            "conU security retire identity requires --confirm-peer-refresh-complete\n\n"
+                .to_string()
+                + &render_security_usage(),
+        );
+    }
+
+    let report = match security::retire_archived_identity_keys(home_override) {
+        Ok(report) => report,
+        Err(error) => {
+            return CliOutput::failure(
+                1,
+                format!("conU security retire identity failed\n\n{error}"),
+            );
+        }
+    };
+
+    if parsed.json {
+        CliOutput::success(render_security_retire_identity_json(&report))
+    } else {
+        CliOutput::success(render_security_retire_identity_text(&report))
+    }
+}
+
+fn parse_security_retire_storage_args(
+    args: &[String],
+) -> Result<SecurityRetireStorageArgs, CliOutput> {
+    let mut confirm = false;
+    let mut json = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--confirm" => confirm = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(CliOutput::success(render_security_usage())),
+            _ => return Err(CliOutput::failure(2, render_security_usage())),
+        }
+    }
+
+    Ok(SecurityRetireStorageArgs { confirm, json })
+}
+
+fn parse_security_retire_identity_args(
+    args: &[String],
+) -> Result<SecurityRetireIdentityArgs, CliOutput> {
+    let mut confirm_peer_refresh_complete = false;
+    let mut json = false;
+
+    for arg in args {
+        match arg.as_str() {
+            "--confirm-peer-refresh-complete" => confirm_peer_refresh_complete = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(CliOutput::success(render_security_usage())),
+            _ => return Err(CliOutput::failure(2, render_security_usage())),
+        }
+    }
+
+    Ok(SecurityRetireIdentityArgs {
+        confirm_peer_refresh_complete,
+        json,
+    })
+}
+
 fn render_security_json(audit: &SecurityAudit, report: &SecurityReport) -> String {
     format!(
         r#"{{
@@ -2882,6 +4011,8 @@ fn render_security_json(audit: &SecurityAudit, report: &SecurityReport) -> Strin
   "localPayloadEncryption": {},
   "signedAgentCards": {},
   "peerKeyExchange": {},
+  "secretStorageBackend": "{}",
+  "secretsOsProtected": {},
   "signingKeyId": "{}",
   "exchangeKeyId": "{}",
   "storageKeyId": "{}",
@@ -2896,6 +4027,8 @@ fn render_security_json(audit: &SecurityAudit, report: &SecurityReport) -> Strin
         audit.local_payload_encryption,
         audit.signed_agent_cards,
         audit.peer_key_exchange,
+        json_escape(&audit.secret_storage_backend),
+        audit.secrets_os_protected,
         json_escape(&report.signing_key_id),
         json_escape(&report.exchange_key_id),
         json_escape(&report.storage_key_id)
@@ -2912,6 +4045,7 @@ keys
   signing key   {}  {}
   exchange key  {}  {}
   storage key   {}  {}
+  secret store  {}  os_protected={}
 
 controls
   local payloads  {}
@@ -2930,6 +4064,8 @@ privacy
         report.exchange_key_id,
         ready_label(audit.storage_key),
         report.storage_key_id,
+        audit.secret_storage_backend,
+        yes_no(audit.secrets_os_protected),
         if audit.local_payload_encryption {
             "encrypted at rest"
         } else {
@@ -2950,8 +4086,194 @@ privacy
     )
 }
 
+fn render_security_rotate_storage_json(report: &StorageKeyRotationReport) -> String {
+    format!(
+        r#"{{
+  "status": "rotated",
+  "oldStorageKeyId": "{}",
+  "newStorageKeyId": "{}",
+  "filesScanned": {},
+  "filesMigrated": {},
+  "filesSkipped": {},
+  "archivedStorageKeys": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(&report.old_storage_key_id),
+        json_escape(&report.new_storage_key_id),
+        report.files_scanned,
+        report.files_migrated,
+        report.files_skipped,
+        report.archived_storage_keys
+    )
+}
+
+fn render_security_rotate_storage_text(report: &StorageKeyRotationReport) -> String {
+    format!(
+        r"conU security rotate storage
+
+status: rotated
+old storage key: {}
+new storage key: {}
+files scanned: {}
+files migrated: {}
+files skipped: {}
+archived keys: {}
+
+privacy
+  payload view    contents are not displayed by conU
+  key view        private keys are not displayed",
+        report.old_storage_key_id,
+        report.new_storage_key_id,
+        report.files_scanned,
+        report.files_migrated,
+        report.files_skipped,
+        report.archived_storage_keys
+    )
+}
+
+fn render_security_rotate_identity_json(report: &IdentityKeyRotationReport) -> String {
+    format!(
+        r#"{{
+  "status": "rotated",
+  "oldSigningKeyId": "{}",
+  "newSigningKeyId": "{}",
+  "oldExchangeKeyId": "{}",
+  "newExchangeKeyId": "{}",
+  "archivedIdentityKeys": {},
+  "peerCardRefreshRequired": {},
+  "signedAgentCardRefreshRequired": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(&report.old_signing_key_id),
+        json_escape(&report.new_signing_key_id),
+        json_escape(&report.old_exchange_key_id),
+        json_escape(&report.new_exchange_key_id),
+        report.archived_identity_keys,
+        report.peer_card_refresh_required,
+        report.signed_agent_card_refresh_required
+    )
+}
+
+fn render_security_rotate_identity_text(report: &IdentityKeyRotationReport) -> String {
+    format!(
+        r"conU security rotate identity
+
+status: rotated
+old signing key: {}
+new signing key: {}
+old exchange key: {}
+new exchange key: {}
+archived identity keys: {}
+peer card refresh required: {}
+signed agent-card refresh required: {}
+
+next
+  run conu identity export and share the refreshed public peer card with trusted peers
+  export or re-register signed local agent cards before peers import new cards
+
+privacy
+  payload view    contents are not displayed by conU
+  key view        private keys are not displayed",
+        report.old_signing_key_id,
+        report.new_signing_key_id,
+        report.old_exchange_key_id,
+        report.new_exchange_key_id,
+        report.archived_identity_keys,
+        yes_no(report.peer_card_refresh_required),
+        yes_no(report.signed_agent_card_refresh_required)
+    )
+}
+
+fn render_security_retire_storage_json(report: &StorageKeyRetirementReport) -> String {
+    format!(
+        r#"{{
+  "status": "retired",
+  "archivedStorageKeysScanned": {},
+  "retiredStorageKeys": {},
+  "retainedStorageKeys": {},
+  "filesScanned": {},
+  "dependentFiles": {},
+  "contentsDisplayed": false
+}}"#,
+        report.archived_storage_keys_scanned,
+        report.retired_storage_keys,
+        report.retained_storage_keys,
+        report.files_scanned,
+        report.dependent_files
+    )
+}
+
+fn render_security_retire_identity_json(report: &IdentityKeyRetirementReport) -> String {
+    format!(
+        r#"{{
+  "status": "retired",
+  "archivedIdentityKeysScanned": {},
+  "retiredIdentityKeys": {},
+  "retainedIdentityKeys": {},
+  "peerCardRefreshConfirmed": {},
+  "oldKeyDecryptCompatibilityRetired": {},
+  "contentsDisplayed": false
+}}"#,
+        report.archived_identity_keys_scanned,
+        report.retired_identity_keys,
+        report.retained_identity_keys,
+        report.peer_card_refresh_confirmed,
+        report.old_key_decrypt_compatibility_retired
+    )
+}
+
+fn render_security_retire_identity_text(report: &IdentityKeyRetirementReport) -> String {
+    format!(
+        r"conU security retire identity
+
+status: retired
+archived identity keys scanned: {}
+identity keys retired: {}
+identity keys retained: {}
+peer card refresh confirmed: {}
+old-key decrypt compatibility retired: {}
+
+privacy
+  payload view    contents are not displayed by conU
+  key view        private keys are not displayed",
+        report.archived_identity_keys_scanned,
+        report.retired_identity_keys,
+        report.retained_identity_keys,
+        yes_no(report.peer_card_refresh_confirmed),
+        yes_no(report.old_key_decrypt_compatibility_retired)
+    )
+}
+
+fn render_security_retire_storage_text(report: &StorageKeyRetirementReport) -> String {
+    format!(
+        r"conU security retire storage
+
+status: retired
+archived keys scanned: {}
+keys retired: {}
+keys retained: {}
+files scanned: {}
+dependent files: {}
+
+privacy
+  payload view    contents are not displayed by conU
+  key view        private keys are not displayed",
+        report.archived_storage_keys_scanned,
+        report.retired_storage_keys,
+        report.retained_storage_keys,
+        report.files_scanned,
+        report.dependent_files
+    )
+}
+
 fn render_security_usage() -> String {
-    "usage: conu security audit [--json]".to_string()
+    r"usage:
+  conu security audit [--json]
+  conu security rotate storage --confirm [--json]
+  conu security rotate identity --confirm-peer-refresh [--json]
+  conu security retire identity --confirm-peer-refresh-complete [--json]
+  conu security retire storage --confirm [--json]"
+        .to_string()
 }
 
 fn render_identity(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -2980,12 +4302,22 @@ fn render_identity_export(args: &[String], home_override: Option<PathBuf>) -> Cl
   "displayName": "{}",
   "exchangePublicKeyHex": "{}",
   "relayEndpoint": "{}",
+  "signingPublicKeyHex": "{}",
+  "signatureAlgorithm": "{}",
+  "signatureKeyId": "{}",
+  "signatureHex": "{}",
+  "peerCardSigned": {},
   "contentsDisplayed": false
 }}"#,
             json_escape(&card.node_id),
             json_escape(&card.display_name),
             json_escape(&card.exchange_public_key_hex),
-            json_escape(&card.relay_endpoint)
+            json_escape(&card.relay_endpoint),
+            json_escape(card.signing_public_key_hex.as_deref().unwrap_or("")),
+            json_escape(card.signature_algorithm.as_deref().unwrap_or("")),
+            json_escape(card.signature_key_id.as_deref().unwrap_or("")),
+            json_escape(card.signature_hex.as_deref().unwrap_or("")),
+            card.signature_hex.is_some()
         ));
     }
 
@@ -2996,17 +4328,26 @@ node: {}
 name: {}
 exchange public key: {}
 relay: {}
+signing public key: {}
+signature key id: {}
+signature: {}
 
 share this public card with a peer, then import their card with:
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay {}
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay {} --signing-key <hex> --signature <hex> --signature-key-id <id>
 
 privacy
   key view      public exchange key only
+  signature     public integrity proof only
   payload view  contents are not displayed by conU",
         card.node_id,
         card.display_name,
         card.exchange_public_key_hex,
         card.relay_endpoint,
+        card.signing_public_key_hex
+            .as_deref()
+            .unwrap_or("not available"),
+        card.signature_key_id.as_deref().unwrap_or("not available"),
+        card.signature_hex.as_deref().unwrap_or("not available"),
         card.relay_endpoint
     ))
 }
@@ -3052,6 +4393,7 @@ fn wait_for_message_delivery(
 
 fn render_peers(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("policy") => render_peer_policy(&args[1..], home_override),
         Some("revoke") => render_peer_revoke(&args[1..], home_override),
         Some("trust") => render_peer_trust(&args[1..], home_override),
         _ => render_peer_list(args, home_override),
@@ -3081,6 +4423,10 @@ fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutp
         display_name: parsed.display_name,
         exchange_public_key_hex: parsed.exchange_key,
         relay_endpoint: parsed.relay_endpoint,
+        signing_public_key_hex: parsed.signing_key,
+        signature_algorithm: parsed.signature_algorithm,
+        signature_key_id: parsed.signature_key_id,
+        signature_hex: parsed.signature,
     };
     let peer = match trust::trust_peer_card(home_override, card) {
         Ok(peer) => peer,
@@ -3094,6 +4440,7 @@ fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutp
   "peerNodeId": "{}",
   "displayName": "{}",
   "exchangeKeyTrusted": {},
+  "peerCardSigned": {},
   "relayEndpoint": "{}",
   "contentsDisplayed": false
 }}"#,
@@ -3101,6 +4448,7 @@ fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutp
             json_escape(&peer.peer_node_id),
             json_escape(&peer.display_name),
             peer.exchange_public_key_hex.is_some(),
+            peer.signature_hex.is_some(),
             json_escape(peer.relay_endpoint.as_deref().unwrap_or(""))
         ));
     }
@@ -3112,6 +4460,7 @@ status: {}
 peer: {}
 name: {}
 exchange key: trusted
+peer card signature: {}
 relay: {}
 
 next
@@ -3123,6 +4472,11 @@ privacy
         peer.status.as_str(),
         peer.peer_node_id,
         peer.display_name,
+        if peer.signature_hex.is_some() {
+            "verified"
+        } else {
+            "not provided"
+        },
         peer.relay_endpoint.as_deref().unwrap_or("not configured")
     ))
 }
@@ -3166,6 +4520,53 @@ privacy
     ))
 }
 
+fn render_peer_policy(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_peer_policy_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match parsed.peer_node_id {
+        Some(peer_node_id) if parsed.update.has_changes() => {
+            let record = match policy::set_peer_policy(home_override, &peer_node_id, parsed.update)
+            {
+                Ok(record) => record,
+                Err(error) => {
+                    return CliOutput::failure(1, format!("conU peers policy failed\n\n{error}"));
+                }
+            };
+            if parsed.json {
+                return CliOutput::success(render_peer_policy_json(&record, "updated"));
+            }
+            CliOutput::success(render_peer_policy_text(&record, "updated"))
+        }
+        Some(peer_node_id) => {
+            let record = match policy::peer_policy(home_override, &peer_node_id) {
+                Ok(record) => record,
+                Err(error) => {
+                    return CliOutput::failure(1, format!("conU peers policy failed\n\n{error}"));
+                }
+            };
+            if parsed.json {
+                return CliOutput::success(render_peer_policy_json(&record, "read"));
+            }
+            CliOutput::success(render_peer_policy_text(&record, "read"))
+        }
+        None => {
+            let policies = match policy::list_peer_policies(home_override) {
+                Ok(policies) => policies,
+                Err(error) => {
+                    return CliOutput::failure(1, format!("conU peers policy failed\n\n{error}"));
+                }
+            };
+            if parsed.json {
+                return CliOutput::success(render_peer_policies_json(&policies));
+            }
+            CliOutput::success(render_peer_policies_text(&policies))
+        }
+    }
+}
+
 fn render_peers_json(peers: &[TrustedPeer]) -> String {
     let trusted = trusted_peer_count(peers);
     let peer_items = peers
@@ -3178,6 +4579,7 @@ fn render_peers_json(peers: &[TrustedPeer]) -> String {
       "status": "{}",
       "source": "{}",
       "exchangeKeyTrusted": {},
+      "peerCardSigned": {},
       "relayEndpoint": "{}",
       "updatedAtUnix": {}
     }}"#,
@@ -3186,6 +4588,7 @@ fn render_peers_json(peers: &[TrustedPeer]) -> String {
                 peer.status.as_str(),
                 json_escape(&peer.source),
                 peer.exchange_public_key_hex.is_some(),
+                peer.signature_hex.is_some(),
                 json_escape(peer.relay_endpoint.as_deref().unwrap_or("")),
                 peer.updated_at_unix
             )
@@ -3216,11 +4619,16 @@ fn render_peers_text(peers: &[TrustedPeer]) -> String {
             .iter()
             .map(|peer| {
                 format!(
-                    "  {}  {}  {}  key {}  relay {}",
+                    "  {}  {}  {}  key {}  signed {}  relay {}",
                     peer.peer_node_id,
                     peer.status.as_str(),
                     peer.display_name,
                     if peer.exchange_public_key_hex.is_some() {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    if peer.signature_hex.is_some() {
                         "yes"
                     } else {
                         "no"
@@ -3242,8 +4650,131 @@ next
   conu pair
   conu join <code>
   conu identity export
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port>]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--signing-key <hex> --signature <hex> --signature-key-id <id>]
+  conu peers policy <peer-node-id> --messages true --streams true
   conu peers revoke <peer-node-id>"
+    )
+}
+
+fn render_peer_policy_json(record: &PeerPolicyRecord, status: &str) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "peerNodeId": "{}",
+  "policy": {{
+    "messages": {},
+    "streams": {},
+    "rooms": {},
+    "files": {},
+    "mailbox": {}
+  }},
+  "updatedAtUnix": {},
+  "contentsDisplayed": false
+}}"#,
+        status,
+        json_escape(&record.peer_node_id),
+        record.messages,
+        record.streams,
+        record.rooms,
+        record.files,
+        record.mailbox,
+        record.updated_at_unix
+    )
+}
+
+fn render_peer_policy_text(record: &PeerPolicyRecord, status: &str) -> String {
+    format!(
+        r"conU peers policy
+
+status: {}
+peer: {}
+messages: {}
+streams: {}
+rooms: {}
+files: {}
+mailbox: {}
+
+privacy
+  payload view  contents are not displayed by conU",
+        status,
+        record.peer_node_id,
+        record.messages,
+        record.streams,
+        record.rooms,
+        record.files,
+        record.mailbox
+    )
+}
+
+fn render_peer_policies_json(policies: &[PeerPolicyRecord]) -> String {
+    let items = policies
+        .iter()
+        .map(|policy| {
+            format!(
+                r#"    {{
+      "peerNodeId": "{}",
+      "messages": {},
+      "streams": {},
+      "rooms": {},
+      "files": {},
+      "mailbox": {},
+      "updatedAtUnix": {}
+    }}"#,
+                json_escape(&policy.peer_node_id),
+                policy.messages,
+                policy.streams,
+                policy.rooms,
+                policy.files,
+                policy.mailbox,
+                policy.updated_at_unix
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let policies = if items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "policies": {},
+  "contentsDisplayed": false
+}}"#,
+        policies
+    )
+}
+
+fn render_peer_policies_text(policies: &[PeerPolicyRecord]) -> String {
+    let rows = if policies.is_empty() {
+        "  no peer policies granted".to_string()
+    } else {
+        policies
+            .iter()
+            .map(|policy| {
+                format!(
+                    "  {}  messages={} streams={} rooms={} files={} mailbox={}",
+                    policy.peer_node_id,
+                    policy.messages,
+                    policy.streams,
+                    policy.rooms,
+                    policy.files,
+                    policy.mailbox
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU peers policy
+
+peer policies
+{rows}
+
+next
+  conu peers policy <peer-node-id> --messages true --streams true --rooms false"
     )
 }
 
@@ -3252,13 +4783,91 @@ struct PeerTrustArgs {
     display_name: String,
     exchange_key: String,
     relay_endpoint: String,
+    signing_key: Option<String>,
+    signature_algorithm: Option<String>,
+    signature_key_id: Option<String>,
+    signature: Option<String>,
     json: bool,
+}
+
+struct PeerPolicyArgs {
+    peer_node_id: Option<String>,
+    update: PeerPolicyUpdate,
+    json: bool,
+}
+
+fn parse_peer_policy_args(args: &[String]) -> Result<PeerPolicyArgs, CliOutput> {
+    let mut json = false;
+    let mut update = PeerPolicyUpdate::empty();
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--messages" => {
+                update.messages = Some(parse_peer_policy_bool(args.get(index + 1), "--messages")?);
+                index += 2;
+            }
+            "--streams" => {
+                update.streams = Some(parse_peer_policy_bool(args.get(index + 1), "--streams")?);
+                index += 2;
+            }
+            "--rooms" => {
+                update.rooms = Some(parse_peer_policy_bool(args.get(index + 1), "--rooms")?);
+                index += 2;
+            }
+            "--files" => {
+                update.files = Some(parse_peer_policy_bool(args.get(index + 1), "--files")?);
+                index += 2;
+            }
+            "--mailbox" => {
+                update.mailbox = Some(parse_peer_policy_bool(args.get(index + 1), "--mailbox")?);
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+            }
+            value => {
+                positional.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if positional.len() > 1 {
+        return Err(CliOutput::failure(2, render_peer_policy_usage()));
+    }
+    if positional.is_empty() && update.has_changes() {
+        return Err(CliOutput::failure(2, render_peer_policy_usage()));
+    }
+
+    Ok(PeerPolicyArgs {
+        peer_node_id: positional.into_iter().next(),
+        update,
+        json,
+    })
+}
+
+fn parse_peer_policy_bool(value: Option<&String>, option: &'static str) -> Result<bool, CliOutput> {
+    parse_bool_option(value, option, render_peer_policy_usage())
+}
+
+fn render_peer_policy_usage() -> String {
+    "usage: conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]".to_string()
 }
 
 fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
     let mut json = false;
     let mut exchange_key = None;
     let mut relay_endpoint = "ws://127.0.0.1:8787".to_string();
+    let mut signing_key = None;
+    let mut signature_algorithm = None;
+    let mut signature_key_id = None;
+    let mut signature = None;
     let mut positional = Vec::new();
     let mut index = 0;
 
@@ -3279,6 +4888,34 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
                 relay_endpoint = value.clone();
                 index += 1;
             }
+            "--signing-key" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                };
+                signing_key = Some(value.clone());
+                index += 1;
+            }
+            "--signature-algorithm" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                };
+                signature_algorithm = Some(value.clone());
+                index += 1;
+            }
+            "--signature-key-id" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                };
+                signature_key_id = Some(value.clone());
+                index += 1;
+            }
+            "--signature" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                };
+                signature = Some(value.clone());
+                index += 1;
+            }
             value if value.starts_with("--") => {
                 return Err(CliOutput::failure(2, format!("unknown option: {value}")));
             }
@@ -3293,18 +4930,27 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
     if positional.len() != 2 {
         return Err(CliOutput::failure(2, render_peer_trust_usage()));
     }
+    if signature_algorithm.is_none()
+        && (signing_key.is_some() || signature_key_id.is_some() || signature.is_some())
+    {
+        signature_algorithm = Some(security::AGENT_CARD_SIGNATURE_ALGORITHM.to_string());
+    }
 
     Ok(PeerTrustArgs {
         peer_node_id: positional.remove(0),
         display_name: positional.remove(0),
         exchange_key,
         relay_endpoint,
+        signing_key,
+        signature_algorithm,
+        signature_key_id,
+        signature,
         json,
     })
 }
 
 fn render_peer_trust_usage() -> String {
-    "usage: conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port>] [--json]".to_string()
+    "usage: conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--signature-algorithm <algorithm>] [--json]".to_string()
 }
 
 fn parse_peer_revoke_args(args: &[String]) -> Result<(String, bool), CliOutput> {
@@ -3839,6 +5485,512 @@ fn render_components(args: &[String]) -> CliOutput {
     CliOutput::success(output)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LogRotateArgs {
+    max_bytes: u64,
+    keep_archives: usize,
+    json: bool,
+}
+
+fn render_logs(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("rotate") => render_logs_rotate(&args[1..], home_override),
+        Some("--help") | Some("-h") | None => CliOutput::success(render_logs_usage()),
+        _ => CliOutput::failure(2, render_logs_usage()),
+    }
+}
+
+fn render_logs_rotate(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_log_rotate_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let policy = match LogRotationPolicy::new(parsed.max_bytes, parsed.keep_archives) {
+        Ok(policy) => policy,
+        Err(error) => return CliOutput::failure(2, format!("conU logs rotate failed\n\n{error}")),
+    };
+    let report = match observability::rotate_logs(home_override, policy) {
+        Ok(report) => report,
+        Err(error) => return CliOutput::failure(1, format!("conU logs rotate failed\n\n{error}")),
+    };
+
+    if parsed.json {
+        CliOutput::success(render_logs_rotate_json(&report))
+    } else {
+        CliOutput::success(render_logs_rotate_text(&report))
+    }
+}
+
+fn parse_log_rotate_args(args: &[String]) -> Result<LogRotateArgs, CliOutput> {
+    let mut max_bytes = observability::DEFAULT_LOG_ROTATE_MAX_BYTES;
+    let mut keep_archives = observability::DEFAULT_LOG_ROTATE_KEEP_ARCHIVES;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--max-bytes" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_logs_usage()));
+                };
+                max_bytes = value
+                    .parse::<u64>()
+                    .map_err(|_| CliOutput::failure(2, render_logs_usage()))?;
+            }
+            "--keep" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_logs_usage()));
+                };
+                keep_archives = value
+                    .parse::<usize>()
+                    .map_err(|_| CliOutput::failure(2, render_logs_usage()))?;
+            }
+            "--help" | "-h" => return Err(CliOutput::success(render_logs_usage())),
+            _ => return Err(CliOutput::failure(2, render_logs_usage())),
+        }
+        index += 1;
+    }
+
+    Ok(LogRotateArgs {
+        max_bytes,
+        keep_archives,
+        json,
+    })
+}
+
+fn render_logs_rotate_json(report: &LogRotationReport) -> String {
+    let log_items = report
+        .entries
+        .iter()
+        .map(|entry| {
+            format!(
+                r#"    {{
+      "name": "{}",
+      "sizeBytes": {},
+      "rotated": {},
+      "archivesRemoved": {}
+    }}"#,
+                json_escape(&entry.log_name),
+                entry.size_bytes,
+                entry.rotated,
+                entry.archives_removed
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let logs = if log_items.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{log_items}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "status": "rotated",
+  "maxBytes": {},
+  "keepArchives": {},
+  "filesScanned": {},
+  "filesRotated": {},
+  "archivesRemoved": {},
+  "logs": {},
+  "contentsDisplayed": false
+}}"#,
+        report.max_bytes,
+        report.keep_archives,
+        report.files_scanned,
+        report.files_rotated,
+        report.archives_removed,
+        logs
+    )
+}
+
+fn render_logs_rotate_text(report: &LogRotationReport) -> String {
+    let logs = report
+        .entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "  {}  size {}  rotated {}  removed {}",
+                entry.log_name,
+                entry.size_bytes,
+                yes_no(entry.rotated),
+                entry.archives_removed
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let logs = if logs.is_empty() {
+        "  none found".to_string()
+    } else {
+        logs
+    };
+
+    format!(
+        r"conU logs rotate
+
+status: rotated
+max bytes: {}
+keep archives: {}
+files scanned: {}
+files rotated: {}
+archives removed: {}
+
+logs
+{logs}
+
+privacy
+  payload view  contents are not displayed by conU",
+        report.max_bytes,
+        report.keep_archives,
+        report.files_scanned,
+        report.files_rotated,
+        report.archives_removed
+    )
+}
+
+fn render_logs_usage() -> String {
+    r"usage:
+  conu logs rotate [--max-bytes <bytes>] [--keep <count>] [--json]"
+        .to_string()
+}
+
+struct TelemetryView<'a> {
+    snapshot: &'a StateSnapshot,
+    runtime_status: &'a RuntimeStatus,
+    local_agents: &'a [LocalAgentRecord],
+    remote_agents: &'a [RemoteAgentRecord],
+    sessions: &'a [RemoteSession],
+    stream_records: &'a [StreamRecord],
+    room_records: &'a [RoomRecord],
+    room_events: &'a [RoomEvent],
+    route_records: &'a [RouteRecord],
+    peers: &'a [TrustedPeer],
+    relay_queue: &'a relay_delivery::RelayQueueSummary,
+    security: &'a SecurityAudit,
+    log_scan: &'a DoctorLogScan,
+}
+
+fn render_telemetry(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("snapshot") => render_telemetry_snapshot(&args[1..], home_override),
+        Some("--help") | Some("-h") | None => CliOutput::success(render_telemetry_usage()),
+        _ => CliOutput::failure(2, render_telemetry_usage()),
+    }
+}
+
+fn render_telemetry_snapshot(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+
+    let snapshot = match state::read_state(home_override.clone()) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let runtime_status = match runtime::read_runtime(home_override.clone()) {
+        Ok(status) => status,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let local_agents = match agents::list_local_agents(home_override.clone()) {
+        Ok(agents) => agents,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let peers = match trust::list_peers(home_override.clone()) {
+        Ok(peers) => peers,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let sessions = match sessions::list_remote_sessions(home_override.clone()) {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let remote_agents = match sessions::list_remote_agents(home_override.clone()) {
+        Ok(agents) => agents,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let stream_records = match streams::list_streams(home_override.clone()) {
+        Ok(streams) => streams,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let room_records = match rooms::list_rooms(home_override.clone()) {
+        Ok(rooms) => rooms,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let room_events = match rooms::list_room_events(home_override.clone()) {
+        Ok(events) => events,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let route_records = match routes::list_routes(home_override.clone()) {
+        Ok(routes) => routes,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let relay_queue = match relay_delivery::relay_queue_summary(home_override.clone()) {
+        Ok(queue) => queue,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU telemetry snapshot failed\n\n{error}"));
+        }
+    };
+    let security_audit =
+        security::security_audit(home_override).unwrap_or_else(|_| empty_security_audit());
+    let log_scan = scan_payload_safe_logs(&snapshot);
+    let view = TelemetryView {
+        snapshot: &snapshot,
+        runtime_status: &runtime_status,
+        local_agents: &local_agents,
+        remote_agents: &remote_agents,
+        sessions: &sessions,
+        stream_records: &stream_records,
+        room_records: &room_records,
+        room_events: &room_events,
+        route_records: &route_records,
+        peers: &peers,
+        relay_queue: &relay_queue,
+        security: &security_audit,
+        log_scan: &log_scan,
+    };
+
+    if json {
+        CliOutput::success(render_telemetry_snapshot_json(&view))
+    } else {
+        CliOutput::success(render_telemetry_snapshot_text(&view))
+    }
+}
+
+fn render_telemetry_snapshot_json(view: &TelemetryView<'_>) -> String {
+    let snapshot = view.snapshot;
+    let runtime_status = view.runtime_status;
+    let security = view.security;
+    let log_scan = view.log_scan;
+    let relay_queue = view.relay_queue;
+
+    format!(
+        r#"{{
+  "schema": "{}",
+  "fieldAllowlist": {},
+  "state": {{
+    "initialized": {},
+    "configReady": {},
+    "trustStoreReady": {},
+    "agentRegistryReady": {}
+  }},
+  "runtime": {{
+    "state": "{}",
+    "health": "{}",
+    "heartbeatAgeSecs": {}
+  }},
+  "agents": {{
+    "local": {},
+    "remote": {},
+    "trustedPeers": {},
+    "sessions": {}
+  }},
+  "streams": {{
+    "total": {},
+    "open": {}
+  }},
+  "rooms": {{
+    "total": {},
+    "events": {}
+  }},
+  "routes": {{
+    "selected": {},
+    "selectedDirect": {},
+    "selectedRelay": {},
+    "relayFallbacks": {}
+  }},
+  "relay": {{
+    "queued": {},
+    "sent": {},
+    "rejected": {}
+  }},
+  "logs": {{
+    "payloadSafe": {},
+    "scannedFiles": {},
+    "issues": {}
+  }},
+  "security": {{
+    "initialized": {},
+    "localPayloadEncryption": {},
+    "signedAgentCards": {},
+    "peerKeyExchange": {},
+    "replayCache": {},
+    "keyRotationPlan": {},
+    "secretsOsProtected": {}
+  }},
+  "privacy": {{
+    "fieldAllowlistOnly": true,
+    "contentsDisplayed": false
+  }}
+}}"#,
+        json_escape(observability::TELEMETRY_SNAPSHOT_SCHEMA),
+        json_string_array(observability::TELEMETRY_FIELD_ALLOWLIST),
+        snapshot.is_initialized(),
+        snapshot.config_exists,
+        snapshot.trust_store_exists,
+        snapshot.agent_registry_exists,
+        runtime_status.state.as_str(),
+        json_escape(runtime_health_label(runtime_status)),
+        json_u64(runtime_status.heartbeat_age_secs()),
+        view.local_agents.len(),
+        view.remote_agents.len(),
+        trusted_peer_count(view.peers),
+        view.sessions.len(),
+        view.stream_records.len(),
+        open_stream_count(view.stream_records),
+        view.room_records.len(),
+        view.room_events.len(),
+        selected_route_count(view.route_records),
+        selected_direct_route_count(view.route_records),
+        selected_relay_route_count(view.route_records),
+        relay_fallback_route_count(view.route_records),
+        relay_queue.queued,
+        relay_queue.sent,
+        relay_queue.rejected,
+        log_scan.payload_safe,
+        log_scan.scanned_files,
+        log_scan.issues,
+        security.initialized,
+        security.local_payload_encryption,
+        security.signed_agent_cards,
+        security.peer_key_exchange,
+        security.replay_cache,
+        security.key_rotation_plan,
+        security.secrets_os_protected
+    )
+}
+
+fn render_telemetry_snapshot_text(view: &TelemetryView<'_>) -> String {
+    let snapshot = view.snapshot;
+    let runtime_status = view.runtime_status;
+    let security = view.security;
+    let log_scan = view.log_scan;
+    let relay_queue = view.relay_queue;
+
+    format!(
+        r"conU telemetry snapshot
+
+schema: {}
+field allowlist: {} fields
+
+state
+  initialized       {}
+  config            {}
+  trust store       {}
+  agent registry    {}
+
+runtime
+  conUD             {}
+  health            {}
+  heartbeat age     {}
+
+agents
+  local             {}
+  remote            {}
+  trusted peers     {}
+  sessions          {}
+
+streams
+  total             {}
+  open              {}
+
+rooms
+  total             {}
+  events            {}
+
+routes
+  selected          {}
+  direct            {}
+  relay             {}
+  relay fallback    {}
+
+relay
+  queued            {}
+  sent              {}
+  rejected          {}
+
+logs
+  payload safe      {}
+  scanned files     {}
+  issues            {}
+
+security
+  initialized       {}
+  local payloads    {}
+  signed agents     {}
+  peer exchange     {}
+  replay guard      {}
+  key rotation      {}
+  os secret store   {}
+
+privacy
+  field allowlist   enforced
+  payload view      contents are not displayed by conU",
+        observability::TELEMETRY_SNAPSHOT_SCHEMA,
+        observability::TELEMETRY_FIELD_ALLOWLIST.len(),
+        yes_no(snapshot.is_initialized()),
+        ready_label(snapshot.config_exists),
+        ready_label(snapshot.trust_store_exists),
+        ready_label(snapshot.agent_registry_exists),
+        runtime_state_label(runtime_status),
+        runtime_health_label(runtime_status),
+        optional_u64_label(runtime_status.heartbeat_age_secs()),
+        view.local_agents.len(),
+        view.remote_agents.len(),
+        trusted_peer_count(view.peers),
+        view.sessions.len(),
+        view.stream_records.len(),
+        open_stream_count(view.stream_records),
+        view.room_records.len(),
+        view.room_events.len(),
+        selected_route_count(view.route_records),
+        selected_direct_route_count(view.route_records),
+        selected_relay_route_count(view.route_records),
+        relay_fallback_route_count(view.route_records),
+        relay_queue.queued,
+        relay_queue.sent,
+        relay_queue.rejected,
+        yes_no(log_scan.payload_safe),
+        log_scan.scanned_files,
+        log_scan.issues,
+        ready_label(security.initialized),
+        yes_no(security.local_payload_encryption),
+        yes_no(security.signed_agent_cards),
+        yes_no(security.peer_key_exchange),
+        yes_no(security.replay_cache),
+        yes_no(security.key_rotation_plan),
+        yes_no(security.secrets_os_protected)
+    )
+}
+
+fn render_telemetry_usage() -> String {
+    r"usage:
+  conu telemetry snapshot [--json]"
+        .to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DoctorBinary {
     name: &'static str,
@@ -4165,7 +6317,7 @@ fn scan_payload_safe_logs(snapshot: &StateSnapshot) -> DoctorLogScan {
     if let Ok(entries) = fs::read_dir(log_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("log") {
+            if !is_log_or_archive(&path) {
                 continue;
             }
             scanned_files += 1;
@@ -4187,6 +6339,16 @@ fn scan_payload_safe_logs(snapshot: &StateSnapshot) -> DoctorLogScan {
         scanned_files,
         issues,
     }
+}
+
+fn is_log_or_archive(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    name.ends_with(".log")
+        || name.split_once(".log.").is_some_and(|(_, suffix)| {
+            !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+        })
 }
 
 const FORBIDDEN_LOG_TERMS: &[&str] = &[
@@ -4385,6 +6547,7 @@ privacy
   local storage encrypted at rest: {}
   agent cards   signed: {}
   replay guard  active: {}
+  secret store  {} os_protected={}
   payload view  contents are not displayed by conU",
         runtime_state_label(runtime_status),
         runtime_pid_label(runtime_status),
@@ -4409,7 +6572,9 @@ privacy
         selected_route_count(view.route_records),
         yes_no(security.local_payload_encryption),
         yes_no(security.signed_agent_cards),
-        yes_no(security.replay_cache)
+        yes_no(security.replay_cache),
+        security.secret_storage_backend,
+        yes_no(security.secrets_os_protected)
     )
 }
 
@@ -4465,7 +6630,9 @@ fn render_status_json(view: &StatusView<'_>) -> String {
     "signedAgentCards": {},
     "peerKeyExchange": {},
     "replayCache": {},
-    "keyRotationPlan": {}
+    "keyRotationPlan": {},
+    "secretStorageBackend": "{}",
+    "secretsOsProtected": {}
   }},
   "privacy": {{
     "contentsDisplayed": false
@@ -4497,7 +6664,9 @@ fn render_status_json(view: &StatusView<'_>) -> String {
         security.signed_agent_cards,
         security.peer_key_exchange,
         security.replay_cache,
-        security.key_rotation_plan
+        security.key_rotation_plan,
+        json_escape(&security.secret_storage_backend),
+        security.secrets_os_protected
     )
 }
 
@@ -4510,13 +6679,18 @@ Usage:
   conu init
   conu status [--json]
   conu agents [--json]
-  conu agents register <agent-id> <display-name> [--kind <kind>] [--json]
+  conu agents register <agent-id> <display-name> [--kind <kind>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--json]
+  conu agents export <agent-id> [--json]
+  conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id> [--json]
   conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
   conu messages receipts [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
+  conu relay credential status [--json]
+  conu relay credential set --stdin [--json]
+  conu relay credential clear [--json]
   conu streams [--json]
   conu streams open <from-agent> <to-agent> [--kind <kind>] [--json]
   conu streams write <stream-id> --stdin [--json]
@@ -4525,16 +6699,24 @@ Usage:
   conu rooms create <room-id> <display-name> --agent <agent-id> [--json]
   conu rooms join <room-id> <agent-id> [--json]
   conu rooms publish <room-id> <from-agent> <topic> --stdin [--json]
+  conu rooms policy [<room-id> <agent-id> <topic> [--publish <true|false>] [--subscribe <true|false>]] [--json]
   conu rooms events [--json]
   conu sessions [--json]
   conu sessions sync [--json]
   conu routes [--json]
   conu routes sync [--json]
   conu routes probes [--json]
+  conu logs rotate [--max-bytes <bytes>] [--keep <count>] [--json]
+  conu telemetry snapshot [--json]
   conu security audit [--json]
+  conu security rotate storage --confirm [--json]
+  conu security rotate identity --confirm-peer-refresh [--json]
+  conu security retire identity --confirm-peer-refresh-complete [--json]
+  conu security retire storage --confirm [--json]
   conu identity export [--json]
   conu peers [--json]
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port>] [--json]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--json]
+  conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]
   conu peers revoke <peer-node-id> [--json]
   conu pair [--json]
   conu join <code> [--json]
@@ -4699,6 +6881,8 @@ fn empty_security_audit() -> SecurityAudit {
         local_payload_encryption: false,
         signed_agent_cards: false,
         peer_key_exchange: false,
+        secret_storage_backend: "uninitialized".to_string(),
+        secrets_os_protected: false,
         contents_displayed: false,
     }
 }
@@ -4735,10 +6919,23 @@ fn runtime_pid_label(status: &RuntimeStatus) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
+fn optional_u64_label(value: Option<u64>) -> String {
+    value
+        .map(|value| format!("{value}s"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
 fn trusted_peer_count(peers: &[TrustedPeer]) -> usize {
     peers
         .iter()
         .filter(|peer| peer.status == TrustStatus::Trusted)
+        .count()
+}
+
+fn open_stream_count(stream_records: &[StreamRecord]) -> usize {
+    stream_records
+        .iter()
+        .filter(|stream| stream.state.as_str() == "open")
         .count()
 }
 
@@ -4782,6 +6979,15 @@ fn json_u64(value: Option<u64>) -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
+fn json_string_array(values: &[&str]) -> String {
+    let items = values
+        .iter()
+        .map(|value| json_string(value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{items}]")
+}
+
 fn json_optional_string(value: Option<&str>) -> String {
     value.map(json_string).unwrap_or_else(|| "null".to_string())
 }
@@ -4823,6 +7029,10 @@ fn json_escape(value: &str) -> String {
 
 fn json_string(value: &str) -> String {
     format!("\"{}\"", json_escape(value))
+}
+
+fn optional_json_string(value: Option<&str>) -> String {
+    value.map(json_string).unwrap_or_else(|| "null".to_string())
 }
 
 fn json_flag(args: &[String]) -> Result<bool, CliOutput> {
@@ -4909,6 +7119,7 @@ mod tests {
             "dashboard",
             "watch",
             "doctor",
+            "telemetry",
             "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
@@ -4954,6 +7165,146 @@ mod tests {
         assert_eq!(revoke.code, 0, "{}", revoke.stderr);
         assert!(revoke.stdout.contains("\"status\": \"revoked\""));
         assert!(revoked.stdout.contains("revoked"));
+    }
+
+    #[test]
+    fn peer_policy_cli_sets_scoped_grants_without_payloads() {
+        let home = temp_home("peer-policy");
+        let invite = trust::create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let joined = trust::join_pairing_code(Some(home.clone()), &invite.code).expect("join");
+
+        let updated = run_with_home(
+            [
+                "peers",
+                "policy",
+                &joined.peer.peer_node_id,
+                "--messages",
+                "true",
+                "--streams",
+                "true",
+                "--rooms",
+                "false",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let listed = run_with_home(["peers", "policy", "--json"], Some(home.clone()));
+        let read = run_with_home(
+            ["peers", "policy", &joined.peer.peer_node_id, "--json"],
+            Some(home),
+        );
+
+        assert_eq!(updated.code, 0, "{}", updated.stderr);
+        assert_eq!(listed.code, 0, "{}", listed.stderr);
+        assert_eq!(read.code, 0, "{}", read.stderr);
+        assert!(updated.stdout.contains("\"messages\": true"));
+        assert!(updated.stdout.contains("\"streams\": true"));
+        assert!(updated.stdout.contains("\"rooms\": false"));
+        assert!(listed.stdout.contains(&joined.peer.peer_node_id));
+        assert!(read.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!updated.stdout.contains("private message contents"));
+        assert!(!listed.stdout.contains("private message contents"));
+        assert!(!read.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn signed_peer_card_cli_import_verifies_without_payloads() {
+        let alice_home = temp_home("signed-peer-alice");
+        let bob_home = temp_home("signed-peer-bob");
+        let card = trust::export_peer_card(Some(bob_home)).expect("bob card exports");
+        let output = run_with_home(
+            vec![
+                "peers".to_string(),
+                "trust".to_string(),
+                card.node_id.clone(),
+                card.display_name.clone(),
+                "--exchange-key".to_string(),
+                card.exchange_public_key_hex.clone(),
+                "--relay".to_string(),
+                card.relay_endpoint.clone(),
+                "--signing-key".to_string(),
+                card.signing_public_key_hex.clone().expect("card signed"),
+                "--signature".to_string(),
+                card.signature_hex.clone().expect("card signature"),
+                "--signature-key-id".to_string(),
+                card.signature_key_id
+                    .clone()
+                    .expect("card signature key id"),
+                "--json".to_string(),
+            ],
+            Some(alice_home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"peerCardSigned\": true"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private message contents"));
+        assert!(
+            !output
+                .stdout
+                .contains(card.signature_hex.as_deref().unwrap_or(""))
+        );
+    }
+
+    #[test]
+    fn signed_agent_card_cli_export_and_import_verifies_without_payloads() {
+        let alice_home = temp_home("signed-agent-alice");
+        let bob_home = temp_home("signed-agent-bob");
+        let bob_peer_card =
+            trust::export_peer_card(Some(bob_home.clone())).expect("bob peer card exports");
+        trust::trust_peer_card(Some(alice_home.clone()), bob_peer_card).expect("alice trusts bob");
+        register_test_agent(&bob_home, "agent.bob");
+
+        let exported = run_with_home(
+            ["agents", "export", "agent.bob", "--json"],
+            Some(bob_home.clone()),
+        );
+        let card =
+            agents::export_agent_card(Some(bob_home), "agent.bob").expect("agent card exports");
+        let trusted = run_with_home(
+            vec![
+                "agents".to_string(),
+                "trust".to_string(),
+                card.agent_id.clone(),
+                card.display_name.clone(),
+                "--node".to_string(),
+                card.node_id.clone(),
+                "--kind".to_string(),
+                card.kind.clone(),
+                "--messages".to_string(),
+                card.capabilities.messages.to_string(),
+                "--streams".to_string(),
+                card.capabilities.streams.to_string(),
+                "--rooms".to_string(),
+                card.capabilities.rooms.to_string(),
+                "--files".to_string(),
+                card.capabilities.files.to_string(),
+                "--presence".to_string(),
+                card.capabilities.presence.to_string(),
+                "--signing-key".to_string(),
+                card.signing_public_key_hex.clone(),
+                "--signature".to_string(),
+                card.signature_hex.clone(),
+                "--signature-key-id".to_string(),
+                card.signature_key_id.clone(),
+                "--json".to_string(),
+            ],
+            Some(alice_home.clone()),
+        );
+        let sync = run_with_home(["sessions", "sync"], Some(alice_home.clone()));
+        let agents = run_with_home(["agents", "--json"], Some(alice_home));
+
+        assert_eq!(exported.code, 0, "{}", exported.stderr);
+        assert_eq!(trusted.code, 0, "{}", trusted.stderr);
+        assert_eq!(sync.code, 0, "{}", sync.stderr);
+        assert!(exported.stdout.contains("\"agentCardSigned\": true"));
+        assert!(trusted.stdout.contains("\"agentCardSigned\": true"));
+        assert!(agents.stdout.contains("\"agentId\": \"agent.bob\""));
+        assert!(agents.stdout.contains("\"agentCardSigned\": true"));
+        assert!(agents.stdout.contains("\"streams\": true"));
+        assert!(agents.stdout.contains("\"rooms\": true"));
+        assert!(!trusted.stdout.contains(&card.signature_hex));
+        assert!(!agents.stdout.contains("private message contents"));
     }
 
     #[test]
@@ -5004,7 +7355,7 @@ mod tests {
     }
 
     #[test]
-    fn routes_sync_prefers_configured_direct_quic_candidate() {
+    fn routes_sync_keeps_relay_selected_for_inactive_direct_quic_candidate() {
         let home = temp_home("routes-direct");
         let pair = run_with_home(["pair"], Some(home.clone()));
         let code = pairing_code_from_output(&pair.stdout);
@@ -5031,11 +7382,13 @@ mod tests {
 
         assert_eq!(join.code, 0, "{}", join.stderr);
         assert_eq!(sync.code, 0, "{}", sync.stderr);
-        assert!(sync.stdout.contains("\"selectedDirect\": 1"));
-        assert!(sync.stdout.contains("\"selectedRelay\": 0"));
+        assert!(sync.stdout.contains("\"directAvailable\": 0"));
+        assert!(sync.stdout.contains("\"selectedDirect\": 0"));
+        assert!(sync.stdout.contains("\"selectedRelay\": 1"));
         assert!(routes.stdout.contains("direct-quic"));
+        assert!(routes.stdout.contains("direct_quic_transport_inactive"));
         assert!(session_sync.stdout.contains("sessions: 1"));
-        assert!(sessions.stdout.contains("route direct-quic"));
+        assert!(sessions.stdout.contains("route relay-websocket"));
         assert!(!routes.stdout.contains("private message contents"));
     }
 
@@ -5130,6 +7483,86 @@ mod tests {
     }
 
     #[test]
+    fn rooms_policy_cli_sets_topic_grants_without_payloads() {
+        let home = temp_home("rooms-policy");
+        register_test_agent(&home, "agent.codex");
+        register_test_agent(&home, "agent.hermes");
+        let created = run_with_home(
+            [
+                "rooms",
+                "create",
+                "room.dev",
+                "Dev Room",
+                "--agent",
+                "agent.codex",
+            ],
+            Some(home.clone()),
+        );
+        let joined = run_with_home(
+            ["rooms", "join", "room.dev", "agent.hermes"],
+            Some(home.clone()),
+        );
+        let publisher = run_with_home(
+            [
+                "rooms",
+                "policy",
+                "room.dev",
+                "agent.hermes",
+                "build",
+                "--publish",
+                "true",
+                "--subscribe",
+                "false",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let subscriber = run_with_home(
+            [
+                "rooms",
+                "policy",
+                "room.dev",
+                "agent.codex",
+                "build",
+                "--publish",
+                "false",
+                "--subscribe",
+                "true",
+            ],
+            Some(home.clone()),
+        );
+        let listed = run_with_home(["rooms", "policy", "--json"], Some(home.clone()));
+        let published = run_with_home_and_stdin(
+            [
+                "rooms",
+                "publish",
+                "room.dev",
+                "agent.hermes",
+                "build",
+                "--stdin",
+                "--json",
+            ],
+            Some(home),
+            b"private message contents".to_vec(),
+        );
+
+        assert_eq!(created.code, 0, "{}", created.stderr);
+        assert_eq!(joined.code, 0, "{}", joined.stderr);
+        assert_eq!(publisher.code, 0, "{}", publisher.stderr);
+        assert_eq!(subscriber.code, 0, "{}", subscriber.stderr);
+        assert_eq!(listed.code, 0, "{}", listed.stderr);
+        assert_eq!(published.code, 0, "{}", published.stderr);
+        assert!(publisher.stdout.contains("\"publish\": true"));
+        assert!(publisher.stdout.contains("\"subscribe\": false"));
+        assert!(subscriber.stdout.contains("status: updated"));
+        assert!(listed.stdout.contains("\"topicPolicies\":"));
+        assert!(published.stdout.contains("\"localDeliveries\": 1"));
+        assert!(!publisher.stdout.contains("private message contents"));
+        assert!(!listed.stdout.contains("private message contents"));
+        assert!(!published.stdout.contains("private message contents"));
+    }
+
+    #[test]
     fn security_audit_reports_hardened_controls_without_keys_or_payloads() {
         let home = temp_home("security-audit");
         let output = run_with_home(["security", "audit", "--json"], Some(home));
@@ -5139,9 +7572,263 @@ mod tests {
         assert!(output.stdout.contains("\"signedAgentCards\": true"));
         assert!(output.stdout.contains("\"peerKeyExchange\": true"));
         assert!(output.stdout.contains("\"replayCache\": true"));
+        assert!(output.stdout.contains("\"secretStorageBackend\":"));
+        assert!(output.stdout.contains("\"secretsOsProtected\":"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
         assert!(!output.stdout.contains("secret_key_hex"));
+        assert!(!output.stdout.contains("dpapi_hex"));
         assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn security_rotate_storage_requires_confirmation_and_hides_payloads() {
+        let unconfirmed = run_with_home(
+            ["security", "rotate", "storage", "--json"],
+            Some(temp_home("security-rotate-unconfirmed")),
+        );
+        assert_eq!(unconfirmed.code, 2);
+        assert!(unconfirmed.stderr.contains("requires --confirm"));
+
+        let home = temp_home("security-rotate");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let before_key = security::ensure_security_state(Some(home.clone()))
+            .expect("security state")
+            .storage_key_id;
+
+        let output = run_with_home(
+            ["security", "rotate", "storage", "--confirm", "--json"],
+            Some(home.clone()),
+        );
+        let after_key = security::ensure_security_state(Some(home.clone()))
+            .expect("security state")
+            .storage_key_id;
+        let payload =
+            messages::read_message_payload(Some(home), "agent.receiver", &inbox[0].envelope_id)
+                .expect("payload reads after rotation");
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_ne!(before_key, after_key);
+        assert!(output.stdout.contains("\"status\": \"rotated\""));
+        assert!(output.stdout.contains("\"filesMigrated\": 1"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert_eq!(payload.as_bytes(), b"private message contents");
+        assert!(!output.stdout.contains("private message contents"));
+        assert!(!output.stdout.contains("key_hex"));
+        assert!(!output.stdout.contains("dpapi_hex"));
+    }
+
+    #[test]
+    fn security_rotate_identity_requires_peer_refresh_and_hides_keys() {
+        let unconfirmed = run_with_home(
+            ["security", "rotate", "identity", "--json"],
+            Some(temp_home("security-rotate-identity-unconfirmed")),
+        );
+        assert_eq!(unconfirmed.code, 2);
+        assert!(unconfirmed.stderr.contains("--confirm-peer-refresh"));
+
+        let home = temp_home("security-rotate-identity");
+        let before = security::ensure_security_state(Some(home.clone())).expect("security state");
+        let output = run_with_home(
+            [
+                "security",
+                "rotate",
+                "identity",
+                "--confirm-peer-refresh",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let after = security::ensure_security_state(Some(home.clone())).expect("security state");
+        let exported = run_with_home(["identity", "export", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_ne!(before.signing_key_id, after.signing_key_id);
+        assert_ne!(before.exchange_key_id, after.exchange_key_id);
+        assert!(output.stdout.contains("\"status\": \"rotated\""));
+        assert!(output.stdout.contains("\"peerCardRefreshRequired\": true"));
+        assert!(
+            output
+                .stdout
+                .contains("\"signedAgentCardRefreshRequired\": true")
+        );
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains(&before.signing_public_key_hex));
+        assert!(!output.stdout.contains(&before.exchange_public_key_hex));
+        assert!(!output.stdout.contains("secret_key_hex"));
+        assert!(!output.stdout.contains("dpapi_hex"));
+        assert_eq!(exported.code, 0, "{}", exported.stderr);
+        assert!(exported.stdout.contains(&after.signing_key_id));
+        assert!(exported.stdout.contains(&after.exchange_public_key_hex));
+    }
+
+    #[test]
+    fn security_retire_identity_requires_refresh_confirmation_and_hides_keys() {
+        let unconfirmed = run_with_home(
+            ["security", "retire", "identity", "--json"],
+            Some(temp_home("security-retire-identity-unconfirmed")),
+        );
+        assert_eq!(unconfirmed.code, 2);
+        assert!(
+            unconfirmed
+                .stderr
+                .contains("--confirm-peer-refresh-complete")
+        );
+
+        let home = temp_home("security-retire-identity");
+        let before = security::ensure_security_state(Some(home.clone())).expect("security state");
+        let rotated = run_with_home(
+            [
+                "security",
+                "rotate",
+                "identity",
+                "--confirm-peer-refresh",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let after_rotation =
+            security::ensure_security_state(Some(home.clone())).expect("security state");
+        let retired = run_with_home(
+            [
+                "security",
+                "retire",
+                "identity",
+                "--confirm-peer-refresh-complete",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let after_retirement =
+            security::ensure_security_state(Some(home.clone())).expect("security state");
+        let archive_dir = home.join("security").join("identity-keys");
+        let archive_count = fs::read_dir(&archive_dir)
+            .map(|entries| entries.count())
+            .unwrap_or_default();
+
+        assert_eq!(rotated.code, 0, "{}", rotated.stderr);
+        assert_eq!(retired.code, 0, "{}", retired.stderr);
+        assert_ne!(before.signing_key_id, after_rotation.signing_key_id);
+        assert_ne!(before.exchange_key_id, after_rotation.exchange_key_id);
+        assert_eq!(
+            after_rotation.signing_key_id,
+            after_retirement.signing_key_id
+        );
+        assert_eq!(
+            after_rotation.exchange_key_id,
+            after_retirement.exchange_key_id
+        );
+        assert_eq!(archive_count, 0);
+        assert!(retired.stdout.contains("\"status\": \"retired\""));
+        assert!(
+            retired
+                .stdout
+                .contains("\"peerCardRefreshConfirmed\": true")
+        );
+        assert!(
+            retired
+                .stdout
+                .contains("\"oldKeyDecryptCompatibilityRetired\": true")
+        );
+        assert!(retired.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!retired.stdout.contains(&before.signing_public_key_hex));
+        assert!(!retired.stdout.contains(&before.exchange_public_key_hex));
+        assert!(!retired.stdout.contains("secret_key_hex"));
+        assert!(!retired.stdout.contains("dpapi_hex"));
+    }
+
+    #[test]
+    fn security_retire_storage_requires_confirmation_and_hides_payloads() {
+        let unconfirmed = run_with_home(
+            ["security", "retire", "storage", "--json"],
+            Some(temp_home("security-retire-unconfirmed")),
+        );
+        assert_eq!(unconfirmed.code, 2);
+        assert!(unconfirmed.stderr.contains("requires --confirm"));
+
+        let home = temp_home("security-retire");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+
+        let rotated = run_with_home(
+            ["security", "rotate", "storage", "--confirm", "--json"],
+            Some(home.clone()),
+        );
+        let retired = run_with_home(
+            ["security", "retire", "storage", "--confirm", "--json"],
+            Some(home.clone()),
+        );
+        let payload =
+            messages::read_message_payload(Some(home), "agent.receiver", &inbox[0].envelope_id)
+                .expect("payload reads after retirement");
+
+        assert_eq!(rotated.code, 0, "{}", rotated.stderr);
+        assert_eq!(retired.code, 0, "{}", retired.stderr);
+        assert!(retired.stdout.contains("\"status\": \"retired\""));
+        assert!(retired.stdout.contains("\"retiredStorageKeys\": 1"));
+        assert!(retired.stdout.contains("\"retainedStorageKeys\": 0"));
+        assert!(retired.stdout.contains("\"contentsDisplayed\": false"));
+        assert_eq!(payload.as_bytes(), b"private message contents");
+        assert!(!retired.stdout.contains("private message contents"));
+        assert!(!retired.stdout.contains("key_hex"));
+        assert!(!retired.stdout.contains("dpapi_hex"));
+    }
+
+    #[test]
+    fn relay_credential_cli_uses_stdin_and_never_prints_token() {
+        let home = temp_home("relay-credential");
+        let token = b"stored-relay-token-1234567890".to_vec();
+        let stored = run_with_home_and_stdin(
+            ["relay", "credential", "set", "--stdin", "--json"],
+            Some(home.clone()),
+            token.clone(),
+        );
+        let status = run_with_home(
+            ["relay", "credential", "status", "--json"],
+            Some(home.clone()),
+        );
+        let cleared = run_with_home(
+            ["relay", "credential", "clear", "--json"],
+            Some(home.clone()),
+        );
+        let after_clear = run_with_home(["relay", "credential", "status", "--json"], Some(home));
+        let token_text = String::from_utf8(token).expect("token utf8");
+
+        assert_eq!(stored.code, 0, "{}", stored.stderr);
+        assert_eq!(status.code, 0, "{}", status.stderr);
+        assert_eq!(cleared.code, 0, "{}", cleared.stderr);
+        assert_eq!(after_clear.code, 0, "{}", after_clear.stderr);
+        assert!(stored.stdout.contains("\"status\": \"stored\""));
+        assert!(stored.stdout.contains("\"configured\": true"));
+        assert!(stored.stdout.contains("\"secretStorageBackend\":"));
+        assert!(stored.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(status.stdout.contains("\"configured\": true"));
+        assert!(cleared.stdout.contains("\"configured\": false"));
+        assert!(after_clear.stdout.contains("\"configured\": false"));
+        assert!(!stored.stdout.contains(&token_text));
+        assert!(!status.stdout.contains(&token_text));
+        assert!(!stored.stdout.contains("dpapi_hex"));
+        assert!(!status.stdout.contains("token_hex"));
     }
 
     #[test]
@@ -5189,6 +7876,133 @@ mod tests {
     }
 
     #[test]
+    fn logs_rotate_archives_metadata_without_payload_output() {
+        let home = temp_home("logs-rotate");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = state::StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        fs::write(
+            paths.logs_dir.join("messages.log"),
+            "event=delivery envelope=env_1 payload=not_observed\n",
+        )
+        .expect("log writes");
+
+        let output = run_with_home(
+            [
+                "logs",
+                "rotate",
+                "--max-bytes",
+                "8",
+                "--keep",
+                "2",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"filesRotated\": 1"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(paths.logs_dir.join("messages.log.1").exists());
+        assert!(!output.stdout.contains("event=delivery"));
+        assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn doctor_scans_rotated_log_archives_without_printing_contents() {
+        let home = temp_home("doctor-log-archives");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = state::StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        fs::write(
+            paths.logs_dir.join("messages.log.1"),
+            "event=test private message contents\n",
+        )
+        .expect("archive writes");
+
+        let output = run_with_home(["doctor", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"privacy_attention\""));
+        assert!(output.stdout.contains("\"payloadSafe\": false"));
+        assert!(output.stdout.contains("\"scannedFiles\": 1"));
+        assert!(
+            !output
+                .stdout
+                .contains("event=test private message contents")
+        );
+    }
+
+    #[test]
+    fn telemetry_snapshot_json_is_allowlisted_and_payload_safe() {
+        let home = temp_home("telemetry-json");
+        register_test_agent(&home, "agent.codex");
+        register_test_agent(&home, "agent.hermes");
+        let opened = run_with_home(
+            ["streams", "open", "agent.codex", "agent.hermes"],
+            Some(home.clone()),
+        );
+        assert_eq!(opened.code, 0, "{}", opened.stderr);
+        let stream_id = stream_id_from_output(&opened.stdout);
+        let written = run_with_home_and_stdin(
+            ["streams", "write", &stream_id, "--stdin"],
+            Some(home.clone()),
+            b"private message contents".to_vec(),
+        );
+        assert_eq!(written.code, 0, "{}", written.stderr);
+        let paths = state::StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        fs::write(
+            paths.logs_dir.join("bad.log"),
+            "event=test payload_text private message contents secret_key_hex\n",
+        )
+        .expect("log writes");
+
+        let output = run_with_home(["telemetry", "snapshot", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(
+            output
+                .stdout
+                .contains("\"schema\": \"conu.telemetry.snapshot.v1\"")
+        );
+        assert!(output.stdout.contains("\"fieldAllowlist\": ["));
+        assert!(output.stdout.contains("\"fieldAllowlistOnly\": true"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(output.stdout.contains("\"local\": 2"));
+        assert!(output.stdout.contains("\"total\": 1"));
+        assert!(output.stdout.contains("\"payloadSafe\": false"));
+        assert!(output.stdout.contains("\"issues\": 1"));
+        assert!(!output.stdout.contains("agent.codex"));
+        assert!(!output.stdout.contains("agent.hermes"));
+        assert!(!output.stdout.contains(&stream_id));
+        assert!(!output.stdout.contains("private message contents"));
+        assert!(!output.stdout.contains("payload_text"));
+        assert!(!output.stdout.contains("secret_key_hex"));
+        assert!(!output.stdout.contains("payload_ciphertext_hex"));
+    }
+
+    #[test]
+    fn telemetry_snapshot_text_uses_counts_without_identifiers() {
+        let home = temp_home("telemetry-text");
+        register_test_agent(&home, "agent.codex");
+
+        let output = run_with_home(["telemetry", "snapshot"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("conU telemetry snapshot"));
+        assert!(output.stdout.contains("field allowlist"));
+        assert!(output.stdout.contains("local             1"));
+        assert!(
+            output
+                .stdout
+                .contains("payload view      contents are not displayed")
+        );
+        assert!(!output.stdout.contains("agent.codex"));
+        assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
     fn join_rejects_unknown_local_pairing_code() {
         let output = run_with_home(["join", "123456"], Some(temp_home("join-missing")));
 
@@ -5220,6 +8034,37 @@ mod tests {
                 .contains("payload view  contents are not displayed")
         );
         assert!(state::StatePaths::from_home(home).ipc_inbox_dir.exists());
+    }
+
+    #[test]
+    fn agents_register_persists_explicit_capabilities() {
+        let home = temp_home("agent-register-capabilities");
+
+        let output = run_with_home(
+            [
+                "agents",
+                "register",
+                "agent.codex",
+                "Codex Desktop",
+                "--kind",
+                "coding-agent",
+                "--streams",
+                "true",
+                "--rooms",
+                "true",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        agents::process_gateway_requests(Some(home.clone())).expect("request processes");
+        let agents = run_with_home(["agents", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"streams\": true"));
+        assert!(output.stdout.contains("\"rooms\": true"));
+        assert!(agents.stdout.contains("\"agentId\": \"agent.codex\""));
+        assert!(agents.stdout.contains("\"streams\": true"));
+        assert!(agents.stdout.contains("\"rooms\": true"));
     }
 
     #[test]
@@ -5320,6 +8165,17 @@ mod tests {
             ],
             Some(alice_home.clone()),
         );
+        let policy = run_with_home(
+            [
+                "peers",
+                "policy",
+                &bob_card.node_id,
+                "--messages",
+                "true",
+                "--json",
+            ],
+            Some(alice_home.clone()),
+        );
         let sent = run_with_home_and_stdin(
             [
                 "messages",
@@ -5342,6 +8198,7 @@ mod tests {
         let request_text = std::fs::read_to_string(request.path()).expect("request reads");
 
         assert_eq!(trusted.code, 0, "{}", trusted.stderr);
+        assert_eq!(policy.code, 0, "{}", policy.stderr);
         assert_eq!(sent.code, 0, "{}", sent.stderr);
         assert!(sent.stdout.contains("\"status\": \"queued_remote\""));
         assert!(request_text.contains("payload_privacy = \"peer_encrypted\""));
@@ -5560,8 +8417,10 @@ mod tests {
     }
 
     fn register_test_agent(home: &std::path::Path, agent_id: &str) {
-        let registration =
+        let mut registration =
             AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid registration");
+        registration.capabilities.streams = true;
+        registration.capabilities.rooms = true;
         agents::submit_registration(Some(home.to_path_buf()), registration)
             .expect("request submits");
         agents::process_gateway_requests(Some(home.to_path_buf())).expect("request processes");
