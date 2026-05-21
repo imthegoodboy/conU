@@ -312,7 +312,8 @@ Environment:
   CONU_RELAY_ABUSE_DIR                optional metadata-only abuse/dashboard counter directory
   CONU_RELAY_ABUSE_WINDOW_SECONDS     abuse counter window; defaults to 86400
   CONU_RELAY_ADMIN_TOKEN              optional hosted admin token for online credential lifecycle; requires CONU_RELAY_CREDENTIALS_FILE
-  CONU_RELAY_TENANTS_FILE             optional hosted tenant metadata registry; requires CONU_RELAY_ADMIN_TOKEN and CONU_RELAY_CREDENTIALS_FILE
+  CONU_RELAY_ADMIN_TOKENS_FILE        optional hashed scoped hosted admin token manifest
+  CONU_RELAY_TENANTS_FILE             optional hosted tenant metadata registry; requires hosted admin config and CONU_RELAY_CREDENTIALS_FILE
 
 CONU_RELAY_CREDENTIALS_FILE overrides CONU_RELAY_CREDENTIALS; CONU_RELAY_CREDENTIALS overrides
 CONU_RELAY_TOKEN. Non-loopback binds such as 0.0.0.0 require custom shared or scoped tokens
@@ -320,7 +321,9 @@ with at least 24 characters. Use --hash-token with stdin to generate credential-
 --issue-credential to generate a scoped token file and optional manifest update, or
 --revoke-credential to mark a scoped credential revoked without displaying tokens. Hosted admin
 commands authenticate with an admin token read from stdin, send only node-token hash metadata to the
-relay, and write the raw node token locally only after the relay confirms the update. Local and admin
+relay, and write the raw node token locally only after the relay confirms the update. CONU_RELAY_ADMIN_TOKEN
+remains a full-admin compatibility path; CONU_RELAY_ADMIN_TOKENS_FILE can grant hashed tokens narrower
+credentials, tenants, dashboard, mailbox-audit, and mailbox-purge scopes. Local and admin
 tenant commands manage account, node, public key-id, and hosted permission metadata only; they never
 grant local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies.
 Admin hosted dashboard and tenant snapshots require the admin token over the relay control plane and
@@ -4079,6 +4082,10 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let admin_tokens_file = env::var("CONU_RELAY_ADMIN_TOKENS_FILE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     let mut config = match credentials_file.clone() {
         Some(path) => RelayConfig::with_scoped_credentials_file(addr, path),
@@ -4110,17 +4117,32 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
         .with_abuse_policy(abuse_policy)
         .with_abuse_storage(abuse_storage);
 
-    if let Some(admin_token) = env::var("CONU_RELAY_ADMIN_TOKEN")
+    let admin_token = env::var("CONU_RELAY_ADMIN_TOKEN")
         .ok()
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        let Some(credentials_file) = credentials_file else {
-            return Err("CONU_RELAY_ADMIN_TOKEN requires CONU_RELAY_CREDENTIALS_FILE".to_string());
+        .filter(|value| !value.is_empty());
+
+    if admin_token.is_some() || admin_tokens_file.is_some() {
+        let Some(credentials_file) = credentials_file.clone() else {
+            return Err(
+                "CONU_RELAY_ADMIN_TOKEN or CONU_RELAY_ADMIN_TOKENS_FILE requires CONU_RELAY_CREDENTIALS_FILE"
+                    .to_string(),
+            );
         };
-        config = config
-            .with_admin_token(admin_token, credentials_file)
-            .map_err(|error| error.to_string())?;
+        if let Some(admin_token) = admin_token {
+            config = config
+                .with_admin_token(admin_token, credentials_file.clone())
+                .map_err(|error| error.to_string())?;
+            if let Some(admin_tokens_file) = admin_tokens_file {
+                config = config
+                    .with_additional_admin_tokens_file(admin_tokens_file)
+                    .map_err(|error| error.to_string())?;
+            }
+        } else if let Some(admin_tokens_file) = admin_tokens_file {
+            config = config
+                .with_admin_tokens_file(admin_tokens_file, credentials_file.clone())
+                .map_err(|error| error.to_string())?;
+        }
         if let Some(tenants_file) = tenants_file {
             config = config
                 .with_admin_tenants_file(tenants_file)
@@ -4128,7 +4150,7 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
         }
     } else if tenants_file.is_some() {
         return Err(
-            "CONU_RELAY_TENANTS_FILE requires CONU_RELAY_ADMIN_TOKEN and CONU_RELAY_CREDENTIALS_FILE"
+            "CONU_RELAY_TENANTS_FILE requires CONU_RELAY_ADMIN_TOKEN or CONU_RELAY_ADMIN_TOKENS_FILE plus CONU_RELAY_CREDENTIALS_FILE"
                 .to_string(),
         );
     }

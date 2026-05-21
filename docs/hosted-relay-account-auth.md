@@ -43,7 +43,45 @@ $env:CONU_RELAY_ADMIN_TOKEN = (Get-Content -Raw C:\secure\relay-admin.token).Tri
 conu-relay --serve 0.0.0.0:8787
 ```
 
-`CONU_RELAY_ADMIN_TOKEN` must be custom, contain no whitespace, and be at least 24 characters. It is accepted only when `CONU_RELAY_CREDENTIALS_FILE` is configured. `CONU_RELAY_TENANTS_FILE` is optional, but when set it also requires `CONU_RELAY_ADMIN_TOKEN` and `CONU_RELAY_CREDENTIALS_FILE`. Missing credential or tenant records fail closed for new runtime sessions.
+`CONU_RELAY_ADMIN_TOKEN` must be custom, contain no whitespace, and be at least 24 characters. It is the backward-compatible full-admin path and is accepted only when `CONU_RELAY_CREDENTIALS_FILE` is configured. Operators can also set `CONU_RELAY_ADMIN_TOKENS_FILE` with hashed scoped admin tokens. `CONU_RELAY_TENANTS_FILE` is optional, but when set it requires either `CONU_RELAY_ADMIN_TOKEN` or `CONU_RELAY_ADMIN_TOKENS_FILE` plus `CONU_RELAY_CREDENTIALS_FILE`. Missing credential or tenant records fail closed for new runtime sessions.
+
+Scoped admin tokens are live-read from a metadata-only manifest. Generate each `token_sha256_hex` with `conu-relay --hash-token` over stdin, store the raw token in your secret manager, and grant only the needed action scopes:
+
+```toml
+version = "1"
+
+[[admin_token]]
+account_id = "account.prod"
+token_sha256_hex = "<sha256-hex-from-conu-relay-hash-token>"
+token_length = 48
+status = "active"
+scope_credentials = true
+scope_tenants = false
+scope_dashboard = false
+scope_mailbox_audit = false
+scope_mailbox_purge = false
+payload_displayed = false
+token_displayed = false
+token_hash_displayed = false
+contents_displayed = false
+
+[[admin_token]]
+account_id = "account.prod"
+token_sha256_hex = "<sha256-hex-from-conu-relay-hash-token>"
+token_length = 48
+status = "active"
+scope_credentials = false
+scope_tenants = true
+scope_dashboard = true
+scope_mailbox_audit = false
+scope_mailbox_purge = false
+payload_displayed = false
+token_displayed = false
+token_hash_displayed = false
+contents_displayed = false
+```
+
+Scopes map to admin actions: `scope_credentials` allows issue/rotate/revoke/audit credential commands, `scope_tenants` allows tenant upsert/revoke/audit commands, `scope_dashboard` allows hosted dashboard snapshots, and the mailbox scopes allow read-only mailbox audits or confirm-gated mailbox purges. If `account_id` is present, credential and tenant actions are limited to that account. Account-scoped dashboard snapshots without a node filter suppress global accounting and abuse counters; account-scoped mailbox audit/purge requires a node filter and an active tenant-node record. Scope failures return `admin_scope_denied` without echoing the submitted token or stored hash.
 
 ## Tenant Lifecycle
 
@@ -194,7 +232,7 @@ They never report raw node tokens, token hashes, admin tokens, payload plaintext
 
 ## Failure Behavior
 
-- Wrong or disabled admin token returns `admin_unauthorized` without echoing either token.
+- Wrong or disabled admin token returns `admin_unauthorized` without echoing either token; a valid scoped token without the requested action/account boundary returns `admin_scope_denied` without echoing the token or hash.
 - Duplicate issue returns `already_exists`.
 - Rotate/revoke for a missing credential returns `not_found`.
 - Issue/rotate with a missing hosted tenant returns `tenant_not_found`.
@@ -250,7 +288,7 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --json
 ```
 
-The online mailbox audit requires `CONU_RELAY_ADMIN_TOKEN`, reads the admin token from stdin, and reports only aggregate counts and display guards from the configured `CONU_RELAY_MAILBOX_DIR`. It is read-only and does not purge files.
+The online mailbox audit requires hosted admin configuration through `CONU_RELAY_ADMIN_TOKEN` or a scoped `CONU_RELAY_ADMIN_TOKENS_FILE` entry with `scope_mailbox_audit = true`, reads the admin token from stdin, and reports only aggregate counts and display guards from the configured `CONU_RELAY_MAILBOX_DIR`. It is read-only and does not purge files.
 
 Operators can enforce that same local retention boundary with an explicit dry-run or confirmation:
 
@@ -323,10 +361,10 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --json
 ```
 
-The online form requires `CONU_RELAY_ADMIN_TOKEN` and reads the admin token from stdin. It returns metadata-only counters from the running relay's configured credential, tenant, accounting, and abuse stores. It never echoes the admin token, raw node tokens, token hashes, private keys, relay session ids, payloads, ciphertext bodies, frame contents, or manifest contents.
+The online form requires hosted admin configuration through `CONU_RELAY_ADMIN_TOKEN` or a scoped `CONU_RELAY_ADMIN_TOKENS_FILE` entry with `scope_dashboard = true`, and reads the admin token from stdin. It returns metadata-only counters from the running relay's configured credential, tenant, accounting, and abuse stores. It never echoes the admin token, raw node tokens, token hashes, private keys, relay session ids, payloads, ciphertext bodies, frame contents, or manifest contents.
 
-This is still single-relay and file-backed/admin-gated. It is not distributed dashboard storage, tenant-wide RBAC, alert routing, adaptive response, billing, workflow automation, or managed hosted account suspension.
+This is still single-relay and file-backed/admin-gated, even with scoped admin tokens. It is not distributed dashboard storage, alert routing, adaptive response, billing, workflow automation, or managed hosted account suspension.
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token, abuse-audit, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle/workflow automation beyond single-relay scoped admin tokens, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.
