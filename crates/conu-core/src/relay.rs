@@ -298,6 +298,11 @@ pub enum RelayAdminAction {
     Revoke,
     Audit,
     Dashboard,
+    TenantUpsert,
+    TenantRevoke,
+    TenantNodeUpsert,
+    TenantNodeRevoke,
+    TenantAudit,
     MailboxAudit,
     MailboxPurge,
 }
@@ -310,6 +315,11 @@ impl RelayAdminAction {
             Self::Revoke => "revoke",
             Self::Audit => "audit",
             Self::Dashboard => "dashboard",
+            Self::TenantUpsert => "tenant_upsert",
+            Self::TenantRevoke => "tenant_revoke",
+            Self::TenantNodeUpsert => "tenant_node_upsert",
+            Self::TenantNodeRevoke => "tenant_node_revoke",
+            Self::TenantAudit => "tenant_audit",
             Self::MailboxAudit => "mailbox_audit",
             Self::MailboxPurge => "mailbox_purge",
         }
@@ -322,6 +332,11 @@ impl RelayAdminAction {
             "revoke" => Ok(Self::Revoke),
             "audit" => Ok(Self::Audit),
             "dashboard" => Ok(Self::Dashboard),
+            "tenant_upsert" => Ok(Self::TenantUpsert),
+            "tenant_revoke" => Ok(Self::TenantRevoke),
+            "tenant_node_upsert" => Ok(Self::TenantNodeUpsert),
+            "tenant_node_revoke" => Ok(Self::TenantNodeRevoke),
+            "tenant_audit" => Ok(Self::TenantAudit),
             "mailbox_audit" => Ok(Self::MailboxAudit),
             "mailbox_purge" => Ok(Self::MailboxPurge),
             _ => Err(RelayFrameError::new("unsupported relay admin action")),
@@ -345,6 +360,13 @@ pub struct RelayAdminRequest {
     pub expires_at_unix: Option<u64>,
     pub retention_ttl_seconds: Option<u64>,
     pub mailbox_purge_dry_run: Option<bool>,
+    pub tenant_messages: Option<bool>,
+    pub tenant_streams: Option<bool>,
+    pub tenant_rooms: Option<bool>,
+    pub tenant_files: Option<bool>,
+    pub tenant_mailbox: Option<bool>,
+    pub signing_key_id: Option<String>,
+    pub exchange_key_id: Option<String>,
 }
 
 impl RelayAdminRequest {
@@ -401,6 +423,13 @@ impl RelayAdminRequest {
             expires_at_unix: None,
             retention_ttl_seconds: None,
             mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
         })
     }
 
@@ -420,6 +449,13 @@ impl RelayAdminRequest {
             expires_at_unix: None,
             retention_ttl_seconds: None,
             mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
         })
     }
 
@@ -442,6 +478,13 @@ impl RelayAdminRequest {
             expires_at_unix: None,
             retention_ttl_seconds: None,
             mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
         })
     }
 
@@ -464,6 +507,13 @@ impl RelayAdminRequest {
                 .map(validate_positive_seconds)
                 .transpose()?,
             mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
         })
     }
 
@@ -485,6 +535,149 @@ impl RelayAdminRequest {
             expires_at_unix: None,
             retention_ttl_seconds: Some(validate_positive_seconds(retention_ttl_seconds)?),
             mailbox_purge_dry_run: Some(dry_run),
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
+        })
+    }
+
+    pub fn tenant_upsert(
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::TenantUpsert,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: Some(validate_identifier(account_id.into(), "account id")?),
+            node_id: None,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
+        })
+    }
+
+    pub fn tenant_revoke(
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::TenantRevoke,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: Some(validate_identifier(account_id.into(), "account id")?),
+            node_id: None,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn tenant_node_upsert(
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+        node_id: impl Into<String>,
+        messages: bool,
+        streams: bool,
+        rooms: bool,
+        files: bool,
+        mailbox: bool,
+        signing_key_id: Option<String>,
+        exchange_key_id: Option<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::TenantNodeUpsert,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: Some(validate_identifier(account_id.into(), "account id")?),
+            node_id: Some(validate_identifier(node_id.into(), "node id")?),
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
+            tenant_messages: Some(messages),
+            tenant_streams: Some(streams),
+            tenant_rooms: Some(rooms),
+            tenant_files: Some(files),
+            tenant_mailbox: Some(mailbox),
+            signing_key_id: signing_key_id
+                .map(|value| validate_identifier(value, "signing key id"))
+                .transpose()?,
+            exchange_key_id: exchange_key_id
+                .map(|value| validate_identifier(value, "exchange key id"))
+                .transpose()?,
+        })
+    }
+
+    pub fn tenant_node_revoke(
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+        node_id: impl Into<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::TenantNodeRevoke,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: Some(validate_identifier(account_id.into(), "account id")?),
+            node_id: Some(validate_identifier(node_id.into(), "node id")?),
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
+        })
+    }
+
+    pub fn tenant_audit(
+        admin_token: impl Into<String>,
+        account_id: Option<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::TenantAudit,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: account_id
+                .map(|value| validate_identifier(value, "account id"))
+                .transpose()?,
+            node_id: None,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
         })
     }
 
@@ -511,6 +704,13 @@ impl RelayAdminRequest {
             expires_at_unix,
             retention_ttl_seconds: None,
             mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
         })
     }
 }
@@ -531,6 +731,13 @@ impl fmt::Debug for RelayAdminRequest {
             .field("expires_at_unix", &self.expires_at_unix)
             .field("retention_ttl_seconds", &self.retention_ttl_seconds)
             .field("mailbox_purge_dry_run", &self.mailbox_purge_dry_run)
+            .field("tenant_messages", &self.tenant_messages)
+            .field("tenant_streams", &self.tenant_streams)
+            .field("tenant_rooms", &self.tenant_rooms)
+            .field("tenant_files", &self.tenant_files)
+            .field("tenant_mailbox", &self.tenant_mailbox)
+            .field("signing_key_id", &self.signing_key_id)
+            .field("exchange_key_id", &self.exchange_key_id)
             .finish()
     }
 }
@@ -1045,6 +1252,27 @@ fn render_admin_request_line(request: &RelayAdminRequest) -> String {
     if let Some(dry_run) = request.mailbox_purge_dry_run {
         line.push_str(&format!(" dry_run={dry_run}"));
     }
+    if let Some(messages) = request.tenant_messages {
+        line.push_str(&format!(" messages={messages}"));
+    }
+    if let Some(streams) = request.tenant_streams {
+        line.push_str(&format!(" streams={streams}"));
+    }
+    if let Some(rooms) = request.tenant_rooms {
+        line.push_str(&format!(" rooms={rooms}"));
+    }
+    if let Some(files) = request.tenant_files {
+        line.push_str(&format!(" files={files}"));
+    }
+    if let Some(mailbox) = request.tenant_mailbox {
+        line.push_str(&format!(" mailbox={mailbox}"));
+    }
+    if let Some(signing_key_id) = &request.signing_key_id {
+        line.push_str(&format!(" signing_key_id={signing_key_id}"));
+    }
+    if let Some(exchange_key_id) = &request.exchange_key_id {
+        line.push_str(&format!(" exchange_key_id={exchange_key_id}"));
+    }
     line.push_str(" token_displayed=false payload=not_observed");
     line
 }
@@ -1084,6 +1312,35 @@ fn parse_admin_request(
             values.get("account").cloned(),
             values.get("node").cloned(),
         ),
+        RelayAdminAction::TenantUpsert => RelayAdminRequest::tenant_upsert(
+            required(values, "admin_token")?,
+            required(values, "account")?,
+        ),
+        RelayAdminAction::TenantRevoke => RelayAdminRequest::tenant_revoke(
+            required(values, "admin_token")?,
+            required(values, "account")?,
+        ),
+        RelayAdminAction::TenantNodeUpsert => RelayAdminRequest::tenant_node_upsert(
+            required(values, "admin_token")?,
+            required(values, "account")?,
+            required(values, "node")?,
+            required_bool(values, "messages")?,
+            required_bool(values, "streams")?,
+            required_bool(values, "rooms")?,
+            required_bool(values, "files")?,
+            required_bool(values, "mailbox")?,
+            values.get("signing_key_id").cloned(),
+            values.get("exchange_key_id").cloned(),
+        ),
+        RelayAdminAction::TenantNodeRevoke => RelayAdminRequest::tenant_node_revoke(
+            required(values, "admin_token")?,
+            required(values, "account")?,
+            required(values, "node")?,
+        ),
+        RelayAdminAction::TenantAudit => RelayAdminRequest::tenant_audit(
+            required(values, "admin_token")?,
+            values.get("account").cloned(),
+        ),
         RelayAdminAction::MailboxAudit => RelayAdminRequest::mailbox_audit(
             required(values, "admin_token")?,
             values.get("node").cloned(),
@@ -1122,7 +1379,15 @@ fn render_admin_result_line(result: &RelayAdminResult) -> String {
     if let Some(expires_at_unix) = result.expires_at_unix {
         line.push_str(&format!(" expires={expires_at_unix}"));
     }
-    if result.action == RelayAdminAction::Dashboard {
+    if matches!(
+        result.action,
+        RelayAdminAction::Dashboard
+            | RelayAdminAction::TenantUpsert
+            | RelayAdminAction::TenantRevoke
+            | RelayAdminAction::TenantNodeUpsert
+            | RelayAdminAction::TenantNodeRevoke
+            | RelayAdminAction::TenantAudit
+    ) {
         line.push_str(&format!(
             " tenants={} active_tenants={} revoked_tenants={} nodes={} active_nodes={} revoked_nodes={} tenant_policies={}",
             result.tenants,
@@ -1133,6 +1398,8 @@ fn render_admin_result_line(result: &RelayAdminResult) -> String {
             result.revoked_nodes,
             result.tenant_policies
         ));
+    }
+    if result.action == RelayAdminAction::Dashboard {
         line.push_str(&format!(
             " accounting_records={} sessions_authenticated={} sessions_resumed={} envelopes_sent={} bytes_sent={} envelopes_received={} bytes_received={} envelopes_mailboxed={} bytes_mailboxed={}",
             result.accounting_records,
@@ -2174,6 +2441,60 @@ mod tests {
         assert!(rendered_dashboard_result.contains("payload_displayed=false"));
         assert!(!rendered_dashboard_result.contains("admin-secret-token-1234567890"));
         assert!(!rendered_dashboard_result.contains(&token_hash));
+
+        let tenant_request = RelayAdminRequest::tenant_node_upsert(
+            "admin-secret-token-1234567890",
+            "account.prod",
+            "node.hosted",
+            true,
+            true,
+            false,
+            false,
+            true,
+            Some("signing.key.1".to_string()),
+            Some("exchange.key.1".to_string()),
+        )
+        .expect("tenant node request parses");
+        let tenant_frame = RelayClientFrame::Admin(Box::new(tenant_request));
+        let rendered_tenant = render_client_frame(&tenant_frame);
+        let parsed_tenant =
+            parse_client_frame(&rendered_tenant).expect("tenant node request parses");
+        let tenant_debug = format!("{tenant_frame:?}");
+        let tenant_result = RelayServerFrame::AdminResult(Box::new(RelayAdminResult {
+            action: RelayAdminAction::TenantNodeUpsert,
+            status: "upserted".to_string(),
+            account_id: Some("account.prod".to_string()),
+            node_id: Some("node.hosted".to_string()),
+            tenants: 1,
+            active_tenants: 1,
+            revoked_tenants: 0,
+            nodes: 1,
+            active_nodes: 1,
+            revoked_nodes: 0,
+            tenant_policies: 1,
+            ..RelayAdminResult::new(RelayAdminAction::TenantNodeUpsert, "upserted")
+        }));
+        let rendered_tenant_result = render_server_frame(&tenant_result);
+        let parsed_tenant_result =
+            parse_server_frame(&rendered_tenant_result).expect("tenant node result parses");
+
+        assert_eq!(parsed_tenant, tenant_frame);
+        assert!(rendered_tenant.contains("ADMIN action=tenant_node_upsert"));
+        assert!(rendered_tenant.contains("account=account.prod"));
+        assert!(rendered_tenant.contains("node=node.hosted"));
+        assert!(rendered_tenant.contains("messages=true"));
+        assert!(rendered_tenant.contains("mailbox=true"));
+        assert!(rendered_tenant.contains("signing_key_id=signing.key.1"));
+        assert!(!tenant_debug.contains("admin-secret-token-1234567890"));
+        assert_eq!(parsed_tenant_result, tenant_result);
+        assert!(rendered_tenant_result.contains("ADMIN_RESULT action=tenant_node_upsert"));
+        assert!(rendered_tenant_result.contains("tenants=1"));
+        assert!(rendered_tenant_result.contains("tenant_policies=1"));
+        assert!(rendered_tenant_result.contains("payload_displayed=false"));
+        assert!(!rendered_tenant_result.contains("admin-secret-token-1234567890"));
+        assert!(!rendered_tenant_result.contains(&token_hash));
+        assert!(!rendered_tenant_result.contains("signing.key.1"));
+        assert!(!rendered_tenant_result.contains("exchange.key.1"));
 
         let mailbox_request = RelayAdminRequest::mailbox_audit(
             "admin-secret-token-1234567890",

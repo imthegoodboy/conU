@@ -1638,7 +1638,7 @@ pub fn revoke_hosted_tenant_in_file(
 ) -> Result<HostedTenantManifestUpdate, RelayError> {
     let path = path.as_ref();
     let account_id = validate_account_id(account_id.into())?;
-    let mut manifest = load_hosted_tenant_manifest(path)?;
+    let mut manifest = load_hosted_tenant_manifest_or_empty(path)?;
     let now_unix = current_unix_seconds();
     let Some(tenant) = manifest
         .tenants
@@ -1683,7 +1683,7 @@ pub fn upsert_hosted_tenant_node_in_file(
     let exchange_key_id = exchange_key_id
         .map(|value| validate_key_id(value, "exchange key id"))
         .transpose()?;
-    let mut manifest = load_hosted_tenant_manifest(path)?;
+    let mut manifest = load_hosted_tenant_manifest_or_empty(path)?;
     ensure_tenant_active(&manifest, &account_id)?;
     let now_unix = current_unix_seconds();
 
@@ -1735,7 +1735,7 @@ pub fn revoke_hosted_tenant_node_in_file(
     let path = path.as_ref();
     let account_id = validate_account_id(account_id.into())?;
     let node_id = validate_node_id(node_id.into())?;
-    let mut manifest = load_hosted_tenant_manifest(path)?;
+    let mut manifest = load_hosted_tenant_manifest_or_empty(path)?;
     ensure_tenant_exists(&manifest, &account_id)?;
     let now_unix = current_unix_seconds();
     let Some(node) = manifest
@@ -2398,13 +2398,6 @@ fn load_hosted_tenant_manifest_or_empty(path: &Path) -> Result<HostedTenantManif
         }
         Err(error) => Err(RelayError::io("read hosted tenant file", error)),
     }
-}
-
-fn load_hosted_tenant_manifest(path: impl AsRef<Path>) -> Result<HostedTenantManifest, RelayError> {
-    let path = path.as_ref();
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read hosted tenant file", error))?;
-    parse_hosted_tenant_manifest(&contents)
 }
 
 fn parse_hosted_tenant_manifest(contents: &str) -> Result<HostedTenantManifest, RelayError> {
@@ -3706,9 +3699,133 @@ impl RelayHub {
                 })
             }
             RelayAdminAction::Dashboard => self.admin_dashboard_result(request, &credentials_file),
+            RelayAdminAction::TenantUpsert
+            | RelayAdminAction::TenantRevoke
+            | RelayAdminAction::TenantNodeUpsert
+            | RelayAdminAction::TenantNodeRevoke => self.admin_tenant_update_result(request),
+            RelayAdminAction::TenantAudit => self.admin_tenant_audit_result(request),
             RelayAdminAction::MailboxAudit => self.admin_mailbox_audit_result(request),
             RelayAdminAction::MailboxPurge => self.admin_mailbox_purge_result(request),
         }
+    }
+
+    fn admin_tenant_update_result(
+        &self,
+        request: &RelayAdminRequest,
+    ) -> Result<RelayAdminResult, RelayError> {
+        let Some(tenants_file) = self.admin.tenants_file() else {
+            return Ok(RelayAdminResult {
+                action: request.action,
+                status: "tenant_unavailable".to_string(),
+                account_id: request.account_id.clone(),
+                node_id: request.node_id.clone(),
+                ..RelayAdminResult::new(request.action, "tenant_unavailable")
+            });
+        };
+        let account_id = request.account_id.as_deref().ok_or_else(|| {
+            RelayError::Protocol("relay admin tenant account is required".to_string())
+        })?;
+        let update = match request.action {
+            RelayAdminAction::TenantUpsert => {
+                upsert_hosted_tenant_in_file(tenants_file, account_id)
+            }
+            RelayAdminAction::TenantRevoke => {
+                revoke_hosted_tenant_in_file(tenants_file, account_id)
+            }
+            RelayAdminAction::TenantNodeUpsert => {
+                let node_id = request.node_id.as_deref().ok_or_else(|| {
+                    RelayError::Protocol("relay admin tenant node is required".to_string())
+                })?;
+                upsert_hosted_tenant_node_in_file(
+                    tenants_file,
+                    account_id,
+                    node_id,
+                    HostedTenantPermissions {
+                        messages: request.tenant_messages.unwrap_or(false),
+                        streams: request.tenant_streams.unwrap_or(false),
+                        rooms: request.tenant_rooms.unwrap_or(false),
+                        files: request.tenant_files.unwrap_or(false),
+                        mailbox: request.tenant_mailbox.unwrap_or(false),
+                    },
+                    request.signing_key_id.clone(),
+                    request.exchange_key_id.clone(),
+                )
+            }
+            RelayAdminAction::TenantNodeRevoke => {
+                let node_id = request.node_id.as_deref().ok_or_else(|| {
+                    RelayError::Protocol("relay admin tenant node is required".to_string())
+                })?;
+                revoke_hosted_tenant_node_in_file(tenants_file, account_id, node_id)
+            }
+            _ => unreachable!("tenant update result only handles tenant update actions"),
+        };
+        let update = match update {
+            Ok(update) => update,
+            Err(error) => {
+                return self.admin_tenant_result_for_update_error(
+                    request,
+                    account_id,
+                    request.node_id.as_deref(),
+                    tenants_file,
+                    error,
+                );
+            }
+        };
+        let audit = audit_hosted_tenants_file(tenants_file, Some(account_id))?;
+        let status = match update.status {
+            HostedTenantStatus::Active => "upserted",
+            HostedTenantStatus::Revoked => "revoked",
+        };
+
+        Ok(RelayAdminResult {
+            action: request.action,
+            status: status.to_string(),
+            account_id: Some(update.account_id),
+            node_id: update.node_id,
+            tenants: audit.tenants,
+            active_tenants: audit.active_tenants,
+            revoked_tenants: audit.revoked_tenants,
+            nodes: audit.nodes,
+            active_nodes: audit.active_nodes,
+            revoked_nodes: audit.revoked_nodes,
+            tenant_policies: audit.policies,
+            token_displayed: update.token_displayed || audit.token_displayed,
+            key_material_displayed: update.key_material_displayed || audit.key_material_displayed,
+            contents_displayed: update.contents_displayed || audit.contents_displayed,
+            ..RelayAdminResult::new(request.action, status)
+        })
+    }
+
+    fn admin_tenant_audit_result(
+        &self,
+        request: &RelayAdminRequest,
+    ) -> Result<RelayAdminResult, RelayError> {
+        let Some(tenants_file) = self.admin.tenants_file() else {
+            return Ok(RelayAdminResult {
+                action: request.action,
+                status: "tenant_unavailable".to_string(),
+                account_id: request.account_id.clone(),
+                ..RelayAdminResult::new(request.action, "tenant_unavailable")
+            });
+        };
+        let audit = audit_hosted_tenants_file(tenants_file, request.account_id.as_deref())?;
+
+        Ok(RelayAdminResult {
+            action: request.action,
+            status: "audited".to_string(),
+            account_id: audit.account_id,
+            tenants: audit.tenants,
+            active_tenants: audit.active_tenants,
+            revoked_tenants: audit.revoked_tenants,
+            nodes: audit.nodes,
+            active_nodes: audit.active_nodes,
+            revoked_nodes: audit.revoked_nodes,
+            tenant_policies: audit.policies,
+            token_displayed: audit.token_displayed,
+            key_material_displayed: audit.key_material_displayed,
+            contents_displayed: audit.contents_displayed,
+            ..RelayAdminResult::new(request.action, "audited")
+        })
     }
 
     fn admin_mailbox_purge_result(
@@ -4016,6 +4133,35 @@ impl RelayHub {
             expires_at_unix: request.expires_at_unix,
             token_displayed: false,
             contents_displayed: false,
+            ..RelayAdminResult::new(request.action, status)
+        })
+    }
+
+    fn admin_tenant_result_for_update_error(
+        &self,
+        request: &RelayAdminRequest,
+        account_id: &str,
+        node_id: Option<&str>,
+        tenants_file: &Path,
+        error: RelayError,
+    ) -> Result<RelayAdminResult, RelayError> {
+        let status = hosted_admin_error_status(&error).ok_or(error)?;
+        let audit = audit_hosted_tenants_file(tenants_file, Some(account_id))?;
+        Ok(RelayAdminResult {
+            action: request.action,
+            status: status.to_string(),
+            account_id: Some(account_id.to_string()),
+            node_id: node_id.map(str::to_string),
+            tenants: audit.tenants,
+            active_tenants: audit.active_tenants,
+            revoked_tenants: audit.revoked_tenants,
+            nodes: audit.nodes,
+            active_nodes: audit.active_nodes,
+            revoked_nodes: audit.revoked_nodes,
+            tenant_policies: audit.policies,
+            token_displayed: audit.token_displayed,
+            key_material_displayed: audit.key_material_displayed,
+            contents_displayed: audit.contents_displayed,
             ..RelayAdminResult::new(request.action, status)
         })
     }
@@ -6857,6 +7003,198 @@ token_displayed = false\n",
         assert!(!dashboard.contains(credential.token_sha256_hex()));
         assert!(!dashboard.contains("signing.key.1"));
         assert!(!dashboard.contains("exchange.key.1"));
+    }
+
+    #[test]
+    fn hosted_admin_tenant_lifecycle_updates_registry_with_admin_token() {
+        let home = test_home("hosted-admin-tenant-lifecycle");
+        let manifest_path = home.join("credentials.toml");
+        let tenants_path = home.join("tenants.toml");
+        let admin_token = "hosted-admin-tenant-lifecycle-token-123456";
+        let wrong_admin_token = "wrong-hosted-tenant-lifecycle-token-123456";
+        let credential = issue_relay_credential_from_token_bytes(
+            "node.hosted",
+            &[43_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            2_000,
+        )
+        .and_then(|credential| credential.with_account_id("account.prod"))
+        .expect("credential issues");
+
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("missing manifest starts fail-closed")
+                .with_admin_token(admin_token, manifest_path.clone())
+                .expect("admin token configures")
+                .with_admin_tenants_file(tenants_path.clone())
+                .expect("tenant registry configures");
+        let relay = spawn_relay(config).expect("relay starts");
+
+        let rejected = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_upsert(wrong_admin_token, "account.prod")
+                .expect("tenant upsert request"),
+        );
+        assert!(rejected.contains("ERROR reason=admin_unauthorized"));
+        assert!(!rejected.contains(admin_token));
+        assert!(!rejected.contains(wrong_admin_token));
+
+        let missing_tenant = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_node_upsert(
+                admin_token,
+                "account.prod",
+                credential.node_id(),
+                true,
+                true,
+                false,
+                false,
+                true,
+                Some("signing.key.1".to_string()),
+                Some("exchange.key.1".to_string()),
+            )
+            .expect("tenant node upsert request"),
+        );
+        assert!(missing_tenant.contains("ADMIN_RESULT action=tenant_node_upsert"));
+        assert!(missing_tenant.contains("status=tenant_not_found"));
+        assert!(!missing_tenant.contains(admin_token));
+        assert!(!missing_tenant.contains(credential.token()));
+        assert!(!missing_tenant.contains(credential.token_sha256_hex()));
+        assert!(!missing_tenant.contains("signing.key.1"));
+        assert!(!missing_tenant.contains("exchange.key.1"));
+
+        let tenant = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_upsert(admin_token, "account.prod")
+                .expect("tenant upsert request"),
+        );
+        assert!(tenant.contains("ADMIN_RESULT action=tenant_upsert status=upserted"));
+        assert!(tenant.contains("account=account.prod"));
+        assert!(tenant.contains("tenants=1 active_tenants=1 revoked_tenants=0"));
+        assert!(tenant.contains("nodes=0 active_nodes=0 revoked_nodes=0 tenant_policies=0"));
+        assert!(tenant.contains("payload_displayed=false"));
+        assert!(tenant.contains("token_displayed=false"));
+        assert!(tenant.contains("key_material_displayed=false"));
+        assert!(tenant.contains("contents_displayed=false"));
+        assert!(!tenant.contains(admin_token));
+        assert!(!tenant.contains(wrong_admin_token));
+        assert!(!tenant.contains(credential.token()));
+        assert!(!tenant.contains(credential.token_sha256_hex()));
+
+        let node = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_node_upsert(
+                admin_token,
+                "account.prod",
+                credential.node_id(),
+                true,
+                true,
+                false,
+                false,
+                true,
+                Some("signing.key.1".to_string()),
+                Some("exchange.key.1".to_string()),
+            )
+            .expect("tenant node upsert request"),
+        );
+        assert!(node.contains("ADMIN_RESULT action=tenant_node_upsert status=upserted"));
+        assert!(node.contains("node=node.hosted"));
+        assert!(node.contains("nodes=1 active_nodes=1 revoked_nodes=0 tenant_policies=1"));
+        assert!(node.contains("token_displayed=false"));
+        assert!(node.contains("key_material_displayed=false"));
+        assert!(node.contains("contents_displayed=false"));
+        assert!(!node.contains(admin_token));
+        assert!(!node.contains(credential.token()));
+        assert!(!node.contains(credential.token_sha256_hex()));
+        assert!(!node.contains("signing.key.1"));
+        assert!(!node.contains("exchange.key.1"));
+
+        let issued = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::issue(
+                admin_token,
+                "account.prod",
+                credential.node_id(),
+                credential.token_sha256_hex().to_string(),
+                credential.token_length(),
+                credential.expires_at_unix(),
+            )
+            .expect("issue request"),
+        );
+        assert!(issued.contains("ADMIN_RESULT action=issue status=issued"));
+        assert!(!issued.contains(credential.token()));
+        assert!(!issued.contains(credential.token_sha256_hex()));
+
+        let mut active_client = connect_client(relay.local_addr());
+        write_client_text(
+            &mut active_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new(credential.node_id(), credential.token()).expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut active_client).contains("WELCOME"));
+
+        let audit = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_audit(admin_token, Some("account.prod".to_string()))
+                .expect("tenant audit request"),
+        );
+        assert!(audit.contains("ADMIN_RESULT action=tenant_audit status=audited"));
+        assert!(audit.contains("tenants=1 active_tenants=1 revoked_tenants=0"));
+        assert!(audit.contains("nodes=1 active_nodes=1 revoked_nodes=0 tenant_policies=1"));
+        assert!(!audit.contains(admin_token));
+        assert!(!audit.contains(credential.token()));
+        assert!(!audit.contains(credential.token_sha256_hex()));
+        assert!(!audit.contains("signing.key.1"));
+        assert!(!audit.contains("exchange.key.1"));
+
+        let revoked_node = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_node_revoke(
+                admin_token,
+                "account.prod",
+                credential.node_id(),
+            )
+            .expect("tenant node revoke request"),
+        );
+        assert!(revoked_node.contains("ADMIN_RESULT action=tenant_node_revoke status=revoked"));
+        assert!(revoked_node.contains("nodes=1 active_nodes=0 revoked_nodes=1"));
+        assert!(!revoked_node.contains(admin_token));
+        assert!(!revoked_node.contains(credential.token()));
+        assert!(!revoked_node.contains(credential.token_sha256_hex()));
+
+        let mut revoked_tenant_client = connect_client(relay.local_addr());
+        write_client_text(
+            &mut revoked_tenant_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new(credential.node_id(), credential.token()).expect("hello"),
+            )),
+        );
+        let revoked_response = read_server_text(&mut revoked_tenant_client);
+        assert!(revoked_response.contains("ERROR reason=unauthorized"));
+        assert!(!revoked_response.contains(credential.token()));
+        assert!(!revoked_response.contains(credential.token_sha256_hex()));
+
+        let revoked_tenant = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::tenant_revoke(admin_token, "account.prod")
+                .expect("tenant revoke request"),
+        );
+        assert!(revoked_tenant.contains("ADMIN_RESULT action=tenant_revoke status=revoked"));
+        assert!(revoked_tenant.contains("tenants=1 active_tenants=0 revoked_tenants=1"));
+        assert!(!revoked_tenant.contains(admin_token));
+        assert!(!revoked_tenant.contains(credential.token()));
+        assert!(!revoked_tenant.contains(credential.token_sha256_hex()));
+
+        let manifest = fs::read_to_string(&tenants_path).expect("tenant manifest reads");
+        assert!(manifest.contains("signing_key_id = \"signing.key.1\""));
+        assert!(manifest.contains("exchange_key_id = \"exchange.key.1\""));
+        assert!(!manifest.contains(admin_token));
+        assert!(!manifest.contains(wrong_admin_token));
+        assert!(!manifest.contains(credential.token()));
+        assert!(!manifest.contains(credential.token_sha256_hex()));
+        assert!(!manifest.contains("payload-body"));
+        assert!(!manifest.contains("ciphertext_body"));
     }
 
     #[test]

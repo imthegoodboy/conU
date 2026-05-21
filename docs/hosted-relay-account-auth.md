@@ -47,7 +47,7 @@ conu-relay --serve 0.0.0.0:8787
 
 ## Tenant Lifecycle
 
-Tenant commands are local/offline file updates for the relay operator:
+Tenant commands can run as local/offline file updates for the relay operator:
 
 ```powershell
 conu-relay --tenant-upsert account.prod `
@@ -76,7 +76,47 @@ conu-relay --tenant-audit `
   --json
 ```
 
-When `CONU_RELAY_TENANTS_FILE` is configured, online issue and rotate require an active tenant account and active hosted node. Revoke remains available so operators can clean up credential metadata even after tenant or node revocation.
+The same lifecycle is available against a running managed relay through the admin control plane:
+
+```powershell
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-tenant-upsert account.prod `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --json
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-tenant-node-upsert account.prod node-a-id `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --messages true `
+    --streams true `
+    --rooms true `
+    --files false `
+    --mailbox true `
+    --signing-key-id signing.key.2026-05 `
+    --exchange-key-id exchange.key.2026-05 `
+    --json
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-tenant-node-revoke account.prod node-a-id `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-tenant-revoke account.prod `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-tenant-audit `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --account account.prod `
+    --json
+```
+
+When `CONU_RELAY_TENANTS_FILE` is configured, online issue and rotate require an active tenant account and active hosted node. New `HELLO` sessions also fail closed when the tenant account or hosted node is missing or revoked. Credential revoke remains available so operators can clean up credential metadata even after tenant or node revocation.
 
 ## Online Lifecycle
 
@@ -140,6 +180,7 @@ Admin results report only metadata:
 - action and status
 - account id and node id where applicable
 - credential, active, revoked, expired, and account counts
+- tenant account/node lifecycle counts for `--admin-tenant-*`
 - dashboard credential, tenant, accounting, and abuse counts for `--admin-hosted-dashboard`
 - durable mailbox node/file/byte/timestamp and optional expired counts for `--admin-mailbox-audit`
 - durable mailbox scanned, invalid, expired, and purged counts for `--admin-mailbox-purge`
@@ -160,6 +201,8 @@ They never report raw node tokens, token hashes, admin tokens, payload plaintext
 - Issue/rotate with a revoked hosted tenant returns `tenant_revoked`.
 - Issue/rotate with a missing hosted node returns `tenant_node_not_found`.
 - Issue/rotate with a revoked hosted node returns `tenant_node_revoked`.
+- Online tenant-node upsert before tenant creation returns `tenant_not_found`.
+- Online tenant revoke or tenant-node revoke for missing records returns `tenant_not_found` or `tenant_node_not_found`.
 - Rotate refuses to move an existing node credential to a different account.
 - Revoked, expired, missing, malformed, public-bind-invalid, or tenant-revoked credentials fail closed for new `HELLO` sessions.
 
