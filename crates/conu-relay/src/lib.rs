@@ -56,6 +56,7 @@ pub struct RelayConfig {
     pub session_storage: RelaySessionStorage,
     pub mailbox_policy: RelayMailboxPolicy,
     pub mailbox_storage: RelayMailboxStorage,
+    pub mailbox_maintenance: RelayMailboxMaintenancePolicy,
     pub accounting_policy: RelayAccountingPolicy,
     pub accounting_storage: RelayAccountingStorage,
     pub abuse_policy: RelayAbusePolicy,
@@ -74,6 +75,7 @@ impl fmt::Debug for RelayConfig {
             .field("session_storage", &self.session_storage)
             .field("mailbox_policy", &self.mailbox_policy)
             .field("mailbox_storage", &self.mailbox_storage)
+            .field("mailbox_maintenance", &self.mailbox_maintenance)
             .field("accounting_policy", &self.accounting_policy)
             .field("accounting_storage", &self.accounting_storage)
             .field("abuse_policy", &self.abuse_policy)
@@ -645,6 +647,45 @@ impl Default for RelayMailboxPolicy {
     }
 }
 
+/// Optional relay-local durable mailbox maintenance policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayMailboxMaintenancePolicy {
+    purge_interval: Option<Duration>,
+}
+
+impl RelayMailboxMaintenancePolicy {
+    pub const fn disabled() -> Self {
+        Self {
+            purge_interval: None,
+        }
+    }
+
+    pub fn every(purge_interval: Duration) -> Result<Self, RelayError> {
+        if purge_interval.is_zero() {
+            return Err(RelayError::InvalidConfig(
+                "relay mailbox purge interval must be greater than zero",
+            ));
+        }
+        Ok(Self {
+            purge_interval: Some(purge_interval),
+        })
+    }
+
+    pub const fn purge_interval(self) -> Option<Duration> {
+        self.purge_interval
+    }
+
+    pub const fn is_enabled(self) -> bool {
+        self.purge_interval.is_some()
+    }
+}
+
+impl Default for RelayMailboxMaintenancePolicy {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
 /// Optional persistence mode for relay mailbox envelopes.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub enum RelayMailboxStorage {
@@ -1029,6 +1070,7 @@ impl RelayConfig {
             session_storage: RelaySessionStorage::default(),
             mailbox_policy: RelayMailboxPolicy::default(),
             mailbox_storage: RelayMailboxStorage::default(),
+            mailbox_maintenance: RelayMailboxMaintenancePolicy::default(),
             accounting_policy: RelayAccountingPolicy::default(),
             accounting_storage: RelayAccountingStorage::default(),
             abuse_policy: RelayAbusePolicy::default(),
@@ -1055,6 +1097,7 @@ impl RelayConfig {
             session_storage: RelaySessionStorage::default(),
             mailbox_policy: RelayMailboxPolicy::default(),
             mailbox_storage: RelayMailboxStorage::default(),
+            mailbox_maintenance: RelayMailboxMaintenancePolicy::default(),
             accounting_policy: RelayAccountingPolicy::default(),
             accounting_storage: RelayAccountingStorage::default(),
             abuse_policy: RelayAbusePolicy::default(),
@@ -1086,6 +1129,7 @@ impl RelayConfig {
             session_storage: RelaySessionStorage::default(),
             mailbox_policy: RelayMailboxPolicy::default(),
             mailbox_storage: RelayMailboxStorage::default(),
+            mailbox_maintenance: RelayMailboxMaintenancePolicy::default(),
             accounting_policy: RelayAccountingPolicy::default(),
             accounting_storage: RelayAccountingStorage::default(),
             abuse_policy: RelayAbusePolicy::default(),
@@ -1116,6 +1160,14 @@ impl RelayConfig {
 
     pub fn with_mailbox_storage(mut self, mailbox_storage: RelayMailboxStorage) -> Self {
         self.mailbox_storage = mailbox_storage;
+        self
+    }
+
+    pub fn with_mailbox_maintenance(
+        mut self,
+        mailbox_maintenance: RelayMailboxMaintenancePolicy,
+    ) -> Self {
+        self.mailbox_maintenance = mailbox_maintenance;
         self
     }
 
@@ -2704,6 +2756,7 @@ pub struct RelayHandle {
     local_addr: SocketAddr,
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
+    maintenance_join: Option<JoinHandle<()>>,
 }
 
 impl RelayHandle {
@@ -2717,6 +2770,9 @@ impl Drop for RelayHandle {
         self.stop.store(true, Ordering::SeqCst);
         let _ = TcpStream::connect(self.local_addr);
         if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        if let Some(join) = self.maintenance_join.take() {
             let _ = join.join();
         }
     }
@@ -3099,12 +3155,15 @@ pub fn run_blocking(config: RelayConfig) -> Result<(), RelayError> {
     let listener = TcpListener::bind(&config.bind_addr)
         .map_err(|error| RelayError::io("bind relay listener", error))?;
     let bind_addr = config.bind_addr.clone();
+    let mailbox_policy = config.mailbox_policy;
+    let mailbox_storage_for_maintenance = config.mailbox_storage.clone();
+    let mailbox_maintenance = config.mailbox_maintenance;
     let hub = Arc::new(RelayHub::new(RelayHubConfig {
         auth: config.auth,
         limits: config.limits,
         session_policy: config.session_policy,
         session_storage: config.session_storage,
-        mailbox_policy: config.mailbox_policy,
+        mailbox_policy,
         mailbox_storage: config.mailbox_storage,
         accounting_policy: config.accounting_policy,
         accounting_storage: config.accounting_storage,
@@ -3112,6 +3171,12 @@ pub fn run_blocking(config: RelayConfig) -> Result<(), RelayError> {
         abuse_storage: config.abuse_storage,
         admin: config.admin,
     })?);
+    let _maintenance_join = spawn_mailbox_maintenance_worker(
+        mailbox_storage_for_maintenance,
+        mailbox_policy,
+        mailbox_maintenance,
+        None,
+    );
 
     println!(
         "conU relay listening on {}; payloads not observed",
@@ -3148,12 +3213,15 @@ pub fn spawn_relay(config: RelayConfig) -> Result<RelayHandle, RelayError> {
         .map_err(|error| RelayError::io("read relay listener address", error))?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = stop.clone();
+    let mailbox_policy = config.mailbox_policy;
+    let mailbox_storage_for_maintenance = config.mailbox_storage.clone();
+    let mailbox_maintenance = config.mailbox_maintenance;
     let hub = Arc::new(RelayHub::new(RelayHubConfig {
         auth: config.auth,
         limits: config.limits,
         session_policy: config.session_policy,
         session_storage: config.session_storage,
-        mailbox_policy: config.mailbox_policy,
+        mailbox_policy,
         mailbox_storage: config.mailbox_storage,
         accounting_policy: config.accounting_policy,
         accounting_storage: config.accounting_storage,
@@ -3184,12 +3252,55 @@ pub fn spawn_relay(config: RelayConfig) -> Result<RelayHandle, RelayError> {
             }
         }
     });
+    let maintenance_join = spawn_mailbox_maintenance_worker(
+        mailbox_storage_for_maintenance,
+        mailbox_policy,
+        mailbox_maintenance,
+        Some(stop.clone()),
+    );
 
     Ok(RelayHandle {
         local_addr,
         stop,
         join: Some(join),
+        maintenance_join,
     })
+}
+
+fn spawn_mailbox_maintenance_worker(
+    storage: RelayMailboxStorage,
+    policy: RelayMailboxPolicy,
+    maintenance: RelayMailboxMaintenancePolicy,
+    stop: Option<Arc<AtomicBool>>,
+) -> Option<JoinHandle<()>> {
+    let interval = maintenance.purge_interval()?;
+    let RelayMailboxStorage::FileBacked(root) = storage else {
+        return None;
+    };
+
+    Some(thread::spawn(move || {
+        loop {
+            if stop
+                .as_ref()
+                .is_some_and(|stop| stop.load(Ordering::SeqCst))
+            {
+                break;
+            }
+            let _ = purge_relay_mailbox_dir(&root, None, policy.envelope_ttl, false);
+
+            let started = Instant::now();
+            while started.elapsed() < interval {
+                if stop
+                    .as_ref()
+                    .is_some_and(|stop| stop.load(Ordering::SeqCst))
+                {
+                    return;
+                }
+                let remaining = interval.saturating_sub(started.elapsed());
+                thread::sleep(remaining.min(Duration::from_millis(50)));
+            }
+        }
+    }))
 }
 
 /// Compute the RFC 6455 Sec-WebSocket-Accept value.
@@ -7558,6 +7669,86 @@ token_displayed = true\n",
         assert!(!debug.contains("ENVELOPE from=node.a"));
         assert!(!debug.contains("relay_node.hosted_123456789"));
         assert!(!debug.contains("token_sha256_hex"));
+    }
+
+    #[test]
+    fn relay_mailbox_scheduled_purge_removes_expired_valid_files_only() {
+        let mailbox_dir = test_home("durable-mailbox-scheduled-purge").join("relay-mailbox");
+        let storage =
+            RelayMailboxStorage::file_backed(mailbox_dir.clone()).expect("mailbox storage");
+        let mailbox_policy =
+            RelayMailboxPolicy::new(8, Duration::from_secs(60)).expect("mailbox policy");
+        let maintenance = RelayMailboxMaintenancePolicy::every(Duration::from_millis(50))
+            .expect("maintenance policy");
+        let _relay = spawn_relay(
+            RelayConfig::new("127.0.0.1:0", "test-token")
+                .expect("valid config")
+                .with_mailbox_policy(mailbox_policy)
+                .with_mailbox_storage(storage)
+                .with_mailbox_maintenance(maintenance),
+        )
+        .expect("relay starts");
+
+        let node_dir = mailbox_dir.join("node.b");
+        fs::create_dir_all(&node_dir).expect("mailbox node dir");
+        let now = current_unix_millis();
+        let expired_queued_at = now.saturating_sub(120_000);
+        let fresh_queued_at = now;
+        let expired = QueuedRelayEnvelope {
+            queued_at_millis: expired_queued_at,
+            queued_at_nanos: expired_queued_at.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.b", "env.scheduled.expired"),
+            ),
+        };
+        let fresh = QueuedRelayEnvelope {
+            queued_at_millis: fresh_queued_at,
+            queued_at_nanos: fresh_queued_at.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.b", "env.scheduled.fresh"),
+            ),
+        };
+        let expired_path = node_dir.join("expired.mailbox");
+        let fresh_path = node_dir.join("fresh.mailbox");
+        let invalid_path = node_dir.join("invalid.mailbox");
+        let display_guard_path = node_dir.join("display-guard.mailbox");
+        fs::write(&expired_path, render_mailbox_file(&expired)).expect("expired mailbox file");
+        fs::write(&fresh_path, render_mailbox_file(&fresh)).expect("fresh mailbox file");
+        fs::write(
+            &invalid_path,
+            "version = \"1\"\nqueued_at_millis = invalid\nframe = ENVELOPE from=node.a body_ciphertext=ciphertext_body\npayload_displayed = false\n",
+        )
+        .expect("invalid mailbox file");
+        fs::write(
+            &display_guard_path,
+            render_mailbox_file(&expired)
+                .replace("payload_displayed = false", "payload_displayed = true"),
+        )
+        .expect("display guard mailbox file");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while expired_path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        assert!(!expired_path.exists());
+        assert!(fresh_path.exists());
+        assert!(invalid_path.exists());
+        assert!(display_guard_path.exists());
+
+        let audit =
+            audit_relay_mailbox_dir(&mailbox_dir, Some("node.b"), Some(Duration::from_secs(60)))
+                .expect("mailbox audit reads");
+        assert_eq!(audit.records, 3);
+        assert_eq!(audit.invalid_records, 2);
+        assert_eq!(audit.expired_records, Some(0));
+        assert!(!audit.payload_displayed);
+        assert!(!audit.ciphertext_displayed);
+        assert!(!audit.contents_displayed);
     }
 
     #[test]
