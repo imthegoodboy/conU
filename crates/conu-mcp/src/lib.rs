@@ -301,6 +301,7 @@ impl McpServer {
             "selectedDirect": report.selected_direct,
             "selectedRelay": report.selected_relay,
             "relayFallbacks": report.relay_fallbacks,
+            "natTraversalUnavailable": report.nat_traversal_unavailable,
             "probesRecorded": report.probes_recorded,
             "contentsDisplayed": false
         }))
@@ -1353,6 +1354,9 @@ fn route_to_json(route: &Route) -> Value {
         "directAttempted": route.direct_attempted,
         "relayFallback": route.relay_fallback,
         "natProfile": route.nat_profile.as_str(),
+        "candidateSource": &route.candidate_source,
+        "candidateKind": &route.candidate_kind,
+        "rendezvousState": &route.rendezvous_state,
         "failureReason": route.failure_reason.as_deref(),
         "updatedAtUnix": route.updated_at_unix,
         "contentsDisplayed": false

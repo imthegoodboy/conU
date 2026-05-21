@@ -83,7 +83,7 @@ Implemented so far:
 - payload-safe watch event bus under `streams/events.toml`
 - payload-safe room event bus under `rooms/events.toml`
 - `conu watch` private transport animation
-- conUD-owned direct/relay route manager through `conu routes`, including authenticated direct QUIC probes and relay fallback
+- conUD-owned direct/relay route manager through `conu routes`, including authenticated direct QUIC probes, static candidate metadata, NAT-unavailable reporting, and relay fallback
 - peer-encrypted direct QUIC one-shot message and stream-chunk delivery for reachable trusted peer endpoints
 - conUD-owned reusable relay session pump for peer-encrypted one-shot remote message delivery
 - metadata-only route registry under `routes/registry.toml`

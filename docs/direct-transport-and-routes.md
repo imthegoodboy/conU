@@ -12,6 +12,7 @@ conU owns the connection.
 - `conu routes sync` probes trusted-peer direct endpoints and writes selected routes.
 - `conu routes` lists selected, candidate, fallback, and unavailable routes.
 - `conu routes probes` lists metadata-only probe history.
+- Route sync records direct candidate metadata: source, candidate kind, and rendezvous state.
 - `conu status` and the dashboard show selected direct, relay, and fallback counts.
 - `conu sessions sync` refreshes routes before mirroring remote sessions.
 - Streams opened to mirrored remote agents use the selected route label.
@@ -27,7 +28,7 @@ logs/routes.log        payload-safe route sync summaries
 logs/direct.log        payload-safe direct send/receive summaries
 ```
 
-These files may contain peer ids, route ids, transport labels, endpoints, scores, NAT profile labels, latency estimates, byte counts, and failure reasons. They must not contain message text, prompt text, chunk bytes, tool output, private keys, shared secrets, auth tokens, or plaintext payload fields.
+These files may contain peer ids, route ids, transport labels, sanitized endpoints, candidate source/kind, rendezvous state, scores, NAT profile labels, latency estimates, byte counts, and failure reasons. They must not contain message text, prompt text, chunk bytes, tool output, private keys, shared secrets, auth tokens, endpoint secrets, or plaintext payload fields.
 
 ## Route Selection
 
@@ -36,7 +37,17 @@ For each trusted peer, conUD creates:
 - one `direct-quic` candidate from peer-specific config, the signed peer card, or global config
 - one `relay-websocket` fallback candidate
 
-Direct endpoints are selected only after a live QUIC connection succeeds and the remote peer proves possession of the trusted peer-card exchange key by decrypting and answering a peer-encrypted challenge. If the direct probe fails, the direct route is `unavailable` with `direct_quic_probe_failed` and relay remains selected. If the NAT profile is `relay-only`, direct probing is skipped.
+Direct endpoints are selected only after a live QUIC connection succeeds and the remote peer proves possession of the trusted peer-card exchange key by decrypting and answering a peer-encrypted challenge. If the direct probe fails, the direct route is `unavailable` with `direct_quic_probe_failed` and relay remains selected. If no endpoint candidate exists for `unknown`, `cone`, or `symmetric` NAT profiles, route sync records `nat_traversal_unavailable` and selects relay. If the NAT profile is `relay-only`, direct probing is skipped.
+
+Candidate metadata is deliberately small:
+
+```txt
+candidate_source: none | peer_config | peer_card | local_config
+candidate_kind:   none | host
+rendezvous_state: not_configured | candidate_exchanged | unavailable | disabled
+```
+
+`candidate_exchanged` means conU found a static host candidate in local config or the trusted peer card. It does not mean ICE/STUN/TURN negotiation or UDP hole punching happened. Invalid direct endpoints are persisted as `quic://invalid`, and route ids are derived from that sanitized display endpoint rather than from the rejected endpoint string.
 
 NAT profile scoring:
 
@@ -65,7 +76,7 @@ When exported with `conu identity export`, this endpoint is included in the sign
 direct_quic_peer_abcd1234 = "quic://203.0.113.10:9443"
 ```
 
-Accepted direct endpoint schemes are `quic://` and `udp://` with a host and port. Endpoints with user info, query strings, fragments, paths, or whitespace are rejected so route logs cannot hide credentials.
+Accepted direct endpoint schemes are `quic://` and `udp://` with a host and port. Endpoints with user info, query strings, fragments, paths, or whitespace are rejected so route files and logs cannot hide credentials.
 
 ## Agent Use
 
@@ -82,7 +93,7 @@ Agents can inspect route metadata to understand whether conU selected direct QUI
 
 ## Current Boundary
 
-Direct QUIC is active for reachable configured endpoints between trusted peers. It does not yet implement ICE-style candidate gathering, STUN/TURN negotiation, UDP hole punching, or managed hosted NAT traversal. On NATs that do not allow the configured endpoint to be reached, route sync keeps relay selected.
+Direct QUIC is active for reachable configured endpoints between trusted peers. Route sync now records static direct candidate metadata and an explicit `nat_traversal_unavailable` state when no candidate exists for NAT profiles that need traversal help. It does not yet implement ICE-style candidate gathering, STUN/TURN negotiation, UDP hole punching, or managed hosted NAT traversal. On NATs that do not allow the configured endpoint to be reached, route sync keeps relay selected.
 
 Design references:
 

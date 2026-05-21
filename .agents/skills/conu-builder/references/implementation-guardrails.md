@@ -108,12 +108,13 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 
 - Phase 13 route selection belongs in `conu_core::routes`; other modules should call that API instead of parsing route files directly.
 - Route state belongs under `routes/registry.toml`; probe history belongs under `routes/probes.toml`; route logs belong under `logs/routes.log`.
-- Route records may include route id, peer id, display name, transport label, endpoint, state, score, estimated latency, NAT profile, fallback flag, and failure reason.
-- Route records must not include plaintext payloads, prompt text, reasoning, file contents, auth tokens, private keys, shared secrets, or decrypted bytes.
+- Route records may include route id, peer id, display name, transport label, sanitized endpoint, state, score, estimated latency, NAT profile, candidate source/kind, rendezvous state, fallback flag, and failure reason.
+- Route records must not include plaintext payloads, prompt text, reasoning, file contents, auth tokens, private keys, shared secrets, endpoint secrets, or decrypted bytes.
 - Revoked peers must not remain routeable after route sync.
 - `conu sessions sync`, conUD processing, SDK, and MCP may refresh or list route metadata, but they must keep outputs payload-safe.
 - A configured `direct-quic` route must be selected only after a live QUIC probe succeeds and the remote peer answers an encrypted challenge with the trusted peer-card key. If probing fails, record a generic metadata-only failure such as `direct_quic_probe_failed` and keep relay selected.
-- Relay fallback must remain available when direct endpoint config is missing, invalid, or disabled by `nat_profile = "relay-only"`.
+- Route sync may record static host candidate metadata from peer-specific config, signed peer cards, or local config. Missing candidates for `unknown`, `cone`, or `symmetric` NAT profiles should record `nat_traversal_unavailable`; this is not ICE/STUN/TURN negotiation or UDP hole punching.
+- Relay fallback must remain available when direct endpoint config is missing, invalid, unavailable, or disabled by `nat_profile = "relay-only"`.
 
 ## Stream And Watch Rules
 

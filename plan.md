@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-21
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifest, relay accounting/quotas, relay session state storage, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, and platform signing/notarization workflow hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards, distributed multi-instance session migration, managed direct NAT traversal/rendezvous, multi-tenant hosted permission administration, managed hosted identity/key administration, distributed tenant lifecycle, and hosted account dashboard gaps.
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifest, relay accounting/quotas, relay session state storage, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, and platform signing/notarization workflow hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, multi-tenant hosted permission administration, managed hosted identity/key administration, distributed tenant lifecycle, and hosted account dashboard gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -4006,6 +4006,59 @@ Next recommendation:
 
 - Run full workspace validation and CI, then merge this branch for issue #64 before starting managed direct NAT traversal or hosted tenant administration.
 
+## Post Phase 15 Managed Direct NAT Rendezvous Foundation
+
+Status: completed
+
+Completed work:
+
+- Added static direct candidate metadata to route records and probes: `candidate_source`, `candidate_kind`, and `rendezvous_state`.
+- Added `nat_traversal_unavailable` reporting so route sync distinguishes reachable configured endpoints, failed static probes, missing traversal support, relay-only profiles, and relay fallback.
+- Kept direct selection gated on live authenticated QUIC probes and preserved relay fallback for failed, missing, invalid, or disabled direct routes.
+- Sanitized invalid direct endpoints as `quic://invalid` and derived route ids from sanitized display endpoints instead of rejected endpoint strings.
+- Exposed candidate metadata and NAT-unavailable counts through CLI route JSON/text output and MCP route tools.
+- Updated direct transport, production readiness, user guide, SDK/MCP, release checklist, repo memory, and future-agent guardrails to describe the supported static candidate boundary and unsupported ICE/STUN/TURN behavior.
+
+Files changed:
+
+- `crates/conu-core/src/routes.rs`
+- `crates/conu-cli/src/lib.rs`
+- `crates/conu-mcp/src/lib.rs`
+- `README.md`
+- `docs/direct-transport-and-routes.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/user-install-and-agent-guide.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `cargo fmt --all` and `cargo fmt --all -- --check` passed locally.
+- `git diff --check` passed locally.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-core routes::tests` passed locally with `PATH` including `C:\Users\parth\Downloads\llama\w64devkit\bin` and `RUSTFLAGS=-C linker=rust-lld`.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli routes_sync` passed locally with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed locally with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed locally with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed locally with the same GNU environment.
+- `npm run check --prefix sdk\typescript` passed locally.
+- `npm run check --prefix packaging\npm\conu-cli` passed locally.
+- `python -m py_compile sdk\python\conu_sdk\__init__.py` passed locally.
+
+Known gaps:
+
+- This is static host-candidate metadata and honest NAT-unavailable reporting, not ICE-style candidate gathering, STUN/TURN negotiation, UDP hole punching, or hosted direct-candidate rendezvous.
+- Direct QUIC still requires a reachable configured UDP endpoint and a trusted peer-card key for the authenticated probe.
+- Distributed hosted dashboards/accounting, hosted tenant administration, distributed multi-instance session migration, and managed hosted identity/key administration remain future work.
+
+Next recommendation:
+
+- Open the PR for issue #65, wait for CI, merge if green, and preserve both local and remote feature branches.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -4074,4 +4127,5 @@ Add entries here when a phase is completed.
 2026-05-21 - Post Phase 15 hosted relay account auth completed. Added account-scoped relay credential metadata, admin WebSocket frames, `CONU_RELAY_ADMIN_TOKEN`, online issue/rotate/revoke/audit commands with admin-token stdin, raw node-token local-only issuance after relay confirmation, fail-closed revoked/expired/missing credential behavior, token/hash redaction coverage, docs/skill updates, full GNU-toolchain validation, package checks, relay daemon smoke, and admin CLI smoke. Next: distributed hosted session/accounting state, hosted dashboards/abuse workflows, hosted tenant administration, direct QUIC/NAT transport, and managed hosted identity/key administration.
 2026-05-21 - Post Phase 15 authenticated direct QUIC/NAT transport completed. Added Quinn-based direct listener/client support, trusted-peer encrypted probes, direct message and stream-chunk delivery, route selection only after live authenticated probes, relay fallback preservation, direct endpoint peer-card/SDK/MCP surfaces, docs/skill updates, and GNU-toolchain core validation. Next: distributed hosted session/accounting state, hosted dashboards/abuse workflows, hosted tenant administration, managed direct NAT traversal, and managed hosted identity/key administration.
 2026-05-21 - Post Phase 15 distributed relay state/accounting foundation completed. Added metadata-only file-backed relay session state through `CONU_RELAY_SESSION_STATE_DIR`, relay restart same-node resume validation, cross-node resume fallback preservation, docs/skill/package updates, and full GNU-toolchain/package validation. Next: hosted dashboards/abuse workflows, managed direct NAT traversal, hosted tenant administration, distributed multi-instance session migration, and managed hosted identity/key administration.
+2026-05-21 - Post Phase 15 managed direct NAT rendezvous foundation completed. Added static direct candidate source/kind/rendezvous metadata, explicit `nat_traversal_unavailable` reporting, invalid endpoint secret sanitization, CLI/MCP route surfaces, docs/skill updates, and full GNU-toolchain/package validation. Next: hosted dashboards/abuse workflows, ICE/STUN/TURN managed traversal, hosted tenant administration, distributed multi-instance session migration, and managed hosted identity/key administration.
 ```

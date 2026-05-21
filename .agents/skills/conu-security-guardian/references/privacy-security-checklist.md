@@ -79,9 +79,9 @@
 
 ## Routes
 
-- Direct route candidates are recorded only for trusted peers and must be selected only after a live authenticated QUIC probe succeeds; failed probes must keep relay selected.
+- Direct route candidates are recorded only for trusted peers and must be selected only after a live authenticated QUIC probe succeeds; failed probes and NAT-traversal-unavailable states must keep relay selected.
 - Relay fallback does not weaken trust checks.
-- Direct endpoint config must not contain tokens, private keys, or payload material.
+- Direct endpoint config must not contain tokens, private keys, endpoint secrets, or payload material, and rejected endpoint strings must not be persisted in route ids, route registries, probes, logs, CLI output, SDK output, or MCP output.
 - Route failure reasons stay generic and must not echo arbitrary payload-bearing input.
 
 ## Packaging And Doctor

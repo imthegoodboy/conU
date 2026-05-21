@@ -21,6 +21,17 @@ const ROUTE_VERSION: &str = "1";
 const DEFAULT_RELAY_ENDPOINT: &str = "ws://127.0.0.1:8787";
 const RELAY_WEBSOCKET_LATENCY_MS: u64 = 80;
 const DIRECT_QUIC_PROBE_FAILED: &str = "direct_quic_probe_failed";
+const NAT_TRAVERSAL_UNAVAILABLE: &str = "nat_traversal_unavailable";
+const CANDIDATE_SOURCE_NONE: &str = "none";
+const CANDIDATE_SOURCE_PEER_CONFIG: &str = "peer_config";
+const CANDIDATE_SOURCE_PEER_CARD: &str = "peer_card";
+const CANDIDATE_SOURCE_LOCAL_CONFIG: &str = "local_config";
+const CANDIDATE_KIND_NONE: &str = "none";
+const CANDIDATE_KIND_HOST: &str = "host";
+const RENDEZVOUS_STATE_NOT_CONFIGURED: &str = "not_configured";
+const RENDEZVOUS_STATE_CANDIDATE_EXCHANGED: &str = "candidate_exchanged";
+const RENDEZVOUS_STATE_UNAVAILABLE: &str = "unavailable";
+const RENDEZVOUS_STATE_DISABLED: &str = "disabled";
 
 /// Transport class for a candidate route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +131,9 @@ pub struct RouteRecord {
     pub direct_attempted: bool,
     pub relay_fallback: bool,
     pub nat_profile: NatProfile,
+    pub candidate_source: String,
+    pub candidate_kind: String,
+    pub rendezvous_state: String,
     pub failure_reason: Option<String>,
     pub updated_at_unix: u64,
 }
@@ -145,6 +159,9 @@ pub struct RouteProbe {
     pub outcome: String,
     pub score: u16,
     pub latency_ms: Option<u64>,
+    pub candidate_source: String,
+    pub candidate_kind: String,
+    pub rendezvous_state: String,
     pub created_at_unix: u64,
 }
 
@@ -158,6 +175,7 @@ pub struct RouteSyncReport {
     pub selected_direct: usize,
     pub selected_relay: usize,
     pub relay_fallbacks: usize,
+    pub nat_traversal_unavailable: usize,
     pub probes_recorded: usize,
 }
 
@@ -326,21 +344,22 @@ fn direct_route_candidate(
     nat_profile: NatProfile,
     now: u64,
 ) -> Result<RouteRecord, RouteError> {
-    let endpoint = direct_endpoint(config, peer);
+    let candidate = direct_candidate(config, peer, nat_profile);
+    let display_endpoint = candidate.display_endpoint();
     let route_id = route_id(
         &peer.peer_node_id,
         RouteTransport::DirectQuic,
-        endpoint.as_deref(),
+        Some(display_endpoint.as_str()),
     );
     let mut state = RouteState::Unavailable;
     let mut score = 0;
     let mut latency_ms = None;
-    let mut failure_reason = Some("no_direct_quic_candidate".to_string());
+    let mut failure_reason = Some(candidate.initial_failure_reason());
     let mut direct_attempted = false;
 
     if nat_profile == NatProfile::RelayOnly {
         failure_reason = Some("nat_profile_relay_only".to_string());
-    } else if let Some(endpoint) = endpoint.as_deref() {
+    } else if let Some(endpoint) = candidate.endpoint.as_deref() {
         direct_attempted = true;
         if valid_direct_endpoint(endpoint) {
             match direct_transport::probe_direct_quic_from_paths(
@@ -362,6 +381,7 @@ fn direct_route_candidate(
                 }
             }
         } else {
+            direct_attempted = false;
             failure_reason = Some("invalid_direct_quic_endpoint".to_string());
         }
     }
@@ -371,13 +391,16 @@ fn direct_route_candidate(
         peer_node_id: peer.peer_node_id.clone(),
         display_name: peer.display_name.clone(),
         transport: RouteTransport::DirectQuic,
-        endpoint: endpoint.unwrap_or_else(|| "quic://unconfigured".to_string()),
+        endpoint: display_endpoint,
         state,
         score,
         latency_ms,
         direct_attempted,
         relay_fallback: false,
         nat_profile,
+        candidate_source: candidate.source.to_string(),
+        candidate_kind: candidate.kind.to_string(),
+        rendezvous_state: candidate.rendezvous_state.to_string(),
         failure_reason,
         updated_at_unix: now,
     })
@@ -405,9 +428,100 @@ fn relay_route_candidate(
         direct_attempted: false,
         relay_fallback: false,
         nat_profile,
+        candidate_source: CANDIDATE_SOURCE_NONE.to_string(),
+        candidate_kind: CANDIDATE_KIND_NONE.to_string(),
+        rendezvous_state: RENDEZVOUS_STATE_NOT_CONFIGURED.to_string(),
         failure_reason: None,
         updated_at_unix: now,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectCandidate {
+    endpoint: Option<String>,
+    source: &'static str,
+    kind: &'static str,
+    rendezvous_state: &'static str,
+}
+
+impl DirectCandidate {
+    fn initial_failure_reason(&self) -> String {
+        match self.rendezvous_state {
+            RENDEZVOUS_STATE_UNAVAILABLE => NAT_TRAVERSAL_UNAVAILABLE.to_string(),
+            RENDEZVOUS_STATE_DISABLED => "nat_profile_relay_only".to_string(),
+            _ => "no_direct_quic_candidate".to_string(),
+        }
+    }
+
+    fn display_endpoint(&self) -> String {
+        match self.endpoint.as_deref() {
+            Some(endpoint) if valid_direct_endpoint(endpoint) => endpoint.to_string(),
+            Some(_) => "quic://invalid".to_string(),
+            None => "quic://unconfigured".to_string(),
+        }
+    }
+}
+
+fn direct_candidate(
+    config: &HashMap<String, String>,
+    peer: &TrustedPeer,
+    nat_profile: NatProfile,
+) -> DirectCandidate {
+    let keyed = format!("direct_quic_{}", config_key_suffix(&peer.peer_node_id));
+    if let Some(endpoint) = config
+        .get(&keyed)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return DirectCandidate {
+            endpoint: Some(endpoint),
+            source: CANDIDATE_SOURCE_PEER_CONFIG,
+            kind: CANDIDATE_KIND_HOST,
+            rendezvous_state: RENDEZVOUS_STATE_CANDIDATE_EXCHANGED,
+        };
+    }
+    if let Some(endpoint) = peer
+        .direct_quic_endpoint
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return DirectCandidate {
+            endpoint: Some(endpoint),
+            source: CANDIDATE_SOURCE_PEER_CARD,
+            kind: CANDIDATE_KIND_HOST,
+            rendezvous_state: RENDEZVOUS_STATE_CANDIDATE_EXCHANGED,
+        };
+    }
+    if let Some(endpoint) = config
+        .get("direct_quic_endpoint")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return DirectCandidate {
+            endpoint: Some(endpoint),
+            source: CANDIDATE_SOURCE_LOCAL_CONFIG,
+            kind: CANDIDATE_KIND_HOST,
+            rendezvous_state: RENDEZVOUS_STATE_CANDIDATE_EXCHANGED,
+        };
+    }
+
+    DirectCandidate {
+        endpoint: None,
+        source: CANDIDATE_SOURCE_NONE,
+        kind: CANDIDATE_KIND_NONE,
+        rendezvous_state: rendezvous_state_without_candidate(nat_profile),
+    }
+}
+
+fn rendezvous_state_without_candidate(nat_profile: NatProfile) -> &'static str {
+    match nat_profile {
+        NatProfile::RelayOnly => RENDEZVOUS_STATE_DISABLED,
+        NatProfile::Public => RENDEZVOUS_STATE_NOT_CONFIGURED,
+        NatProfile::Unknown | NatProfile::Cone | NatProfile::Symmetric => {
+            RENDEZVOUS_STATE_UNAVAILABLE
+        }
+    }
 }
 
 fn direct_score(nat_profile: NatProfile) -> u16 {
@@ -436,6 +550,9 @@ fn probe_from_route(route: &RouteRecord, now: u64) -> RouteProbe {
         outcome: outcome.to_string(),
         score: route.score,
         latency_ms: route.latency_ms,
+        candidate_source: route.candidate_source.clone(),
+        candidate_kind: route.candidate_kind.clone(),
+        rendezvous_state: route.rendezvous_state.clone(),
         created_at_unix: now,
     }
 }
@@ -471,6 +588,13 @@ fn report_from_routes(routes: &[RouteRecord], probes_recorded: usize) -> RouteSy
             })
             .count(),
         relay_fallbacks: routes.iter().filter(|route| route.relay_fallback).count(),
+        nat_traversal_unavailable: routes
+            .iter()
+            .filter(|route| {
+                route.transport == RouteTransport::DirectQuic
+                    && route.failure_reason.as_deref() == Some(NAT_TRAVERSAL_UNAVAILABLE)
+            })
+            .count(),
         probes_recorded,
     }
 }
@@ -499,16 +623,6 @@ fn relay_endpoint(config: &HashMap<String, String>) -> Result<String, RouteError
             .cloned()
             .unwrap_or_else(|| DEFAULT_RELAY_ENDPOINT.to_string()),
     )
-}
-
-fn direct_endpoint(config: &HashMap<String, String>, peer: &TrustedPeer) -> Option<String> {
-    let keyed = format!("direct_quic_{}", config_key_suffix(&peer.peer_node_id));
-    config
-        .get(&keyed)
-        .or(peer.direct_quic_endpoint.as_ref())
-        .or_else(|| config.get("direct_quic_endpoint"))
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn read_routes(paths: &StatePaths) -> Result<Vec<RouteRecord>, RouteError> {
@@ -561,6 +675,18 @@ fn write_routes(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteE
             route.nat_profile.as_str()
         ));
         contents.push_str(&format!(
+            "candidate_source = \"{}\"\n",
+            escape_file_value(&route.candidate_source)
+        ));
+        contents.push_str(&format!(
+            "candidate_kind = \"{}\"\n",
+            escape_file_value(&route.candidate_kind)
+        ));
+        contents.push_str(&format!(
+            "rendezvous_state = \"{}\"\n",
+            escape_file_value(&route.rendezvous_state)
+        ));
+        contents.push_str(&format!(
             "failure_reason = \"{}\"\n",
             escape_file_value(route.failure_reason.as_deref().unwrap_or(""))
         ));
@@ -594,7 +720,7 @@ fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteE
     for probe in probes {
         writeln!(
             file,
-            "\n[[probe]]\nprobe_id = \"{}\"\nroute_id = \"{}\"\npeer_node_id = \"{}\"\ntransport = \"{}\"\nendpoint = \"{}\"\noutcome = \"{}\"\nscore = {}\nlatency_ms = {}\ncreated_at_unix = {}\npayload_displayed = false",
+            "\n[[probe]]\nprobe_id = \"{}\"\nroute_id = \"{}\"\npeer_node_id = \"{}\"\ntransport = \"{}\"\nendpoint = \"{}\"\noutcome = \"{}\"\nscore = {}\nlatency_ms = {}\ncandidate_source = \"{}\"\ncandidate_kind = \"{}\"\nrendezvous_state = \"{}\"\ncreated_at_unix = {}\npayload_displayed = false",
             escape_file_value(&probe.probe_id),
             escape_file_value(&probe.route_id),
             escape_file_value(&probe.peer_node_id),
@@ -603,6 +729,9 @@ fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteE
             escape_file_value(&probe.outcome),
             probe.score,
             probe.latency_ms.unwrap_or(0),
+            escape_file_value(&probe.candidate_source),
+            escape_file_value(&probe.candidate_kind),
+            escape_file_value(&probe.rendezvous_state),
             probe.created_at_unix
         )
         .map_err(|error| RouteError::io("write route probe", &paths.route_probes, error))?;
@@ -634,12 +763,13 @@ fn append_route_log(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), Ro
 
     writeln!(
         file,
-        "event=route_sync peers={} candidates={} selected_direct={} selected_relay={} relay_fallbacks={} payload=not_observed",
+        "event=route_sync peers={} candidates={} selected_direct={} selected_relay={} relay_fallbacks={} nat_traversal_unavailable={} payload=not_observed",
         report.peers,
         report.candidates,
         report.selected_direct,
         report.selected_relay,
-        report.relay_fallbacks
+        report.relay_fallbacks,
+        report.nat_traversal_unavailable
     )
     .map_err(|error| RouteError::io("write route log", &log_path, error))
 }
@@ -719,6 +849,15 @@ fn route_from_values(values: &HashMap<String, String>) -> Result<RouteRecord, Ro
         direct_attempted: parse_bool(values.get("direct_attempted")).unwrap_or(false),
         relay_fallback: parse_bool(values.get("relay_fallback")).unwrap_or(false),
         nat_profile: NatProfile::from_config(values.get("nat_profile")),
+        candidate_source: optional_identifier(
+            values.get("candidate_source"),
+            CANDIDATE_SOURCE_NONE,
+        )?,
+        candidate_kind: optional_identifier(values.get("candidate_kind"), CANDIDATE_KIND_NONE)?,
+        rendezvous_state: optional_identifier(
+            values.get("rendezvous_state"),
+            RENDEZVOUS_STATE_NOT_CONFIGURED,
+        )?,
         failure_reason,
         updated_at_unix: parse_u64(&required(values, "updated_at_unix")?)?,
     })
@@ -739,6 +878,15 @@ fn probe_from_values(values: &HashMap<String, String>) -> Result<RouteProbe, Rou
         } else {
             Some(latency_ms)
         },
+        candidate_source: optional_identifier(
+            values.get("candidate_source"),
+            CANDIDATE_SOURCE_NONE,
+        )?,
+        candidate_kind: optional_identifier(values.get("candidate_kind"), CANDIDATE_KIND_NONE)?,
+        rendezvous_state: optional_identifier(
+            values.get("rendezvous_state"),
+            RENDEZVOUS_STATE_NOT_CONFIGURED,
+        )?,
         created_at_unix: parse_u64(&required(values, "created_at_unix")?)?,
     })
 }
@@ -782,6 +930,16 @@ fn optional_clean(value: Option<&String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn optional_identifier(
+    value: Option<&String>,
+    default: &'static str,
+) -> Result<String, RouteError> {
+    match optional_clean(value) {
+        Some(value) => validate_identifier(value, "route metadata"),
+        None => Ok(default.to_string()),
+    }
 }
 
 fn validate_identifier(value: String, field: &'static str) -> Result<String, RouteError> {
@@ -838,16 +996,7 @@ fn validate_endpoint(value: String) -> Result<String, RouteError> {
 }
 
 fn valid_direct_endpoint(value: &str) -> bool {
-    let endpoint = value
-        .strip_prefix("quic://")
-        .or_else(|| value.strip_prefix("udp://"))
-        .unwrap_or(value);
-    let Some((host, port)) = endpoint.rsplit_once(':') else {
-        return false;
-    };
-    !host.trim().is_empty()
-        && port.parse::<u16>().is_ok_and(|port| port > 0)
-        && !endpoint.chars().any(char::is_whitespace)
+    direct_transport::validate_direct_endpoint(value).is_ok()
 }
 
 fn parse_bool(value: Option<&String>) -> Option<bool> {
@@ -966,6 +1115,7 @@ mod tests {
         assert_eq!(report.direct_available, 0);
         assert_eq!(report.selected_direct, 0);
         assert_eq!(report.selected_relay, 1);
+        assert_eq!(report.nat_traversal_unavailable, 0);
         assert_eq!(
             selected.expect("selected").transport,
             RouteTransport::RelayWebSocket
@@ -976,11 +1126,197 @@ mod tests {
             direct.failure_reason.as_deref(),
             Some(DIRECT_QUIC_PROBE_FAILED)
         );
+        assert_eq!(direct.candidate_source, CANDIDATE_SOURCE_PEER_CONFIG);
+        assert_eq!(direct.candidate_kind, CANDIDATE_KIND_HOST);
+        assert_eq!(
+            direct.rendezvous_state,
+            RENDEZVOUS_STATE_CANDIDATE_EXCHANGED
+        );
+        let direct_probe = probes
+            .iter()
+            .find(|probe| {
+                probe.peer_node_id == peer.peer_node_id
+                    && probe.transport == RouteTransport::DirectQuic
+            })
+            .expect("direct probe recorded");
+        assert_eq!(direct_probe.candidate_source, CANDIDATE_SOURCE_PEER_CONFIG);
+        assert_eq!(direct_probe.candidate_kind, CANDIDATE_KIND_HOST);
+        assert_eq!(
+            direct_probe.rendezvous_state,
+            RENDEZVOUS_STATE_CANDIDATE_EXCHANGED
+        );
         assert!(
             probes
                 .iter()
                 .any(|probe| probe.outcome == DIRECT_QUIC_PROBE_FAILED)
         );
+    }
+
+    #[test]
+    fn sync_marks_nat_traversal_unavailable_without_candidate() {
+        let home = test_home("nat-unavailable");
+        let peer = trusted_peer(&home);
+        fs::write(
+            StatePaths::from_home(home.clone()).config,
+            "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\nnat_profile = \"symmetric\"\n",
+        )
+        .expect("config writes");
+
+        let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let routes = list_routes(Some(home.clone())).expect("routes read");
+        let direct = routes
+            .iter()
+            .find(|route| route.peer_node_id == peer.peer_node_id && route.is_direct())
+            .expect("direct route recorded");
+        let selected =
+            selected_route_for_peer(Some(home.clone()), &peer.peer_node_id).expect("route lookup");
+        let probes = list_route_probes(Some(home)).expect("probes read");
+
+        assert_eq!(report.direct_attempts, 0);
+        assert_eq!(report.direct_available, 0);
+        assert_eq!(report.selected_relay, 1);
+        assert_eq!(report.nat_traversal_unavailable, 1);
+        assert_eq!(
+            selected.expect("selected").transport,
+            RouteTransport::RelayWebSocket
+        );
+        assert_eq!(direct.state, RouteState::Unavailable);
+        assert!(!direct.direct_attempted);
+        assert_eq!(
+            direct.failure_reason.as_deref(),
+            Some(NAT_TRAVERSAL_UNAVAILABLE)
+        );
+        assert_eq!(direct.candidate_source, CANDIDATE_SOURCE_NONE);
+        assert_eq!(direct.candidate_kind, CANDIDATE_KIND_NONE);
+        assert_eq!(direct.rendezvous_state, RENDEZVOUS_STATE_UNAVAILABLE);
+        assert!(
+            probes
+                .iter()
+                .any(|probe| probe.outcome == NAT_TRAVERSAL_UNAVAILABLE)
+        );
+    }
+
+    #[test]
+    fn sync_records_peer_card_candidate_metadata_without_payloads() {
+        let alice_home = test_home("peer-card-candidate-alice");
+        let bob_home = test_home("peer-card-candidate-bob");
+        let bob_endpoint = free_loopback_endpoint();
+        state::init_state(Some(bob_home.clone())).expect("bob state initializes");
+        fs::write(
+            StatePaths::from_home(bob_home.clone()).config,
+            format!("version = \"1\"\ndirect_quic_endpoint = \"{bob_endpoint}\"\n"),
+        )
+        .expect("bob config writes");
+
+        let bob_card = trust::export_peer_card(Some(bob_home)).expect("bob card exports");
+        let bob_peer =
+            trust::trust_peer_card(Some(alice_home.clone()), bob_card).expect("alice trusts bob");
+
+        let report = sync_routes(Some(alice_home.clone())).expect("routes sync");
+        let routes = list_routes(Some(alice_home.clone())).expect("routes read");
+        let direct = routes
+            .iter()
+            .find(|route| route.peer_node_id == bob_peer.peer_node_id && route.is_direct())
+            .expect("direct route recorded");
+        let paths = StatePaths::from_home(alice_home);
+        let registry = fs::read_to_string(paths.route_registry).expect("routes read");
+        let probes = fs::read_to_string(paths.route_probes).expect("probes read");
+
+        assert_eq!(report.selected_relay, 1);
+        assert!(direct.direct_attempted);
+        assert_eq!(
+            direct.failure_reason.as_deref(),
+            Some(DIRECT_QUIC_PROBE_FAILED)
+        );
+        assert_eq!(direct.candidate_source, CANDIDATE_SOURCE_PEER_CARD);
+        assert_eq!(direct.candidate_kind, CANDIDATE_KIND_HOST);
+        assert_eq!(
+            direct.rendezvous_state,
+            RENDEZVOUS_STATE_CANDIDATE_EXCHANGED
+        );
+        assert!(registry.contains("candidate_source = \"peer_card\""));
+        assert!(registry.contains("candidate_kind = \"host\""));
+        assert!(registry.contains("rendezvous_state = \"candidate_exchanged\""));
+        assert!(probes.contains("candidate_source = \"peer_card\""));
+        assert!(probes.contains("candidate_kind = \"host\""));
+        assert!(probes.contains("rendezvous_state = \"candidate_exchanged\""));
+        assert!(probes.contains("payload_displayed = false"));
+        assert!(!registry.contains("private message contents"));
+        assert!(!probes.contains("private message contents"));
+        assert!(!registry.contains("local-dev-token"));
+        assert!(!probes.contains("local-dev-token"));
+        assert!(!registry.contains("BEGIN PRIVATE KEY"));
+        assert!(!probes.contains("BEGIN PRIVATE KEY"));
+    }
+
+    #[test]
+    fn invalid_direct_candidate_sanitizes_endpoint_secret_metadata() {
+        let home = test_home("invalid-endpoint-secret");
+        let peer = trusted_peer(&home);
+        let config_key = format!("direct_quic_{}", config_key_suffix(&peer.peer_node_id));
+        let secret_endpoint = "quic://user:secret@127.0.0.1:9443";
+        fs::write(
+            StatePaths::from_home(home.clone()).config,
+            format!(
+                "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\nnat_profile = \"public\"\n{config_key} = \"{secret_endpoint}\"\n"
+            ),
+        )
+        .expect("config writes");
+
+        let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let routes = list_routes(Some(home.clone())).expect("routes read");
+        let direct = routes
+            .iter()
+            .find(|route| route.peer_node_id == peer.peer_node_id && route.is_direct())
+            .expect("direct route recorded");
+        let selected =
+            selected_route_for_peer(Some(home.clone()), &peer.peer_node_id).expect("route lookup");
+        let paths = StatePaths::from_home(home);
+        let registry = fs::read_to_string(paths.route_registry).expect("routes read");
+        let probes = fs::read_to_string(paths.route_probes).expect("probes read");
+        let log = fs::read_to_string(paths.logs_dir.join("routes.log")).expect("log reads");
+
+        assert_eq!(report.direct_attempts, 0);
+        assert_eq!(report.selected_relay, 1);
+        assert_eq!(
+            selected.expect("selected").transport,
+            RouteTransport::RelayWebSocket
+        );
+        assert_eq!(direct.endpoint, "quic://invalid");
+        assert!(!direct.direct_attempted);
+        assert_eq!(
+            direct.failure_reason.as_deref(),
+            Some("invalid_direct_quic_endpoint")
+        );
+        assert_eq!(direct.candidate_source, CANDIDATE_SOURCE_PEER_CONFIG);
+        assert_eq!(direct.candidate_kind, CANDIDATE_KIND_HOST);
+        assert_eq!(
+            direct.rendezvous_state,
+            RENDEZVOUS_STATE_CANDIDATE_EXCHANGED
+        );
+        assert_eq!(
+            direct.route_id,
+            route_id(
+                &peer.peer_node_id,
+                RouteTransport::DirectQuic,
+                Some("quic://invalid")
+            )
+        );
+        assert_ne!(
+            direct.route_id,
+            route_id(
+                &peer.peer_node_id,
+                RouteTransport::DirectQuic,
+                Some(secret_endpoint)
+            )
+        );
+        for contents in [&registry, &probes, &log] {
+            assert!(!contents.contains(secret_endpoint));
+            assert!(!contents.contains("user:secret"));
+            assert!(!contents.contains("@127.0.0.1"));
+            assert!(!contents.contains("BEGIN PRIVATE KEY"));
+            assert!(!contents.contains("private message contents"));
+        }
     }
 
     #[test]
