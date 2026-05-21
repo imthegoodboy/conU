@@ -566,21 +566,26 @@ import { ConuClient } from "@conu/sdk";
 const client = new ConuClient({ home: ".conu-agent" });
 client.init();
 client.registerAgent("agent.mybot", "My Bot", { rooms: true, streams: true });
+client.registerAgent("agent.other", "Other", { rooms: true, streams: true });
 client.processQueued();
 const localAgentCard = client.exportAgentCard("agent.mybot");
 // Manual fallback for a signed card received from an already trusted peer:
 // client.trustAgentCard(remoteAgentCard);
 client.setPeerPolicy("node_peer", { messages: true, streams: true, rooms: true });
 client.sendMessage("agent.mybot", "agent.other", "opaque bytes");
+client.processQueued();
+const inbox = client.inbox("agent.other");
+const received = client.receiveMessageBytes("agent.other", inbox.entries[0].envelopeId);
 client.sendRemoteMessage("agent.mybot", "agent.remote", "node_peer", "opaque bytes");
 client.createRoom("room.dev", "Dev Room", "agent.mybot");
 client.joinRoom("room.dev", "agent.other");
 client.setRoomTopicPolicy("room.dev", "agent.mybot", "build", { publish: true, subscribe: true });
 client.publishRoomEvent("room.dev", "agent.mybot", "build", "opaque bytes");
 client.relaySync(3000);
+console.log({ receivedBytes: received.byteLength, contentsDisplayed: false });
 ```
 
-The wrapper passes payload bytes through stdin and returns CLI JSON metadata. It does not print payloads and does not add a raw payload receive helper beyond inbox metadata listing.
+The wrapper passes payload bytes through stdin and returns CLI JSON metadata for normal list/status surfaces. It does not print payloads, and raw inbox bytes are available only through explicit addressed-agent receive helpers such as `receiveMessageBytes(agentId, envelopeId)`.
 
 ### CLI Agent Fallback
 
@@ -702,5 +707,5 @@ To make conU genuinely useful over the internet, the next phase should build:
 - Published npm package backed by platform release assets and checksums.
 - Hosted multi-tenant room permission administration beyond the current local topic policy file.
 - Real QUIC socket transport and NAT candidate exchange after the room/session model is stable.
-- TypeScript explicit payload receive helper if JavaScript agents need raw local inbox bytes without MCP.
+- Browser-native TypeScript protocol support remains future work; the current Node wrapper uses installed binaries and MCP for explicit payload receive.
 - Signed installers plus non-Windows OS keychain-backed secret storage after local packaging stabilizes.

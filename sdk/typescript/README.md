@@ -13,7 +13,10 @@ client.registerAgent("agent.beta", "Beta", { streams: true, rooms: true });
 client.processQueued();
 
 const sent = client.sendMessage("agent.alpha", "agent.beta", "private bytes");
-console.log(sent.payloadBytes);
+client.processQueued();
+const inbox = client.inbox("agent.beta");
+const payload = client.receiveMessageBytes("agent.beta", inbox.entries[0].envelopeId);
+console.log({ sentBytes: sent.payloadBytes, receivedBytes: payload.byteLength });
 ```
 
 The SDK does not log or print payloads. Message, stream, room, and relay
@@ -21,16 +24,18 @@ credential bytes are passed to conU through stdin. List, send, route, room,
 security, relay, telemetry, and status methods return JSON metadata from the
 CLI.
 
-The wrapper follows the CLI metadata boundary for inbox listing and does not
-add a raw payload receive helper yet. Use the Rust SDK or MCP explicit receive
-path when an addressed local agent needs inbox bytes.
+The wrapper follows the CLI metadata boundary for inbox listing. Raw inbox bytes
+are returned only through the explicit `receiveMessageBytes(agentId,
+envelopeId)` helper, which calls the MCP receive path for an envelope present in
+that addressed local agent's inbox.
 
 Useful calls include:
 
 - `registerAgent()`, `heartbeat()`, `agents()`
 - `identityExport()`, `trustPeer()`, `setPeerPolicy()`
 - `exportAgentCard()`, `trustAgentCard()`
-- `sendMessage()`, `sendRemoteMessage()`, `inbox()`, `receipts()`
+- `sendMessage()`, `sendRemoteMessage()`, `inbox()`, `receiveMessageBytes()`,
+  `receipts()`
 - `openStream()`, `writeStream()`, `closeStream()`
 - `createRoom()`, `joinRoom()`, `publishRoomEvent()`, `setRoomTopicPolicy()`
 - `relaySync()`, `setRelayCredential()`, `relayCredentialStatus()`

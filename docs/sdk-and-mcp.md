@@ -128,12 +128,17 @@ client.processQueued();
 
 const sent = client.sendMessage("agent.alpha", "agent.beta", "private bytes");
 const inbox = client.inbox("agent.beta");
-console.log({ sentEnvelopeId: sent.envelopeId, inboxEntries: inbox.entries?.length ?? 0 });
+const received = client.receiveMessageBytes("agent.beta", inbox.entries[0].envelopeId);
+console.log({
+  sentEnvelopeId: sent.envelopeId,
+  inboxEntries: inbox.entries?.length ?? 0,
+  receivedBytes: received.byteLength,
+});
 ```
 
-Useful calls include `init()`, `status()`, `securityAudit()`, `registerAgent()`, `heartbeat()`, `agents()`, `exportAgentCard()`, `trustAgentCard()`, `identityExport()`, `trustPeer()`, `setPeerPolicy()`, `sendMessage()`, `sendRemoteMessage()`, `relaySync()`, `syncRoutes()`, `routes()`, `openStream()`, `writeStream()`, `createRoom()`, `joinRoom()`, `setRoomTopicPolicy()`, `publishRoomEvent()`, `rotateIdentity()`, `retireIdentityArchives()`, `rotateStorage()`, `retireStorage()`, `telemetrySnapshot()`, and `processQueued()`.
+Useful calls include `init()`, `status()`, `securityAudit()`, `registerAgent()`, `heartbeat()`, `agents()`, `exportAgentCard()`, `trustAgentCard()`, `identityExport()`, `trustPeer()`, `setPeerPolicy()`, `sendMessage()`, `sendRemoteMessage()`, `inbox()`, `receiveMessageBytes()`, `relaySync()`, `syncRoutes()`, `routes()`, `openStream()`, `writeStream()`, `createRoom()`, `joinRoom()`, `setRoomTopicPolicy()`, `publishRoomEvent()`, `rotateIdentity()`, `retireIdentityArchives()`, `rotateStorage()`, `retireStorage()`, `telemetrySnapshot()`, and `processQueued()`.
 
-Payload-bearing methods pass bytes through stdin rather than argv. The wrapper does not print or log payloads, and command responses stay on the current CLI metadata contract. The current TypeScript wrapper does not add a payload receive helper beyond metadata inbox listing; use the Rust SDK or MCP explicit receive path when a local addressed agent needs raw inbox bytes.
+Payload-bearing methods pass bytes through stdin rather than argv. The wrapper does not print or log payloads, and command responses stay on the current CLI metadata contract. The TypeScript wrapper exposes raw local inbox bytes only through the explicit `receiveMessageBytes(agentId, envelopeId)` helper, which calls `conu_receive_message` with `includePayload: true` and still requires the envelope to be present in that addressed local agent inbox.
 
 Run the package smoke check:
 
@@ -215,4 +220,4 @@ Reference: [MCP 2025-11-25 Transports](https://modelcontextprotocol.io/specifica
 - Route sync records configured direct QUIC candidates as inactive metadata and keeps relay selected until a real direct QUIC data plane exists.
 - MCP uses local stdio only; HTTP MCP transport is not implemented.
 - `conu_receive_message` is intentionally explicit because normal CLI and tool metadata views must not display payload contents.
-- The TypeScript wrapper currently follows CLI metadata surfaces and does not expose a raw payload receive helper.
+- The TypeScript wrapper follows CLI metadata surfaces for list/send/status helpers and exposes raw payload bytes only through explicit addressed-agent receive helpers.

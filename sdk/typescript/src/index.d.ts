@@ -28,6 +28,7 @@ export type CommandRunner = (input: RunnerInput) => CommandResult;
 export interface ConuClientOptions {
   conuBin?: string;
   conudBin?: string;
+  mcpBin?: string;
   home?: string;
   env?: Record<string, string | undefined>;
   cwd?: string;
@@ -70,6 +71,10 @@ export interface TrustPeerOptions {
 export interface RotateLogOptions {
   maxBytes?: number;
   keep?: number;
+}
+
+export interface ReceiveMessageOptions {
+  includePayload?: boolean;
 }
 
 export interface SignedAgentCard {
@@ -117,6 +122,8 @@ export class ConuClient {
   rooms(): JsonObject;
   roomEvents(): JsonObject;
   inbox(agentId: string): JsonObject;
+  receiveMessage(agentId: string, envelopeId: string, options?: ReceiveMessageOptions): JsonObject;
+  receiveMessageBytes(agentId: string, envelopeId: string): Uint8Array;
   receipts(): JsonObject;
   registerAgent(agentId: string, displayName: string, options?: RegisterAgentOptions): JsonObject;
   heartbeat(agentId: string, presence?: string): JsonObject;
@@ -156,5 +163,6 @@ export class ConuClient {
   processQueued(): CommandResult;
   runConu(args: string[], input?: Uint8Array): CommandResult;
   runJson(binary: string, args: string[], input?: Uint8Array): JsonObject;
+  callMcpTool(name: string, argumentsValue?: JsonObject): JsonObject;
   run(binary: string, args?: string[], input?: Uint8Array): CommandResult;
 }

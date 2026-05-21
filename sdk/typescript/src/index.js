@@ -12,6 +12,7 @@ export class ConuClient {
   constructor(options = {}) {
     this.conuBin = String(options.conuBin ?? "conu");
     this.conudBin = String(options.conudBin ?? "conud");
+    this.mcpBin = String(options.mcpBin ?? "conu-mcp");
     this.cwd = options.cwd === undefined ? undefined : String(options.cwd);
     this.env = { ...process.env, ...(options.env ?? {}) };
     if (options.home !== undefined && options.home !== null) {
@@ -185,6 +186,22 @@ export class ConuClient {
 
   inbox(agentId) {
     return this.runJson(this.conuBin, ["messages", "inbox", agentId, "--json"]);
+  }
+
+  receiveMessage(agentId, envelopeId, options = {}) {
+    return this.callMcpTool("conu_receive_message", {
+      agentId: String(agentId),
+      envelopeId: String(envelopeId),
+      includePayload: Boolean(options.includePayload),
+    });
+  }
+
+  receiveMessageBytes(agentId, envelopeId) {
+    const received = this.receiveMessage(agentId, envelopeId, { includePayload: true });
+    if (typeof received.payloadHex !== "string") {
+      throw new Error("conU receive response did not include payloadHex");
+    }
+    return hexToBuffer(received.payloadHex);
   }
 
   receipts() {
@@ -378,6 +395,35 @@ export class ConuClient {
     return JSON.parse(result.stdout);
   }
 
+  callMcpTool(name, argumentsValue = {}) {
+    const request = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name,
+        arguments: argumentsValue,
+      },
+    };
+    const result = this.run(
+      this.mcpBin,
+      [],
+      Buffer.from(`${JSON.stringify(request)}\n`, "utf8"),
+    );
+    const response = parseMcpResponse(result.stdout);
+    if (response.error) {
+      throw new ConuError(`conU MCP tool failed: ${safeMcpError(response.error)}`, result);
+    }
+    const toolResult = response.result;
+    if (!isRecord(toolResult)) {
+      throw new ConuError("conU MCP response did not include a tool result", result);
+    }
+    if (toolResult.isError === true) {
+      throw new ConuError(`conU MCP tool failed: ${toolText(toolResult)}`, result);
+    }
+    return JSON.parse(toolText(toolResult));
+  }
+
   run(binary, args = [], input) {
     const result = this.runner({
       binary,
@@ -452,4 +498,38 @@ function cardBool(values, key, defaultValue) {
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseMcpResponse(stdout) {
+  const line = String(stdout)
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .find((value) => value.length > 0);
+  if (line === undefined) {
+    throw new Error("conU MCP response was empty");
+  }
+  return JSON.parse(line);
+}
+
+function toolText(toolResult) {
+  const content = Array.isArray(toolResult.content) ? toolResult.content : [];
+  const text = content.find((item) => isRecord(item) && item.type === "text")?.text;
+  if (typeof text !== "string") {
+    throw new Error("conU MCP tool response did not include text content");
+  }
+  return text;
+}
+
+function safeMcpError(error) {
+  if (isRecord(error) && typeof error.message === "string") {
+    return error.message;
+  }
+  return "unknown MCP error";
+}
+
+function hexToBuffer(hex) {
+  if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new Error("conU receive response included invalid payloadHex");
+  }
+  return Buffer.from(hex, "hex");
 }

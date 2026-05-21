@@ -50,6 +50,7 @@ Implemented so far:
 - MCP stdio adapter crate `conu-mcp` exposing conU tools over newline-delimited JSON-RPC
 - Python stdlib wrapper SDK under `sdk/python`
 - TypeScript/JavaScript wrapper SDK under `sdk/typescript`
+- explicit TypeScript addressed-agent receive helpers backed by MCP `conu_receive_message`
 - local examples for Rust, Python, and TypeScript agents
 - local pairing invitation creation through `conu pair`
 - local pairing join/trust creation through `conu join <code>`
