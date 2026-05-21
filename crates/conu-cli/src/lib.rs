@@ -3234,6 +3234,9 @@ fn render_routes_json(route_records: &[RouteRecord]) -> String {
       "directAttempted": {},
       "relayFallback": {},
       "natProfile": "{}",
+      "candidateSource": "{}",
+      "candidateKind": "{}",
+      "rendezvousState": "{}",
       "failureReason": {},
       "updatedAtUnix": {}
     }}"#,
@@ -3248,6 +3251,9 @@ fn render_routes_json(route_records: &[RouteRecord]) -> String {
                 route.direct_attempted,
                 route.relay_fallback,
                 route.nat_profile.as_str(),
+                json_escape(&route.candidate_source),
+                json_escape(&route.candidate_kind),
+                json_escape(&route.rendezvous_state),
                 json_optional_string(route.failure_reason.as_deref()),
                 route.updated_at_unix
             )
@@ -3313,6 +3319,7 @@ summary
   selected direct  {}
   selected relay   {}
   relay fallbacks  {}
+  nat unavailable  {}
 
 privacy
   payload view     contents are not displayed by conU
@@ -3321,7 +3328,8 @@ next
   conu routes sync",
         selected_direct_route_count(route_records),
         selected_relay_route_count(route_records),
-        relay_fallback_route_count(route_records)
+        relay_fallback_route_count(route_records),
+        nat_traversal_unavailable_count(route_records)
     )
 }
 
@@ -3343,12 +3351,15 @@ fn render_route_line(route: &RouteRecord) -> String {
         .unwrap_or_default();
 
     format!(
-        "  {}  {}  {}  score {}  latency {}  endpoint {}{}",
+        "  {}  {}  {}  score {}  latency {}  source {}  kind {}  rendezvous {}  endpoint {}{}",
         route.peer_node_id,
         route.transport.as_str(),
         state,
         route.score,
         latency,
+        route.candidate_source,
+        route.candidate_kind,
+        route.rendezvous_state,
         route.endpoint,
         reason
     )
@@ -3368,6 +3379,9 @@ fn render_route_probes_json(probes: &[RouteProbe]) -> String {
       "outcome": "{}",
       "score": {},
       "latencyMs": {},
+      "candidateSource": "{}",
+      "candidateKind": "{}",
+      "rendezvousState": "{}",
       "createdAtUnix": {}
     }}"#,
                 json_escape(&probe.probe_id),
@@ -3378,6 +3392,9 @@ fn render_route_probes_json(probes: &[RouteProbe]) -> String {
                 json_escape(&probe.outcome),
                 probe.score,
                 json_u64(probe.latency_ms),
+                json_escape(&probe.candidate_source),
+                json_escape(&probe.candidate_kind),
+                json_escape(&probe.rendezvous_state),
                 probe.created_at_unix
             )
         })
@@ -3409,12 +3426,15 @@ fn render_route_probes_text(probes: &[RouteProbe]) -> String {
                 .map(|latency| format!("{latency}ms"))
                 .unwrap_or_else(|| "n/a".to_string());
             format!(
-                "  {}  {}  {}  score {}  latency {}",
+                "  {}  {}  {}  score {}  latency {}  source {}  kind {}  rendezvous {}",
                 probe.peer_node_id,
                 probe.transport.as_str(),
                 probe.outcome,
                 probe.score,
-                latency
+                latency,
+                probe.candidate_source,
+                probe.candidate_kind,
+                probe.rendezvous_state
             )
         })
         .collect::<Vec<_>>()
@@ -3447,6 +3467,7 @@ fn render_routes_report_json(report: &RouteSyncReport) -> String {
   "selectedDirect": {},
   "selectedRelay": {},
   "relayFallbacks": {},
+  "natTraversalUnavailable": {},
   "probesRecorded": {},
   "contentsDisplayed": false
 }}"#,
@@ -3457,6 +3478,7 @@ fn render_routes_report_json(report: &RouteSyncReport) -> String {
         report.selected_direct,
         report.selected_relay,
         report.relay_fallbacks,
+        report.nat_traversal_unavailable,
         report.probes_recorded
     )
 }
@@ -3473,6 +3495,7 @@ direct available: {}
 selected direct: {}
 selected relay: {}
 relay fallbacks: {}
+nat unavailable: {}
 probes recorded: {}
 
 privacy
@@ -3484,6 +3507,7 @@ privacy
         report.selected_direct,
         report.selected_relay,
         report.relay_fallbacks,
+        report.nat_traversal_unavailable,
         report.probes_recorded
     )
 }
@@ -7050,6 +7074,13 @@ fn relay_fallback_route_count(route_records: &[RouteRecord]) -> usize {
         .count()
 }
 
+fn nat_traversal_unavailable_count(route_records: &[RouteRecord]) -> usize {
+    route_records
+        .iter()
+        .filter(|route| route.failure_reason.as_deref() == Some("nat_traversal_unavailable"))
+        .count()
+}
+
 fn json_u32(value: Option<u32>) -> String {
     value
         .map(|value| value.to_string())
@@ -7468,8 +7499,12 @@ mod tests {
         assert!(sync.stdout.contains("\"directAvailable\": 0"));
         assert!(sync.stdout.contains("\"selectedDirect\": 0"));
         assert!(sync.stdout.contains("\"selectedRelay\": 1"));
+        assert!(sync.stdout.contains("\"natTraversalUnavailable\": 0"));
         assert!(routes.stdout.contains("direct-quic"));
         assert!(routes.stdout.contains("direct_quic_probe_failed"));
+        assert!(routes.stdout.contains("source peer_config"));
+        assert!(routes.stdout.contains("kind host"));
+        assert!(routes.stdout.contains("rendezvous candidate_exchanged"));
         assert!(session_sync.stdout.contains("sessions: 1"));
         assert!(sessions.stdout.contains("route relay-websocket"));
         assert!(!routes.stdout.contains("private message contents"));
