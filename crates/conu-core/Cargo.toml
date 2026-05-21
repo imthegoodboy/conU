@@ -19,5 +19,8 @@ x25519-dalek = { version = "2", features = ["getrandom", "static_secrets"] }
 schannel = "=0.1.27"
 windows-dpapi = "0.2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+
 [lints]
 workspace = true

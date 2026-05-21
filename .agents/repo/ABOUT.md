@@ -31,6 +31,7 @@ Implemented so far:
 - encrypted-at-rest local message request and inbox payload storage
 - local X25519 peer key agreement helpers
 - Windows current-user DPAPI wrapping for local signing, exchange, storage, and stored relay credential secret bytes, with migration-compatible reads for older plaintext-hex key files
+- macOS user Keychain and Linux Secret Service native secret backends for local signing, exchange, storage, archived key, and stored relay credential secret bytes when available
 - non-Windows user-managed secret wrapping through `CONU_SECRET_WRAP_KEY_HEX` or `CONU_SECRET_WRAP_KEY_FILE`, with XChaCha20Poly1305 protection for local signing, exchange, storage, archived key, and stored relay credential secret fields when configured
 - identity-key rotation through `conu security rotate identity --confirm-peer-refresh`, including archived old signing/exchange keys and refreshed public peer-card handoff
 - identity archive retirement through `conu security retire identity --confirm-peer-refresh-complete` after peer-card refresh is complete
@@ -114,6 +115,7 @@ Current important files:
 - `docs/internet-relay-test.md`: current relay-backed remote message smoke test.
 - `docs/distribution-and-hosting.md`: how users install conU, how npm packaging should publish native binaries, and how to self-host the current relay.
 - `docs/browser-native-typescript.md`: browser boundary and future browser-native TypeScript protocol requirements.
+- `docs/native-secret-storage.md`: native and fallback local secret backend selection plus platform smoke checks.
 - `docs/release-checklist.md`: Phase 15 release gate.
 - `docs/observability.md`: payload-safe observability policy.
 - `packaging/README.md`: install, npm launcher, Docker relay, and service templates.
