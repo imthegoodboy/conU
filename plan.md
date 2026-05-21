@@ -4304,9 +4304,9 @@ Known gaps:
 
 Next recommendation:
 
-- Finish issue #96 threshold policy-file validation, open the PR, wait for CI, merge if green, and preserve both local and remote feature branches.
+- Continue with distributed hosted dashboards/adaptive abuse workflows beyond single-relay threshold reports, distributed tenant lifecycle/workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
-## Post Phase 15 Abuse Threshold Policy Files (Ready For PR)
+## Post Phase 15 Abuse Threshold Policy Files (Completed)
 
 Objective: let self-hosted and managed relay operators reuse payload-safe threshold limits across local/admin abuse threshold reports without adding adaptive enforcement, alerting, distributed dashboards, or tenant-wide workflow automation.
 
@@ -4321,6 +4321,8 @@ Current status:
 - Kept the existing requirement that at least one threshold must be supplied by file or CLI.
 - Added parser and CLI override tests for local/admin threshold reports.
 - Updated docs, package notes, repo memory, release checklist, and security guardrails.
+- Merged PR #97 and closed issue #96.
+- Preserved local and remote branch `codex/abuse-threshold-policy-file`.
 
 Validation:
 
@@ -4337,10 +4339,9 @@ Validation:
 - `target\debug\conu-relay.exe --help` smoke confirmed `--thresholds-file` is documented.
 - Local policy-file threshold smoke passed against a temporary `.abuse` directory: without `--fail-on-threshold` it returned exit code 0 with `status=threshold_exceeded`, and with `--fail-on-threshold` it returned exit code 3 while preserving stdout.
 
-Remaining:
+Known gaps:
 
-- Run PR guardian/security review.
-- Commit, push, open the PR for issue #96, wait for checks, merge without deleting local or remote branches, and verify issue closure.
+- Threshold policy files are local/admin single-relay reporting inputs only. They are not distributed alerting, adaptive enforcement, tenant-wide workflow automation, hosted dashboard storage, or managed policy distribution.
 
 ## Phase Completion Log
 
@@ -4425,4 +4426,5 @@ Add entries here when a phase is completed.
 2026-05-21 - Post Phase 15 hosted account suspension workflow completed. Added relay admin `account_suspend`, `conu-relay --hosted-account-suspend`, and `conu-relay --admin-hosted-account-suspend` so one configured relay can revoke hosted tenant metadata first and then all credential records for that account while returning only account, credential, tenant, node, policy, path/endpoint, and display-guard metadata. Scoped admin tokens require both credentials and tenants scopes for this workflow; full-admin compatibility remains available. Updated docs/skills/plan and validated with GNU `fmt --check`, workspace `check`, `clippy -D warnings`, workspace tests, Python compile, TypeScript/package checks, npm launcher check, diff check, conu-relay build, CLI help smoke, and a local hosted account-suspend CLI smoke. Next: distributed hosted dashboards/adaptive abuse workflows beyond single-relay snapshots, distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-21 - Post Phase 15 hosted abuse threshold report completed. Added local `conu-relay --abuse-threshold-report` and admin-gated `conu-relay --admin-abuse-threshold-report` over metadata-only abuse counters, with explicit max thresholds, count/max/exceeded JSON/text output, dashboard-scope admin authorization, payload-safe display guards, docs/skills/plan updates, targeted threshold tests, full GNU workspace validation, Python/package checks, diff check, conu-relay build, CLI help smoke, and local JSON threshold smoke. Next: distributed hosted dashboards/adaptive abuse workflows beyond single-relay threshold reports, distributed tenant lifecycle/workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-21 - Post Phase 15 abuse threshold fail-on-threshold mode completed. Added optional `--fail-on-threshold` to local and admin-gated abuse threshold reports, preserving stdout report output and returning exit code 3 only when configured thresholds are exceeded; updated docs/skills/plan and validated with GNU `fmt --check`, workspace `check`, `clippy -D warnings`, focused threshold tests, workspace tests, Python compile, TypeScript/package checks, diff check, conu-relay build, CLI help smoke, and local exit-code smoke. Next: distributed hosted dashboards/adaptive abuse workflows beyond single-relay threshold reports, distributed tenant lifecycle/workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-21 - Post Phase 15 abuse threshold policy files completed. Added reusable metadata-only `--thresholds-file` support to local and admin-gated abuse threshold reports, required versioned policy files with false display guards, kept CLI `--max-*` overrides and `--fail-on-threshold` behavior, updated docs/skills/plan, validated with GNU `fmt --check`, workspace `check`, `clippy -D warnings`, focused threshold tests, workspace tests, Python compile, TypeScript/package checks, diff check, conu-relay build, CLI help smoke, and local policy-file exit-code smoke. PR #97 merged, issue #96 closed, and local/remote feature branches were preserved. Next: distributed hosted dashboards/adaptive abuse workflows beyond single-relay threshold reports, distributed tenant lifecycle/workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
