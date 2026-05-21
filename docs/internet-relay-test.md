@@ -51,6 +51,16 @@ The admin frame sends only the generated node token hash and length to the relay
 
 For same-machine testing, use `ws://127.0.0.1:8787`. For two machines on a trusted private path, use the reachable host or IP, for example `ws://203.0.113.10:8787`. For public internet testing, terminate TLS in front of the relay and use a certificate-valid endpoint such as `wss://relay.example.com/conu`.
 
+When `CONU_RELAY_SESSION_STATE_DIR` is set, operators can inspect the same-node resume store without exposing session ids:
+
+```powershell
+conu-relay --session-audit --session-state-dir C:\conu-relay\sessions --json
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-session-audit --relay wss://relay.example.com/conu --admin-token-stdin --json
+```
+
+Both outputs should report record counts, active/expired/invalid totals, timestamp bounds, and false display guards only. They must not print relay session ids, tokens, token hashes, payloads, ciphertext bodies, private keys, or session-state file contents.
+
 ## 2. Prepare Node A And Node B
 
 On each node:
@@ -195,7 +205,7 @@ If you are testing without a long-running daemon, use the manual fallback: run `
 
 To test the offline relay mailbox, stop Node B's conUD before sending from Node A, then start Node B again before `CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS` expires. The relay should accept the peer-encrypted envelope while Node B is offline and deliver it after Node B reconnects. If `CONU_RELAY_MAILBOX_DIR` is set, repeat the test with a relay restart between send and receive; the ciphertext envelope should survive the restart and then be removed after delivery. While Node B is still offline, `conu-relay --mailbox-audit --mailbox-dir C:\conu-relay\mailbox --ttl-seconds 3600 --retention-policy-file C:\conu-relay\mailbox-retention.toml --json` should show mailbox counts and display guards without frame contents or ciphertext bodies. On a relay configured with `CONU_RELAY_ADMIN_TOKEN`, `conu-relay --admin-mailbox-audit --relay wss://relay.example.com/conu --admin-token-stdin --ttl-seconds 3600 --retention-policy-file C:\conu-relay\mailbox-retention.toml --json` should return the same class of read-only retention metadata from the running relay without echoing the admin token. For cleanup validation, first run `conu-relay --mailbox-purge --mailbox-dir C:\conu-relay\mailbox --retention-policy-file C:\conu-relay\mailbox-retention.toml --dry-run --json`; only rerun with `--confirm` when the aggregate expired counts match the intended retention window. The retention policy file is metadata-only and may provide `ttl_seconds` and `node_id` defaults; CLI flags override it for one run.
 
-To test relay session state, inspect `C:\conu-relay\sessions` after a successful `HELLO`. The `.session` files should show node ids, relay session ids, timestamps, and `payload_displayed = false` / `token_displayed = false` / `contents_displayed = false`, without relay tokens, token hashes, plaintext message text, stream chunks, room-event plaintext, ciphertext bodies, or private keys. Same-process daemon reconnects to the same relay endpoint may increment `sessions_resumed`; with `CONU_RELAY_SESSION_STATE_DIR` set, the relay can also accept that same-node resume hint after a relay restart until the session TTL expires. A daemon restart still loses the client-side resume hint.
+To test relay session state, run `conu-relay --session-audit --session-state-dir C:\conu-relay\sessions --json` after a successful `HELLO`. It should show record counts, active/expired/invalid totals, timestamp bounds, and false display guards without relay session ids or file contents. If you inspect the protected directory directly during a controlled operator test, the `.session` files should contain only node ids, relay session ids, timestamps, and `payload_displayed = false` / `token_displayed = false` / `contents_displayed = false`, without relay tokens, token hashes, plaintext message text, stream chunks, room-event plaintext, ciphertext bodies, or private keys. Same-process daemon reconnects to the same relay endpoint may increment `sessions_resumed`; with `CONU_RELAY_SESSION_STATE_DIR` set, the relay can also accept that same-node resume hint after a relay restart until the session TTL expires. A daemon restart still loses the client-side resume hint.
 
 To test relay accounting, inspect `C:\conu-relay\accounting` after a successful send. The `.accounting` files should show node ids, authenticated-session counts, resumed-session counts, envelope counts, byte counts, and `payload_displayed = false` / `token_displayed = false`, without relay tokens, token hashes, session ids, plaintext message text, stream chunks, room-event plaintext, or ciphertext bodies. Lower `CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE` to `1`, restart the relay, and send twice from the same node to verify that the second send returns `UNDELIVERED reason=quota_exceeded`.
 

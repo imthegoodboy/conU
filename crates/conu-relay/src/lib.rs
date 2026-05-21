@@ -321,6 +321,7 @@ pub struct RelayAdminTokenScopes {
     pub credentials: bool,
     pub tenants: bool,
     pub dashboard: bool,
+    pub sessions: bool,
     pub mailbox_audit: bool,
     pub mailbox_purge: bool,
 }
@@ -331,6 +332,7 @@ impl RelayAdminTokenScopes {
             credentials: true,
             tenants: true,
             dashboard: true,
+            sessions: true,
             mailbox_audit: true,
             mailbox_purge: true,
         }
@@ -349,6 +351,7 @@ impl RelayAdminTokenScopes {
             | RelayAdminAction::TenantAudit => self.tenants,
             RelayAdminAction::AccountSuspend => self.credentials && self.tenants,
             RelayAdminAction::Dashboard => self.dashboard,
+            RelayAdminAction::SessionAudit => self.sessions,
             RelayAdminAction::MailboxAudit => self.mailbox_audit,
             RelayAdminAction::MailboxPurge => self.mailbox_purge,
         }
@@ -358,6 +361,7 @@ impl RelayAdminTokenScopes {
         self.credentials
             || self.tenants
             || self.dashboard
+            || self.sessions
             || self.mailbox_audit
             || self.mailbox_purge
     }
@@ -989,6 +993,26 @@ pub struct RelayAccountingAudit {
     pub bytes_received: u64,
     pub envelopes_mailboxed: u64,
     pub bytes_mailboxed: u64,
+    pub payload_displayed: bool,
+    pub token_displayed: bool,
+    pub token_hash_displayed: bool,
+    pub key_material_displayed: bool,
+    pub session_id_displayed: bool,
+    pub ciphertext_displayed: bool,
+    pub contents_displayed: bool,
+}
+
+/// Metadata-only relay session-state audit result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelaySessionAudit {
+    pub node_id: Option<String>,
+    pub records: usize,
+    pub active_records: usize,
+    pub expired_records: usize,
+    pub invalid_records: usize,
+    pub oldest_created_unix_millis: Option<u64>,
+    pub newest_last_seen_unix_millis: Option<u64>,
+    pub next_expires_unix_millis: Option<u64>,
     pub payload_displayed: bool,
     pub token_displayed: bool,
     pub token_hash_displayed: bool,
@@ -2169,6 +2193,114 @@ pub fn audit_hosted_tenants_file(
     })
 }
 
+/// Summarize relay session-state records without exposing session ids, tokens,
+/// token hashes, payloads, ciphertext bodies, or private key material.
+pub fn audit_relay_session_state_dir(
+    root: impl AsRef<Path>,
+    node_id: Option<&str>,
+) -> Result<RelaySessionAudit, RelayError> {
+    let root = root.as_ref();
+    let node_id = node_id
+        .map(|value| validate_node_id(value.to_string()))
+        .transpose()?;
+    let mut audit = RelaySessionAudit {
+        node_id,
+        records: 0,
+        active_records: 0,
+        expired_records: 0,
+        invalid_records: 0,
+        oldest_created_unix_millis: None,
+        newest_last_seen_unix_millis: None,
+        next_expires_unix_millis: None,
+        payload_displayed: false,
+        token_displayed: false,
+        token_hash_displayed: false,
+        key_material_displayed: false,
+        session_id_displayed: false,
+        ciphertext_displayed: false,
+        contents_displayed: false,
+    };
+
+    if !root.exists() {
+        return Ok(audit);
+    }
+
+    let now = current_unix_millis_u64();
+    if let Some(node_id) = audit.node_id.as_deref() {
+        let path = relay_session_record_path(root, node_id);
+        if path.exists() {
+            audit_session_state_file(&mut audit, &path, now)?;
+        }
+        return Ok(audit);
+    }
+
+    for entry in fs::read_dir(root)
+        .map_err(|error| RelayError::io("read relay session state directory", error))?
+    {
+        let entry =
+            entry.map_err(|error| RelayError::io("read relay session state entry", error))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("session") {
+            continue;
+        }
+        audit_session_state_file(&mut audit, &path, now)?;
+    }
+
+    Ok(audit)
+}
+
+fn audit_session_state_file(
+    audit: &mut RelaySessionAudit,
+    path: &Path,
+    now_unix_millis: u64,
+) -> Result<(), RelayError> {
+    let record = match read_session_file(path) {
+        Ok(Some(record)) => record,
+        Ok(None) | Err(_) => {
+            audit.invalid_records += 1;
+            return Ok(());
+        }
+    };
+    if audit
+        .node_id
+        .as_deref()
+        .is_some_and(|node_id| record.node_id != node_id)
+    {
+        return Ok(());
+    }
+
+    audit.records += 1;
+    audit.oldest_created_unix_millis = Some(
+        audit
+            .oldest_created_unix_millis
+            .map_or(record.created_at_unix_millis, |existing| {
+                existing.min(record.created_at_unix_millis)
+            }),
+    );
+    audit.newest_last_seen_unix_millis = Some(
+        audit
+            .newest_last_seen_unix_millis
+            .map_or(record.last_seen_unix_millis, |existing| {
+                existing.max(record.last_seen_unix_millis)
+            }),
+    );
+
+    if record.is_expired(now_unix_millis) {
+        audit.expired_records += 1;
+    } else {
+        audit.active_records += 1;
+        audit.next_expires_unix_millis = Some(
+            audit
+                .next_expires_unix_millis
+                .map_or(record.expires_at_unix_millis, |existing| {
+                    existing.min(record.expires_at_unix_millis)
+                }),
+        );
+    }
+
+    Ok(())
+}
+
 /// Summarize relay accounting counters without exposing tokens, token hashes,
 /// session ids, payloads, ciphertext bodies, or private key material.
 pub fn audit_relay_accounting_dir(
@@ -3254,6 +3386,7 @@ impl AdminTokenFileRecord {
             "scope_dashboard" => {
                 self.scopes.dashboard = parse_config_bool(value, line_number, key)?
             }
+            "scope_sessions" => self.scopes.sessions = parse_config_bool(value, line_number, key)?,
             "scope_mailbox_audit" => {
                 self.scopes.mailbox_audit = parse_config_bool(value, line_number, key)?
             }
@@ -4211,6 +4344,9 @@ impl RelayHub {
             RelayAdminAction::Dashboard => {
                 self.admin_dashboard_result(request, &credentials_file, &authorization)
             }
+            RelayAdminAction::SessionAudit => {
+                self.admin_session_audit_result(request, &authorization)
+            }
             RelayAdminAction::TenantUpsert
             | RelayAdminAction::TenantRevoke
             | RelayAdminAction::TenantNodeUpsert
@@ -4575,6 +4711,62 @@ impl RelayHub {
         };
         hosted_tenant_registry_authorizes_account_node(tenants_file, account_id, node_id)
             .map_err(|_| RelayError::Protocol("admin_scope_denied".to_string()))
+    }
+
+    fn ensure_admin_session_node_allowed(
+        &self,
+        request: &RelayAdminRequest,
+        authorization: &RelayAdminAuthorization,
+    ) -> Result<(), RelayError> {
+        let Some(account_id) = authorization.account_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(node_id) = request.node_id.as_deref() else {
+            return Err(RelayError::Protocol("admin_scope_denied".to_string()));
+        };
+        let Some(tenants_file) = self.admin.tenants_file() else {
+            return Err(RelayError::Protocol("admin_scope_denied".to_string()));
+        };
+        hosted_tenant_registry_authorizes_account_node(tenants_file, account_id, node_id)
+            .map_err(|_| RelayError::Protocol("admin_scope_denied".to_string()))
+    }
+
+    fn admin_session_audit_result(
+        &self,
+        request: &RelayAdminRequest,
+        authorization: &RelayAdminAuthorization,
+    ) -> Result<RelayAdminResult, RelayError> {
+        self.ensure_admin_session_node_allowed(request, authorization)?;
+        let RelaySessionStorage::FileBacked(session_state_dir) = &self.session_storage else {
+            return Ok(RelayAdminResult {
+                action: request.action,
+                status: "session_state_unavailable".to_string(),
+                node_id: request.node_id.clone(),
+                ..RelayAdminResult::new(request.action, "session_state_unavailable")
+            });
+        };
+        let audit = audit_relay_session_state_dir(session_state_dir, request.node_id.as_deref())?;
+
+        Ok(RelayAdminResult {
+            action: request.action,
+            status: "audited".to_string(),
+            node_id: audit.node_id,
+            session_state_records: audit.records,
+            session_state_active_records: audit.active_records,
+            session_state_expired_records: audit.expired_records,
+            session_state_invalid_records: audit.invalid_records,
+            session_state_oldest_created_unix_millis: audit.oldest_created_unix_millis,
+            session_state_newest_last_seen_unix_millis: audit.newest_last_seen_unix_millis,
+            session_state_next_expires_unix_millis: audit.next_expires_unix_millis,
+            payload_displayed: audit.payload_displayed,
+            token_displayed: audit.token_displayed,
+            token_hash_displayed: audit.token_hash_displayed,
+            key_material_displayed: audit.key_material_displayed,
+            session_id_displayed: audit.session_id_displayed,
+            ciphertext_displayed: audit.ciphertext_displayed,
+            contents_displayed: audit.contents_displayed,
+            ..RelayAdminResult::new(request.action, "audited")
+        })
     }
 
     fn admin_dashboard_result(
@@ -7881,6 +8073,133 @@ contents_displayed = false\n",
     }
 
     #[test]
+    fn hosted_admin_token_manifest_scopes_session_audit_to_account_nodes_without_secret_leak() {
+        let home = test_home("hosted-admin-token-session-rbac");
+        let manifest_path = home.join("credentials.toml");
+        let tenants_path = home.join("tenants.toml");
+        let admin_tokens_path = home.join("admin-tokens.toml");
+        let session_dir = home.join("sessions");
+        let node_id = "node.hosted";
+        let session_token = "session-audit-admin-token-1234567890";
+        let dashboard_token = "session-dashboard-admin-token-1234567890";
+        let session_hash = relay_token_sha256_hex(session_token).expect("session hash");
+        let dashboard_hash = relay_token_sha256_hex(dashboard_token).expect("dashboard hash");
+        fs::create_dir_all(&session_dir).expect("session dir");
+        upsert_hosted_tenant_in_file(&tenants_path, "account.prod").expect("tenant upserts");
+        upsert_hosted_tenant_node_in_file(
+            &tenants_path,
+            "account.prod",
+            node_id,
+            HostedTenantPermissions {
+                messages: false,
+                streams: false,
+                rooms: false,
+                files: false,
+                mailbox: false,
+            },
+            None,
+            None,
+        )
+        .expect("tenant node upserts");
+        let now = current_unix_millis_u64();
+        let session = RelaySessionRecord {
+            node_id: node_id.to_string(),
+            session_id: session_id(node_id),
+            created_at_unix_millis: now.saturating_sub(1_000),
+            last_seen_unix_millis: now.saturating_sub(100),
+            expires_at_unix_millis: now.saturating_add(60_000),
+        };
+        fs::write(
+            relay_session_record_path(&session_dir, node_id),
+            render_session_file(&session),
+        )
+        .expect("session state writes");
+        fs::write(
+            &admin_tokens_path,
+            format!(
+                "version = \"1\"\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{session_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+scope_sessions = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{dashboard_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+scope_dashboard = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n",
+                session_token.len(),
+                dashboard_token.len()
+            ),
+        )
+        .expect("admin token manifest writes");
+
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("missing manifest starts fail-closed")
+                .with_session_storage(
+                    RelaySessionStorage::file_backed(session_dir).expect("session storage"),
+                )
+                .with_admin_tokens_file(admin_tokens_path, manifest_path)
+                .expect("admin token manifest configures")
+                .with_admin_tenants_file(tenants_path)
+                .expect("tenant registry configures");
+        let relay = spawn_relay(config).expect("relay starts");
+
+        let missing_node = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::session_audit(session_token, None).expect("session audit request"),
+        );
+        assert!(missing_node.contains("ERROR reason=admin_scope_denied"));
+        assert!(!missing_node.contains(session_token));
+        assert!(!missing_node.contains(&session_hash));
+
+        let wrong_scope = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::session_audit(dashboard_token, Some(node_id.to_string()))
+                .expect("session audit request"),
+        );
+        assert!(wrong_scope.contains("ERROR reason=admin_scope_denied"));
+        assert!(!wrong_scope.contains(dashboard_token));
+        assert!(!wrong_scope.contains(&dashboard_hash));
+
+        let wrong_node = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::session_audit(session_token, Some("node.other".to_string()))
+                .expect("session audit request"),
+        );
+        assert!(wrong_node.contains("ERROR reason=admin_scope_denied"));
+        assert!(!wrong_node.contains(session_token));
+        assert!(!wrong_node.contains(&session_hash));
+
+        let audit = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::session_audit(session_token, Some(node_id.to_string()))
+                .expect("session audit request"),
+        );
+        assert!(audit.contains("ADMIN_RESULT action=session_audit status=audited"));
+        assert!(audit.contains("node=node.hosted"));
+        assert!(audit.contains("session_state_records=1"));
+        assert!(audit.contains("session_state_active_records=1"));
+        assert!(audit.contains("session_state_invalid_records=0"));
+        assert!(audit.contains("payload_displayed=false"));
+        assert!(audit.contains("session_id_displayed=false"));
+        assert!(!audit.contains(session_token));
+        assert!(!audit.contains(&session_hash));
+        assert!(!audit.contains(&session.session_id));
+    }
+
+    #[test]
     fn admin_token_manifest_rejects_display_flags_and_empty_scopes() {
         let token = "manifest-admin-token-1234567890";
         let hash = relay_token_sha256_hex(token).expect("hash");
@@ -9449,6 +9768,81 @@ token_displayed = true\n",
         .expect("session state reloads");
         let debug = format!("{loaded_state:?}");
         assert!(!debug.contains(&first_session));
+        assert!(!debug.contains("test-token"));
+    }
+
+    #[test]
+    fn relay_session_state_audit_reports_metadata_only() {
+        let session_dir = test_home("relay-session-state-audit").join("sessions");
+        fs::create_dir_all(&session_dir).expect("session dir exists");
+        let now = current_unix_millis_u64();
+        let active_session = session_id("node.a");
+        let expired_session = session_id("node.b");
+        let active = RelaySessionRecord {
+            node_id: "node.a".to_string(),
+            session_id: active_session.clone(),
+            created_at_unix_millis: now.saturating_sub(1_000),
+            last_seen_unix_millis: now.saturating_sub(500),
+            expires_at_unix_millis: now.saturating_add(5_000),
+        };
+        let expired = RelaySessionRecord {
+            node_id: "node.b".to_string(),
+            session_id: expired_session.clone(),
+            created_at_unix_millis: now.saturating_sub(2_000),
+            last_seen_unix_millis: now.saturating_sub(1_500),
+            expires_at_unix_millis: now.saturating_sub(1),
+        };
+        fs::write(
+            relay_session_record_path(&session_dir, "node.a"),
+            render_session_file(&active),
+        )
+        .expect("active session writes");
+        fs::write(
+            relay_session_record_path(&session_dir, "node.b"),
+            render_session_file(&expired),
+        )
+        .expect("expired session writes");
+        fs::write(
+            session_dir.join("invalid.session"),
+            "version = \"1\"\nnode_id = \"node.invalid\"\nsession_id = \"relay_node.invalid_1\"\npayload_displayed = true\n",
+        )
+        .expect("invalid session writes");
+
+        let audit = audit_relay_session_state_dir(&session_dir, None).expect("session audit reads");
+        assert_eq!(audit.records, 2);
+        assert_eq!(audit.active_records, 1);
+        assert_eq!(audit.expired_records, 1);
+        assert_eq!(audit.invalid_records, 1);
+        assert_eq!(
+            audit.oldest_created_unix_millis,
+            Some(expired.created_at_unix_millis)
+        );
+        assert_eq!(
+            audit.newest_last_seen_unix_millis,
+            Some(active.last_seen_unix_millis)
+        );
+        assert_eq!(
+            audit.next_expires_unix_millis,
+            Some(active.expires_at_unix_millis)
+        );
+        assert!(!audit.payload_displayed);
+        assert!(!audit.token_displayed);
+        assert!(!audit.token_hash_displayed);
+        assert!(!audit.key_material_displayed);
+        assert!(!audit.session_id_displayed);
+        assert!(!audit.ciphertext_displayed);
+        assert!(!audit.contents_displayed);
+
+        let node_a_audit =
+            audit_relay_session_state_dir(&session_dir, Some("node.a")).expect("node audit reads");
+        assert_eq!(node_a_audit.records, 1);
+        assert_eq!(node_a_audit.active_records, 1);
+        assert_eq!(node_a_audit.expired_records, 0);
+        assert_eq!(node_a_audit.invalid_records, 0);
+
+        let debug = format!("{audit:?}");
+        assert!(!debug.contains(&active_session));
+        assert!(!debug.contains(&expired_session));
         assert!(!debug.contains("test-token"));
     }
 
