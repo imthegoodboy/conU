@@ -152,6 +152,25 @@ The relay increments counters for admin unauthorized attempts, admin failures, c
 
 This is a single-relay file-backed foundation for operator visibility. It is not distributed alerting, adaptive throttling, account suspension, tenant-wide workflow automation, or a hosted dashboard service yet.
 
+## Hosted Dashboard Snapshot
+
+Managed relay operators can combine the current metadata-only stores into one local dashboard snapshot:
+
+```powershell
+conu-relay --hosted-dashboard `
+  --credentials-file C:\conu-relay\credentials.toml `
+  --tenants-file C:\conu-relay\tenants.toml `
+  --accounting-dir C:\conu-relay\accounting `
+  --abuse-dir C:\conu-relay\abuse `
+  --account account.prod `
+  --node node-a-id `
+  --json
+```
+
+The snapshot is an audit surface, not a control plane. It aggregates credential counts, tenant/node counts, accounting counters, and abuse counters with display guards only. It does not show raw node tokens, admin tokens, token hashes, private keys, relay session ids, plaintext payloads, ciphertext bodies, arbitrary frame contents, message text, stream chunks, or room-event plaintext.
+
+This is still single-relay and file-backed. It is not distributed dashboard storage, RBAC, alert routing, adaptive response, billing, tenant-wide workflow automation, or managed hosted account suspension.
+
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant and abuse-audit foundations. Public managed hosting still needs distributed tenant lifecycle, hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, hosted mailbox retention policy, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, and dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, hosted mailbox retention policy, full hosted identity/key administration, and managed direct NAT traversal.

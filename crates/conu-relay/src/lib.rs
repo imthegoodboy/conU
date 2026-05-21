@@ -772,6 +772,29 @@ impl fmt::Debug for RelayAccountingStorage {
     }
 }
 
+/// Metadata-only relay accounting audit result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayAccountingAudit {
+    pub node_id: Option<String>,
+    pub records: usize,
+    pub window_started_unix: Option<u64>,
+    pub sessions_authenticated: u64,
+    pub sessions_resumed: u64,
+    pub envelopes_sent: u64,
+    pub bytes_sent: u64,
+    pub envelopes_received: u64,
+    pub bytes_received: u64,
+    pub envelopes_mailboxed: u64,
+    pub bytes_mailboxed: u64,
+    pub payload_displayed: bool,
+    pub token_displayed: bool,
+    pub token_hash_displayed: bool,
+    pub key_material_displayed: bool,
+    pub session_id_displayed: bool,
+    pub ciphertext_displayed: bool,
+    pub contents_displayed: bool,
+}
+
 /// Metadata-only abuse/dashboard counter window for relay enforcement events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayAbusePolicy {
@@ -1705,6 +1728,94 @@ pub fn audit_hosted_tenants_file(
         key_material_displayed: false,
         contents_displayed: false,
     })
+}
+
+/// Summarize relay accounting counters without exposing tokens, token hashes,
+/// session ids, payloads, ciphertext bodies, or private key material.
+pub fn audit_relay_accounting_dir(
+    root: impl AsRef<Path>,
+    node_id: Option<&str>,
+) -> Result<RelayAccountingAudit, RelayError> {
+    let root = root.as_ref();
+    let node_id = node_id
+        .map(|value| validate_node_id(value.to_string()))
+        .transpose()?;
+    let mut audit = RelayAccountingAudit {
+        node_id,
+        records: 0,
+        window_started_unix: None,
+        sessions_authenticated: 0,
+        sessions_resumed: 0,
+        envelopes_sent: 0,
+        bytes_sent: 0,
+        envelopes_received: 0,
+        bytes_received: 0,
+        envelopes_mailboxed: 0,
+        bytes_mailboxed: 0,
+        payload_displayed: false,
+        token_displayed: false,
+        token_hash_displayed: false,
+        key_material_displayed: false,
+        session_id_displayed: false,
+        ciphertext_displayed: false,
+        contents_displayed: false,
+    };
+
+    if !root.exists() {
+        return Ok(audit);
+    }
+
+    let mut mixed_windows = false;
+    for entry in fs::read_dir(root)
+        .map_err(|error| RelayError::io("read relay accounting directory", error))?
+    {
+        let entry = entry.map_err(|error| RelayError::io("read relay accounting entry", error))?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("accounting") {
+            continue;
+        }
+
+        let Some(record) = read_accounting_file(&path)? else {
+            continue;
+        };
+        if audit
+            .node_id
+            .as_deref()
+            .is_some_and(|node_id| record.node_id != node_id)
+        {
+            continue;
+        }
+
+        audit.records += 1;
+        if !mixed_windows {
+            audit.window_started_unix = match audit.window_started_unix {
+                None => Some(record.window_started_unix),
+                Some(existing) if existing == record.window_started_unix => Some(existing),
+                Some(_) => {
+                    mixed_windows = true;
+                    None
+                }
+            };
+        }
+        audit.sessions_authenticated = audit
+            .sessions_authenticated
+            .saturating_add(record.sessions_authenticated);
+        audit.sessions_resumed = audit
+            .sessions_resumed
+            .saturating_add(record.sessions_resumed);
+        audit.envelopes_sent = audit.envelopes_sent.saturating_add(record.envelopes_sent);
+        audit.bytes_sent = audit.bytes_sent.saturating_add(record.bytes_sent);
+        audit.envelopes_received = audit
+            .envelopes_received
+            .saturating_add(record.envelopes_received);
+        audit.bytes_received = audit.bytes_received.saturating_add(record.bytes_received);
+        audit.envelopes_mailboxed = audit
+            .envelopes_mailboxed
+            .saturating_add(record.envelopes_mailboxed);
+        audit.bytes_mailboxed = audit.bytes_mailboxed.saturating_add(record.bytes_mailboxed);
+    }
+
+    Ok(audit)
 }
 
 /// Summarize relay abuse/dashboard counters without exposing secrets, payloads,
@@ -6249,6 +6360,77 @@ token_displayed = true\n",
         assert!(joined.contains("token_displayed = false"));
         assert!(!joined.contains("private message contents"));
         assert!(!joined.contains("test-token"));
+    }
+
+    #[test]
+    fn relay_accounting_audit_summarizes_metadata_without_payloads() {
+        let accounting_dir = test_home("relay-accounting-audit").join("accounting");
+        let accounting_storage =
+            RelayAccountingStorage::file_backed(accounting_dir.clone()).expect("storage config");
+        let record_a = RelayAccountingRecord {
+            node_id: "node.a".to_string(),
+            window_started_unix: 1_763_596_800,
+            sessions_authenticated: 2,
+            sessions_resumed: 1,
+            envelopes_sent: 3,
+            bytes_sent: 33,
+            envelopes_received: 4,
+            bytes_received: 44,
+            envelopes_mailboxed: 1,
+            bytes_mailboxed: 11,
+        };
+        let record_b = RelayAccountingRecord {
+            node_id: "node.b".to_string(),
+            window_started_unix: 1_763_596_800,
+            sessions_authenticated: 1,
+            sessions_resumed: 0,
+            envelopes_sent: 5,
+            bytes_sent: 55,
+            envelopes_received: 6,
+            bytes_received: 66,
+            envelopes_mailboxed: 2,
+            bytes_mailboxed: 22,
+        };
+        persist_accounting_record(&accounting_storage, &record_a).expect("record a writes");
+        persist_accounting_record(&accounting_storage, &record_b).expect("record b writes");
+
+        let audit = audit_relay_accounting_dir(&accounting_dir, None).expect("accounting audit");
+        assert_eq!(audit.records, 2);
+        assert_eq!(audit.window_started_unix, Some(1_763_596_800));
+        assert_eq!(audit.sessions_authenticated, 3);
+        assert_eq!(audit.sessions_resumed, 1);
+        assert_eq!(audit.envelopes_sent, 8);
+        assert_eq!(audit.bytes_sent, 88);
+        assert_eq!(audit.envelopes_received, 10);
+        assert_eq!(audit.bytes_received, 110);
+        assert_eq!(audit.envelopes_mailboxed, 3);
+        assert_eq!(audit.bytes_mailboxed, 33);
+        assert!(!audit.payload_displayed);
+        assert!(!audit.token_displayed);
+        assert!(!audit.token_hash_displayed);
+        assert!(!audit.key_material_displayed);
+        assert!(!audit.session_id_displayed);
+        assert!(!audit.ciphertext_displayed);
+        assert!(!audit.contents_displayed);
+
+        let filtered =
+            audit_relay_accounting_dir(&accounting_dir, Some("node.a")).expect("filtered audit");
+        assert_eq!(filtered.records, 1);
+        assert_eq!(filtered.node_id.as_deref(), Some("node.a"));
+        assert_eq!(filtered.bytes_sent, 33);
+        assert_eq!(filtered.bytes_received, 44);
+
+        let missing = audit_relay_accounting_dir(accounting_dir.join("missing"), None)
+            .expect("missing audit is empty");
+        assert_eq!(missing.records, 0);
+        assert_eq!(missing.window_started_unix, None);
+
+        let stored = read_accounting_texts(&accounting_dir).join("\n");
+        assert!(!stored.contains("test-token"));
+        assert!(!stored.contains("token_sha256_hex"));
+        assert!(!stored.contains("relay_node.a_123456789"));
+        assert!(!stored.contains("private message contents"));
+        assert!(!stored.contains("ciphertext_body"));
     }
 
     #[test]
