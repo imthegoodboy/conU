@@ -198,6 +198,8 @@ export CONU_RELAY_ACCOUNTING_DIR=/var/lib/conu-relay/accounting
 export CONU_RELAY_ACCOUNTING_WINDOW_SECONDS=86400
 export CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE=10000
 export CONU_RELAY_MAX_BYTES_SENT_PER_NODE=1073741824
+export CONU_RELAY_ABUSE_DIR=/var/lib/conu-relay/abuse
+export CONU_RELAY_ABUSE_WINDOW_SECONDS=86400
 conu-relay --serve 0.0.0.0:8787
 ```
 
@@ -208,6 +210,8 @@ conu-relay --serve 0.0.0.0:8787
 `CONU_RELAY_SESSION_STATE_DIR` persists metadata-only `.session` files per node so a same-node resume hint can survive a relay restart until the session TTL expires. They contain node ids, relay session ids, timestamps, and display guards; they do not contain relay tokens, token hashes, payloads, ciphertext bodies, private keys, or account secrets. Keep this directory on protected relay storage. The current file-backed session store is a single-writer boundary for self-hosted relays and controlled failover tests; it is not a distributed lock service or multi-region session migration layer.
 
 `CONU_RELAY_ACCOUNTING_DIR` persists metadata-only `.accounting` files per node. They contain node ids, accounting window start, authenticated session counts, sent/received envelope counts, byte counts, mailbox counts, `payload_displayed = false`, and `token_displayed = false`; they do not contain relay tokens, token hashes, session ids, message text, stream chunks, room-event plaintext, or ciphertext bodies. Set `CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE` and/or `CONU_RELAY_MAX_BYTES_SENT_PER_NODE` to reject over-quota sends for a node during the configured accounting window with `UNDELIVERED reason=quota_exceeded`.
+
+`CONU_RELAY_ABUSE_DIR` persists metadata-only `.abuse` files for enforcement outcomes such as admin unauthorized attempts, credential-denied sessions, tenant-denied sessions, rate limits, session expiry, quota-denied forwards, undelivered forwards, and mailbox rejects. They contain aggregate counters, optional node ids, window start, and display guards only; they do not contain raw tokens, token hashes, admin tokens, session ids, payloads, ciphertext bodies, private keys, or arbitrary frame contents. Inspect them with `conu-relay --abuse-audit --abuse-dir /var/lib/conu-relay/abuse [--node <node-id>] [--json]`. The current store is single-writer relay-local storage for self-hosted or controlled managed deployments, not a distributed abuse pipeline.
 
 Open TCP port `8787` only to machines on a trusted private path, then give users:
 
@@ -246,6 +250,8 @@ docker run --rm -p 8787:8787 \
   -e CONU_RELAY_ACCOUNTING_WINDOW_SECONDS=86400 \
   -e CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE=10000 \
   -e CONU_RELAY_MAX_BYTES_SENT_PER_NODE=1073741824 \
+  -e CONU_RELAY_ABUSE_DIR=/var/lib/conu-relay/abuse \
+  -e CONU_RELAY_ABUSE_WINDOW_SECONDS=86400 \
   -v conu-relay-data:/var/lib/conu-relay \
   conu-relay
 ```
@@ -259,7 +265,7 @@ The built-in client accepts `ws://` and `wss://` relay endpoints. `wss://` uses 
 Before running a managed public relay, conU still needs:
 
 - Distributed hosted account control planes and tenant lifecycle beyond the current single-relay file-backed account metadata, hosted tenant registry, online credential issue/rotate/revoke/audit APIs, offline `conu-relay --issue-credential` helper, `--revoke-credential`, and live-reloaded credential manifest.
-- Managed hosted quotas, abuse monitoring, dashboards, and adaptive response beyond the current self-hosted connection/frame caps and per-node accounting quotas.
+- Managed hosted quotas, distributed abuse monitoring, dashboards, and adaptive response beyond the current self-hosted connection/frame caps, per-node accounting quotas, and single-relay metadata-only abuse counters.
 - Distributed hosted relay session migration and accounting beyond the current idle-timeout, max-TTL session policy, same-node resume hints, file-backed session records, and authenticated/resumed session counters.
 - Managed hosted mailbox retention/accounting dashboards beyond the current self-hosted durable ciphertext files and metadata-only mailbox counters.
 - Hosted dashboards and distributed permission administration beyond the current single-writer tenant registry plus local peer and room topic policy files.

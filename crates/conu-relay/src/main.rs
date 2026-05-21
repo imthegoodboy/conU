@@ -10,9 +10,10 @@ use conu_core::relay::{
 };
 use conu_relay::{
     CredentialManifestUpdate, HostedTenantAudit, HostedTenantManifestUpdate,
-    HostedTenantPermissions, IssuedRelayCredential, RelayAccountingPolicy, RelayAccountingStorage,
-    RelayConfig, RelayCredential, RelayMailboxPolicy, RelayMailboxStorage, RelaySessionPolicy,
-    RelaySessionStorage, audit_hosted_tenants_file, issue_relay_credential,
+    HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy,
+    RelayAbuseStorage, RelayAccountingPolicy, RelayAccountingStorage, RelayConfig, RelayCredential,
+    RelayMailboxPolicy, RelayMailboxStorage, RelaySessionPolicy, RelaySessionStorage,
+    audit_hosted_tenants_file, audit_relay_abuse_dir, issue_relay_credential,
     relay_credential_manifest_contains_node, relay_token_sha256_hex, revoke_hosted_tenant_in_file,
     revoke_hosted_tenant_node_in_file, revoke_relay_credential_in_file,
     upsert_hosted_tenant_in_file, upsert_hosted_tenant_node_in_file,
@@ -119,6 +120,13 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--abuse-audit") => match abuse_audit_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--serve") => {
             let addr = args.next().unwrap_or_else(|| "127.0.0.1:8787".to_string());
             let config = match relay_config_from_env(addr) {
@@ -176,6 +184,7 @@ Usage:
   conu-relay --tenant-node-upsert <account-id> <node-id> --tenants-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
   conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
+  conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
   conu-relay --check
   conu-relay --help
   conu-relay --version
@@ -201,6 +210,8 @@ Environment:
   CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE
                                         optional per-node sent-envelope quota per accounting window
   CONU_RELAY_MAX_BYTES_SENT_PER_NODE  optional per-node sent-byte quota per accounting window
+  CONU_RELAY_ABUSE_DIR                optional metadata-only abuse/dashboard counter directory
+  CONU_RELAY_ABUSE_WINDOW_SECONDS     abuse counter window; defaults to 86400
   CONU_RELAY_ADMIN_TOKEN              optional hosted admin token for online credential lifecycle; requires CONU_RELAY_CREDENTIALS_FILE
   CONU_RELAY_TENANTS_FILE             optional hosted tenant metadata registry; requires CONU_RELAY_ADMIN_TOKEN and CONU_RELAY_CREDENTIALS_FILE
 
@@ -212,7 +223,9 @@ with at least 24 characters. Use --hash-token with stdin to generate credential-
 commands authenticate with an admin token read from stdin, send only node-token hash metadata to the
 relay, and write the raw node token locally only after the relay confirms the update. Tenant
 commands manage account, node, public key-id, and hosted permission metadata only; they never grant
-local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies."
+local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Abuse
+audit reads aggregate enforcement counters only and never displays tokens, token hashes, payloads,
+ciphertext bodies, frame contents, private keys, or relay session ids."
     );
 }
 
@@ -1361,6 +1374,70 @@ fn tenant_audit_usage() -> String {
         .to_string()
 }
 
+#[derive(Debug, Clone)]
+struct AbuseAuditArgs {
+    abuse_dir: PathBuf,
+    node_id: Option<String>,
+    json: bool,
+}
+
+fn abuse_audit_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_abuse_audit_args(args)?;
+    let audit = audit_relay_abuse_dir(&parsed.abuse_dir, parsed.node_id.as_deref())
+        .map_err(|error| error.to_string())?;
+    if parsed.json {
+        println!("{}", render_abuse_audit_json(&audit, &parsed.abuse_dir));
+    } else {
+        println!("{}", render_abuse_audit_text(&audit, &parsed.abuse_dir));
+    }
+    Ok(())
+}
+
+fn parse_abuse_audit_args(args: Vec<String>) -> Result<AbuseAuditArgs, String> {
+    let mut abuse_dir = None::<PathBuf>;
+    let mut node_id = None::<String>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--abuse-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(abuse_audit_usage());
+                };
+                abuse_dir = Some(PathBuf::from(value));
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(abuse_audit_usage());
+                };
+                node_id = Some(value.to_string());
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(abuse_audit_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(abuse_audit_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(abuse_dir) = abuse_dir.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(abuse_audit_usage());
+    };
+
+    Ok(AbuseAuditArgs {
+        abuse_dir,
+        node_id,
+        json,
+    })
+}
+
+fn abuse_audit_usage() -> String {
+    "usage: conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]".to_string()
+}
+
 fn parse_cli_bool(value: &str, flag: &str) -> Result<bool, String> {
     match value {
         "true" => Ok(true),
@@ -1485,6 +1562,109 @@ fn render_tenant_audit_json(audit: &HostedTenantAudit, tenants_file: &Path) -> S
     )
 }
 
+fn render_abuse_audit_text(audit: &RelayAbuseAudit, abuse_dir: &Path) -> String {
+    format!(
+        r"conU relay abuse audit
+
+scope: {}
+abuse dir: {}
+records: {}
+window started unix: {}
+admin unauthorized: {}
+admin failed: {}
+unauthorized sessions: {}
+credential denied sessions: {}
+tenant denied sessions: {}
+rate limited sessions: {}
+session expired: {}
+quota denied forwards: {}
+undelivered forwards: {}
+mailbox rejected forwards: {}
+malformed client frames: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        audit.node_id.as_deref().unwrap_or("all"),
+        abuse_dir.display(),
+        audit.records,
+        optional_u64_text(audit.window_started_unix),
+        audit.admin_unauthorized,
+        audit.admin_failed,
+        audit.unauthorized_sessions,
+        audit.credential_denied_sessions,
+        audit.tenant_denied_sessions,
+        audit.rate_limited_sessions,
+        audit.session_expired,
+        audit.quota_denied_forwards,
+        audit.undelivered_forwards,
+        audit.mailbox_rejected_forwards,
+        audit.malformed_client_frames,
+        yes_no(audit.payload_displayed),
+        yes_no(audit.token_displayed),
+        yes_no(audit.token_hash_displayed),
+        yes_no(audit.key_material_displayed),
+        yes_no(audit.session_id_displayed),
+        yes_no(audit.ciphertext_displayed),
+        yes_no(audit.contents_displayed)
+    )
+}
+
+fn render_abuse_audit_json(audit: &RelayAbuseAudit, abuse_dir: &Path) -> String {
+    format!(
+        r#"{{
+  "status": "audited",
+  "nodeId": {},
+  "abuseDir": "{}",
+  "records": {},
+  "windowStartedUnix": {},
+  "adminUnauthorized": {},
+  "adminFailed": {},
+  "unauthorizedSessions": {},
+  "credentialDeniedSessions": {},
+  "tenantDeniedSessions": {},
+  "rateLimitedSessions": {},
+  "sessionExpired": {},
+  "quotaDeniedForwards": {},
+  "undeliveredForwards": {},
+  "mailboxRejectedForwards": {},
+  "malformedClientFrames": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        optional_string_json(audit.node_id.as_deref()),
+        json_escape(&abuse_dir.display().to_string()),
+        audit.records,
+        optional_u64_json(audit.window_started_unix),
+        audit.admin_unauthorized,
+        audit.admin_failed,
+        audit.unauthorized_sessions,
+        audit.credential_denied_sessions,
+        audit.tenant_denied_sessions,
+        audit.rate_limited_sessions,
+        audit.session_expired,
+        audit.quota_denied_forwards,
+        audit.undelivered_forwards,
+        audit.mailbox_rejected_forwards,
+        audit.malformed_client_frames,
+        bool_json(audit.payload_displayed),
+        bool_json(audit.token_displayed),
+        bool_json(audit.token_hash_displayed),
+        bool_json(audit.key_material_displayed),
+        bool_json(audit.session_id_displayed),
+        bool_json(audit.ciphertext_displayed),
+        bool_json(audit.contents_displayed)
+    )
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
@@ -1541,6 +1721,8 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
     let mailbox_storage = relay_mailbox_storage_from_env()?;
     let accounting_policy = relay_accounting_policy_from_env()?;
     let accounting_storage = relay_accounting_storage_from_env()?;
+    let abuse_policy = relay_abuse_policy_from_env()?;
+    let abuse_storage = relay_abuse_storage_from_env()?;
     let credentials_file = env::var("CONU_RELAY_CREDENTIALS_FILE")
         .ok()
         .map(|value| value.trim().to_string())
@@ -1575,7 +1757,9 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
         .with_mailbox_policy(mailbox_policy)
         .with_mailbox_storage(mailbox_storage)
         .with_accounting_policy(accounting_policy)
-        .with_accounting_storage(accounting_storage);
+        .with_accounting_storage(accounting_storage)
+        .with_abuse_policy(abuse_policy)
+        .with_abuse_storage(abuse_storage);
 
     if let Some(admin_token) = env::var("CONU_RELAY_ADMIN_TOKEN")
         .ok()
@@ -1679,6 +1863,25 @@ fn relay_accounting_storage_from_env() -> Result<RelayAccountingStorage, String>
     {
         Some(path) => RelayAccountingStorage::file_backed(path).map_err(|error| error.to_string()),
         None => Ok(RelayAccountingStorage::memory_only()),
+    }
+}
+
+fn relay_abuse_policy_from_env() -> Result<RelayAbusePolicy, String> {
+    RelayAbusePolicy::new(Duration::from_secs(parse_duration_seconds(
+        "CONU_RELAY_ABUSE_WINDOW_SECONDS",
+        86_400,
+    )?))
+    .map_err(|error| error.to_string())
+}
+
+fn relay_abuse_storage_from_env() -> Result<RelayAbuseStorage, String> {
+    match env::var("CONU_RELAY_ABUSE_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(path) => RelayAbuseStorage::file_backed(path).map_err(|error| error.to_string()),
+        None => Ok(RelayAbuseStorage::memory_only()),
     }
 }
 
@@ -1824,6 +2027,64 @@ mod tests {
             assert!(output.contains("contents"));
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+    }
+
+    #[test]
+    fn abuse_audit_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_abuse_audit_args(vec![
+            "--abuse-dir".to_string(),
+            "abuse".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("abuse audit args parse");
+        assert_eq!(parsed.abuse_dir, PathBuf::from("abuse"));
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert!(parsed.json);
+
+        let audit = RelayAbuseAudit {
+            node_id: Some("node.hosted".to_string()),
+            records: 1,
+            window_started_unix: Some(1_763_596_800),
+            admin_unauthorized: 1,
+            admin_failed: 1,
+            unauthorized_sessions: 2,
+            credential_denied_sessions: 1,
+            tenant_denied_sessions: 1,
+            rate_limited_sessions: 1,
+            session_expired: 1,
+            quota_denied_forwards: 1,
+            undelivered_forwards: 1,
+            mailbox_rejected_forwards: 1,
+            malformed_client_frames: 1,
+            payload_displayed: false,
+            token_displayed: false,
+            token_hash_displayed: false,
+            key_material_displayed: false,
+            session_id_displayed: false,
+            ciphertext_displayed: false,
+            contents_displayed: false,
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_abuse_audit_text(&audit, Path::new("abuse")),
+            render_abuse_audit_json(&audit, Path::new("abuse")),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("credential"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
             assert!(!output.contains("BEGIN PRIVATE KEY"));
             assert!(!output.contains("payload-body"));
             assert!(!output.contains("ciphertext_body"));
