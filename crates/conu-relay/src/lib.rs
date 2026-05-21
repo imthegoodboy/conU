@@ -817,6 +817,30 @@ pub struct RelayMailboxAudit {
     pub contents_displayed: bool,
 }
 
+/// Metadata-only durable relay mailbox retention purge result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayMailboxPurgeReport {
+    pub node_id: Option<String>,
+    pub retention_ttl_seconds: u64,
+    pub dry_run: bool,
+    pub confirmed: bool,
+    pub nodes: usize,
+    pub records: usize,
+    pub invalid_records: usize,
+    pub bytes: u64,
+    pub expired_records: u64,
+    pub expired_bytes: u64,
+    pub purged_records: u64,
+    pub purged_bytes: u64,
+    pub payload_displayed: bool,
+    pub token_displayed: bool,
+    pub token_hash_displayed: bool,
+    pub key_material_displayed: bool,
+    pub session_id_displayed: bool,
+    pub ciphertext_displayed: bool,
+    pub contents_displayed: bool,
+}
+
 /// Metadata-only abuse/dashboard counter window for relay enforcement events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayAbusePolicy {
@@ -1905,6 +1929,78 @@ pub fn audit_relay_mailbox_dir(
     }
 
     Ok(audit)
+}
+
+/// Delete expired durable relay mailbox files after an explicit operator
+/// confirmation, or report the same retention set in dry-run mode.
+///
+/// The report is aggregate-only and does not expose stored frames, ciphertext
+/// bodies, plaintext payloads, tokens, hashes, private keys, or session ids.
+pub fn purge_relay_mailbox_dir(
+    root: impl AsRef<Path>,
+    node_id: Option<&str>,
+    retention_ttl: Duration,
+    dry_run: bool,
+) -> Result<RelayMailboxPurgeReport, RelayError> {
+    let root = root.as_ref();
+    if retention_ttl.is_zero() {
+        return Err(RelayError::InvalidConfig(
+            "relay mailbox purge TTL must be greater than zero",
+        ));
+    }
+    let node_id = node_id
+        .map(|value| validate_node_id(value.to_string()))
+        .transpose()?;
+    let mut report = RelayMailboxPurgeReport {
+        node_id,
+        retention_ttl_seconds: retention_ttl.as_secs(),
+        dry_run,
+        confirmed: !dry_run,
+        nodes: 0,
+        records: 0,
+        invalid_records: 0,
+        bytes: 0,
+        expired_records: 0,
+        expired_bytes: 0,
+        purged_records: 0,
+        purged_bytes: 0,
+        payload_displayed: false,
+        token_displayed: false,
+        token_hash_displayed: false,
+        key_material_displayed: false,
+        session_id_displayed: false,
+        ciphertext_displayed: false,
+        contents_displayed: false,
+    };
+
+    if !root.exists() {
+        return Ok(report);
+    }
+
+    let now_millis = current_unix_millis();
+    let retention_ttl_millis = retention_ttl.as_millis();
+    if let Some(node_id) = report.node_id.as_deref() {
+        let node_dir = root.join(sanitize_identifier(node_id));
+        if node_dir.exists() {
+            purge_mailbox_node_dir(&mut report, &node_dir, now_millis, retention_ttl_millis)?;
+        }
+        return Ok(report);
+    }
+
+    for entry in
+        fs::read_dir(root).map_err(|error| RelayError::io("read relay mailbox directory", error))?
+    {
+        let entry = entry.map_err(|error| RelayError::io("read relay mailbox entry", error))?;
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        purge_mailbox_node_dir(&mut report, &entry.path(), now_millis, retention_ttl_millis)?;
+    }
+
+    Ok(report)
 }
 
 /// Summarize relay abuse/dashboard counters without exposing secrets, payloads,
@@ -4765,6 +4861,9 @@ fn read_mailbox_file(path: &Path) -> Result<Option<QueuedRelayEnvelope>, RelayEr
     if version != RELAY_MAILBOX_FILE_VERSION {
         return Ok(None);
     }
+    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false") {
+        return Ok(None);
+    }
     let queued_at_millis = mailbox_value(&contents, "queued_at_millis")
         .and_then(|value| value.parse::<u128>().ok())
         .ok_or_else(|| RelayError::Protocol("relay mailbox entry is invalid".to_string()))?;
@@ -4865,6 +4964,66 @@ fn read_mailbox_audit_timestamp(path: &Path) -> Result<Option<u128>, RelayError>
         return Ok(None);
     };
     Ok(Some(queued_at_millis))
+}
+
+fn purge_mailbox_node_dir(
+    report: &mut RelayMailboxPurgeReport,
+    node_dir: &Path,
+    now_millis: u128,
+    retention_ttl_millis: u128,
+) -> Result<(), RelayError> {
+    let mut node_records = 0usize;
+    for entry in fs::read_dir(node_dir)
+        .map_err(|error| RelayError::io("read relay mailbox node directory", error))?
+    {
+        let entry = entry.map_err(|error| RelayError::io("read relay mailbox envelope", error))?;
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("mailbox") {
+            continue;
+        }
+
+        node_records = node_records.saturating_add(1);
+        report.records = report.records.saturating_add(1);
+        let byte_len = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        report.bytes = report.bytes.saturating_add(byte_len);
+
+        let Some(queued_at_millis) = read_mailbox_purge_timestamp(&path)? else {
+            report.invalid_records = report.invalid_records.saturating_add(1);
+            continue;
+        };
+        let expired = now_millis.saturating_sub(queued_at_millis) >= retention_ttl_millis;
+        if !expired {
+            continue;
+        }
+
+        report.expired_records = report.expired_records.saturating_add(1);
+        report.expired_bytes = report.expired_bytes.saturating_add(byte_len);
+        if !report.dry_run {
+            remove_mailbox_file(&path)
+                .map_err(|error| RelayError::io("remove expired relay mailbox file", error))?;
+            report.purged_records = report.purged_records.saturating_add(1);
+            report.purged_bytes = report.purged_bytes.saturating_add(byte_len);
+        }
+    }
+
+    if node_records > 0 {
+        report.nodes = report.nodes.saturating_add(1);
+    }
+    Ok(())
+}
+
+fn read_mailbox_purge_timestamp(path: &Path) -> Result<Option<u128>, RelayError> {
+    match read_mailbox_file(path) {
+        Ok(Some(entry)) => Ok(Some(entry.queued_at_millis)),
+        Ok(None) | Err(RelayError::Protocol(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn mailbox_file_sequence(path: &Path) -> Option<u128> {
@@ -7304,6 +7463,96 @@ token_displayed = true\n",
         assert_eq!(node_audit.invalid_records, 0);
 
         let debug = format!("{audit:?}");
+        assert!(!debug.contains("private message contents"));
+        assert!(!debug.contains("ciphertext_body"));
+        assert!(!debug.contains("ENVELOPE from=node.a"));
+        assert!(!debug.contains("relay_node.hosted_123456789"));
+        assert!(!debug.contains("token_sha256_hex"));
+    }
+
+    #[test]
+    fn relay_mailbox_purge_requires_confirm_and_keeps_output_metadata_only() {
+        let mailbox_dir = test_home("durable-mailbox-purge").join("relay-mailbox");
+        let node_dir = mailbox_dir.join("node.b");
+        fs::create_dir_all(&node_dir).expect("mailbox node dir");
+        let now = current_unix_millis();
+        let expired_queued_at = now.saturating_sub(10_000);
+        let fresh_queued_at = now;
+
+        let expired = QueuedRelayEnvelope {
+            queued_at_millis: expired_queued_at,
+            queued_at_nanos: expired_queued_at.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.b", "env.purge.expired"),
+            ),
+        };
+        let fresh = QueuedRelayEnvelope {
+            queued_at_millis: fresh_queued_at,
+            queued_at_nanos: fresh_queued_at.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.b", "env.purge.fresh"),
+            ),
+        };
+        let expired_path = node_dir.join("expired.mailbox");
+        let fresh_path = node_dir.join("fresh.mailbox");
+        let invalid_path = node_dir.join("invalid.mailbox");
+        let display_guard_path = node_dir.join("display-guard.mailbox");
+        fs::write(&expired_path, render_mailbox_file(&expired)).expect("expired mailbox file");
+        fs::write(&fresh_path, render_mailbox_file(&fresh)).expect("fresh mailbox file");
+        fs::write(
+            &invalid_path,
+            "version = \"1\"\nqueued_at_millis = invalid\nframe = ENVELOPE from=node.a body_ciphertext=ciphertext_body\npayload_displayed = false\n",
+        )
+        .expect("invalid mailbox file");
+        fs::write(
+            &display_guard_path,
+            render_mailbox_file(&expired)
+                .replace("payload_displayed = false", "payload_displayed = true"),
+        )
+        .expect("display guard mailbox file");
+
+        let dry_run =
+            purge_relay_mailbox_dir(&mailbox_dir, Some("node.b"), Duration::from_secs(1), true)
+                .expect("dry-run purge reports");
+        assert!(dry_run.dry_run);
+        assert!(!dry_run.confirmed);
+        assert_eq!(dry_run.nodes, 1);
+        assert_eq!(dry_run.records, 4);
+        assert_eq!(dry_run.invalid_records, 2);
+        assert_eq!(dry_run.expired_records, 1);
+        assert_eq!(dry_run.purged_records, 0);
+        assert!(expired_path.exists());
+        assert!(fresh_path.exists());
+        assert!(invalid_path.exists());
+        assert!(display_guard_path.exists());
+
+        let confirmed =
+            purge_relay_mailbox_dir(&mailbox_dir, Some("node.b"), Duration::from_secs(1), false)
+                .expect("confirmed purge removes expired mailbox");
+        assert!(!confirmed.dry_run);
+        assert!(confirmed.confirmed);
+        assert_eq!(confirmed.records, 4);
+        assert_eq!(confirmed.invalid_records, 2);
+        assert_eq!(confirmed.expired_records, 1);
+        assert_eq!(confirmed.purged_records, 1);
+        assert!(confirmed.purged_bytes > 0);
+        assert!(!expired_path.exists());
+        assert!(fresh_path.exists());
+        assert!(invalid_path.exists());
+        assert!(display_guard_path.exists());
+        assert!(!confirmed.payload_displayed);
+        assert!(!confirmed.token_displayed);
+        assert!(!confirmed.token_hash_displayed);
+        assert!(!confirmed.key_material_displayed);
+        assert!(!confirmed.session_id_displayed);
+        assert!(!confirmed.ciphertext_displayed);
+        assert!(!confirmed.contents_displayed);
+
+        let debug = format!("{confirmed:?}");
         assert!(!debug.contains("private message contents"));
         assert!(!debug.contains("ciphertext_body"));
         assert!(!debug.contains("ENVELOPE from=node.a"));
