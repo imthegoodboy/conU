@@ -42,11 +42,11 @@ Release archives intended for npm installation should be named by platform:
 conu-<version>-windows-x64.zip
 conu-<version>-linux-x64.tar.gz
 conu-<version>-linux-arm64.tar.gz
-conu-<version>-macos-x64.tar.gz
-conu-<version>-macos-arm64.tar.gz
+conu-<version>-macos-x64.zip
+conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets: Windows binaries are Authenticode-signed before packaging, and macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives. Linux archives currently use SHA-256 files plus GitHub artifact attestations until distro/package-manager signing is introduced.
 
 Validate generated archives before upload:
 
@@ -60,6 +60,8 @@ templates, and common forbidden local-state paths so developer `CONU_HOME`,
 logs, private keys, inboxes, route registries, package `node_modules`, and
 vendored npm binaries are not shipped. Tagged release builds also create
 GitHub artifact attestations for each platform archive and checksum file.
+See `docs/platform-code-signing.md` for signing secrets and verification
+commands.
 
 Verify a downloaded archive's provenance when `gh` is available:
 

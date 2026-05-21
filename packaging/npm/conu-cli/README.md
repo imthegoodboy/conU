@@ -22,16 +22,18 @@ The expected release asset names are:
 conu-0.1.0-windows-x64.zip
 conu-0.1.0-linux-x64.tar.gz
 conu-0.1.0-linux-arm64.tar.gz
-conu-0.1.0-macos-x64.tar.gz
-conu-0.1.0-macos-arm64.tar.gz
+conu-0.1.0-macos-x64.zip
+conu-0.1.0-macos-arm64.zip
 ```
 
 Each archive must have a sibling checksum file named `<asset>.sha256`.
 
 Tagged GitHub releases are expected to publish these assets before this npm
 package is published. The release workflow verifies archive checksums and
-rejects local conU state/log/key/payload paths before upload. Automated npm
-publication is available when the repository `NPM_TOKEN` secret is configured;
+rejects local conU state/log/key/payload paths before upload. Tagged release
+builds also require Windows Authenticode signing secrets and macOS Developer
+ID/notarization secrets. Automated npm publication is available when the
+repository `NPM_TOKEN` secret is configured;
 otherwise maintainers can publish manually after the GitHub Release assets are
 visible.
 

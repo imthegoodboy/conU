@@ -653,7 +653,7 @@ These are not hidden bugs; they are the honest state of the current app:
 
 | Area | Current issue | User impact | Workaround today |
 | --- | --- | --- | --- |
-| Installer | Release artifact scripts exist, but packages are not signed | Users must trust a source build or unsigned artifact | Use `cargo install --path` or inspect/build artifacts locally |
+| Installer | Release artifact scripts exist, tagged release workflow supports Windows Authenticode and macOS notarization, but one-click OS installers are not published | Users still install from archives or source until package-manager distribution exists | Verify checksums, GitHub attestations, and platform signatures before install |
 | npm install | `@conu/cli` template exists but is not published until release assets are attached | `npm install -g @conu/cli` is the target path, not a live package guarantee yet | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
@@ -710,4 +710,4 @@ To make conU genuinely useful over the internet, the next phase should build:
 - Hosted multi-tenant room permission administration beyond the current local topic policy file.
 - Real QUIC socket transport and NAT candidate exchange after the room/session model is stable.
 - Browser-native TypeScript protocol support remains future work; the current Node wrapper uses installed binaries and MCP for explicit payload receive, while browser-conditioned imports fail closed through a safe unsupported stub.
-- Signed installers and managed hosted account/key administration after local packaging stabilizes.
+- OS package-manager installers, detached Linux package signatures, and managed hosted account/key administration after local packaging stabilizes.

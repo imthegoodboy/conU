@@ -45,8 +45,8 @@ The npm installer expects these assets for version `0.1.0`:
 conu-0.1.0-windows-x64.zip
 conu-0.1.0-linux-x64.tar.gz
 conu-0.1.0-linux-arm64.tar.gz
-conu-0.1.0-macos-x64.tar.gz
-conu-0.1.0-macos-arm64.tar.gz
+conu-0.1.0-macos-x64.zip
+conu-0.1.0-macos-arm64.zip
 ```
 
 Each archive must have:
@@ -55,7 +55,7 @@ Each archive must have:
 <asset>.sha256
 ```
 
-The release workflow builds platform-named artifacts and uploads matching checksum files.
+The release workflow builds platform-named artifacts and uploads matching checksum files. Tagged release builds require maintainer-owned signing secrets for Windows Authenticode and macOS Developer ID/notarization. Linux archives use SHA-256 files plus GitHub artifact attestations until native distro package signing is added.
 
 ## Publishing Flow
 
@@ -63,7 +63,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 2. Confirm `sdk/typescript/package.json` has the same version if publishing `@conu/sdk`.
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
-5. Let the `Release Artifacts` GitHub Actions workflow build platform archives, verify that they exclude conU state/log/payload paths and include the required install/service templates, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, and run npm package dry-runs.
+5. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, and run npm package dry-runs.
 6. Configure the repository `NPM_TOKEN` secret before tag builds that should publish npm packages. When that token is present, the release workflow publishes `@conu/cli` and `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
@@ -91,6 +91,9 @@ For a downloaded release archive, verify the GitHub artifact attestation when `g
 ```sh
 gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 ```
+
+For platform signing verification commands and the required repository secrets,
+see `docs/platform-code-signing.md`.
 
 The verifier checks each archive checksum, required binaries, `manifest.toml`
 payload flags, required install/service templates, and common forbidden
@@ -294,4 +297,4 @@ For the user install story, finish publishing in this order:
 2. Publish `@conu/cli` after the GitHub Release exists.
 3. Put public relay tests behind TLS termination and use `wss://` endpoints.
 4. Add hosted account auth, online credential issuance APIs, distributed monitoring/dashboards, hosted mailbox retention policy, and distributed hosted session state before opening a managed relay to everyone.
-5. Add signed installers and OS package managers after npm and release archives are stable.
+5. Add OS package managers, detached Linux package signatures, and auto-update policy after npm and release archives are stable.

@@ -95,6 +95,7 @@ Implemented so far:
 - platform-named release artifacts with SHA-256 checksum support
 - GitHub CI and release artifact workflows, including Rust OS-matrix checks plus TypeScript SDK, npm launcher package checks, release archive verification, GitHub Release asset upload, and optional npm package publishing
 - GitHub artifact attestation generation for release archives and checksum files
+- tagged release signing workflow for Windows Authenticode and macOS Developer ID/notarized ZIP archives, with Linux SHA-256 plus GitHub-attestation policy
 - release checklist and observability docs
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs
@@ -116,6 +117,7 @@ Current important files:
 - `docs/distribution-and-hosting.md`: how users install conU, how npm packaging should publish native binaries, and how to self-host the current relay.
 - `docs/browser-native-typescript.md`: browser boundary and future browser-native TypeScript protocol requirements.
 - `docs/native-secret-storage.md`: native and fallback local secret backend selection plus platform smoke checks.
+- `docs/platform-code-signing.md`: platform signing/notarization policy, required GitHub secrets, and verification commands.
 - `docs/release-checklist.md`: Phase 15 release gate.
 - `docs/observability.md`: payload-safe observability policy.
 - `packaging/README.md`: install, npm launcher, Docker relay, and service templates.

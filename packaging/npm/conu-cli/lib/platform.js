@@ -40,7 +40,10 @@ function platformKey() {
 }
 
 function archiveExtension() {
-  return process.platform === "win32" ? ".zip" : ".tar.gz";
+  if (process.platform === "win32" || process.platform === "darwin") {
+    return ".zip";
+  }
+  return ".tar.gz";
 }
 
 function assetName(version = packageVersion()) {

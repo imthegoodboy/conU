@@ -111,6 +111,7 @@ conu stop
 - Release archive includes docs and the required packaging templates: Windows install/uninstall scripts, Linux systemd unit, macOS launchd plist, Docker relay files, and npm launcher install metadata.
 - `manifest.toml` contains `payload_contents_included = false`.
 - Release archive has a matching `.sha256` checksum file.
+- macOS npm release assets are ZIP archives so Apple notarization can run on the distribution container.
 - `scripts/verify-release-artifacts.py dist` passes for every archive and rejects local conU state, logs, private key files, inboxes, route registries, telemetry dumps, node modules, vendored package binaries, and payload-bearing paths.
 - Windows install script copies binaries to a current-user install directory.
 - Linux systemd template is present and documents the required user/state path edits.
@@ -118,6 +119,43 @@ conu stop
 - Docker relay template is present and documents current relay limits and knobs.
 - npm launcher package passes `npm run check` from `packaging/npm/conu-cli`.
 - TypeScript/JavaScript SDK package passes `npm run check --prefix sdk/typescript`.
+
+## Platform Signing
+
+- Repository signing secrets are configured before a `v*` tag release:
+  `CONU_WINDOWS_SIGN_CERT_PFX_BASE64`, `CONU_WINDOWS_SIGN_CERT_PASSWORD`,
+  `CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64`,
+  `CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD`,
+  `CONU_MACOS_CODESIGN_IDENTITY`, `CONU_MACOS_NOTARY_APPLE_ID`,
+  `CONU_MACOS_NOTARY_TEAM_ID`, and `CONU_MACOS_NOTARY_PASSWORD`.
+- Windows release ZIPs contain Authenticode-signed binaries. Verify after extraction:
+
+```powershell
+Get-AuthenticodeSignature .\bin\conu.exe
+Get-AuthenticodeSignature .\bin\conud.exe
+Get-AuthenticodeSignature .\bin\conu-relay.exe
+Get-AuthenticodeSignature .\bin\conu-mcp.exe
+```
+
+- macOS release ZIPs contain Developer ID-signed binaries and are submitted to Apple notarization by the release workflow. Verify after extraction:
+
+```sh
+codesign --verify --strict --verbose=2 bin/conu
+codesign --verify --strict --verbose=2 bin/conud
+codesign --verify --strict --verbose=2 bin/conu-relay
+codesign --verify --strict --verbose=2 bin/conu-mcp
+spctl -a -vv -t exec bin/conu
+```
+
+- Linux release tarballs use SHA-256 checksum files plus GitHub artifact attestations until distro package signing exists:
+
+```sh
+sha256sum -c conu-0.1.0-linux-x64.tar.gz.sha256
+gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
+```
+
+- Signing workflows and logs do not print certificates, private keys, signing passwords, npm tokens, relay tokens, local conU state, or payload contents.
+- See `docs/platform-code-signing.md` for the full signing policy and secret names.
 
 ## GitHub
 
@@ -134,7 +172,7 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 
 - `@conu/cli` and `@conu/sdk` npm package dry-runs pass before publication.
 - `@conu/cli` and `@conu/sdk` are published only after the matching GitHub Release assets are available; configure the repository `NPM_TOKEN` secret for automated npm publication with provenance.
-- Platform code signing is not implemented yet; the current release trust decision is CI-built archives, SHA-256 checksums, GitHub artifact attestations, GitHub Release assets, and npm provenance when `NPM_TOKEN` is configured.
+- Platform signing workflow is implemented for tagged releases: Windows Authenticode, macOS Developer ID signing/notarization, Linux SHA-256 plus GitHub artifact attestations.
 - `plan.md` completion log is updated.
 - Issue is closed by PR merge.
 
@@ -148,4 +186,4 @@ needs_fix
 blocked
 ```
 
-Current decision target is `daemon_relay_message_stream_chunk_room_topic_policy_durable_mailbox_live_reloaded_hashed_relay_credential_manifest_lifecycle_accounting_quotas_session_resume_direct_route_selection_guard_log_rotation_identity_key_rotation_and_retirement_storage_key_rotation_and_retirement_windows_dpapi_macos_keychain_linux_secret_service_nonwindows_user_managed_secret_wrap_key_stored_relay_client_credentials_local_capabilities_signed_agent_cards_peer_policy_auto_agent_card_exchange_and_attested_release_archives_ready_with_known_limits`. Public hosted/internet release remains blocked until hosted account auth, managed online credential issuance APIs, distributed hosted session state, distributed hosted dashboards/accounting, hosted mailbox retention policy, hosted multi-tenant permission administration, direct QUIC, and platform code signing are finished.
+Current decision target is `daemon_relay_message_stream_chunk_room_topic_policy_durable_mailbox_live_reloaded_hashed_relay_credential_manifest_lifecycle_accounting_quotas_session_resume_direct_route_selection_guard_log_rotation_identity_key_rotation_and_retirement_storage_key_rotation_and_retirement_windows_dpapi_macos_keychain_linux_secret_service_nonwindows_user_managed_secret_wrap_key_stored_relay_client_credentials_local_capabilities_signed_agent_cards_peer_policy_auto_agent_card_exchange_attested_release_archives_and_platform_signing_workflow_ready_with_known_limits`. Public hosted/internet release remains blocked until hosted account auth, managed online credential issuance APIs, distributed hosted session state, distributed hosted dashboards/accounting, hosted mailbox retention policy, hosted multi-tenant permission administration, and direct QUIC are finished.
