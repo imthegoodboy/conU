@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes daemon-pumped relay-backed one-shot message, stream-chunk, and room-event delivery, peer-scoped default-deny policy grants for trusted peers, automatic encrypted signed agent-card exchange during session sync, bounded offline relay mailbox delivery with optional durable ciphertext files, offline scoped relay credential issuance with manifest upsert/rotate/revoke helpers, live-reloaded hashed self-hosted relay credential manifests, metadata-only relay accounting/quotas, plus local rooms/pub/sub metadata with encrypted-at-rest local fanout to joined local participants.
+The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes daemon-pumped relay-backed one-shot message, stream-chunk, and room-event delivery, peer-scoped default-deny policy grants for trusted peers, automatic encrypted signed agent-card exchange during session sync, bounded offline relay mailbox delivery with optional durable ciphertext files, offline scoped relay credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifests, metadata-only relay accounting/quotas, plus local rooms/pub/sub metadata with encrypted-at-rest local fanout to joined local participants.
 
 Implemented so far:
 
@@ -62,6 +62,7 @@ Implemented so far:
 - small plain `conu-relay` WebSocket service
 - offline scoped relay credential issuance through `conu-relay --issue-credential`, writing raw tokens to a chosen file while manifest upsert/rotation output reports only counts, paths, and status
 - relay session authentication with a shared token, compatibility static per-node scoped credentials, or a live-reloaded hashed `CONU_RELAY_CREDENTIALS_FILE` manifest with status/expiry metadata and helper-driven upsert/replace/revoke operations
+- hosted relay account metadata and online admin lifecycle through `CONU_RELAY_ADMIN_TOKEN`, `--admin-issue-credential`, `--admin-rotate-credential`, `--admin-revoke-credential`, and `--admin-audit-credentials`, with admin-token stdin, node-token hash-only relay updates, and metadata-only audit output
 - configurable relay total connection, per-IP connection, and per-session frame-rate caps
 - configurable relay idle timeout and max session TTL
 - metadata-only relay accounting with optional file-backed authenticated/resumed session counters and per-node sent quotas
@@ -115,6 +116,7 @@ Current important files:
 - `docs/direct-transport-and-routes.md`: Phase 13 route manager, config, and privacy boundary.
 - `docs/internet-relay-test.md`: current relay-backed remote message smoke test.
 - `docs/distribution-and-hosting.md`: how users install conU, how npm packaging should publish native binaries, and how to self-host the current relay.
+- `docs/hosted-relay-account-auth.md`: account-scoped hosted relay credential lifecycle and privacy boundary.
 - `docs/browser-native-typescript.md`: browser boundary and future browser-native TypeScript protocol requirements.
 - `docs/native-secret-storage.md`: native and fallback local secret backend selection plus platform smoke checks.
 - `docs/platform-code-signing.md`: platform signing/notarization policy, required GitHub secrets, and verification commands.

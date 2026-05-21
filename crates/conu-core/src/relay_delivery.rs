@@ -947,6 +947,10 @@ fn handle_relay_frame(
             report.rejected += 1;
             append_relay_log(paths, "relay_error", "", "", 0)?;
         }
+        RelayServerFrame::AdminResult(_) => {
+            report.rejected += 1;
+            append_relay_log(paths, "relay_admin_frame_unexpected", "", "", 0)?;
+        }
         RelayServerFrame::Welcome { .. } | RelayServerFrame::Pong => {}
     }
 
