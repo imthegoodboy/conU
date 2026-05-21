@@ -304,7 +304,8 @@ conu-relay --abuse-threshold-report `
   --max-admin-unauthorized 0 `
   --max-credential-denied-sessions 10 `
   --max-mailbox-rejected-forwards 25 `
-  --json
+  --json `
+  --fail-on-threshold
 
 Get-Content -Raw C:\secure\relay-admin.token |
   conu-relay --admin-abuse-threshold-report `
@@ -314,10 +315,11 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --node node-a-id `
     --max-admin-unauthorized 0 `
     --max-rate-limited-sessions 100 `
-    --json
+    --json `
+    --fail-on-threshold
 ```
 
-Threshold reports return `status` (`ok` or `threshold_exceeded`), count/max/exceeded metadata for every abuse metric, the number of checked and exceeded thresholds, the optional account/node filters, and false display guards. The admin form reads the token from stdin, uses the same dashboard admin scope as hosted dashboard snapshots, and never echoes the token, token hashes, session ids, payloads, ciphertext bodies, frame contents, or raw abuse records.
+Threshold reports return `status` (`ok` or `threshold_exceeded`), count/max/exceeded metadata for every abuse metric, the number of checked and exceeded thresholds, the optional account/node filters, and false display guards. By default they exit successfully after rendering the report. With `--fail-on-threshold`, they still preserve stdout report output but return exit code 3 when one or more configured thresholds are exceeded. The admin form reads the token from stdin, uses the same dashboard admin scope as hosted dashboard snapshots, and never echoes the token, token hashes, session ids, payloads, ciphertext bodies, frame contents, or raw abuse records.
 
 This is a single-relay file-backed/admin-gated foundation for operator visibility. It is not distributed alerting, adaptive throttling, tenant-wide workflow automation, or a hosted dashboard service yet.
 
@@ -420,10 +422,10 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --json
 ```
 
-The online form requires hosted admin configuration through `CONU_RELAY_ADMIN_TOKEN` or a scoped `CONU_RELAY_ADMIN_TOKENS_FILE` entry with `scope_dashboard = true`, and reads the admin token from stdin. It returns metadata-only counters from the running relay's configured credential, tenant, accounting, and abuse stores. The same dashboard scope authorizes `conu-relay --admin-abuse-threshold-report`, which derives count/max/exceeded metadata from the running relay's dashboard snapshot. Neither form echoes the admin token, raw node tokens, token hashes, private keys, relay session ids, payloads, ciphertext bodies, frame contents, or manifest contents.
+The online form requires hosted admin configuration through `CONU_RELAY_ADMIN_TOKEN` or a scoped `CONU_RELAY_ADMIN_TOKENS_FILE` entry with `scope_dashboard = true`, and reads the admin token from stdin. It returns metadata-only counters from the running relay's configured credential, tenant, accounting, and abuse stores. The same dashboard scope authorizes `conu-relay --admin-abuse-threshold-report`, which derives count/max/exceeded metadata from the running relay's dashboard snapshot and can return exit code 3 with `--fail-on-threshold` when a configured maximum is exceeded. Neither form echoes the admin token, raw node tokens, token hashes, private keys, relay session ids, payloads, ciphertext bodies, frame contents, or manifest contents.
 
 This is still single-relay and file-backed/admin-gated, even with scoped admin tokens. It is not distributed dashboard storage, alert routing, adaptive response, billing, or tenant-wide workflow automation.
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token, hosted account-suspension, abuse-audit, local/admin-gated abuse threshold reports, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token, hosted account-suspension, abuse-audit, local/admin-gated abuse threshold reports with optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.

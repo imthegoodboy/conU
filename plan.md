@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-21
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/mailbox actions, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, relay session state storage, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, confirm-gated local and admin-gated online durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, and platform signing/notarization workflow hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse workflows beyond local/admin-gated single-relay snapshots and threshold reports, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and distributed hosted mailbox retention orchestration beyond single-relay purge gaps.
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/mailbox actions, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, relay session state storage, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, confirm-gated local and admin-gated online durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, and platform signing/notarization workflow hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse workflows beyond local/admin-gated single-relay snapshots and threshold reports, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and distributed hosted mailbox retention orchestration beyond single-relay purge gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -4242,6 +4242,70 @@ Next recommendation:
 
 - Open the PR for issue #92, wait for CI, merge if green, and preserve both local and remote feature branches.
 
+## Post Phase 15 - Abuse Threshold Fail-On-Threshold Mode
+
+Status: completed
+
+Goal:
+
+Make local and admin-gated hosted abuse threshold reports scriptable for CI, cron, and operator monitoring without adding adaptive enforcement or distributed alerting.
+
+Completed work:
+
+- Created GitHub issue #94 for the fail-on-threshold report slice.
+- Added optional `--fail-on-threshold` to `conu-relay --abuse-threshold-report`.
+- Added optional `--fail-on-threshold` to `conu-relay --admin-abuse-threshold-report`.
+- Preserved normal stdout report rendering and default success exit behavior.
+- Added exit code 3 only when `--fail-on-threshold` is set and one or more configured thresholds are exceeded.
+- Kept admin threshold reports behind `--admin-token-stdin` and the existing dashboard admin scope.
+- Added parser and report-exit tests for local and admin threshold forms.
+- Updated hosted relay docs, distribution/hosting docs, production readiness, release checklist, user guide, SDK/MCP notes, packaging docs, repo memory, and future-agent security/build guardrails.
+
+Files changed:
+
+- `crates/conu-relay/src/main.rs`
+- `README.md`
+- `docs/hosted-relay-account-auth.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/docker/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `cargo +stable-x86_64-pc-windows-gnu fmt --all -- --check` passed with `PATH` including `C:\Users\parth\Downloads\llama\w64devkit\bin` and `RUSTFLAGS=-C linker=rust-lld`.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay abuse_threshold -- --nocapture` passed with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed with the same GNU environment.
+- `python -m py_compile sdk\python\conu_sdk\__init__.py examples\python\local_agent_pair.py` passed.
+- `npm run check --prefix sdk\typescript` passed.
+- `npm run check --prefix packaging\npm\conu-cli` passed.
+- `cargo +stable-x86_64-pc-windows-gnu build -p conu-relay` passed with the same GNU environment.
+- `git diff --check` passed.
+- `target\debug\conu-relay.exe --help` smoke confirmed `--fail-on-threshold` is documented.
+- Local threshold CLI smoke passed against a temporary `.abuse` file: `--fail-on-threshold` returned exit code 3 with `status=threshold_exceeded`, and the same report without the flag returned exit code 0 while preserving `status=threshold_exceeded`.
+
+Known gaps:
+
+- The fail-on-threshold flag is a local process exit mode only. It is not distributed alerting, adaptive abuse response, tenant-wide workflow automation, or hosted dashboard storage.
+- Abuse, accounting, tenant, credential, mailbox, and dashboard stores are still single-relay storage boundaries.
+- Admin threshold reports still inherit dashboard scope and the existing account-scoped dashboard behavior where global accounting and abuse counters are suppressed without a node filter.
+
+Next recommendation:
+
+- Open the PR for issue #94, wait for CI, merge if green, and preserve both local and remote feature branches.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -4324,4 +4388,5 @@ Add entries here when a phase is completed.
 2026-05-21 - Post Phase 15 scoped hosted admin-token RBAC completed. Added live-read `CONU_RELAY_ADMIN_TOKENS_FILE` hashed admin-token records with optional account ids, active/revoked status, optional expiry, and credentials/tenants/dashboard/mailbox-audit/mailbox-purge scopes while preserving `CONU_RELAY_ADMIN_TOKEN` as the full-admin compatibility path. Online admin requests now fail closed with `admin_scope_denied` for valid tokens outside their action or account boundary, account-scoped dashboard snapshots avoid global accounting/abuse counters without a node filter, account-scoped mailbox audit/purge requires an active tenant node, and admin outputs still avoid admin tokens, raw node tokens, token hashes, private keys, session ids, payloads, ciphertext bodies, frame contents, and manifest contents. Updated docs/skills/plan and added scoped manifest coverage for credential, tenant, dashboard, mailbox-audit, and mailbox-purge paths. Validation passed with GNU `fmt`, workspace `check`, `clippy -D warnings`, workspace tests, Python compile, TypeScript/package checks, diff check, conu-relay build, and CLI help smoke. Next: distributed hosted dashboards/adaptive abuse workflows beyond single-relay snapshots, distributed tenant lifecycle/workflow automation beyond scoped single-relay admin tokens, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-21 - Post Phase 15 hosted account suspension workflow completed. Added relay admin `account_suspend`, `conu-relay --hosted-account-suspend`, and `conu-relay --admin-hosted-account-suspend` so one configured relay can revoke hosted tenant metadata first and then all credential records for that account while returning only account, credential, tenant, node, policy, path/endpoint, and display-guard metadata. Scoped admin tokens require both credentials and tenants scopes for this workflow; full-admin compatibility remains available. Updated docs/skills/plan and validated with GNU `fmt --check`, workspace `check`, `clippy -D warnings`, workspace tests, Python compile, TypeScript/package checks, npm launcher check, diff check, conu-relay build, CLI help smoke, and a local hosted account-suspend CLI smoke. Next: distributed hosted dashboards/adaptive abuse workflows beyond single-relay snapshots, distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-21 - Post Phase 15 hosted abuse threshold report completed. Added local `conu-relay --abuse-threshold-report` and admin-gated `conu-relay --admin-abuse-threshold-report` over metadata-only abuse counters, with explicit max thresholds, count/max/exceeded JSON/text output, dashboard-scope admin authorization, payload-safe display guards, docs/skills/plan updates, targeted threshold tests, full GNU workspace validation, Python/package checks, diff check, conu-relay build, CLI help smoke, and local JSON threshold smoke. Next: distributed hosted dashboards/adaptive abuse workflows beyond single-relay threshold reports, distributed tenant lifecycle/workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-21 - Post Phase 15 abuse threshold fail-on-threshold mode completed. Added optional `--fail-on-threshold` to local and admin-gated abuse threshold reports, preserving stdout report output and returning exit code 3 only when configured thresholds are exceeded; updated docs/skills/plan and validated with GNU `fmt --check`, workspace `check`, `clippy -D warnings`, focused threshold tests, workspace tests, Python compile, TypeScript/package checks, diff check, conu-relay build, CLI help smoke, and local exit-code smoke. Next: distributed hosted dashboards/adaptive abuse workflows beyond single-relay threshold reports, distributed tenant lifecycle/workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
