@@ -97,6 +97,45 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--admin-tenant-upsert") => match admin_tenant_upsert_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
+        Some("--admin-tenant-revoke") => match admin_tenant_revoke_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
+        Some("--admin-tenant-node-upsert") => {
+            match admin_tenant_node_upsert_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("--admin-tenant-node-revoke") => {
+            match admin_tenant_node_revoke_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("--admin-tenant-audit") => match admin_tenant_audit_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--admin-mailbox-audit") => match admin_mailbox_audit_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -227,6 +266,11 @@ Usage:
   conu-relay --admin-revoke-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-audit-credentials --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
   conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]
+  conu-relay --admin-tenant-upsert <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
+  conu-relay --admin-tenant-revoke <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
+  conu-relay --admin-tenant-node-upsert <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
+  conu-relay --admin-tenant-node-revoke <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
+  conu-relay --admin-tenant-audit --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
   conu-relay --admin-mailbox-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--ttl-seconds <seconds>] [--json]
   conu-relay --admin-mailbox-purge --relay <ws://host:port/path> --admin-token-stdin --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
   conu-relay --tenant-upsert <account-id> --tenants-file <path> [--json]
@@ -276,12 +320,12 @@ with at least 24 characters. Use --hash-token with stdin to generate credential-
 --issue-credential to generate a scoped token file and optional manifest update, or
 --revoke-credential to mark a scoped credential revoked without displaying tokens. Hosted admin
 commands authenticate with an admin token read from stdin, send only node-token hash metadata to the
-relay, and write the raw node token locally only after the relay confirms the update. Tenant
-commands manage account, node, public key-id, and hosted permission metadata only; they never grant
-local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Admin
-hosted dashboard snapshots require the admin token over the relay control plane and return
-metadata-only credential, tenant, accounting, and abuse counters. Admin mailbox audits and purges
-require the admin token over the relay control plane and inspect or clean durable mailbox retention
+relay, and write the raw node token locally only after the relay confirms the update. Local and admin
+tenant commands manage account, node, public key-id, and hosted permission metadata only; they never
+grant local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies.
+Admin hosted dashboard and tenant snapshots require the admin token over the relay control plane and
+return metadata-only credential, tenant, accounting, and abuse counters. Admin mailbox audits and
+purges require the admin token over the relay control plane and inspect or clean durable mailbox retention
 metadata from the running relay only. Abuse audit reads aggregate enforcement counters only, mailbox
 audit reads durable mailbox timestamps and file sizes only, manual and admin mailbox purge require
 dry-run or explicit confirmation, and scheduled mailbox purge requires an explicit local interval
@@ -1020,6 +1064,440 @@ fn admin_dashboard_usage() -> String {
     "usage: conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]".to_string()
 }
 
+fn admin_tenant_upsert_from_args(args: Vec<String>) -> Result<(), String> {
+    admin_tenant_account_from_args(args, AdminTenantAccountMode::Upsert)
+}
+
+fn admin_tenant_revoke_from_args(args: Vec<String>) -> Result<(), String> {
+    admin_tenant_account_from_args(args, AdminTenantAccountMode::Revoke)
+}
+
+fn admin_tenant_account_from_args(
+    args: Vec<String>,
+    mode: AdminTenantAccountMode,
+) -> Result<(), String> {
+    let parsed = parse_admin_tenant_account_args(args, mode)?;
+    let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
+    let request = match mode {
+        AdminTenantAccountMode::Upsert => {
+            RelayAdminRequest::tenant_upsert(admin_token, parsed.account_id.clone())
+        }
+        AdminTenantAccountMode::Revoke => {
+            RelayAdminRequest::tenant_revoke(admin_token, parsed.account_id.clone())
+        }
+    }
+    .map_err(|error| error.to_string())?;
+    let result = send_admin_request(&parsed.relay, request)?;
+    if result.status != mode.success_status() {
+        return Err(format!(
+            "relay admin tenant {} did not complete: status={}",
+            mode.verb(),
+            result.status
+        ));
+    }
+
+    if parsed.json {
+        println!("{}", render_admin_tenant_json(&result, &parsed.relay));
+    } else {
+        println!("{}", render_admin_tenant_text(&result, &parsed.relay));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum AdminTenantAccountMode {
+    Upsert,
+    Revoke,
+}
+
+impl AdminTenantAccountMode {
+    fn usage(self) -> String {
+        match self {
+            Self::Upsert => "usage: conu-relay --admin-tenant-upsert <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]".to_string(),
+            Self::Revoke => "usage: conu-relay --admin-tenant-revoke <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]".to_string(),
+        }
+    }
+
+    fn success_status(self) -> &'static str {
+        match self {
+            Self::Upsert => "upserted",
+            Self::Revoke => "revoked",
+        }
+    }
+
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Upsert => "upsert",
+            Self::Revoke => "revoke",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AdminTenantAccountArgs {
+    account_id: String,
+    relay: String,
+    admin_token_stdin: bool,
+    json: bool,
+}
+
+fn parse_admin_tenant_account_args(
+    args: Vec<String>,
+    mode: AdminTenantAccountMode,
+) -> Result<AdminTenantAccountArgs, String> {
+    let mut positional = Vec::new();
+    let mut relay = None::<String>;
+    let mut admin_token_stdin = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--relay" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                relay = Some(value.to_string());
+            }
+            "--admin-token-stdin" => admin_token_stdin = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(mode.usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 1 {
+        return Err(mode.usage());
+    }
+    let Some(relay) = relay.filter(|value| !value.trim().is_empty()) else {
+        return Err(mode.usage());
+    };
+    if !admin_token_stdin {
+        return Err("--admin-token-stdin is required".to_string());
+    }
+
+    Ok(AdminTenantAccountArgs {
+        account_id: positional.remove(0),
+        relay,
+        admin_token_stdin,
+        json,
+    })
+}
+
+fn admin_tenant_node_upsert_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_admin_tenant_node_upsert_args(args)?;
+    let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
+    let request = RelayAdminRequest::tenant_node_upsert(
+        admin_token,
+        parsed.account_id.clone(),
+        parsed.node_id.clone(),
+        parsed.permissions.messages,
+        parsed.permissions.streams,
+        parsed.permissions.rooms,
+        parsed.permissions.files,
+        parsed.permissions.mailbox,
+        parsed.signing_key_id.clone(),
+        parsed.exchange_key_id.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let result = send_admin_request(&parsed.relay, request)?;
+    if result.status != "upserted" {
+        return Err(format!(
+            "relay admin tenant node upsert did not complete: status={}",
+            result.status
+        ));
+    }
+
+    if parsed.json {
+        println!("{}", render_admin_tenant_json(&result, &parsed.relay));
+    } else {
+        println!("{}", render_admin_tenant_text(&result, &parsed.relay));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct AdminTenantNodeUpsertArgs {
+    account_id: String,
+    node_id: String,
+    relay: String,
+    admin_token_stdin: bool,
+    permissions: HostedTenantPermissions,
+    signing_key_id: Option<String>,
+    exchange_key_id: Option<String>,
+    json: bool,
+}
+
+fn parse_admin_tenant_node_upsert_args(
+    args: Vec<String>,
+) -> Result<AdminTenantNodeUpsertArgs, String> {
+    let mut positional = Vec::new();
+    let mut relay = None::<String>;
+    let mut admin_token_stdin = false;
+    let mut permissions = HostedTenantPermissions::default();
+    let mut signing_key_id = None::<String>;
+    let mut exchange_key_id = None::<String>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--relay" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_upsert_usage());
+                };
+                relay = Some(value.to_string());
+            }
+            "--admin-token-stdin" => admin_token_stdin = true,
+            "--messages" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_upsert_usage());
+                };
+                permissions.messages = parse_cli_bool(value, "--messages")?;
+            }
+            "--streams" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_upsert_usage());
+                };
+                permissions.streams = parse_cli_bool(value, "--streams")?;
+            }
+            "--rooms" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_upsert_usage());
+                };
+                permissions.rooms = parse_cli_bool(value, "--rooms")?;
+            }
+            "--files" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_upsert_usage());
+                };
+                permissions.files = parse_cli_bool(value, "--files")?;
+            }
+            "--mailbox" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_upsert_usage());
+                };
+                permissions.mailbox = parse_cli_bool(value, "--mailbox")?;
+            }
+            "--signing-key-id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_upsert_usage());
+                };
+                signing_key_id = Some(value.to_string());
+            }
+            "--exchange-key-id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_upsert_usage());
+                };
+                exchange_key_id = Some(value.to_string());
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(admin_tenant_node_upsert_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(admin_tenant_node_upsert_usage());
+    }
+    let Some(relay) = relay.filter(|value| !value.trim().is_empty()) else {
+        return Err(admin_tenant_node_upsert_usage());
+    };
+    if !admin_token_stdin {
+        return Err("--admin-token-stdin is required".to_string());
+    }
+
+    Ok(AdminTenantNodeUpsertArgs {
+        account_id: positional.remove(0),
+        node_id: positional.remove(0),
+        relay,
+        admin_token_stdin,
+        permissions,
+        signing_key_id,
+        exchange_key_id,
+        json,
+    })
+}
+
+fn admin_tenant_node_upsert_usage() -> String {
+    "usage: conu-relay --admin-tenant-node-upsert <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]".to_string()
+}
+
+fn admin_tenant_node_revoke_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_admin_tenant_node_revoke_args(args)?;
+    let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
+    let request = RelayAdminRequest::tenant_node_revoke(
+        admin_token,
+        parsed.account_id.clone(),
+        parsed.node_id.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let result = send_admin_request(&parsed.relay, request)?;
+    if result.status != "revoked" {
+        return Err(format!(
+            "relay admin tenant node revoke did not complete: status={}",
+            result.status
+        ));
+    }
+
+    if parsed.json {
+        println!("{}", render_admin_tenant_json(&result, &parsed.relay));
+    } else {
+        println!("{}", render_admin_tenant_text(&result, &parsed.relay));
+    }
+    Ok(())
+}
+
+struct AdminTenantNodeRevokeArgs {
+    account_id: String,
+    node_id: String,
+    relay: String,
+    admin_token_stdin: bool,
+    json: bool,
+}
+
+fn parse_admin_tenant_node_revoke_args(
+    args: Vec<String>,
+) -> Result<AdminTenantNodeRevokeArgs, String> {
+    let mut positional = Vec::new();
+    let mut relay = None::<String>;
+    let mut admin_token_stdin = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--relay" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_node_revoke_usage());
+                };
+                relay = Some(value.to_string());
+            }
+            "--admin-token-stdin" => admin_token_stdin = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(admin_tenant_node_revoke_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(admin_tenant_node_revoke_usage());
+    }
+    let Some(relay) = relay.filter(|value| !value.trim().is_empty()) else {
+        return Err(admin_tenant_node_revoke_usage());
+    };
+    if !admin_token_stdin {
+        return Err("--admin-token-stdin is required".to_string());
+    }
+
+    Ok(AdminTenantNodeRevokeArgs {
+        account_id: positional.remove(0),
+        node_id: positional.remove(0),
+        relay,
+        admin_token_stdin,
+        json,
+    })
+}
+
+fn admin_tenant_node_revoke_usage() -> String {
+    "usage: conu-relay --admin-tenant-node-revoke <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]".to_string()
+}
+
+fn admin_tenant_audit_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_admin_tenant_audit_args(args)?;
+    let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
+    let request = RelayAdminRequest::tenant_audit(admin_token, parsed.account_id.clone())
+        .map_err(|error| error.to_string())?;
+    let result = send_admin_request(&parsed.relay, request)?;
+    if result.status != "audited" {
+        return Err(format!(
+            "relay admin tenant audit did not complete: status={}",
+            result.status
+        ));
+    }
+
+    if parsed.json {
+        println!("{}", render_admin_tenant_json(&result, &parsed.relay));
+    } else {
+        println!("{}", render_admin_tenant_text(&result, &parsed.relay));
+    }
+    Ok(())
+}
+
+struct AdminTenantAuditArgs {
+    account_id: Option<String>,
+    relay: String,
+    admin_token_stdin: bool,
+    json: bool,
+}
+
+fn parse_admin_tenant_audit_args(args: Vec<String>) -> Result<AdminTenantAuditArgs, String> {
+    let mut account_id = None::<String>;
+    let mut relay = None::<String>;
+    let mut admin_token_stdin = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--account" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_audit_usage());
+                };
+                account_id = Some(value.to_string());
+            }
+            "--relay" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_tenant_audit_usage());
+                };
+                relay = Some(value.to_string());
+            }
+            "--admin-token-stdin" => admin_token_stdin = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(admin_tenant_audit_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(admin_tenant_audit_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(relay) = relay.filter(|value| !value.trim().is_empty()) else {
+        return Err(admin_tenant_audit_usage());
+    };
+    if !admin_token_stdin {
+        return Err("--admin-token-stdin is required".to_string());
+    }
+
+    Ok(AdminTenantAuditArgs {
+        account_id,
+        relay,
+        admin_token_stdin,
+        json,
+    })
+}
+
+fn admin_tenant_audit_usage() -> String {
+    "usage: conu-relay --admin-tenant-audit --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]".to_string()
+}
+
 fn admin_mailbox_audit_from_args(args: Vec<String>) -> Result<(), String> {
     let parsed = parse_admin_mailbox_audit_args(args)?;
     let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
@@ -1616,6 +2094,95 @@ fn render_admin_dashboard_json(result: &RelayAdminResult, relay: &str) -> String
         result.undelivered_forwards,
         result.mailbox_rejected_forwards,
         result.malformed_client_frames,
+        bool_json(result.payload_displayed),
+        bool_json(result.token_displayed),
+        bool_json(result.token_hash_displayed),
+        bool_json(result.key_material_displayed),
+        bool_json(result.session_id_displayed),
+        bool_json(result.ciphertext_displayed),
+        bool_json(result.contents_displayed)
+    )
+}
+
+fn render_admin_tenant_text(result: &RelayAdminResult, relay: &str) -> String {
+    format!(
+        r"conU hosted relay tenant admin {}
+
+action: {}
+account: {}
+node: {}
+relay: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+nodes: {}
+active nodes: {}
+revoked nodes: {}
+hosted policies: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        result.status,
+        result.action.as_str(),
+        result.account_id.as_deref().unwrap_or("all"),
+        result.node_id.as_deref().unwrap_or("none"),
+        relay,
+        result.tenants,
+        result.active_tenants,
+        result.revoked_tenants,
+        result.nodes,
+        result.active_nodes,
+        result.revoked_nodes,
+        result.tenant_policies,
+        yes_no(result.payload_displayed),
+        yes_no(result.token_displayed),
+        yes_no(result.token_hash_displayed),
+        yes_no(result.key_material_displayed),
+        yes_no(result.session_id_displayed),
+        yes_no(result.ciphertext_displayed),
+        yes_no(result.contents_displayed)
+    )
+}
+
+fn render_admin_tenant_json(result: &RelayAdminResult, relay: &str) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "action": "{}",
+  "accountId": {},
+  "nodeId": {},
+  "relay": "{}",
+  "tenants": {},
+  "activeTenants": {},
+  "revokedTenants": {},
+  "nodes": {},
+  "activeNodes": {},
+  "revokedNodes": {},
+  "policies": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        json_escape(&result.status),
+        result.action.as_str(),
+        optional_string_json(result.account_id.as_deref()),
+        optional_string_json(result.node_id.as_deref()),
+        json_escape(relay),
+        result.tenants,
+        result.active_tenants,
+        result.revoked_tenants,
+        result.nodes,
+        result.active_nodes,
+        result.revoked_nodes,
+        result.tenant_policies,
         bool_json(result.payload_displayed),
         bool_json(result.token_displayed),
         bool_json(result.token_hash_displayed),
@@ -4165,6 +4732,153 @@ mod tests {
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));
             assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+    }
+
+    #[test]
+    fn admin_tenant_lifecycle_parsers_and_renderers_are_metadata_only() {
+        let parsed_account = parse_admin_tenant_account_args(
+            vec![
+                "account.prod".to_string(),
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--admin-token-stdin".to_string(),
+                "--json".to_string(),
+            ],
+            AdminTenantAccountMode::Upsert,
+        )
+        .expect("admin tenant account args parse");
+        assert_eq!(parsed_account.account_id, "account.prod");
+        assert_eq!(parsed_account.relay, "ws://127.0.0.1:8787");
+        assert!(parsed_account.admin_token_stdin);
+        assert!(parsed_account.json);
+        assert!(
+            parse_admin_tenant_account_args(Vec::new(), AdminTenantAccountMode::Upsert).is_err()
+        );
+        assert!(
+            parse_admin_tenant_account_args(
+                vec![
+                    "account.prod".to_string(),
+                    "--relay".to_string(),
+                    "ws://127.0.0.1:8787".to_string(),
+                ],
+                AdminTenantAccountMode::Revoke,
+            )
+            .expect_err("admin token stdin required")
+            .contains("--admin-token-stdin")
+        );
+
+        let parsed_node = parse_admin_tenant_node_upsert_args(vec![
+            "account.prod".to_string(),
+            "node.hosted".to_string(),
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--messages".to_string(),
+            "true".to_string(),
+            "--streams".to_string(),
+            "true".to_string(),
+            "--mailbox".to_string(),
+            "false".to_string(),
+            "--signing-key-id".to_string(),
+            "signing.key.1".to_string(),
+            "--exchange-key-id".to_string(),
+            "exchange.key.1".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("admin tenant node args parse");
+        assert_eq!(parsed_node.account_id, "account.prod");
+        assert_eq!(parsed_node.node_id, "node.hosted");
+        assert_eq!(parsed_node.relay, "ws://127.0.0.1:8787");
+        assert!(parsed_node.admin_token_stdin);
+        assert!(parsed_node.permissions.messages);
+        assert!(parsed_node.permissions.streams);
+        assert!(!parsed_node.permissions.rooms);
+        assert!(!parsed_node.permissions.files);
+        assert!(!parsed_node.permissions.mailbox);
+        assert_eq!(parsed_node.signing_key_id.as_deref(), Some("signing.key.1"));
+        assert_eq!(
+            parsed_node.exchange_key_id.as_deref(),
+            Some("exchange.key.1")
+        );
+        assert!(parsed_node.json);
+        assert!(
+            parse_admin_tenant_node_upsert_args(vec![
+                "account.prod".to_string(),
+                "node.hosted".to_string(),
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--admin-token-stdin".to_string(),
+                "--messages".to_string(),
+                "yes".to_string(),
+            ])
+            .expect_err("invalid bool should fail")
+            .contains("must be true or false")
+        );
+
+        let parsed_revoke = parse_admin_tenant_node_revoke_args(vec![
+            "account.prod".to_string(),
+            "node.hosted".to_string(),
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+        ])
+        .expect("admin tenant node revoke args parse");
+        assert_eq!(parsed_revoke.account_id, "account.prod");
+        assert_eq!(parsed_revoke.node_id, "node.hosted");
+        assert!(parsed_revoke.admin_token_stdin);
+
+        let parsed_audit = parse_admin_tenant_audit_args(vec![
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--account".to_string(),
+            "account.prod".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("admin tenant audit args parse");
+        assert_eq!(parsed_audit.account_id.as_deref(), Some("account.prod"));
+        assert_eq!(parsed_audit.relay, "ws://127.0.0.1:8787");
+        assert!(parsed_audit.admin_token_stdin);
+        assert!(parsed_audit.json);
+
+        let result = RelayAdminResult {
+            action: conu_core::relay::RelayAdminAction::TenantNodeUpsert,
+            status: "upserted".to_string(),
+            account_id: Some("account.prod".to_string()),
+            node_id: Some("node.hosted".to_string()),
+            tenants: 1,
+            active_tenants: 1,
+            nodes: 1,
+            active_nodes: 1,
+            tenant_policies: 1,
+            ..RelayAdminResult::new(
+                conu_core::relay::RelayAdminAction::TenantNodeUpsert,
+                "upserted",
+            )
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_admin_tenant_text(&result, "ws://127.0.0.1:8787"),
+            render_admin_tenant_json(&result, "ws://127.0.0.1:8787"),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("tenant"));
+            assert!(output.contains("upserted"));
+            assert!(output.contains("token"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("signing.key.1"));
+            assert!(!output.contains("exchange.key.1"));
             assert!(!output.contains("BEGIN PRIVATE KEY"));
             assert!(!output.contains("payload-body"));
             assert!(!output.contains("ciphertext_body"));
