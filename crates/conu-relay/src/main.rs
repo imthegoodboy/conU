@@ -6537,6 +6537,9 @@ fn parse_credentials(value: &str) -> Result<Vec<RelayCredential>, String> {
 mod tests {
     use super::*;
     use conu_relay::HostedTenantStatus;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn abuse_threshold_policy_contents(thresholds: &str) -> String {
         format!(
@@ -6545,13 +6548,14 @@ mod tests {
     }
 
     fn write_abuse_threshold_policy_file(contents: &str) -> PathBuf {
+        let counter = TEST_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock before epoch")
             .as_nanos();
         let path = env::temp_dir().join(format!(
-            "conu-relay-abuse-threshold-policy-{}-{nanos}.toml",
-            std::process::id()
+            "conu-relay-abuse-threshold-policy-{}-{nanos}-{counter}.toml",
+            std::process::id(),
         ));
         fs::write(&path, contents).expect("write abuse threshold policy file");
         path
@@ -6564,13 +6568,14 @@ mod tests {
     }
 
     fn write_mailbox_retention_policy_file(contents: &str) -> PathBuf {
+        let counter = TEST_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock before epoch")
             .as_nanos();
         let path = env::temp_dir().join(format!(
-            "conu-relay-mailbox-retention-policy-{}-{nanos}.toml",
-            std::process::id()
+            "conu-relay-mailbox-retention-policy-{}-{nanos}-{counter}.toml",
+            std::process::id(),
         ));
         fs::write(&path, contents).expect("write mailbox retention policy file");
         path
