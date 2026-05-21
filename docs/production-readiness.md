@@ -37,7 +37,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Replay protection for local message request and envelope ids.
 - Rust SDK for local agent registration, messaging, receive, peer, security, and stream calls.
 - Python stdlib wrapper SDK around installed `conu` and `conud` binaries.
-- TypeScript/JavaScript stdlib-free Node wrapper SDK around installed `conu`, `conud`, and `conu-mcp` binaries, including explicit addressed-agent payload receive.
+- TypeScript/JavaScript stdlib-free Node wrapper SDK around installed `conu`, `conud`, and `conu-mcp` binaries, including explicit addressed-agent payload receive and a fail-closed browser export boundary.
 - MCP stdio adapter exposing conU as JSON-RPC tools for MCP-capable agents.
 - `conu doctor` local readiness and payload-safe log scanner.
 - Payload-safe local log rotation through `conu logs rotate`, with active and rotated logs covered by doctor scanning.
@@ -72,6 +72,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Room membership remains the compatibility boundary for unconfigured room topics. `conu rooms policy`, SDK calls, and MCP tools can configure metadata-only per-topic publish/subscribe grants; once any policy exists for a room/topic, that topic requires explicit publisher and subscriber grants.
 - Pairing is local trust-store groundwork, not full cross-machine rendezvous.
 - MCP is stdio-only. HTTP MCP transport, auth, and remote MCP hosting are intentionally not implemented.
+- Browser-native TypeScript protocol support is intentionally not implemented. The current `@conu/sdk` package is a Node wrapper, and browser-conditioned imports expose only a safe unsupported stub until hosted auth, browser transport, and key-handling rules are designed.
 - Packaging is unsigned and local-first. Code signing, notarization, package-manager publishing, and auto-update are not implemented.
 - The npm launcher template is present, but `@conu/cli` should only be published after GitHub Release archives and checksum files exist for the supported platforms.
 - The Docker relay template runs the current relay with scoped credentials or a live-reloaded hashed credential manifest, configurable connection/frame-rate caps, metadata-only accounting, idle/TTL session policy, durable ciphertext mailbox directory, and non-loopback token guard. The client supports `wss://`, but the relay server itself still needs TLS termination in front of it for public operation, and managed hosted account auth is not implemented.
@@ -83,6 +84,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Real direct QUIC transport with peer authentication and NAT traversal.
 - Hosted multi-tenant room permission administration beyond the current local room topic policy file.
 - Multi-tenant hosted SDK/MCP permission administration beyond the current local peer policy file.
+- Browser-native TypeScript protocol support beyond the current fail-closed Node-wrapper package boundary.
 - Native non-Windows OS-backed private key and relay credential storage beyond the current user-managed wrap-key fallback.
 - Signed installer/package publishing for Windows, macOS, and Linux.
 - Published npm package backed by verified release checksums.

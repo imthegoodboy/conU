@@ -170,6 +170,7 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - `CONU_AGENT_ID` may bind one `conu-mcp` server to one local agent; bound servers must not act as another agent.
 - Python SDK wrappers should pass payload bytes through stdin and avoid printing/logging payloads.
 - TypeScript SDK wrappers should pass payload bytes through stdin, avoid printing/logging payloads, keep wrapper responses on metadata-only CLI JSON surfaces, and pass `npm run check --prefix sdk/typescript`.
+- `@conu/sdk` is currently a Node.js local-binary wrapper, not a browser-native protocol package. Browser-conditioned exports must fail closed without accepting relay tokens, private keys, endpoint secrets, or payload bytes. Do not add browser-native transport until hosted auth, browser key handling, and relay credential semantics are designed.
 - SDK/MCP remote send helpers must queue peer-encrypted bytes and return metadata only. Relay sync helpers report counters only.
 
 ## Packaging And Release Rules

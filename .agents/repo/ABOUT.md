@@ -52,6 +52,7 @@ Implemented so far:
 - Python stdlib wrapper SDK under `sdk/python`
 - TypeScript/JavaScript wrapper SDK under `sdk/typescript`
 - explicit TypeScript addressed-agent receive helpers backed by MCP `conu_receive_message`
+- fail-closed browser export boundary for `@conu/sdk`; browser-native protocol support remains future work
 - local examples for Rust, Python, and TypeScript agents
 - local pairing invitation creation through `conu pair`
 - local pairing join/trust creation through `conu join <code>`
@@ -112,6 +113,7 @@ Current important files:
 - `docs/direct-transport-and-routes.md`: Phase 13 route manager, config, and privacy boundary.
 - `docs/internet-relay-test.md`: current relay-backed remote message smoke test.
 - `docs/distribution-and-hosting.md`: how users install conU, how npm packaging should publish native binaries, and how to self-host the current relay.
+- `docs/browser-native-typescript.md`: browser boundary and future browser-native TypeScript protocol requirements.
 - `docs/release-checklist.md`: Phase 15 release gate.
 - `docs/observability.md`: payload-safe observability policy.
 - `packaging/README.md`: install, npm launcher, Docker relay, and service templates.

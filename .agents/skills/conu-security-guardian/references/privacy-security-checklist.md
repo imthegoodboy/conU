@@ -6,6 +6,7 @@
 - CLI does not print payload text.
 - SDK and MCP list/send/status/stream/room outputs do not print payload text.
 - TypeScript/JavaScript SDK payload helpers pass bytes through stdin and do not put payload contents in argv, logs, or wrapper output.
+- Browser-conditioned TypeScript SDK exports must fail closed until browser-native transport exists; they must not accept private keys, relay tokens, endpoint secrets, payload bytes, or account credentials.
 - Logs do not include payload text.
 - Metrics do not include payload text.
 - Route registry, probe history, and route logs include only metadata.

@@ -1,5 +1,23 @@
 import assert from "node:assert/strict";
 import { ConuClient, ConuError } from "../src/index.js";
+import {
+  BrowserUnsupportedError,
+  ConuClient as BrowserConuClient,
+  browserSupport,
+} from "../src/browser.js";
+
+assert.deepEqual(browserSupport, {
+  supported: false,
+  packageKind: "node-wrapper",
+  reason:
+    "@conu/sdk currently wraps local conu/conud/conu-mcp binaries and is not browser-native.",
+  safeNextStep:
+    "Use @conu/sdk from Node.js, or wait for a future browser-native protocol package.",
+  contentsDisplayed: false,
+});
+assert.throws(() => new BrowserConuClient(), BrowserUnsupportedError);
+assert.ok(!browserSupport.reason.includes("token"));
+assert.ok(!browserSupport.reason.includes("payload"));
 
 const calls = [];
 const client = new ConuClient({
