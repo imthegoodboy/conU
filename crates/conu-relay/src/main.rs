@@ -100,7 +100,7 @@ fn main() -> ExitCode {
         }
         Some("--admin-abuse-threshold-report") => {
             match admin_abuse_threshold_report_from_args(args.collect()) {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(status) => status.exit_code(),
                 Err(error) => {
                     eprintln!("conU relay failed: {error}");
                     ExitCode::from(2)
@@ -222,7 +222,7 @@ fn main() -> ExitCode {
         },
         Some("--abuse-threshold-report") => {
             match abuse_threshold_report_from_args(args.collect()) {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(status) => status.exit_code(),
                 Err(error) => {
                     eprintln!("conU relay failed: {error}");
                     ExitCode::from(2)
@@ -303,7 +303,7 @@ Usage:
   conu-relay --admin-revoke-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-audit-credentials --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
   conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]
-  conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] --max-<metric> <count>... [--json]
+  conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] --max-<metric> <count>... [--json] [--fail-on-threshold]
   conu-relay --admin-tenant-upsert <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-tenant-revoke <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-tenant-node-upsert <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
@@ -319,7 +319,7 @@ Usage:
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
-  conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] --max-<metric> <count>... [--json]
+  conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] --max-<metric> <count>... [--json] [--fail-on-threshold]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--json]
   conu-relay --mailbox-purge --mailbox-dir <path> --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
@@ -376,7 +376,9 @@ audit reads durable mailbox timestamps and file sizes only, manual and admin mai
 dry-run or explicit confirmation, and scheduled mailbox purge requires an explicit local interval
 plus CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted dashboard
 snapshots combine configured credential, tenant, accounting, and abuse summaries without displaying
-tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids."
+tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids.
+Abuse threshold reports preserve stdout report output and return exit code 3 only when
+--fail-on-threshold is set and one or more configured thresholds are exceeded."
     );
 }
 
@@ -1109,7 +1111,35 @@ fn admin_dashboard_usage() -> String {
     "usage: conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]".to_string()
 }
 
-fn admin_abuse_threshold_report_from_args(args: Vec<String>) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AbuseThresholdReportExit {
+    Success,
+    ThresholdExceeded,
+}
+
+impl AbuseThresholdReportExit {
+    fn exit_code(self) -> ExitCode {
+        match self {
+            Self::Success => ExitCode::SUCCESS,
+            Self::ThresholdExceeded => ExitCode::from(3),
+        }
+    }
+}
+
+fn abuse_threshold_report_exit(
+    report: &AbuseThresholdReport,
+    fail_on_threshold: bool,
+) -> AbuseThresholdReportExit {
+    if fail_on_threshold && report.threshold_exceeded > 0 {
+        AbuseThresholdReportExit::ThresholdExceeded
+    } else {
+        AbuseThresholdReportExit::Success
+    }
+}
+
+fn admin_abuse_threshold_report_from_args(
+    args: Vec<String>,
+) -> Result<AbuseThresholdReportExit, String> {
     let parsed = parse_admin_abuse_threshold_report_args(args)?;
     let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
     let request = RelayAdminRequest::dashboard(
@@ -1133,7 +1163,10 @@ fn admin_abuse_threshold_report_from_args(args: Vec<String>) -> Result<(), Strin
     } else {
         println!("{}", render_abuse_threshold_report_text(&report));
     }
-    Ok(())
+    Ok(abuse_threshold_report_exit(
+        &report,
+        parsed.fail_on_threshold,
+    ))
 }
 
 #[derive(Debug)]
@@ -1144,6 +1177,7 @@ struct AdminAbuseThresholdReportArgs {
     admin_token_stdin: bool,
     thresholds: AbuseThresholds,
     json: bool,
+    fail_on_threshold: bool,
 }
 
 fn parse_admin_abuse_threshold_report_args(
@@ -1155,6 +1189,7 @@ fn parse_admin_abuse_threshold_report_args(
     let mut admin_token_stdin = false;
     let mut thresholds = AbuseThresholds::default();
     let mut json = false;
+    let mut fail_on_threshold = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -1185,6 +1220,7 @@ fn parse_admin_abuse_threshold_report_args(
             }
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
+            "--fail-on-threshold" => fail_on_threshold = true,
             "--help" | "-h" => return Err(admin_abuse_threshold_report_usage()),
             value if value.starts_with("--max-") => {
                 index += 1;
@@ -1216,11 +1252,12 @@ fn parse_admin_abuse_threshold_report_args(
         admin_token_stdin,
         thresholds,
         json,
+        fail_on_threshold,
     })
 }
 
 fn admin_abuse_threshold_report_usage() -> String {
-    "usage: conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] --max-<metric> <count>... [--json]".to_string()
+    "usage: conu-relay --admin-abuse-threshold-report --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] --max-<metric> <count>... [--json] [--fail-on-threshold]".to_string()
 }
 
 fn admin_tenant_upsert_from_args(args: Vec<String>) -> Result<(), String> {
@@ -3102,7 +3139,7 @@ fn abuse_audit_usage() -> String {
     "usage: conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]".to_string()
 }
 
-fn abuse_threshold_report_from_args(args: Vec<String>) -> Result<(), String> {
+fn abuse_threshold_report_from_args(args: Vec<String>) -> Result<AbuseThresholdReportExit, String> {
     let parsed = parse_abuse_threshold_report_args(args)?;
     let audit = audit_relay_abuse_dir(&parsed.abuse_dir, parsed.node_id.as_deref())
         .map_err(|error| error.to_string())?;
@@ -3113,7 +3150,10 @@ fn abuse_threshold_report_from_args(args: Vec<String>) -> Result<(), String> {
     } else {
         println!("{}", render_abuse_threshold_report_text(&report));
     }
-    Ok(())
+    Ok(abuse_threshold_report_exit(
+        &report,
+        parsed.fail_on_threshold,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3194,6 +3234,7 @@ struct AbuseThresholdReportArgs {
     node_id: Option<String>,
     thresholds: AbuseThresholds,
     json: bool,
+    fail_on_threshold: bool,
 }
 
 fn parse_abuse_threshold_report_args(
@@ -3203,6 +3244,7 @@ fn parse_abuse_threshold_report_args(
     let mut node_id = None::<String>;
     let mut thresholds = AbuseThresholds::default();
     let mut json = false;
+    let mut fail_on_threshold = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -3222,6 +3264,7 @@ fn parse_abuse_threshold_report_args(
                 node_id = Some(validate_dashboard_filter_id(value.to_string(), "node id")?);
             }
             "--json" => json = true,
+            "--fail-on-threshold" => fail_on_threshold = true,
             "--help" | "-h" => return Err(abuse_threshold_report_usage()),
             value if value.starts_with("--max-") => {
                 index += 1;
@@ -3248,11 +3291,12 @@ fn parse_abuse_threshold_report_args(
         node_id,
         thresholds,
         json,
+        fail_on_threshold,
     })
 }
 
 fn abuse_threshold_report_usage() -> String {
-    "usage: conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] --max-<metric> <count>... [--json]".to_string()
+    "usage: conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] --max-<metric> <count>... [--json] [--fail-on-threshold]".to_string()
 }
 
 fn parse_abuse_threshold_option(
@@ -5608,6 +5652,7 @@ mod tests {
             "--max-mailbox-rejected-forwards".to_string(),
             "2".to_string(),
             "--json".to_string(),
+            "--fail-on-threshold".to_string(),
         ])
         .expect("abuse threshold report args parse");
         assert_eq!(parsed.abuse_dir, PathBuf::from("abuse"));
@@ -5616,6 +5661,7 @@ mod tests {
         assert_eq!(parsed.thresholds.credential_denied_sessions, Some(1));
         assert_eq!(parsed.thresholds.mailbox_rejected_forwards, Some(2));
         assert!(parsed.json);
+        assert!(parsed.fail_on_threshold);
         assert!(parse_abuse_threshold_report_args(Vec::new()).is_err());
         assert!(
             parse_abuse_threshold_report_args(
@@ -5675,6 +5721,20 @@ mod tests {
         assert_eq!(report.threshold_checks, 3);
         assert_eq!(report.threshold_exceeded, 1);
         assert_eq!(abuse_threshold_status(&report), "threshold_exceeded");
+        assert_eq!(
+            abuse_threshold_report_exit(&report, true),
+            AbuseThresholdReportExit::ThresholdExceeded
+        );
+        assert_eq!(
+            abuse_threshold_report_exit(&report, false),
+            AbuseThresholdReportExit::Success
+        );
+        let mut report_within_thresholds = report.clone();
+        report_within_thresholds.threshold_exceeded = 0;
+        assert_eq!(
+            abuse_threshold_report_exit(&report_within_thresholds, true),
+            AbuseThresholdReportExit::Success
+        );
 
         let secret_token = "relay-secret-token";
         let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -5976,6 +6036,7 @@ mod tests {
             "--max-rate-limited-sessions".to_string(),
             "4".to_string(),
             "--json".to_string(),
+            "--fail-on-threshold".to_string(),
         ])
         .expect("admin abuse threshold report args parse");
         assert_eq!(parsed.relay, "ws://127.0.0.1:8787");
@@ -5985,6 +6046,7 @@ mod tests {
         assert_eq!(parsed.thresholds.admin_failed, Some(0));
         assert_eq!(parsed.thresholds.rate_limited_sessions, Some(4));
         assert!(parsed.json);
+        assert!(parsed.fail_on_threshold);
         assert!(parse_admin_abuse_threshold_report_args(Vec::new()).is_err());
         assert!(
             parse_admin_abuse_threshold_report_args(vec![
@@ -6044,6 +6106,14 @@ mod tests {
         assert_eq!(report.threshold_checks, 2);
         assert_eq!(report.threshold_exceeded, 1);
         assert_eq!(abuse_threshold_status(&report), "threshold_exceeded");
+        assert_eq!(
+            abuse_threshold_report_exit(&report, true),
+            AbuseThresholdReportExit::ThresholdExceeded
+        );
+        assert_eq!(
+            abuse_threshold_report_exit(&report, false),
+            AbuseThresholdReportExit::Success
+        );
 
         let secret_token = "relay-secret-token";
         let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
