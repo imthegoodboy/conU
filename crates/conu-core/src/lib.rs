@@ -2,6 +2,8 @@
 
 pub mod agents;
 pub mod messages;
+pub mod observability;
+pub mod policy;
 pub mod relay;
 pub mod relay_delivery;
 pub mod rooms;

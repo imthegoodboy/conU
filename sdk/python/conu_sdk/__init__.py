@@ -60,8 +60,69 @@ class ConuClient:
     def agents(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "agents", "--json")
 
+    def export_agent_card(self, agent_id: str) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "agents", "export", agent_id, "--json")
+
+    def trust_agent_card(self, card: dict[str, Any]) -> dict[str, Any]:
+        capabilities = card.get("capabilities", {})
+        args = [
+            "agents",
+            "trust",
+            str(card["agentId"]),
+            str(card["displayName"]),
+            "--node",
+            str(card["nodeId"]),
+            "--kind",
+            str(card.get("kind", "remote-agent")),
+            "--signing-key",
+            str(card["signingPublicKeyHex"]),
+            "--signature",
+            str(card["signatureHex"]),
+            "--signature-key-id",
+            str(card["signatureKeyId"]),
+            "--signature-algorithm",
+            str(card.get("signatureAlgorithm", "Ed25519")),
+            "--messages",
+            _bool_arg(_card_bool(capabilities, "messages", True)),
+            "--streams",
+            _bool_arg(_card_bool(capabilities, "streams", False)),
+            "--rooms",
+            _bool_arg(_card_bool(capabilities, "rooms", False)),
+            "--files",
+            _bool_arg(_card_bool(capabilities, "files", False)),
+            "--presence",
+            _bool_arg(_card_bool(capabilities, "presence", True)),
+            "--json",
+        ]
+        return self._run_json(self.conu_bin, *args)
+
     def peers(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "peers", "--json")
+
+    def peer_policies(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "peers", "policy", "--json")
+
+    def set_peer_policy(
+        self,
+        peer_node_id: str,
+        messages: bool | None = None,
+        streams: bool | None = None,
+        rooms: bool | None = None,
+        files: bool | None = None,
+        mailbox: bool | None = None,
+    ) -> dict[str, Any]:
+        args = ["peers", "policy", peer_node_id, "--json"]
+        if messages is not None:
+            args.extend(["--messages", _bool_arg(messages)])
+        if streams is not None:
+            args.extend(["--streams", _bool_arg(streams)])
+        if rooms is not None:
+            args.extend(["--rooms", _bool_arg(rooms)])
+        if files is not None:
+            args.extend(["--files", _bool_arg(files)])
+        if mailbox is not None:
+            args.extend(["--mailbox", _bool_arg(mailbox)])
+        return self._run_json(self.conu_bin, *args)
 
     def identity_export(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "identity", "export", "--json")
@@ -72,6 +133,10 @@ class ConuClient:
         display_name: str,
         exchange_public_key_hex: str,
         relay_endpoint: str | None = None,
+        signing_public_key_hex: str | None = None,
+        signature_hex: str | None = None,
+        signature_key_id: str | None = None,
+        signature_algorithm: str | None = None,
     ) -> dict[str, Any]:
         args = [
             "peers",
@@ -84,6 +149,14 @@ class ConuClient:
         ]
         if relay_endpoint is not None:
             args.extend(["--relay", relay_endpoint])
+        if signing_public_key_hex is not None:
+            args.extend(["--signing-key", signing_public_key_hex])
+        if signature_hex is not None:
+            args.extend(["--signature", signature_hex])
+        if signature_key_id is not None:
+            args.extend(["--signature-key-id", signature_key_id])
+        if signature_algorithm is not None:
+            args.extend(["--signature-algorithm", signature_algorithm])
         return self._run_json(self.conu_bin, *args)
 
     def sync_routes(self) -> dict[str, Any]:
@@ -112,6 +185,11 @@ class ConuClient:
         agent_id: str,
         display_name: str,
         kind: str = "local-agent",
+        messages: bool = True,
+        streams: bool = False,
+        rooms: bool = False,
+        files: bool = False,
+        presence: bool = True,
     ) -> dict[str, Any]:
         return self._run_json(
             self.conu_bin,
@@ -121,6 +199,16 @@ class ConuClient:
             display_name,
             "--kind",
             kind,
+            "--messages",
+            _bool_arg(messages),
+            "--streams",
+            _bool_arg(streams),
+            "--rooms",
+            _bool_arg(rooms),
+            "--files",
+            _bool_arg(files),
+            "--presence",
+            _bool_arg(presence),
             "--json",
         )
 
@@ -217,6 +305,24 @@ class ConuClient:
             "--json",
             input_bytes=payload,
         )
+
+    def room_topic_policies(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "rooms", "policy", "--json")
+
+    def set_room_topic_policy(
+        self,
+        room_id: str,
+        agent_id: str,
+        topic: str,
+        publish: bool | None = None,
+        subscribe: bool | None = None,
+    ) -> dict[str, Any]:
+        args = ["rooms", "policy", room_id, agent_id, topic, "--json"]
+        if publish is not None:
+            args.extend(["--publish", _bool_arg(publish)])
+        if subscribe is not None:
+            args.extend(["--subscribe", _bool_arg(subscribe)])
+        return self._run_json(self.conu_bin, *args)
 
     def connect_local(
         self,
@@ -329,6 +435,17 @@ class ConuClient:
         if completed.returncode != 0:
             raise ConuError(f"conU command failed ({completed.returncode}): {' '.join(argv)}")
         return result
+
+
+def _bool_arg(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _card_bool(values: Any, key: str, default: bool) -> bool:
+    if not isinstance(values, dict):
+        return default
+    value = values.get(key, default)
+    return value if isinstance(value, bool) else default
 
 
 __all__ = ["CommandResult", "ConuClient", "ConuError"]

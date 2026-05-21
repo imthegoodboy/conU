@@ -12,6 +12,8 @@ use std::net::TcpStream;
 use std::process;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use native_tls::{HandshakeError, TlsConnector, TlsStream};
+
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_HTTP_HEADER_BYTES: usize = 8192;
 const MAX_FRAME_BYTES: usize = 256 * 1024;
@@ -47,6 +49,7 @@ impl std::error::Error for RelayFrameError {}
 pub struct RelayHello {
     pub node_id: String,
     pub auth_token: String,
+    pub resume_session_id: Option<String>,
 }
 
 impl RelayHello {
@@ -57,16 +60,27 @@ impl RelayHello {
         Ok(Self {
             node_id: validate_identifier(node_id.into(), "node id")?,
             auth_token: validate_token(auth_token.into())?,
+            resume_session_id: None,
         })
+    }
+
+    pub fn with_resume_session_id(
+        mut self,
+        resume_session_id: impl Into<String>,
+    ) -> Result<Self, RelayFrameError> {
+        self.resume_session_id = Some(validate_session_id(resume_session_id.into())?);
+        Ok(self)
     }
 }
 
 impl fmt::Debug for RelayHello {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let resume_session_id = self.resume_session_id.as_ref().map(|_| "<redacted>");
         formatter
             .debug_struct("RelayHello")
             .field("node_id", &self.node_id)
             .field("auth_token", &"<redacted>")
+            .field("resume_session_id", &resume_session_id)
             .finish()
     }
 }
@@ -76,6 +90,8 @@ impl fmt::Debug for RelayHello {
 pub struct RelayForward {
     pub to_node_id: String,
     pub envelope_id: String,
+    pub kind: RelayEnvelopeKind,
+    pub stream_id: Option<String>,
     pub payload_bytes: usize,
     pub from_agent_id: Option<String>,
     pub to_agent_id: Option<String>,
@@ -91,6 +107,8 @@ impl RelayForward {
         Ok(Self {
             to_node_id: validate_identifier(to_node_id.into(), "to node id")?,
             envelope_id: validate_identifier(envelope_id.into(), "envelope id")?,
+            kind: RelayEnvelopeKind::Message,
+            stream_id: None,
             payload_bytes,
             from_agent_id: None,
             to_agent_id: None,
@@ -109,6 +127,70 @@ impl RelayForward {
         Ok(Self {
             to_node_id: validate_identifier(to_node_id.into(), "to node id")?,
             envelope_id: validate_identifier(envelope_id.into(), "envelope id")?,
+            kind: RelayEnvelopeKind::Message,
+            stream_id: None,
+            from_agent_id: Some(validate_identifier(from_agent_id.into(), "from agent id")?),
+            to_agent_id: Some(validate_identifier(to_agent_id.into(), "to agent id")?),
+            payload_bytes,
+            body: Some(body),
+        })
+    }
+
+    pub fn with_stream_body(
+        stream_id: impl Into<String>,
+        to_node_id: impl Into<String>,
+        envelope_id: impl Into<String>,
+        from_agent_id: impl Into<String>,
+        to_agent_id: impl Into<String>,
+        payload_bytes: usize,
+        body: RelayOpaqueBody,
+    ) -> Result<Self, RelayFrameError> {
+        let stream_id = validate_identifier(stream_id.into(), "stream id")?;
+
+        Ok(Self {
+            to_node_id: validate_identifier(to_node_id.into(), "to node id")?,
+            envelope_id: validate_identifier(envelope_id.into(), "envelope id")?,
+            kind: RelayEnvelopeKind::StreamChunk,
+            stream_id: Some(stream_id),
+            from_agent_id: Some(validate_identifier(from_agent_id.into(), "from agent id")?),
+            to_agent_id: Some(validate_identifier(to_agent_id.into(), "to agent id")?),
+            payload_bytes,
+            body: Some(body),
+        })
+    }
+
+    pub fn with_agent_card_body(
+        to_node_id: impl Into<String>,
+        envelope_id: impl Into<String>,
+        from_agent_id: impl Into<String>,
+        payload_bytes: usize,
+        body: RelayOpaqueBody,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            to_node_id: validate_identifier(to_node_id.into(), "to node id")?,
+            envelope_id: validate_identifier(envelope_id.into(), "envelope id")?,
+            kind: RelayEnvelopeKind::AgentCard,
+            stream_id: None,
+            from_agent_id: Some(validate_identifier(from_agent_id.into(), "from agent id")?),
+            to_agent_id: Some("conu.discovery".to_string()),
+            payload_bytes,
+            body: Some(body),
+        })
+    }
+
+    pub fn with_room_event_body(
+        to_node_id: impl Into<String>,
+        envelope_id: impl Into<String>,
+        from_agent_id: impl Into<String>,
+        to_agent_id: impl Into<String>,
+        payload_bytes: usize,
+        body: RelayOpaqueBody,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            to_node_id: validate_identifier(to_node_id.into(), "to node id")?,
+            envelope_id: validate_identifier(envelope_id.into(), "envelope id")?,
+            kind: RelayEnvelopeKind::RoomEvent,
+            stream_id: None,
             from_agent_id: Some(validate_identifier(from_agent_id.into(), "from agent id")?),
             to_agent_id: Some(validate_identifier(to_agent_id.into(), "to agent id")?),
             payload_bytes,
@@ -123,11 +205,43 @@ impl fmt::Debug for RelayForward {
             .debug_struct("RelayForward")
             .field("to_node_id", &self.to_node_id)
             .field("envelope_id", &self.envelope_id)
+            .field("kind", &self.kind)
+            .field("stream_id", &self.stream_id)
             .field("payload_bytes", &self.payload_bytes)
             .field("from_agent_id", &self.from_agent_id)
             .field("to_agent_id", &self.to_agent_id)
             .field("body", &self.body)
             .finish()
+    }
+}
+
+/// Opaque envelope kind carried over the blind relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayEnvelopeKind {
+    Message,
+    StreamChunk,
+    AgentCard,
+    RoomEvent,
+}
+
+impl RelayEnvelopeKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::StreamChunk => "stream_chunk",
+            Self::AgentCard => "agent_card",
+            Self::RoomEvent => "room_event",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self, RelayFrameError> {
+        match value {
+            "message" => Ok(Self::Message),
+            "stream_chunk" => Ok(Self::StreamChunk),
+            "agent_card" => Ok(Self::AgentCard),
+            "room_event" => Ok(Self::RoomEvent),
+            _ => Err(RelayFrameError::new("unsupported relay envelope kind")),
+        }
     }
 }
 
@@ -180,8 +294,22 @@ impl fmt::Debug for RelayOpaqueBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayClientFrame {
     Hello(RelayHello),
-    Forward(RelayForward),
+    Forward(Box<RelayForward>),
     Ping,
+}
+
+/// Relay-forwarded opaque envelope metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayForwarded {
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub envelope_id: String,
+    pub kind: RelayEnvelopeKind,
+    pub stream_id: Option<String>,
+    pub payload_bytes: usize,
+    pub from_agent_id: Option<String>,
+    pub to_agent_id: Option<String>,
+    pub body: Option<RelayOpaqueBody>,
 }
 
 /// Relay frames sent back to runtimes.
@@ -189,16 +317,9 @@ pub enum RelayClientFrame {
 pub enum RelayServerFrame {
     Welcome {
         session_id: String,
+        resumed: bool,
     },
-    Forwarded {
-        from_node_id: String,
-        to_node_id: String,
-        envelope_id: String,
-        payload_bytes: usize,
-        from_agent_id: Option<String>,
-        to_agent_id: Option<String>,
-        body: Option<RelayOpaqueBody>,
-    },
+    Forwarded(Box<RelayForwarded>),
     Sent {
         to_node_id: String,
         envelope_id: String,
@@ -218,11 +339,17 @@ pub enum RelayServerFrame {
 /// Render a client frame as a compact metadata line.
 pub fn render_client_frame(frame: &RelayClientFrame) -> String {
     match frame {
-        RelayClientFrame::Hello(hello) => format!(
-            "HELLO node={} token={} payload=not_observed",
-            hello.node_id, hello.auth_token
-        ),
-        RelayClientFrame::Forward(forward) => render_forward_line("FORWARD", None, forward),
+        RelayClientFrame::Hello(hello) => {
+            let mut line = format!("HELLO node={} token={}", hello.node_id, hello.auth_token);
+            if let Some(resume_session_id) = &hello.resume_session_id {
+                line.push_str(&format!(" resume={resume_session_id}"));
+            }
+            line.push_str(" payload=not_observed");
+            line
+        }
+        RelayClientFrame::Forward(forward) => {
+            render_forward_line("FORWARD", None, forward.as_ref())
+        }
         RelayClientFrame::Ping => "PING payload=not_observed".to_string(),
     }
 }
@@ -237,18 +364,23 @@ pub fn parse_client_frame(line: &str) -> Result<RelayClientFrame, RelayFrameErro
     }
 
     match kind {
-        "HELLO" => Ok(RelayClientFrame::Hello(RelayHello::new(
-            required(&values, "node")?,
-            required(&values, "token")?,
-        )?)),
-        "FORWARD" => Ok(RelayClientFrame::Forward(
+        "HELLO" => {
+            let mut hello =
+                RelayHello::new(required(&values, "node")?, required(&values, "token")?)?;
+            if let Some(resume_session_id) = values.get("resume") {
+                hello = hello.with_resume_session_id(resume_session_id.clone())?;
+            }
+            Ok(RelayClientFrame::Hello(hello))
+        }
+        "FORWARD" => Ok(RelayClientFrame::Forward(Box::new(
             RelayForward::new(
                 required(&values, "to")?,
                 required(&values, "envelope")?,
                 parse_usize(&required(&values, "bytes")?)?,
             )?
+            .with_kind_and_stream_from_values(&values)?
             .with_optional_body(&values)?,
-        )),
+        ))),
         "PING" => Ok(RelayClientFrame::Ping),
         _ => Err(RelayFrameError::new("unsupported client frame type")),
     }
@@ -257,26 +389,14 @@ pub fn parse_client_frame(line: &str) -> Result<RelayClientFrame, RelayFrameErro
 /// Render a relay server frame.
 pub fn render_server_frame(frame: &RelayServerFrame) -> String {
     match frame {
-        RelayServerFrame::Welcome { session_id } => {
-            format!("WELCOME session={} payload=not_observed", session_id)
-        }
-        RelayServerFrame::Forwarded {
-            from_node_id,
-            to_node_id,
-            envelope_id,
-            payload_bytes,
-            from_agent_id,
-            to_agent_id,
-            body,
-        } => render_forwarded_line(
-            from_node_id,
-            to_node_id,
-            envelope_id,
-            *payload_bytes,
-            from_agent_id.as_deref(),
-            to_agent_id.as_deref(),
-            body.as_ref(),
+        RelayServerFrame::Welcome {
+            session_id,
+            resumed,
+        } => format!(
+            "WELCOME session={} resumed={} payload=not_observed",
+            session_id, resumed
         ),
+        RelayServerFrame::Forwarded(forwarded) => render_forwarded_line(forwarded.as_ref()),
         RelayServerFrame::Sent {
             to_node_id,
             envelope_id,
@@ -316,19 +436,25 @@ pub fn parse_server_frame(line: &str) -> Result<RelayServerFrame, RelayFrameErro
 
     match kind {
         "WELCOME" => Ok(RelayServerFrame::Welcome {
-            session_id: required(&values, "session")?,
+            session_id: validate_session_id(required(&values, "session")?)?,
+            resumed: optional_bool(&values, "resumed")?.unwrap_or(false),
         }),
         "ENVELOPE" => {
             let body = optional_body(&values)?;
-            Ok(RelayServerFrame::Forwarded {
+            let kind = relay_kind_from_values(&values)?;
+            let stream_id = optional_identifier(&values, "stream", "stream id")?;
+            validate_kind_stream(kind, stream_id.as_deref())?;
+            Ok(RelayServerFrame::Forwarded(Box::new(RelayForwarded {
                 from_node_id: validate_identifier(required(&values, "from")?, "from node id")?,
                 to_node_id: validate_identifier(required(&values, "to")?, "to node id")?,
                 envelope_id: validate_identifier(required(&values, "envelope")?, "envelope id")?,
+                kind,
+                stream_id,
                 payload_bytes: parse_usize(&required(&values, "bytes")?)?,
                 from_agent_id: optional_identifier(&values, "from_agent", "from agent id")?,
                 to_agent_id: optional_identifier(&values, "to_agent", "to agent id")?,
                 body,
-            })
+            })))
         }
         "SENT" => Ok(RelayServerFrame::Sent {
             to_node_id: validate_identifier(required(&values, "to")?, "to node id")?,
@@ -348,15 +474,28 @@ pub fn parse_server_frame(line: &str) -> Result<RelayServerFrame, RelayFrameErro
     }
 }
 
-/// Minimal std-only WebSocket client for runtime-to-relay sync.
+trait RelayStream: Read + Write {}
+
+impl<T> RelayStream for T where T: Read + Write {}
+
+/// Minimal WebSocket client for runtime-to-relay sync.
 pub struct RelayWebSocketClient {
-    stream: TcpStream,
+    stream: Box<dyn RelayStream>,
+}
+
+impl fmt::Debug for RelayWebSocketClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RelayWebSocketClient")
+            .field("stream", &"<websocket>")
+            .finish()
+    }
 }
 
 impl RelayWebSocketClient {
     pub fn connect(endpoint: &str, timeout: Duration) -> Result<Self, RelayFrameError> {
         let parsed = ParsedEndpoint::parse(endpoint)?;
-        let mut stream = TcpStream::connect((&parsed.host[..], parsed.port))
+        let stream = TcpStream::connect((&parsed.host[..], parsed.port))
             .map_err(|error| RelayFrameError::io("connect relay endpoint", error))?;
         stream
             .set_read_timeout(Some(timeout))
@@ -364,17 +503,21 @@ impl RelayWebSocketClient {
         stream
             .set_write_timeout(Some(timeout))
             .map_err(|error| RelayFrameError::io("configure relay write timeout", error))?;
-        perform_client_handshake(&mut stream, &parsed)?;
+        let mut stream: Box<dyn RelayStream> = match parsed.scheme {
+            RelayScheme::Ws => Box::new(stream),
+            RelayScheme::Wss => Box::new(connect_tls(&parsed.host, stream)?),
+        };
+        perform_client_handshake(stream.as_mut(), &parsed)?;
 
         Ok(Self { stream })
     }
 
     pub fn send(&mut self, frame: &RelayClientFrame) -> Result<(), RelayFrameError> {
-        write_client_text_frame(&mut self.stream, &render_client_frame(frame))
+        write_client_text_frame(self.stream.as_mut(), &render_client_frame(frame))
     }
 
     pub fn read(&mut self) -> Result<Option<RelayServerFrame>, RelayFrameError> {
-        let Some(text) = read_server_text_frame(&mut self.stream)? else {
+        let Some(text) = read_server_text_frame(self.stream.as_mut())? else {
             return Ok(None);
         };
         parse_server_frame(&text).map(Some)
@@ -382,6 +525,16 @@ impl RelayWebSocketClient {
 }
 
 impl RelayForward {
+    fn with_kind_and_stream_from_values(
+        mut self,
+        values: &HashMap<String, String>,
+    ) -> Result<Self, RelayFrameError> {
+        self.kind = relay_kind_from_values(values)?;
+        self.stream_id = optional_identifier(values, "stream", "stream id")?;
+        validate_kind_stream(self.kind, self.stream_id.as_deref())?;
+        Ok(self)
+    }
+
     fn with_optional_body(
         mut self,
         values: &HashMap<String, String>,
@@ -404,17 +557,25 @@ impl RelayForward {
 fn render_forward_line(kind: &str, from_node: Option<&str>, forward: &RelayForward) -> String {
     let mut line = match from_node {
         Some(from_node) => format!(
-            "{kind} from={} to={} envelope={} bytes={}",
-            from_node, forward.to_node_id, forward.envelope_id, forward.payload_bytes
+            "{kind} from={} to={} envelope={} kind={} bytes={}",
+            from_node,
+            forward.to_node_id,
+            forward.envelope_id,
+            forward.kind.as_str(),
+            forward.payload_bytes
         ),
         None => format!(
-            "{kind} to={} envelope={} bytes={}",
-            forward.to_node_id, forward.envelope_id, forward.payload_bytes
+            "{kind} to={} envelope={} kind={} bytes={}",
+            forward.to_node_id,
+            forward.envelope_id,
+            forward.kind.as_str(),
+            forward.payload_bytes
         ),
     };
 
     append_forward_body(
         &mut line,
+        forward.stream_id.as_deref(),
         forward.from_agent_id.as_deref(),
         forward.to_agent_id.as_deref(),
         forward.body.as_ref(),
@@ -422,29 +583,36 @@ fn render_forward_line(kind: &str, from_node: Option<&str>, forward: &RelayForwa
     line
 }
 
-fn render_forwarded_line(
-    from_node_id: &str,
-    to_node_id: &str,
-    envelope_id: &str,
-    payload_bytes: usize,
-    from_agent_id: Option<&str>,
-    to_agent_id: Option<&str>,
-    body: Option<&RelayOpaqueBody>,
-) -> String {
+fn render_forwarded_line(forwarded: &RelayForwarded) -> String {
     let mut line = format!(
-        "ENVELOPE from={} to={} envelope={} bytes={}",
-        from_node_id, to_node_id, envelope_id, payload_bytes
+        "ENVELOPE from={} to={} envelope={} kind={} bytes={}",
+        forwarded.from_node_id,
+        forwarded.to_node_id,
+        forwarded.envelope_id,
+        forwarded.kind.as_str(),
+        forwarded.payload_bytes
     );
-    append_forward_body(&mut line, from_agent_id, to_agent_id, body);
+    append_forward_body(
+        &mut line,
+        forwarded.stream_id.as_deref(),
+        forwarded.from_agent_id.as_deref(),
+        forwarded.to_agent_id.as_deref(),
+        forwarded.body.as_ref(),
+    );
     line
 }
 
 fn append_forward_body(
     line: &mut String,
+    stream_id: Option<&str>,
     from_agent_id: Option<&str>,
     to_agent_id: Option<&str>,
     body: Option<&RelayOpaqueBody>,
 ) {
+    if let Some(stream_id) = stream_id {
+        line.push_str(&format!(" stream={stream_id}"));
+    }
+
     if let Some(body) = body {
         line.push_str(&format!(
             " from_agent={} to_agent={} cipher={} key={} sender_key={} nonce={} body={} payload=peer_encrypted",
@@ -458,6 +626,37 @@ fn append_forward_body(
         ));
     } else {
         line.push_str(" payload=opaque");
+    }
+}
+
+fn relay_kind_from_values(
+    values: &HashMap<String, String>,
+) -> Result<RelayEnvelopeKind, RelayFrameError> {
+    values
+        .get("kind")
+        .map(String::as_str)
+        .map(RelayEnvelopeKind::from_str)
+        .unwrap_or(Ok(RelayEnvelopeKind::Message))
+}
+
+fn validate_kind_stream(
+    kind: RelayEnvelopeKind,
+    stream_id: Option<&str>,
+) -> Result<(), RelayFrameError> {
+    match (kind, stream_id) {
+        (RelayEnvelopeKind::StreamChunk, None) => Err(RelayFrameError::new(
+            "stream chunk frames require stream id",
+        )),
+        (RelayEnvelopeKind::Message, Some(_)) => Err(RelayFrameError::new(
+            "message frames must not include stream id",
+        )),
+        (RelayEnvelopeKind::AgentCard, Some(_)) => Err(RelayFrameError::new(
+            "agent card frames must not include stream id",
+        )),
+        (RelayEnvelopeKind::RoomEvent, Some(_)) => Err(RelayFrameError::new(
+            "room event frames must not include stream id",
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -486,6 +685,18 @@ fn optional_identifier(
         .get(key)
         .map(|value| validate_identifier(value.clone(), field))
         .transpose()
+}
+
+fn optional_bool(
+    values: &HashMap<String, String>,
+    key: &'static str,
+) -> Result<Option<bool>, RelayFrameError> {
+    match values.get(key).map(String::as_str) {
+        None => Ok(None),
+        Some("true") => Ok(Some(true)),
+        Some("false") => Ok(Some(false)),
+        Some(_) => Err(RelayFrameError::new(format!("{key} must be true or false"))),
+    }
 }
 
 fn parse_frame_values(line: &str) -> Result<(&str, HashMap<String, String>), RelayFrameError> {
@@ -531,6 +742,25 @@ fn validate_identifier(value: String, field: &'static str) -> Result<String, Rel
         return Err(RelayFrameError::new(format!(
             "{field} must use ASCII letters, numbers, dash, underscore, or dot"
         )));
+    }
+    Ok(value)
+}
+
+fn validate_session_id(value: String) -> Result<String, RelayFrameError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(RelayFrameError::new("session id cannot be empty"));
+    }
+    if value.len() > 180 {
+        return Err(RelayFrameError::new("session id is too long"));
+    }
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return Err(RelayFrameError::new(
+            "session id must use ASCII letters, numbers, dash, underscore, or dot",
+        ));
     }
     Ok(value)
 }
@@ -600,21 +830,29 @@ fn sanitize_reason(reason: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedEndpoint {
+    scheme: RelayScheme,
     host: String,
     port: u16,
     path: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayScheme {
+    Ws,
+    Wss,
+}
+
 impl ParsedEndpoint {
     fn parse(endpoint: &str) -> Result<Self, RelayFrameError> {
-        if endpoint.starts_with("wss://") {
+        let (scheme, rest, default_port) = if let Some(rest) = endpoint.strip_prefix("ws://") {
+            (RelayScheme::Ws, rest, 80)
+        } else if let Some(rest) = endpoint.strip_prefix("wss://") {
+            (RelayScheme::Wss, rest, 443)
+        } else {
             return Err(RelayFrameError::new(
-                "wss relay endpoints need a TLS terminator; this std client supports ws://",
+                "relay endpoint must start with ws:// or wss://",
             ));
-        }
-        let rest = endpoint
-            .strip_prefix("ws://")
-            .ok_or_else(|| RelayFrameError::new("relay endpoint must start with ws://"))?;
+        };
         let (authority, path) = match rest.split_once('/') {
             Some((authority, path)) => (authority, format!("/{path}")),
             None => (rest, "/relay".to_string()),
@@ -625,7 +863,7 @@ impl ParsedEndpoint {
                 port.parse::<u16>()
                     .map_err(|_| RelayFrameError::new("relay endpoint port is invalid"))?,
             ),
-            None => (authority.trim().to_string(), 80),
+            None => (authority.trim().to_string(), default_port),
         };
 
         if host.is_empty() || host.chars().any(char::is_whitespace) {
@@ -635,7 +873,12 @@ impl ParsedEndpoint {
             return Err(RelayFrameError::new("relay endpoint path is invalid"));
         }
 
-        Ok(Self { host, port, path })
+        Ok(Self {
+            scheme,
+            host,
+            port,
+            path,
+        })
     }
 
     fn authority(&self) -> String {
@@ -643,8 +886,22 @@ impl ParsedEndpoint {
     }
 }
 
+fn connect_tls(host: &str, stream: TcpStream) -> Result<TlsStream<TcpStream>, RelayFrameError> {
+    let connector = TlsConnector::new()
+        .map_err(|error| RelayFrameError::new(format!("configure relay TLS: {error}")))?;
+    match connector.connect(host, stream) {
+        Ok(stream) => Ok(stream),
+        Err(HandshakeError::Failure(error)) => {
+            Err(RelayFrameError::new(format!("connect relay TLS: {error}")))
+        }
+        Err(HandshakeError::WouldBlock(_)) => Err(RelayFrameError::new(
+            "connect relay TLS: handshake would block",
+        )),
+    }
+}
+
 fn perform_client_handshake(
-    stream: &mut TcpStream,
+    stream: &mut dyn RelayStream,
     endpoint: &ParsedEndpoint,
 ) -> Result<(), RelayFrameError> {
     let key = websocket_key();
@@ -673,7 +930,7 @@ fn perform_client_handshake(
     Ok(())
 }
 
-fn read_http_response(stream: &mut TcpStream) -> Result<String, RelayFrameError> {
+fn read_http_response(stream: &mut dyn RelayStream) -> Result<String, RelayFrameError> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 1];
 
@@ -704,12 +961,15 @@ fn header_value(response: &str, header: &str) -> Option<String> {
     })
 }
 
-fn write_client_text_frame(stream: &mut TcpStream, text: &str) -> Result<(), RelayFrameError> {
+fn write_client_text_frame(
+    stream: &mut dyn RelayStream,
+    text: &str,
+) -> Result<(), RelayFrameError> {
     write_client_raw_frame(stream, 0x1, text.as_bytes())
 }
 
 fn write_client_raw_frame(
-    stream: &mut TcpStream,
+    stream: &mut dyn RelayStream,
     opcode: u8,
     payload: &[u8],
 ) -> Result<(), RelayFrameError> {
@@ -737,7 +997,7 @@ fn write_client_raw_frame(
         .map_err(|error| RelayFrameError::io("write websocket frame", error))
 }
 
-fn read_server_text_frame(stream: &mut TcpStream) -> Result<Option<String>, RelayFrameError> {
+fn read_server_text_frame(stream: &mut dyn RelayStream) -> Result<Option<String>, RelayFrameError> {
     let mut header = [0_u8; 2];
     match stream.read_exact(&mut header) {
         Ok(()) => {}
@@ -955,15 +1215,123 @@ mod tests {
     }
 
     #[test]
-    fn forward_frame_is_metadata_only() {
-        let frame = RelayClientFrame::Forward(
-            RelayForward::new("node.b", "env.1", 42).expect("valid forward"),
+    fn hello_resume_round_trips_without_debug_leak() {
+        let session_id = "relay_node.a_123";
+        let frame = RelayClientFrame::Hello(
+            RelayHello::new("node.a", "secret-token")
+                .expect("valid hello")
+                .with_resume_session_id(session_id)
+                .expect("resume id"),
         );
+        let rendered = render_client_frame(&frame);
+        let parsed = parse_client_frame(&rendered).expect("hello parses");
+        let debug = format!("{frame:?}");
+
+        assert!(rendered.contains("resume=relay_node.a_123"));
+        assert!(rendered.contains("payload=not_observed"));
+        assert_eq!(parsed, frame);
+        assert!(!debug.contains("secret-token"));
+        assert!(!debug.contains(session_id));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn welcome_resume_round_trips_with_legacy_default() {
+        let frame = RelayServerFrame::Welcome {
+            session_id: "relay_node.a_123".to_string(),
+            resumed: true,
+        };
+        let rendered = render_server_frame(&frame);
+        let parsed = parse_server_frame(&rendered).expect("welcome parses");
+        let legacy = parse_server_frame("WELCOME session=relay_node.a_456 payload=not_observed")
+            .expect("legacy welcome parses");
+
+        assert!(rendered.contains("resumed=true"));
+        assert_eq!(parsed, frame);
+        assert_eq!(
+            legacy,
+            RelayServerFrame::Welcome {
+                session_id: "relay_node.a_456".to_string(),
+                resumed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn forward_frame_is_metadata_only() {
+        let frame = RelayClientFrame::Forward(Box::new(
+            RelayForward::new("node.b", "env.1", 42).expect("valid forward"),
+        ));
         let rendered = render_client_frame(&frame);
         let parsed = parse_client_frame(&rendered).expect("frame parses");
 
         assert!(rendered.contains("payload=opaque"));
         assert!(!rendered.contains("private message contents"));
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn stream_chunk_frame_carries_stream_metadata_only() {
+        let body =
+            RelayOpaqueBody::new("xchacha20poly1305", "key.1", "aa", "bb", "cc").expect("body");
+        let frame = RelayClientFrame::Forward(Box::new(
+            RelayForward::with_stream_body(
+                "stream.1", "node.b", "env.1", "agent.a", "agent.b", 18, body,
+            )
+            .expect("stream frame"),
+        ));
+        let rendered = render_client_frame(&frame);
+        let parsed = parse_client_frame(&rendered).expect("frame parses");
+
+        assert!(rendered.contains("kind=stream_chunk"));
+        assert!(rendered.contains("stream=stream.1"));
+        assert!(rendered.contains("payload=peer_encrypted"));
+        assert!(!rendered.contains("private stream chunk"));
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn agent_card_frame_carries_ciphertext_only() {
+        let body =
+            RelayOpaqueBody::new("xchacha20poly1305", "key.1", "aa", "bb", "cc").expect("body");
+        let frame = RelayClientFrame::Forward(Box::new(
+            RelayForward::with_agent_card_body("node.b", "env.card.1", "agent.a", 128, body)
+                .expect("agent card frame"),
+        ));
+        let rendered = render_client_frame(&frame);
+        let parsed = parse_client_frame(&rendered).expect("frame parses");
+
+        assert!(rendered.contains("kind=agent_card"));
+        assert!(rendered.contains("to_agent=conu.discovery"));
+        assert!(rendered.contains("payload=peer_encrypted"));
+        assert!(!rendered.contains("conu-agent-card-v1"));
+        assert!(!rendered.contains("signature_hex"));
+        assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn room_event_frame_carries_ciphertext_only() {
+        let body =
+            RelayOpaqueBody::new("xchacha20poly1305", "key.1", "aa", "bb", "cc").expect("body");
+        let frame = RelayClientFrame::Forward(Box::new(
+            RelayForward::with_room_event_body(
+                "node.b",
+                "room.env.1",
+                "agent.a",
+                "agent.b",
+                128,
+                body,
+            )
+            .expect("room event frame"),
+        ));
+        let rendered = render_client_frame(&frame);
+        let parsed = parse_client_frame(&rendered).expect("frame parses");
+
+        assert!(rendered.contains("kind=room_event"));
+        assert!(rendered.contains("payload=peer_encrypted"));
+        assert!(!rendered.contains("room.dev"));
+        assert!(!rendered.contains("build"));
+        assert!(!rendered.contains("private room event"));
         assert_eq!(parsed, frame);
     }
 
@@ -974,5 +1342,35 @@ mod tests {
 
         assert!(error.to_string().contains("must not include"));
         assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn endpoint_parser_accepts_wss_with_default_port() {
+        let endpoint =
+            ParsedEndpoint::parse("wss://relay.example.com/conu").expect("wss endpoint parses");
+
+        assert_eq!(endpoint.scheme, RelayScheme::Wss);
+        assert_eq!(endpoint.host, "relay.example.com");
+        assert_eq!(endpoint.port, 443);
+        assert_eq!(endpoint.path, "/conu");
+        assert_eq!(endpoint.authority(), "relay.example.com:443");
+    }
+
+    #[test]
+    fn endpoint_parser_accepts_ws_with_default_port() {
+        let endpoint = ParsedEndpoint::parse("ws://relay.example.com").expect("ws endpoint parses");
+
+        assert_eq!(endpoint.scheme, RelayScheme::Ws);
+        assert_eq!(endpoint.host, "relay.example.com");
+        assert_eq!(endpoint.port, 80);
+        assert_eq!(endpoint.path, "/relay");
+    }
+
+    #[test]
+    fn endpoint_parser_rejects_non_websocket_schemes() {
+        let error = ParsedEndpoint::parse("https://relay.example.com")
+            .expect_err("non websocket endpoint fails");
+
+        assert!(error.to_string().contains("ws:// or wss://"));
     }
 }

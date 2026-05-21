@@ -172,11 +172,15 @@ impl RuntimeLease {
     /// Sleep and heartbeat until a stop request appears.
     pub fn serve_until_stop(&self, heartbeat_every: Duration) -> Result<(), RuntimeError> {
         let mut next_relay_attempt = Instant::now();
+        let mut relay_pump = relay_delivery::RelayRuntimePump::new();
 
         while !self.stop_requested() {
             self.heartbeat()?;
             if Instant::now() >= next_relay_attempt {
-                let report = self.process_once(Duration::from_millis(RELAY_PUMP_WAIT_MS))?;
+                let report = self.process_once_with_relay_pump(
+                    Duration::from_millis(RELAY_PUMP_WAIT_MS),
+                    &mut relay_pump,
+                )?;
                 if report.relay_error {
                     next_relay_attempt =
                         Instant::now() + Duration::from_secs(RELAY_PUMP_ERROR_BACKOFF_SECS);
@@ -235,6 +239,38 @@ impl RuntimeLease {
         Ok(())
     }
 
+    fn process_once_with_relay_pump(
+        &self,
+        relay_wait: Duration,
+        relay_pump: &mut relay_delivery::RelayRuntimePump,
+    ) -> Result<RuntimeProcessReport, RuntimeError> {
+        let agent_report =
+            agents::process_gateway_requests_from_paths(&self.paths, &self.node.node_id)
+                .map_err(RuntimeError::Agent)?;
+        let message_report = messages::process_message_requests_from_paths(&self.paths)
+            .map_err(RuntimeError::Message)?;
+        let session_report = sessions::sync_remote_sessions_from_paths(&self.paths)
+            .map_err(RuntimeError::Session)?;
+        let mut report = RuntimeProcessReport {
+            agents_processed: agent_report.processed,
+            agents_rejected: agent_report.rejected,
+            messages_delivered: message_report.delivered,
+            messages_rejected: message_report.rejected,
+            sessions_synced: session_report.sessions_synced,
+            remote_agents_synced: session_report.remote_agents_synced,
+            relay_attempted: false,
+            relay_connected: false,
+            relay_sent: 0,
+            relay_received: 0,
+            relay_undelivered: 0,
+            relay_rejected: 0,
+            relay_error: false,
+        };
+
+        self.pump_relay_persistent(&mut report, relay_pump, relay_wait)?;
+        Ok(report)
+    }
+
     fn pump_relay_once(
         &self,
         report: &mut RuntimeProcessReport,
@@ -281,6 +317,62 @@ impl RuntimeLease {
             Ok(false) => {}
             Err(_) => {
                 report.relay_error = true;
+                append_log(
+                    &self.paths,
+                    "relay_pump_retry",
+                    self.pid,
+                    &self.node.node_id,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn pump_relay_persistent(
+        &self,
+        report: &mut RuntimeProcessReport,
+        relay_pump: &mut relay_delivery::RelayRuntimePump,
+        wait: Duration,
+    ) -> Result<(), RuntimeError> {
+        match relay_delivery::relay_runtime_should_sync_from_paths(&self.paths) {
+            Ok(true) => {
+                report.relay_attempted = true;
+                match relay_pump.tick_from_paths(&self.paths, &self.node.node_id, wait) {
+                    Ok(relay_report) => {
+                        report.relay_connected = relay_report.connected;
+                        report.relay_sent = relay_report.sent;
+                        report.relay_received = relay_report.received;
+                        report.relay_undelivered = relay_report.undelivered;
+                        report.relay_rejected = relay_report.rejected;
+                        if relay_report.sent > 0
+                            || relay_report.received > 0
+                            || relay_report.undelivered > 0
+                            || relay_report.rejected > 0
+                        {
+                            append_log(
+                                &self.paths,
+                                "relay_pump_activity",
+                                self.pid,
+                                &self.node.node_id,
+                            )?;
+                        }
+                    }
+                    Err(_) => {
+                        report.relay_error = true;
+                        append_log(
+                            &self.paths,
+                            "relay_pump_retry",
+                            self.pid,
+                            &self.node.node_id,
+                        )?;
+                    }
+                }
+            }
+            Ok(false) => relay_pump.disconnect(),
+            Err(_) => {
+                report.relay_error = true;
+                relay_pump.disconnect();
                 append_log(
                     &self.paths,
                     "relay_pump_retry",

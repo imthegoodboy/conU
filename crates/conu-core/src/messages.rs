@@ -73,6 +73,8 @@ pub struct InboxEntry {
     pub envelope_id: String,
     pub from_agent_id: String,
     pub to_agent_id: String,
+    pub kind: String,
+    pub stream_id: Option<String>,
     pub receipt_id: String,
     pub delivered_at_unix: u64,
     pub payload_bytes: usize,
@@ -85,6 +87,8 @@ pub struct DeliveryReceipt {
     pub envelope_id: String,
     pub from_agent_id: String,
     pub to_agent_id: String,
+    pub kind: String,
+    pub stream_id: Option<String>,
     pub status: String,
     pub delivered_at_unix: u64,
     pub payload_bytes: usize,
@@ -297,7 +301,7 @@ pub fn deliver_remote_envelope_from_paths(
     let from_agent_id = validate_identifier(from_agent_id.to_string(), "from agent id")?;
     let to_agent_id = validate_identifier(to_agent_id.to_string(), "to agent id")?;
     validate_payload_size(payload.len())?;
-    validate_local_recipient_can_receive(paths, &to_agent_id)?;
+    validate_local_recipient_can_receive_messages(paths, &to_agent_id)?;
 
     let envelope = Envelope::new(
         &envelope_id,
@@ -309,6 +313,40 @@ pub fn deliver_remote_envelope_from_paths(
 
     security::record_replay_id_from_paths(paths, &envelope_id, "relay_envelope")?;
     deliver_envelope_with_status(paths, envelope, "delivered_relay")
+}
+
+/// Deliver a peer-decrypted remote stream chunk to a local addressed agent inbox.
+pub fn deliver_remote_stream_chunk_from_paths(
+    paths: &StatePaths,
+    envelope_id: &str,
+    stream_id: &str,
+    from_agent_id: &str,
+    to_agent_id: &str,
+    payload: OpaquePayload,
+) -> Result<InboxEntry, MessageError> {
+    let envelope_id = validate_identifier(envelope_id.to_string(), "envelope id")?;
+    let stream_id = validate_identifier(stream_id.to_string(), "stream id")?;
+    let from_agent_id = validate_identifier(from_agent_id.to_string(), "from agent id")?;
+    let to_agent_id = validate_identifier(to_agent_id.to_string(), "to agent id")?;
+    validate_payload_size(payload.len())?;
+    validate_local_recipient_can_receive_streams(paths, &to_agent_id)?;
+
+    let mut envelope = Envelope::new(
+        &envelope_id,
+        AgentId::new(from_agent_id)?,
+        AgentId::new(to_agent_id)?,
+        EnvelopeKind::StreamChunk,
+        payload,
+    )?;
+    envelope.meta.stream_id = Some(stream_id.clone());
+
+    security::record_replay_id_from_paths(paths, &envelope_id, "relay_stream_chunk")?;
+    deliver_envelope_with_status_and_stream(
+        paths,
+        envelope,
+        "delivered_relay_stream",
+        Some(stream_id),
+    )
 }
 
 /// Deliver an opaque room event to a local subscribed agent inbox.
@@ -323,7 +361,7 @@ pub fn deliver_room_event_from_paths(
     let from_agent_id = validate_identifier(from_agent_id.to_string(), "from agent id")?;
     let to_agent_id = validate_identifier(to_agent_id.to_string(), "to agent id")?;
     validate_payload_size(payload.len())?;
-    validate_local_recipient_can_receive(paths, &to_agent_id)?;
+    validate_local_recipient_can_receive_rooms(paths, &to_agent_id)?;
 
     let envelope = Envelope::new(
         &envelope_id,
@@ -447,9 +485,47 @@ fn validate_agents_can_message(
     Ok(())
 }
 
-fn validate_local_recipient_can_receive(
+fn validate_local_recipient_can_receive_messages(
     paths: &StatePaths,
     to_agent_id: &str,
+) -> Result<(), MessageError> {
+    validate_local_recipient_capability(
+        paths,
+        to_agent_id,
+        |recipient| recipient.capabilities.messages,
+        "recipient is not allowed to receive messages",
+    )
+}
+
+fn validate_local_recipient_can_receive_streams(
+    paths: &StatePaths,
+    to_agent_id: &str,
+) -> Result<(), MessageError> {
+    validate_local_recipient_capability(
+        paths,
+        to_agent_id,
+        |recipient| recipient.capabilities.streams,
+        "recipient is not allowed to receive stream chunks",
+    )
+}
+
+fn validate_local_recipient_can_receive_rooms(
+    paths: &StatePaths,
+    to_agent_id: &str,
+) -> Result<(), MessageError> {
+    validate_local_recipient_capability(
+        paths,
+        to_agent_id,
+        |recipient| recipient.capabilities.rooms,
+        "recipient is not allowed to receive room events",
+    )
+}
+
+fn validate_local_recipient_capability(
+    paths: &StatePaths,
+    to_agent_id: &str,
+    allowed: impl FnOnce(&agents::LocalAgentRecord) -> bool,
+    denied_reason: &'static str,
 ) -> Result<(), MessageError> {
     let registered = agents::list_local_agents(Some(paths.home.clone()))?;
     let recipient = registered
@@ -459,9 +535,9 @@ fn validate_local_recipient_can_receive(
             reason: "recipient is not a registered local agent".to_string(),
         })?;
 
-    if !recipient.capabilities.messages {
+    if !allowed(recipient) {
         return Err(MessageError::InvalidRequest {
-            reason: "recipient is not allowed to receive messages".to_string(),
+            reason: denied_reason.to_string(),
         });
     }
 
@@ -472,6 +548,15 @@ fn deliver_envelope_with_status(
     paths: &StatePaths,
     envelope: Envelope,
     status: &str,
+) -> Result<InboxEntry, MessageError> {
+    deliver_envelope_with_status_and_stream(paths, envelope, status, None)
+}
+
+fn deliver_envelope_with_status_and_stream(
+    paths: &StatePaths,
+    envelope: Envelope,
+    status: &str,
+    stream_id: Option<String>,
 ) -> Result<InboxEntry, MessageError> {
     let now = current_unix_seconds();
     let receipt_id = request_id("rcpt");
@@ -490,6 +575,8 @@ fn deliver_envelope_with_status(
         envelope_id: envelope.id.clone(),
         from_agent_id: envelope.from.as_str().to_string(),
         to_agent_id: envelope.to.as_str().to_string(),
+        kind: envelope_kind_label(envelope.kind).to_string(),
+        stream_id,
         receipt_id,
         delivered_at_unix: now,
         payload_bytes: envelope.payload.len(),
@@ -497,7 +584,12 @@ fn deliver_envelope_with_status(
     let encrypted = security::encrypt_for_storage_from_paths(
         paths,
         envelope.payload.as_bytes(),
-        &message_envelope_aad(&entry.envelope_id, &entry.from_agent_id, &entry.to_agent_id),
+        &message_envelope_storage_aad(
+            &entry.envelope_id,
+            &entry.from_agent_id,
+            &entry.to_agent_id,
+            entry.stream_id.as_deref(),
+        ),
     )?;
     let envelope_path = inbox_dir.join(format!("{}.env", entry.envelope_id));
     write_new_file(
@@ -510,6 +602,8 @@ fn deliver_envelope_with_status(
         envelope_id: entry.envelope_id.clone(),
         from_agent_id: entry.from_agent_id.clone(),
         to_agent_id: entry.to_agent_id.clone(),
+        kind: entry.kind.clone(),
+        stream_id: entry.stream_id.clone(),
         status: status.to_string(),
         delivered_at_unix: now,
         payload_bytes: entry.payload_bytes,
@@ -627,6 +721,17 @@ fn read_inbox_entry(path: &Path) -> Result<InboxEntry, MessageError> {
         envelope_id: validate_identifier(required(&values, "envelope_id")?, "envelope id")?,
         from_agent_id: validate_identifier(required(&values, "from_agent_id")?, "from agent id")?,
         to_agent_id: validate_identifier(required(&values, "to_agent_id")?, "to agent id")?,
+        kind: validate_identifier(
+            values
+                .get("kind")
+                .cloned()
+                .unwrap_or_else(|| "message".to_string()),
+            "envelope kind",
+        )?,
+        stream_id: values
+            .get("stream_id")
+            .map(|value| validate_identifier(value.clone(), "stream id"))
+            .transpose()?,
         receipt_id: validate_identifier(required(&values, "receipt_id")?, "receipt id")?,
         delivered_at_unix: parse_u64(&required(&values, "delivered_at_unix")?)?,
         payload_bytes: parse_usize(&required(&values, "payload_len")?)?,
@@ -643,6 +748,17 @@ fn read_receipt(path: &Path) -> Result<DeliveryReceipt, MessageError> {
         envelope_id: validate_identifier(required(&values, "envelope_id")?, "envelope id")?,
         from_agent_id: validate_identifier(required(&values, "from_agent_id")?, "from agent id")?,
         to_agent_id: validate_identifier(required(&values, "to_agent_id")?, "to agent id")?,
+        kind: validate_identifier(
+            values
+                .get("kind")
+                .cloned()
+                .unwrap_or_else(|| "message".to_string()),
+            "envelope kind",
+        )?,
+        stream_id: values
+            .get("stream_id")
+            .map(|value| validate_identifier(value.clone(), "stream id"))
+            .transpose()?,
         status: required(&values, "status")?,
         delivered_at_unix: parse_u64(&required(&values, "delivered_at_unix")?)?,
         payload_bytes: parse_usize(&required(&values, "payload_len")?)?,
@@ -681,13 +797,38 @@ fn message_envelope_aad(envelope_id: &str, from_agent_id: &str, to_agent_id: &st
     format!("conu:message-envelope:v1:{envelope_id}:{from_agent_id}:{to_agent_id}").into_bytes()
 }
 
+fn message_stream_envelope_aad(
+    envelope_id: &str,
+    from_agent_id: &str,
+    to_agent_id: &str,
+    stream_id: &str,
+) -> Vec<u8> {
+    format!("conu:stream-envelope:v1:{envelope_id}:{from_agent_id}:{to_agent_id}:{stream_id}")
+        .into_bytes()
+}
+
+fn message_envelope_storage_aad(
+    envelope_id: &str,
+    from_agent_id: &str,
+    to_agent_id: &str,
+    stream_id: Option<&str>,
+) -> Vec<u8> {
+    match stream_id {
+        Some(stream_id) => {
+            message_stream_envelope_aad(envelope_id, from_agent_id, to_agent_id, stream_id)
+        }
+        None => message_envelope_aad(envelope_id, from_agent_id, to_agent_id),
+    }
+}
+
 fn message_envelope_aad_from_values(
     values: &HashMap<String, String>,
 ) -> Result<Vec<u8>, MessageError> {
-    Ok(message_envelope_aad(
+    Ok(message_envelope_storage_aad(
         &required(values, "envelope_id")?,
         &required(values, "from_agent_id")?,
         &required(values, "to_agent_id")?,
+        values.get("stream_id").map(String::as_str),
     ))
 }
 
@@ -715,13 +856,20 @@ fn render_envelope_file(
     kind: EnvelopeKind,
     encrypted: &EncryptedPayload,
 ) -> String {
+    let stream_line = entry
+        .stream_id
+        .as_deref()
+        .map(|stream_id| format!("stream_id = \"{}\"\n", escape_file_value(stream_id)))
+        .unwrap_or_default();
+
     format!(
-        "version = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nkind = \"{}\"\nreceipt_id = \"{}\"\ndelivered_at_unix = {}\npayload_len = {}\npayload_privacy = \"encrypted_at_rest\"\npayload_cipher = \"{}\"\npayload_key_id = \"{}\"\npayload_nonce_hex = \"{}\"\npayload_ciphertext_hex = \"{}\"\n",
+        "version = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nkind = \"{}\"\n{}receipt_id = \"{}\"\ndelivered_at_unix = {}\npayload_len = {}\npayload_privacy = \"encrypted_at_rest\"\npayload_cipher = \"{}\"\npayload_key_id = \"{}\"\npayload_nonce_hex = \"{}\"\npayload_ciphertext_hex = \"{}\"\n",
         PROTOCOL_VERSION,
         escape_file_value(&entry.envelope_id),
         escape_file_value(&entry.from_agent_id),
         escape_file_value(&entry.to_agent_id),
         envelope_kind_label(kind),
+        stream_line,
         escape_file_value(&entry.receipt_id),
         entry.delivered_at_unix,
         entry.payload_bytes,
@@ -742,13 +890,21 @@ fn envelope_kind_label(kind: EnvelopeKind) -> &'static str {
 }
 
 fn render_receipt(receipt: &DeliveryReceipt) -> String {
+    let stream_line = receipt
+        .stream_id
+        .as_deref()
+        .map(|stream_id| format!("stream_id = \"{}\"\n", escape_file_value(stream_id)))
+        .unwrap_or_default();
+
     format!(
-        "version = \"{}\"\nreceipt_id = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nstatus = \"{}\"\ndelivered_at_unix = {}\npayload_len = {}\npayload_displayed = false\n",
+        "version = \"{}\"\nreceipt_id = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nkind = \"{}\"\n{}status = \"{}\"\ndelivered_at_unix = {}\npayload_len = {}\npayload_displayed = false\n",
         REQUEST_VERSION,
         escape_file_value(&receipt.receipt_id),
         escape_file_value(&receipt.envelope_id),
         escape_file_value(&receipt.from_agent_id),
         escape_file_value(&receipt.to_agent_id),
+        escape_file_value(&receipt.kind),
+        stream_line,
         escape_file_value(&receipt.status),
         receipt.delivered_at_unix,
         receipt.payload_bytes
@@ -768,13 +924,20 @@ fn append_message_log(
         .create(true)
         .open(&log_path)
         .map_err(|error| MessageError::io("open message log", &log_path, error))?;
+    let stream_field = entry
+        .stream_id
+        .as_deref()
+        .map(|stream_id| format!(" stream={}", sanitize_log_value(stream_id)))
+        .unwrap_or_default();
 
     writeln!(
         file,
-        "time={} event=message_delivered status={} envelope={} from={} to={} bytes={} payload=not_observed",
+        "time={} event=envelope_delivered status={} envelope={} kind={}{} from={} to={} bytes={} payload=not_observed",
         current_unix_seconds(),
         sanitize_log_value(status),
         sanitize_log_value(&entry.envelope_id),
+        sanitize_log_value(&entry.kind),
+        stream_field,
         sanitize_log_value(&entry.from_agent_id),
         sanitize_log_value(&entry.to_agent_id),
         entry.payload_bytes
@@ -969,6 +1132,7 @@ fn current_unix_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use conu_protocol::AgentCapabilities;
 
     #[test]
     fn message_request_file_hides_literal_payload() {
@@ -1025,6 +1189,85 @@ mod tests {
         assert!(envelope_file.contains("payload_privacy = \"encrypted_at_rest\""));
         assert!(envelope_file.contains("payload_ciphertext_hex"));
         assert!(!envelope_file.contains("payload_hex"));
+    }
+
+    #[test]
+    fn remote_stream_chunk_delivers_kind_and_stream_metadata() {
+        let home = test_home("remote-stream-chunk");
+        let mut capabilities = AgentCapabilities::basic();
+        capabilities.streams = true;
+        register_agent_with_capabilities(&home, "agent.receiver", capabilities);
+        let paths = StatePaths::from_home(home.clone());
+
+        let entry = deliver_remote_stream_chunk_from_paths(
+            &paths,
+            "streamenv.1",
+            "stream.1",
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private stream chunk".to_vec()),
+        )
+        .expect("stream chunk delivers");
+        let inbox = list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let payload =
+            read_message_payload(Some(home.clone()), "agent.receiver", &entry.envelope_id)
+                .expect("payload reads");
+        let envelope_file = fs::read_to_string(
+            paths
+                .message_inbox_dir
+                .join("agent.receiver")
+                .join(format!("{}.env", entry.envelope_id)),
+        )
+        .expect("envelope file reads");
+
+        assert_eq!(entry.kind, "stream_chunk");
+        assert_eq!(entry.stream_id.as_deref(), Some("stream.1"));
+        assert_eq!(inbox[0].kind, "stream_chunk");
+        assert_eq!(inbox[0].stream_id.as_deref(), Some("stream.1"));
+        assert_eq!(payload.as_bytes(), b"private stream chunk");
+        assert!(envelope_file.contains("kind = \"stream_chunk\""));
+        assert!(envelope_file.contains("stream_id = \"stream.1\""));
+        assert!(envelope_file.contains("payload_ciphertext_hex"));
+        assert!(!envelope_file.contains("private stream chunk"));
+    }
+
+    #[test]
+    fn remote_stream_chunk_requires_stream_recipient_capability() {
+        let home = test_home("remote-stream-chunk-capability");
+        register_agent(&home, "agent.receiver");
+        let paths = StatePaths::from_home(home);
+
+        let error = deliver_remote_stream_chunk_from_paths(
+            &paths,
+            "streamenv.1",
+            "stream.1",
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private stream chunk".to_vec()),
+        )
+        .expect_err("stream chunk requires recipient capability");
+
+        assert!(error.to_string().contains("stream chunks"));
+        assert!(!error.to_string().contains("private stream chunk"));
+    }
+
+    #[test]
+    fn room_event_requires_room_recipient_capability() {
+        let home = test_home("room-event-capability");
+        register_agent(&home, "agent.receiver");
+        let paths = StatePaths::from_home(home);
+
+        let error = deliver_room_event_from_paths(
+            &paths,
+            "roomenv.1",
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private room event".to_vec()),
+        )
+        .expect_err("room event requires recipient capability");
+
+        assert!(error.to_string().contains("room events"));
+        assert!(!error.to_string().contains("private room event"));
     }
 
     #[test]
@@ -1117,6 +1360,21 @@ mod tests {
     fn register_agent(home: &Path, agent_id: &str) {
         let registration =
             agents::AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid agent");
+        register_agent_with_registration(home, registration);
+    }
+
+    fn register_agent_with_capabilities(
+        home: &Path,
+        agent_id: &str,
+        capabilities: AgentCapabilities,
+    ) {
+        let mut registration =
+            agents::AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid agent");
+        registration.capabilities = capabilities;
+        register_agent_with_registration(home, registration);
+    }
+
+    fn register_agent_with_registration(home: &Path, registration: agents::AgentRegistration) {
         agents::submit_registration(Some(home.to_path_buf()), registration)
             .expect("registration submits");
         agents::process_gateway_requests(Some(home.to_path_buf())).expect("registration processes");

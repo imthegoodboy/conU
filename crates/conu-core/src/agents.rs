@@ -108,6 +108,20 @@ pub struct LocalAgentRecord {
     pub signature_hex: Option<String>,
 }
 
+/// Public signed local agent card that can be imported by a trusted peer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedAgentCard {
+    pub agent_id: String,
+    pub display_name: String,
+    pub node_id: String,
+    pub kind: String,
+    pub capabilities: AgentCapabilities,
+    pub signature_algorithm: String,
+    pub signature_key_id: String,
+    pub signing_public_key_hex: String,
+    pub signature_hex: String,
+}
+
 /// Result of submitting an IPC-style request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewaySubmission {
@@ -286,6 +300,97 @@ pub fn agent_exists(home_override: Option<PathBuf>, agent_id: &str) -> Result<bo
         .any(|agent| agent.agent_id == agent_id))
 }
 
+/// Export a public signed local agent card for trusted-peer import.
+pub fn export_agent_card(
+    home_override: Option<PathBuf>,
+    agent_id: &str,
+) -> Result<SignedAgentCard, AgentError> {
+    let agent_id = validate_identifier(agent_id.to_string(), "agent id")?;
+    let agents = list_local_agents(home_override)?;
+    let agent = agents
+        .iter()
+        .find(|agent| agent.agent_id == agent_id)
+        .ok_or_else(|| AgentError::InvalidRequest {
+            reason: "agent is not registered locally".to_string(),
+        })?;
+    let card = signed_agent_card_from_record(agent)?;
+    if !verify_signed_agent_card(&card)? {
+        return Err(AgentError::InvalidRequest {
+            reason: "local agent card signature does not verify".to_string(),
+        });
+    }
+    Ok(card)
+}
+
+/// Export all public signed local agent cards.
+pub fn export_agent_cards(
+    home_override: Option<PathBuf>,
+) -> Result<Vec<SignedAgentCard>, AgentError> {
+    let agents = list_local_agents(home_override)?;
+    agents.iter().map(signed_agent_card_from_record).collect()
+}
+
+/// Render a signed agent card as metadata-only key/value text for encrypted
+/// control-plane exchange.
+pub fn render_signed_agent_card_metadata(card: &SignedAgentCard) -> String {
+    format!(
+        "version = \"1\"\ntype = \"signed_agent_card\"\nagent_id = \"{}\"\ndisplay_name = \"{}\"\nnode_id = \"{}\"\nkind = \"{}\"\ncap_messages = {}\ncap_streams = {}\ncap_rooms = {}\ncap_files = {}\ncap_presence = {}\nsignature_algorithm = \"{}\"\nsignature_key_id = \"{}\"\nsigning_public_key_hex = \"{}\"\nsignature_hex = \"{}\"\npayload_displayed = false\n",
+        escape_file_value(&card.agent_id),
+        escape_file_value(&card.display_name),
+        escape_file_value(&card.node_id),
+        escape_file_value(&card.kind),
+        card.capabilities.messages,
+        card.capabilities.streams,
+        card.capabilities.rooms,
+        card.capabilities.files,
+        card.capabilities.presence,
+        escape_file_value(&card.signature_algorithm),
+        escape_file_value(&card.signature_key_id),
+        escape_file_value(&card.signing_public_key_hex),
+        escape_file_value(&card.signature_hex)
+    )
+}
+
+/// Parse a signed agent card exchanged as encrypted control-plane metadata.
+pub fn parse_signed_agent_card_metadata(contents: &str) -> Result<SignedAgentCard, AgentError> {
+    let values = parse_key_values(contents);
+    if value_or_empty(&values, "version") != "1"
+        || value_or_empty(&values, "type") != "signed_agent_card"
+    {
+        return Err(AgentError::InvalidRequest {
+            reason: "unsupported signed agent card metadata".to_string(),
+        });
+    }
+
+    Ok(SignedAgentCard {
+        agent_id: validate_identifier(required(&values, "agent_id")?, "agent id")?,
+        display_name: validate_display_name(required(&values, "display_name")?)?,
+        node_id: validate_identifier(required(&values, "node_id")?, "node id")?,
+        kind: validate_kind(required(&values, "kind")?)?,
+        capabilities: AgentCapabilities {
+            messages: parse_bool(values.get("cap_messages")).unwrap_or(true),
+            streams: parse_bool(values.get("cap_streams")).unwrap_or(false),
+            rooms: parse_bool(values.get("cap_rooms")).unwrap_or(false),
+            files: parse_bool(values.get("cap_files")).unwrap_or(false),
+            presence: parse_bool(values.get("cap_presence")).unwrap_or(true),
+        },
+        signature_algorithm: validate_identifier(
+            required(&values, "signature_algorithm")?,
+            "signature algorithm",
+        )?,
+        signature_key_id: validate_identifier(
+            required(&values, "signature_key_id")?,
+            "signature key id",
+        )?,
+        signing_public_key_hex: validate_hex_value(
+            required(&values, "signing_public_key_hex")?,
+            "signing public key",
+            128,
+        )?,
+        signature_hex: validate_hex_value(required(&values, "signature_hex")?, "signature", 256)?,
+    })
+}
+
 /// Verify the persisted local agent-card signature.
 pub fn verify_local_agent_record(agent: &LocalAgentRecord) -> Result<bool, AgentError> {
     let Some(public_key_hex) = agent.signing_public_key_hex.as_deref() else {
@@ -299,6 +404,18 @@ pub fn verify_local_agent_record(agent: &LocalAgentRecord) -> Result<bool, Agent
         &canonical_agent_card(agent),
         public_key_hex,
         signature_hex,
+    )?)
+}
+
+/// Verify a public signed agent card.
+pub fn verify_signed_agent_card(card: &SignedAgentCard) -> Result<bool, AgentError> {
+    if card.signature_algorithm != security::AGENT_CARD_SIGNATURE_ALGORITHM {
+        return Ok(false);
+    }
+    Ok(security::verify_agent_card_signature(
+        &canonical_signed_agent_card(card),
+        &card.signing_public_key_hex,
+        &card.signature_hex,
     )?)
 }
 
@@ -420,18 +537,79 @@ fn sign_agent_record(paths: &StatePaths, agent: &mut LocalAgentRecord) -> Result
 }
 
 fn canonical_agent_card(agent: &LocalAgentRecord) -> String {
+    canonical_agent_card_fields(
+        &agent.agent_id,
+        &agent.display_name,
+        &agent.node_id,
+        &agent.kind,
+        &agent.capabilities,
+    )
+}
+
+fn canonical_signed_agent_card(card: &SignedAgentCard) -> String {
+    canonical_agent_card_fields(
+        &card.agent_id,
+        &card.display_name,
+        &card.node_id,
+        &card.kind,
+        &card.capabilities,
+    )
+}
+
+fn canonical_agent_card_fields(
+    agent_id: &str,
+    display_name: &str,
+    node_id: &str,
+    kind: &str,
+    capabilities: &AgentCapabilities,
+) -> String {
     format!(
         "conu-agent-card-v1\nagent_id={}\ndisplay_name={}\nnode_id={}\nkind={}\ncap_messages={}\ncap_streams={}\ncap_rooms={}\ncap_files={}\ncap_presence={}\n",
-        agent.agent_id,
-        agent.display_name,
-        agent.node_id,
-        agent.kind,
-        agent.capabilities.messages,
-        agent.capabilities.streams,
-        agent.capabilities.rooms,
-        agent.capabilities.files,
-        agent.capabilities.presence
+        agent_id,
+        display_name,
+        node_id,
+        kind,
+        capabilities.messages,
+        capabilities.streams,
+        capabilities.rooms,
+        capabilities.files,
+        capabilities.presence
     )
+}
+
+fn signed_agent_card_from_record(agent: &LocalAgentRecord) -> Result<SignedAgentCard, AgentError> {
+    let Some(signature_algorithm) = agent.signature_algorithm.clone() else {
+        return Err(AgentError::InvalidRequest {
+            reason: "agent card is missing signature algorithm".to_string(),
+        });
+    };
+    let Some(signature_key_id) = agent.signature_key_id.clone() else {
+        return Err(AgentError::InvalidRequest {
+            reason: "agent card is missing signature key id".to_string(),
+        });
+    };
+    let Some(signing_public_key_hex) = agent.signing_public_key_hex.clone() else {
+        return Err(AgentError::InvalidRequest {
+            reason: "agent card is missing signing public key".to_string(),
+        });
+    };
+    let Some(signature_hex) = agent.signature_hex.clone() else {
+        return Err(AgentError::InvalidRequest {
+            reason: "agent card is missing signature".to_string(),
+        });
+    };
+
+    Ok(SignedAgentCard {
+        agent_id: agent.agent_id.clone(),
+        display_name: agent.display_name.clone(),
+        node_id: agent.node_id.clone(),
+        kind: agent.kind.clone(),
+        capabilities: agent.capabilities.clone(),
+        signature_algorithm,
+        signature_key_id,
+        signing_public_key_hex,
+        signature_hex,
+    })
 }
 
 fn read_registry(paths: &StatePaths) -> Result<Vec<LocalAgentRecord>, AgentError> {
@@ -772,6 +950,30 @@ fn validate_kind(value: String) -> Result<String, AgentError> {
     validate_identifier(value, "agent kind")
 }
 
+fn validate_hex_value(
+    value: String,
+    field: &'static str,
+    max_len: usize,
+) -> Result<String, AgentError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(AgentError::InvalidRequest {
+            reason: format!("{field} cannot be empty"),
+        });
+    }
+    if value.len() > max_len {
+        return Err(AgentError::InvalidRequest {
+            reason: format!("{field} is too long"),
+        });
+    }
+    if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AgentError::InvalidRequest {
+            reason: format!("{field} must be hex"),
+        });
+    }
+    Ok(value)
+}
+
 fn parse_key_values(contents: &str) -> HashMap<String, String> {
     let mut values = HashMap::new();
 
@@ -886,6 +1088,25 @@ mod tests {
             Some(security::AGENT_CARD_SIGNATURE_ALGORITHM)
         );
         assert!(verify_local_agent_record(&agents[0]).expect("signature verifies"));
+    }
+
+    #[test]
+    fn export_agent_card_returns_signed_public_metadata() {
+        let home = test_home("export-card");
+        let registration = AgentRegistration::new("agent.codex", "Codex Desktop", "coding-agent")
+            .expect("valid registration");
+        submit_registration(Some(home.clone()), registration).expect("request submits");
+        process_gateway_requests(Some(home.clone())).expect("request processes");
+
+        let card = export_agent_card(Some(home), "agent.codex").expect("card exports");
+
+        assert_eq!(card.agent_id, "agent.codex");
+        assert_eq!(
+            card.signature_algorithm,
+            security::AGENT_CARD_SIGNATURE_ALGORITHM
+        );
+        assert!(verify_signed_agent_card(&card).expect("signature verifies"));
+        assert!(!format!("{card:?}").contains("private message contents"));
     }
 
     #[test]

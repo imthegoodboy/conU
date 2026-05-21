@@ -18,8 +18,8 @@ use crate::trust::{self, TrustStatus, TrustedPeer};
 
 const ROUTE_VERSION: &str = "1";
 const DEFAULT_RELAY_ENDPOINT: &str = "ws://127.0.0.1:8787";
-const DIRECT_QUIC_LATENCY_MS: u64 = 25;
 const RELAY_WEBSOCKET_LATENCY_MS: u64 = 80;
+const DIRECT_QUIC_TRANSPORT_INACTIVE: &str = "direct_quic_transport_inactive";
 
 /// Transport class for a candidate route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,19 +316,19 @@ fn direct_route_candidate(
         RouteTransport::DirectQuic,
         endpoint.as_deref(),
     );
-    let mut state = RouteState::Unavailable;
+    let state = RouteState::Unavailable;
     let mut score = 0;
-    let mut latency_ms = None;
+    let latency_ms = None;
     let mut failure_reason = Some("no_direct_quic_candidate".to_string());
+    let mut direct_attempted = false;
 
     if nat_profile == NatProfile::RelayOnly {
         failure_reason = Some("nat_profile_relay_only".to_string());
     } else if let Some(endpoint) = endpoint.as_deref() {
+        direct_attempted = true;
         if valid_direct_endpoint(endpoint) {
-            state = RouteState::Candidate;
             score = direct_score(nat_profile);
-            latency_ms = Some(DIRECT_QUIC_LATENCY_MS);
-            failure_reason = None;
+            failure_reason = Some(DIRECT_QUIC_TRANSPORT_INACTIVE.to_string());
         } else {
             failure_reason = Some("invalid_direct_quic_endpoint".to_string());
         }
@@ -343,7 +343,7 @@ fn direct_route_candidate(
         state,
         score,
         latency_ms,
-        direct_attempted: true,
+        direct_attempted,
         relay_fallback: false,
         nat_profile,
         failure_reason,
@@ -419,7 +419,7 @@ fn report_from_routes(routes: &[RouteRecord], probes_recorded: usize) -> RouteSy
         candidates: routes.len(),
         direct_attempts: routes
             .iter()
-            .filter(|route| route.transport == RouteTransport::DirectQuic)
+            .filter(|route| route.transport == RouteTransport::DirectQuic && route.direct_attempted)
             .count(),
         direct_available: routes
             .iter()
@@ -908,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_prefers_direct_quic_when_candidate_is_configured() {
+    fn sync_keeps_relay_selected_when_direct_quic_transport_is_inactive() {
         let home = test_home("direct-quic");
         let peer = trusted_peer(&home);
         let config_key = format!("direct_quic_{}", config_key_suffix(&peer.peer_node_id));
@@ -921,14 +921,32 @@ mod tests {
         .expect("config writes");
 
         let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let routes = list_routes(Some(home.clone())).expect("routes read");
         let selected =
-            selected_route_for_peer(Some(home), &peer.peer_node_id).expect("route lookup");
+            selected_route_for_peer(Some(home.clone()), &peer.peer_node_id).expect("route lookup");
+        let direct = routes
+            .iter()
+            .find(|route| route.peer_node_id == peer.peer_node_id && route.is_direct())
+            .expect("direct route recorded");
+        let probes = list_route_probes(Some(home)).expect("probes read");
 
-        assert_eq!(report.selected_direct, 1);
-        assert_eq!(report.selected_relay, 0);
+        assert_eq!(report.direct_available, 0);
+        assert_eq!(report.selected_direct, 0);
+        assert_eq!(report.selected_relay, 1);
         assert_eq!(
             selected.expect("selected").transport,
-            RouteTransport::DirectQuic
+            RouteTransport::RelayWebSocket
+        );
+        assert_eq!(direct.state, RouteState::Unavailable);
+        assert_eq!(direct.score, direct_score(NatProfile::Public));
+        assert_eq!(
+            direct.failure_reason.as_deref(),
+            Some(DIRECT_QUIC_TRANSPORT_INACTIVE)
+        );
+        assert!(
+            probes
+                .iter()
+                .any(|probe| probe.outcome == DIRECT_QUIC_TRANSPORT_INACTIVE)
         );
     }
 

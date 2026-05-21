@@ -206,6 +206,10 @@ It helps with:
 
 The relay should not read payloads. It should only see route metadata needed to deliver encrypted envelopes.
 
+The current self-hosted relay supports offline scoped credential issuance, helper-driven manifest upsert/rotation/revocation, and a live-reloaded hashed credential manifest for token revocation/expiry on new session authentication attempts. That is operational hardening for controlled deployments, not a managed hosted account system, online credential issuance API, or tenant lifecycle.
+
+The relay can also persist metadata-only per-node accounting counters and enforce self-hosted sent-envelope or sent-byte quotas. These counters include authenticated and resumed session counts, envelope counts, byte counts, and mailbox accepts. They help controlled deployments understand usage without payload access; they are not a hosted billing, tenant, abuse-response, or analytics service.
+
 Target behavior:
 
 ```txt
@@ -226,6 +230,7 @@ trusted peers
 pairing history
 revoked peers
 allowed rooms
+room topic grants
 capability grants
 session keys
 route preferences
@@ -354,7 +359,7 @@ Machine B:
   opens encrypted runtime session
 ```
 
-Pairing should create trust between runtimes, not between every possible agent automatically. The user or local policy decides which agents are visible and callable.
+Pairing should create trust between runtimes, not between every possible agent automatically. The user or local policy decides which agents are visible and callable. Current peer policy stores default-deny grants for message, stream, room, file, and mailbox surfaces separately from the trust record.
 
 ### Discovery
 
@@ -500,6 +505,7 @@ capabilities
 presence
 local IPC connection
 permission grants
+peer-scoped policy grants
 last heartbeat
 ```
 
@@ -774,7 +780,9 @@ Local persistent state:
 ~/.conu/
 |- node.toml
 |- trust.toml
+|- policy.toml
 |- agents/
+|- rooms/
 |- sessions/
 |- mailbox/
 |- logs/
@@ -785,6 +793,7 @@ Store:
 
 - node identity
 - trusted peers
+- peer-scoped communication grants
 - local agent cards
 - pending encrypted envelopes
 - session metadata
@@ -810,6 +819,8 @@ bytes sent
 bytes received
 delivery state
 ```
+
+The local CLI telemetry surface is `conu telemetry snapshot [--json]`. It reports schema `conu.telemetry.snapshot.v1`, the explicit `TELEMETRY_FIELD_ALLOWLIST`, aggregate counters only, and `contentsDisplayed=false`. It deliberately excludes node ids, agent ids, peer ids, endpoints, file paths, log lines, key ids, secrets, and payload bodies.
 
 Forbidden telemetry:
 
