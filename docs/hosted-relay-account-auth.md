@@ -85,4 +85,4 @@ They never report raw node tokens, token hashes, admin tokens, payload plaintext
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap for a single running relay and file-backed manifest. Public managed hosting still needs distributed hosted session state, distributed accounting dashboards, abuse workflows, hosted mailbox retention policy, multi-tenant permission administration, hosted identity/key administration, and managed direct NAT traversal/rendezvous.
+This closes the online credential lifecycle gap for a single running relay and file-backed manifest. Public managed hosting still needs distributed multi-instance session migration, distributed accounting dashboards, abuse workflows, hosted mailbox retention policy, multi-tenant permission administration, hosted identity/key administration, and managed direct NAT traversal/rendezvous.

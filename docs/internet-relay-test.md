@@ -18,6 +18,7 @@ $env:CONU_RELAY_MAX_CONNECTIONS_PER_IP = "64"
 $env:CONU_RELAY_MAX_FRAMES_PER_MINUTE = "600"
 $env:CONU_RELAY_IDLE_TIMEOUT_SECONDS = "120"
 $env:CONU_RELAY_SESSION_TTL_SECONDS = "3600"
+$env:CONU_RELAY_SESSION_STATE_DIR = "C:\conu-relay\sessions"
 $env:CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE = "128"
 $env:CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS = "3600"
 $env:CONU_RELAY_MAILBOX_DIR = "C:\conu-relay\mailbox"
@@ -185,7 +186,9 @@ If you are testing without a long-running daemon, use the manual fallback: run `
 
 To test the offline relay mailbox, stop Node B's conUD before sending from Node A, then start Node B again before `CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS` expires. The relay should accept the peer-encrypted envelope while Node B is offline and deliver it after Node B reconnects. If `CONU_RELAY_MAILBOX_DIR` is set, repeat the test with a relay restart between send and receive; the ciphertext envelope should survive the restart and then be removed after delivery.
 
-To test relay accounting, inspect `C:\conu-relay\accounting` after a successful send. The `.accounting` files should show node ids, authenticated-session counts, resumed-session counts, envelope counts, byte counts, and `payload_displayed = false` / `token_displayed = false`, without relay tokens, plaintext message text, stream chunks, room-event plaintext, or ciphertext bodies. Same-process daemon reconnects to the same relay endpoint may increment `sessions_resumed`; a daemon restart does not persist the resume hint. Lower `CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE` to `1`, restart the relay, and send twice from the same node to verify that the second send returns `UNDELIVERED reason=quota_exceeded`.
+To test relay session state, inspect `C:\conu-relay\sessions` after a successful `HELLO`. The `.session` files should show node ids, relay session ids, timestamps, and `payload_displayed = false` / `token_displayed = false` / `contents_displayed = false`, without relay tokens, token hashes, plaintext message text, stream chunks, room-event plaintext, ciphertext bodies, or private keys. Same-process daemon reconnects to the same relay endpoint may increment `sessions_resumed`; with `CONU_RELAY_SESSION_STATE_DIR` set, the relay can also accept that same-node resume hint after a relay restart until the session TTL expires. A daemon restart still loses the client-side resume hint.
+
+To test relay accounting, inspect `C:\conu-relay\accounting` after a successful send. The `.accounting` files should show node ids, authenticated-session counts, resumed-session counts, envelope counts, byte counts, and `payload_displayed = false` / `token_displayed = false`, without relay tokens, token hashes, session ids, plaintext message text, stream chunks, room-event plaintext, or ciphertext bodies. Lower `CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE` to `1`, restart the relay, and send twice from the same node to verify that the second send returns `UNDELIVERED reason=quota_exceeded`.
 
 For same-machine validation of the daemon-owned path:
 

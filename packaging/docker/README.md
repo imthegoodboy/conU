@@ -11,6 +11,7 @@ docker run --rm -p 8787:8787 \
   -e CONU_RELAY_MAX_FRAMES_PER_MINUTE=600 \
   -e CONU_RELAY_IDLE_TIMEOUT_SECONDS=120 \
   -e CONU_RELAY_SESSION_TTL_SECONDS=3600 \
+  -e CONU_RELAY_SESSION_STATE_DIR=/var/lib/conu-relay/sessions \
   -e CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE=128 \
   -e CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS=3600 \
   -e CONU_RELAY_MAILBOX_DIR=/var/lib/conu-relay/mailbox \
@@ -50,9 +51,10 @@ Current relay limits still apply:
 - The client also accepts certificate-valid `wss://` relay endpoints when TLS is terminated in front of this plain WebSocket container.
 - The relay forwards metadata plus peer-encrypted message, stream-chunk, room-event, and signed-card control bodies only.
 - The relay has configurable connection caps, per-IP caps, and per-session frame-rate limits.
+- The relay can persist metadata-only per-node session files under `CONU_RELAY_SESSION_STATE_DIR` for same-node resume after relay restarts until the session TTL expires. Session files contain node ids, relay session ids, timestamps, and display guards only, not tokens, token hashes, payloads, ciphertext bodies, or private keys.
 - The relay has a bounded offline mailbox for peer-encrypted envelopes. The Docker image defaults `CONU_RELAY_MAILBOX_DIR` to `/var/lib/conu-relay/mailbox`; mount `/var/lib/conu-relay` to keep queued ciphertext envelopes across container restarts.
-- The relay can persist metadata-only per-node accounting files under `CONU_RELAY_ACCOUNTING_DIR` and enforce optional per-window sent-envelope or sent-byte quotas. Accounting files contain node ids, authenticated/resumed session counters, envelope counters, byte counters, and display guards only, not tokens, session ids, or payload/ciphertext bodies.
-- Same-process daemon reconnects to the same relay endpoint can resume a prior same-node relay session. Cross-node resume attempts receive a new session instead.
+- The relay can persist metadata-only per-node accounting files under `CONU_RELAY_ACCOUNTING_DIR` and enforce optional per-window sent-envelope or sent-byte quotas. Accounting files contain node ids, authenticated/resumed session counters, envelope counters, byte counters, and display guards only, not tokens, token hashes, session ids, or payload/ciphertext bodies.
+- Daemon reconnects to the same relay endpoint can resume a prior same-node relay session when the daemon still has the resume hint and the relay has in-memory or file-backed session state. Cross-node resume attempts receive a new session instead.
 - The relay supports offline scoped credential issuance and manifest upsert/rotate/revoke helpers through `conu-relay --issue-credential` and `conu-relay --revoke-credential`, account-scoped online issue/rotate/revoke/audit through `CONU_RELAY_ADMIN_TOKEN` plus `CONU_RELAY_CREDENTIALS_FILE`, live-reloaded per-node scoped credentials through a hashed `CONU_RELAY_CREDENTIALS_FILE`, compatibility `CONU_RELAY_CREDENTIALS`, and shared-token local tests through `CONU_RELAY_TOKEN`.
 - Non-loopback Docker binds require custom shared or scoped tokens with at least 24 characters; `local-dev-token` is loopback-only.
-- Distributed hosted session state/accounting, dashboards, abuse response, hosted tenant administration, and hosted mailbox retention policy remain future hardening work.
+- Distributed multi-instance session migration/accounting, dashboards, abuse response, hosted tenant administration, and hosted mailbox retention policy remain future hardening work.

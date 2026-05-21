@@ -44,7 +44,7 @@ Implemented so far:
 - relay-backed peer-encrypted room events through `conu rooms publish`
 - metadata-only room topic publish/subscribe grants through `conu rooms policy`
 - bounded relay mailbox delivery for peer-encrypted message, stream-chunk, room-event, and signed-card control envelopes when the target node reconnects, with optional `CONU_RELAY_MAILBOX_DIR` persistence across relay restarts
-- daemon-owned relay send/receive pump with reusable relay sessions and same-process same-node resume when relay config or trusted relay peer endpoints exist
+- daemon-owned relay send/receive pump with reusable relay sessions and same-node resume when relay config or trusted relay peer endpoints exist, plus optional `CONU_RELAY_SESSION_STATE_DIR` metadata persistence across relay restarts
 - explicit manual relay send/receive sync through `conu relay sync`
 - replay protection for local message request and envelope ids
 - `conu security audit` for payload-safe hardening status
