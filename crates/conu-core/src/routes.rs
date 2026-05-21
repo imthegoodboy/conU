@@ -13,13 +13,14 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::direct_transport;
 use crate::state::{self, StateError, StatePaths};
 use crate::trust::{self, TrustStatus, TrustedPeer};
 
 const ROUTE_VERSION: &str = "1";
 const DEFAULT_RELAY_ENDPOINT: &str = "ws://127.0.0.1:8787";
 const RELAY_WEBSOCKET_LATENCY_MS: u64 = 80;
-const DIRECT_QUIC_TRANSPORT_INACTIVE: &str = "direct_quic_transport_inactive";
+const DIRECT_QUIC_PROBE_FAILED: &str = "direct_quic_probe_failed";
 
 /// Transport class for a candidate route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +166,7 @@ pub struct RouteSyncReport {
 pub enum RouteError {
     State(StateError),
     Trust(trust::TrustError),
+    Direct(direct_transport::DirectTransportError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -190,6 +192,7 @@ impl fmt::Display for RouteError {
         match self {
             Self::State(error) => write!(formatter, "{error}"),
             Self::Trust(error) => write!(formatter, "{error}"),
+            Self::Direct(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -214,6 +217,12 @@ impl From<trust::TrustError> for RouteError {
     }
 }
 
+impl From<direct_transport::DirectTransportError> for RouteError {
+    fn from(error: direct_transport::DirectTransportError) -> Self {
+        Self::Direct(error)
+    }
+}
+
 /// Probe trusted-peer routes and write the selected route registry.
 pub fn sync_routes(home_override: Option<PathBuf>) -> Result<RouteSyncReport, RouteError> {
     let init = state::init_state(home_override)?;
@@ -225,6 +234,10 @@ pub fn sync_routes_from_paths(paths: &StatePaths) -> Result<RouteSyncReport, Rou
     ensure_route_files(paths)?;
 
     let peers = trust::list_peers(Some(paths.home.clone()))?;
+    let local_node_id = state::read_state(Some(paths.home.clone()))?
+        .node
+        .map(|node| node.node_id)
+        .unwrap_or_default();
     let config = read_config(paths)?;
     let relay_endpoint = relay_endpoint(&config)?;
     let nat_profile = NatProfile::from_config(config.get("nat_profile"));
@@ -236,7 +249,8 @@ pub fn sync_routes_from_paths(paths: &StatePaths) -> Result<RouteSyncReport, Rou
         .iter()
         .filter(|peer| peer.status == TrustStatus::Trusted)
     {
-        let direct = direct_route_candidate(peer, &config, nat_profile, now)?;
+        let direct =
+            direct_route_candidate(paths, &local_node_id, peer, &config, nat_profile, now)?;
         let relay = relay_route_candidate(peer, &relay_endpoint, nat_profile, now)?;
         let direct_available = direct.state != RouteState::Unavailable;
         let direct_selected = direct_available && direct.score >= relay.score;
@@ -251,11 +265,11 @@ pub fn sync_routes_from_paths(paths: &StatePaths) -> Result<RouteSyncReport, Rou
         };
         let selected_relay = RouteRecord {
             state: if direct_selected {
-                RouteState::Candidate
+                RouteState::Fallback
             } else {
                 RouteState::Selected
             },
-            relay_fallback: !direct_selected,
+            relay_fallback: true,
             ..relay
         };
 
@@ -305,20 +319,22 @@ pub fn selected_route_for_peer_from_paths(
 }
 
 fn direct_route_candidate(
+    paths: &StatePaths,
+    local_node_id: &str,
     peer: &TrustedPeer,
     config: &HashMap<String, String>,
     nat_profile: NatProfile,
     now: u64,
 ) -> Result<RouteRecord, RouteError> {
-    let endpoint = direct_endpoint(config, &peer.peer_node_id);
+    let endpoint = direct_endpoint(config, peer);
     let route_id = route_id(
         &peer.peer_node_id,
         RouteTransport::DirectQuic,
         endpoint.as_deref(),
     );
-    let state = RouteState::Unavailable;
+    let mut state = RouteState::Unavailable;
     let mut score = 0;
-    let latency_ms = None;
+    let mut latency_ms = None;
     let mut failure_reason = Some("no_direct_quic_candidate".to_string());
     let mut direct_attempted = false;
 
@@ -327,8 +343,24 @@ fn direct_route_candidate(
     } else if let Some(endpoint) = endpoint.as_deref() {
         direct_attempted = true;
         if valid_direct_endpoint(endpoint) {
-            score = direct_score(nat_profile);
-            failure_reason = Some(DIRECT_QUIC_TRANSPORT_INACTIVE.to_string());
+            match direct_transport::probe_direct_quic_from_paths(
+                paths,
+                local_node_id,
+                peer,
+                endpoint,
+                std::time::Duration::from_millis(700),
+            ) {
+                Ok(report) if report.authenticated => {
+                    state = RouteState::Candidate;
+                    score = direct_score(nat_profile);
+                    latency_ms = Some(report.latency_ms.max(1));
+                    failure_reason = None;
+                }
+                Ok(_) | Err(_) => {
+                    score = direct_score(nat_profile);
+                    failure_reason = Some(DIRECT_QUIC_PROBE_FAILED.to_string());
+                }
+            }
         } else {
             failure_reason = Some("invalid_direct_quic_endpoint".to_string());
         }
@@ -469,10 +501,11 @@ fn relay_endpoint(config: &HashMap<String, String>) -> Result<String, RouteError
     )
 }
 
-fn direct_endpoint(config: &HashMap<String, String>, peer_node_id: &str) -> Option<String> {
-    let keyed = format!("direct_quic_{}", config_key_suffix(peer_node_id));
+fn direct_endpoint(config: &HashMap<String, String>, peer: &TrustedPeer) -> Option<String> {
+    let keyed = format!("direct_quic_{}", config_key_suffix(&peer.peer_node_id));
     config
         .get(&keyed)
+        .or(peer.direct_quic_endpoint.as_ref())
         .or_else(|| config.get("direct_quic_endpoint"))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -941,13 +974,73 @@ mod tests {
         assert_eq!(direct.score, direct_score(NatProfile::Public));
         assert_eq!(
             direct.failure_reason.as_deref(),
-            Some(DIRECT_QUIC_TRANSPORT_INACTIVE)
+            Some(DIRECT_QUIC_PROBE_FAILED)
         );
         assert!(
             probes
                 .iter()
-                .any(|probe| probe.outcome == DIRECT_QUIC_TRANSPORT_INACTIVE)
+                .any(|probe| probe.outcome == DIRECT_QUIC_PROBE_FAILED)
         );
+    }
+
+    #[test]
+    fn sync_selects_direct_when_authenticated_quic_probe_succeeds() {
+        let alice_home = test_home("direct-selected-alice");
+        let bob_home = test_home("direct-selected-bob");
+        let bob_endpoint = free_loopback_endpoint();
+        state::init_state(Some(bob_home.clone())).expect("bob state initializes");
+        fs::write(
+            StatePaths::from_home(bob_home.clone()).config,
+            format!("version = \"1\"\ndirect_quic_endpoint = \"{bob_endpoint}\"\n"),
+        )
+        .expect("bob config writes");
+
+        let alice_card =
+            trust::export_peer_card(Some(alice_home.clone())).expect("alice card exports");
+        let bob_card = trust::export_peer_card(Some(bob_home.clone())).expect("bob card exports");
+        let bob_peer =
+            trust::trust_peer_card(Some(alice_home.clone()), bob_card).expect("alice trusts bob");
+        trust::trust_peer_card(Some(bob_home.clone()), alice_card).expect("bob trusts alice");
+
+        let bob_paths = StatePaths::from_home(bob_home.clone());
+        let bob_node = state::read_state(Some(bob_home))
+            .expect("bob state")
+            .node
+            .expect("bob node")
+            .node_id;
+        let mut server =
+            crate::direct_transport::DirectRuntimeServer::new().expect("server starts");
+        let handle = std::thread::spawn(move || {
+            server
+                .tick_from_paths(&bob_paths, &bob_node, std::time::Duration::from_millis(900))
+                .expect("server tick")
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let report = sync_routes(Some(alice_home.clone())).expect("routes sync");
+        let routes = list_routes(Some(alice_home.clone())).expect("routes read");
+        let selected = selected_route_for_peer(Some(alice_home), &bob_peer.peer_node_id)
+            .expect("route lookup");
+        let relay = routes
+            .iter()
+            .find(|route| {
+                route.peer_node_id == bob_peer.peer_node_id
+                    && route.transport == RouteTransport::RelayWebSocket
+            })
+            .expect("relay route recorded");
+        let server_report = handle.join().expect("server joins");
+
+        assert_eq!(report.direct_available, 1);
+        assert_eq!(report.selected_direct, 1);
+        assert_eq!(report.selected_relay, 0);
+        assert_eq!(report.relay_fallbacks, 1);
+        assert_eq!(
+            selected.expect("selected").transport,
+            RouteTransport::DirectQuic
+        );
+        assert_eq!(relay.state, RouteState::Fallback);
+        assert!(relay.relay_fallback);
+        assert_eq!(server_report.received, 1);
     }
 
     #[test]
@@ -998,5 +1091,12 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    fn free_loopback_endpoint() -> String {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("free UDP port binds");
+        let port = socket.local_addr().expect("local addr").port();
+        drop(socket);
+        format!("quic://127.0.0.1:{port}")
     }
 }

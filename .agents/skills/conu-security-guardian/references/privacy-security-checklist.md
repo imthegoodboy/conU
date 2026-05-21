@@ -79,7 +79,7 @@
 
 ## Routes
 
-- Direct route candidates are recorded only for trusted peers and must remain unavailable until a real direct data plane exists.
+- Direct route candidates are recorded only for trusted peers and must be selected only after a live authenticated QUIC probe succeeds; failed probes must keep relay selected.
 - Relay fallback does not weaken trust checks.
 - Direct endpoint config must not contain tokens, private keys, or payload material.
 - Route failure reasons stay generic and must not echo arbitrary payload-bearing input.
