@@ -88,6 +88,15 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--admin-hosted-dashboard") => {
+            match admin_hosted_dashboard_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("--tenant-upsert") => match tenant_upsert_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -203,6 +212,7 @@ Usage:
   conu-relay --admin-rotate-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin --token-out <path> [--expires-at-unix <seconds>] [--json]
   conu-relay --admin-revoke-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-audit-credentials --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
+  conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --tenant-upsert <account-id> --tenants-file <path> [--json]
   conu-relay --tenant-revoke <account-id> --tenants-file <path> [--json]
   conu-relay --tenant-node-upsert <account-id> <node-id> --tenants-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
@@ -252,13 +262,15 @@ with at least 24 characters. Use --hash-token with stdin to generate credential-
 commands authenticate with an admin token read from stdin, send only node-token hash metadata to the
 relay, and write the raw node token locally only after the relay confirms the update. Tenant
 commands manage account, node, public key-id, and hosted permission metadata only; they never grant
-local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Abuse
-audit reads aggregate enforcement counters only, mailbox audit reads durable mailbox timestamps
-and file sizes only, manual mailbox purge requires dry-run or explicit confirmation, and scheduled
-mailbox purge requires an explicit local interval plus CONU_RELAY_MAILBOX_DIR before deleting
-expired durable mailbox files. Hosted dashboard snapshots combine configured
-credential, tenant, accounting, and abuse summaries without displaying tokens, token hashes,
-payloads, ciphertext bodies, frame contents, private keys, or relay session ids."
+local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Admin
+hosted dashboard snapshots require the admin token over the relay control plane and return
+metadata-only credential, tenant, accounting, and abuse counters. Abuse audit reads aggregate
+enforcement counters only, mailbox audit reads durable mailbox timestamps and file sizes only,
+manual mailbox purge requires dry-run or explicit confirmation, and scheduled mailbox purge requires
+an explicit local interval plus CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files.
+Hosted dashboard snapshots combine configured credential, tenant, accounting, and abuse summaries
+without displaying tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys,
+or relay session ids."
     );
 }
 
@@ -897,6 +909,100 @@ fn admin_audit_usage() -> String {
     "usage: conu-relay --admin-audit-credentials --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]".to_string()
 }
 
+fn admin_hosted_dashboard_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_admin_dashboard_args(args)?;
+    let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
+    let request = RelayAdminRequest::dashboard(
+        admin_token,
+        parsed.account_id.clone(),
+        parsed.node_id.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let result = send_admin_request(&parsed.relay, request)?;
+    if result.status != "snapshotted" {
+        return Err(format!(
+            "relay admin hosted dashboard did not complete: status={}",
+            result.status
+        ));
+    }
+
+    if parsed.json {
+        println!("{}", render_admin_dashboard_json(&result, &parsed.relay));
+    } else {
+        println!("{}", render_admin_dashboard_text(&result, &parsed.relay));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct AdminDashboardArgs {
+    account_id: Option<String>,
+    node_id: Option<String>,
+    relay: String,
+    admin_token_stdin: bool,
+    json: bool,
+}
+
+fn parse_admin_dashboard_args(args: Vec<String>) -> Result<AdminDashboardArgs, String> {
+    let mut account_id = None::<String>;
+    let mut node_id = None::<String>;
+    let mut relay = None::<String>;
+    let mut admin_token_stdin = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--account" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_dashboard_usage());
+                };
+                account_id = Some(value.to_string());
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_dashboard_usage());
+                };
+                node_id = Some(value.to_string());
+            }
+            "--relay" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_dashboard_usage());
+                };
+                relay = Some(value.to_string());
+            }
+            "--admin-token-stdin" => admin_token_stdin = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(admin_dashboard_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(admin_dashboard_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(relay) = relay.filter(|value| !value.trim().is_empty()) else {
+        return Err(admin_dashboard_usage());
+    };
+    if !admin_token_stdin {
+        return Err("--admin-token-stdin is required".to_string());
+    }
+
+    Ok(AdminDashboardArgs {
+        account_id,
+        node_id,
+        relay,
+        admin_token_stdin,
+        json,
+    })
+}
+
+fn admin_dashboard_usage() -> String {
+    "usage: conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]".to_string()
+}
+
 fn read_admin_token_from_stdin(required: bool) -> Result<String, String> {
     if !required {
         return Err("--admin-token-stdin is required".to_string());
@@ -933,7 +1039,7 @@ fn send_admin_request(relay: &str, request: RelayAdminRequest) -> Result<RelayAd
         .send(&RelayClientFrame::Admin(Box::new(request)))
         .map_err(|error| error.to_string())?;
     match client.read().map_err(|error| error.to_string())? {
-        Some(RelayServerFrame::AdminResult(result)) => Ok(result),
+        Some(RelayServerFrame::AdminResult(result)) => Ok(*result),
         Some(RelayServerFrame::Error { reason }) => {
             Err(format!("relay admin request rejected: {reason}"))
         }
@@ -1076,6 +1182,212 @@ fn render_admin_result_json(result: &RelayAdminResult, relay: &str) -> String {
         result.revoked,
         result.expired,
         result.accounts
+    )
+}
+
+fn render_admin_dashboard_text(result: &RelayAdminResult, relay: &str) -> String {
+    format!(
+        r"conU hosted relay admin dashboard snapshot
+
+account: {}
+node: {}
+relay: {}
+credentials: {}
+active credentials: {}
+revoked credentials: {}
+expired credentials: {}
+credential accounts: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+nodes: {}
+active nodes: {}
+revoked nodes: {}
+hosted policies: {}
+accounting records: {}
+accounting window started unix: {}
+sessions authenticated: {}
+sessions resumed: {}
+envelopes sent: {}
+bytes sent: {}
+envelopes received: {}
+bytes received: {}
+envelopes mailboxed: {}
+bytes mailboxed: {}
+abuse records: {}
+abuse window started unix: {}
+admin unauthorized: {}
+admin failed: {}
+unauthorized sessions: {}
+credential denied sessions: {}
+tenant denied sessions: {}
+rate limited sessions: {}
+session expired: {}
+quota denied forwards: {}
+undelivered forwards: {}
+mailbox rejected forwards: {}
+malformed client frames: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        result.account_id.as_deref().unwrap_or("all"),
+        result.node_id.as_deref().unwrap_or("all"),
+        relay,
+        result.credentials,
+        result.active,
+        result.revoked,
+        result.expired,
+        result.accounts,
+        result.tenants,
+        result.active_tenants,
+        result.revoked_tenants,
+        result.nodes,
+        result.active_nodes,
+        result.revoked_nodes,
+        result.tenant_policies,
+        result.accounting_records,
+        optional_u64_text(result.accounting_window_started_unix),
+        result.sessions_authenticated,
+        result.sessions_resumed,
+        result.envelopes_sent,
+        result.bytes_sent,
+        result.envelopes_received,
+        result.bytes_received,
+        result.envelopes_mailboxed,
+        result.bytes_mailboxed,
+        result.abuse_records,
+        optional_u64_text(result.abuse_window_started_unix),
+        result.admin_unauthorized,
+        result.admin_failed,
+        result.unauthorized_sessions,
+        result.credential_denied_sessions,
+        result.tenant_denied_sessions,
+        result.rate_limited_sessions,
+        result.session_expired,
+        result.quota_denied_forwards,
+        result.undelivered_forwards,
+        result.mailbox_rejected_forwards,
+        result.malformed_client_frames,
+        yes_no(result.payload_displayed),
+        yes_no(result.token_displayed),
+        yes_no(result.token_hash_displayed),
+        yes_no(result.key_material_displayed),
+        yes_no(result.session_id_displayed),
+        yes_no(result.ciphertext_displayed),
+        yes_no(result.contents_displayed)
+    )
+}
+
+fn render_admin_dashboard_json(result: &RelayAdminResult, relay: &str) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "action": "{}",
+  "accountId": {},
+  "nodeId": {},
+  "relay": "{}",
+  "credentials": {{
+    "credentials": {},
+    "active": {},
+    "revoked": {},
+    "expired": {},
+    "accounts": {}
+  }},
+  "tenants": {{
+    "tenants": {},
+    "activeTenants": {},
+    "revokedTenants": {},
+    "nodes": {},
+    "activeNodes": {},
+    "revokedNodes": {},
+    "policies": {}
+  }},
+  "accounting": {{
+    "records": {},
+    "windowStartedUnix": {},
+    "sessionsAuthenticated": {},
+    "sessionsResumed": {},
+    "envelopesSent": {},
+    "bytesSent": {},
+    "envelopesReceived": {},
+    "bytesReceived": {},
+    "envelopesMailboxed": {},
+    "bytesMailboxed": {}
+  }},
+  "abuse": {{
+    "records": {},
+    "windowStartedUnix": {},
+    "adminUnauthorized": {},
+    "adminFailed": {},
+    "unauthorizedSessions": {},
+    "credentialDeniedSessions": {},
+    "tenantDeniedSessions": {},
+    "rateLimitedSessions": {},
+    "sessionExpired": {},
+    "quotaDeniedForwards": {},
+    "undeliveredForwards": {},
+    "mailboxRejectedForwards": {},
+    "malformedClientFrames": {}
+  }},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        json_escape(&result.status),
+        result.action.as_str(),
+        optional_string_json(result.account_id.as_deref()),
+        optional_string_json(result.node_id.as_deref()),
+        json_escape(relay),
+        result.credentials,
+        result.active,
+        result.revoked,
+        result.expired,
+        result.accounts,
+        result.tenants,
+        result.active_tenants,
+        result.revoked_tenants,
+        result.nodes,
+        result.active_nodes,
+        result.revoked_nodes,
+        result.tenant_policies,
+        result.accounting_records,
+        optional_u64_json(result.accounting_window_started_unix),
+        result.sessions_authenticated,
+        result.sessions_resumed,
+        result.envelopes_sent,
+        result.bytes_sent,
+        result.envelopes_received,
+        result.bytes_received,
+        result.envelopes_mailboxed,
+        result.bytes_mailboxed,
+        result.abuse_records,
+        optional_u64_json(result.abuse_window_started_unix),
+        result.admin_unauthorized,
+        result.admin_failed,
+        result.unauthorized_sessions,
+        result.credential_denied_sessions,
+        result.tenant_denied_sessions,
+        result.rate_limited_sessions,
+        result.session_expired,
+        result.quota_denied_forwards,
+        result.undelivered_forwards,
+        result.mailbox_rejected_forwards,
+        result.malformed_client_frames,
+        bool_json(result.payload_displayed),
+        bool_json(result.token_displayed),
+        bool_json(result.token_hash_displayed),
+        bool_json(result.key_material_displayed),
+        bool_json(result.session_id_displayed),
+        bool_json(result.ciphertext_displayed),
+        bool_json(result.contents_displayed)
     )
 }
 
@@ -3332,6 +3644,99 @@ mod tests {
             assert!(!output.contains("payload-body"));
             assert!(!output.contains("ciphertext_body"));
             assert!(!output.contains("ENVELOPE from=node.a"));
+        }
+    }
+
+    #[test]
+    fn admin_hosted_dashboard_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_admin_dashboard_args(vec![
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--account".to_string(),
+            "account.prod".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("admin dashboard args parse");
+        assert_eq!(parsed.relay, "ws://127.0.0.1:8787");
+        assert!(parsed.admin_token_stdin);
+        assert_eq!(parsed.account_id.as_deref(), Some("account.prod"));
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert!(parsed.json);
+        assert!(parse_admin_dashboard_args(Vec::new()).is_err());
+        assert!(
+            parse_admin_dashboard_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+            ])
+            .expect_err("admin token stdin required")
+            .contains("--admin-token-stdin")
+        );
+
+        let result = RelayAdminResult {
+            account_id: Some("account.prod".to_string()),
+            node_id: Some("node.hosted".to_string()),
+            credentials: 3,
+            active: 1,
+            revoked: 1,
+            expired: 1,
+            accounts: 1,
+            tenants: 1,
+            active_tenants: 1,
+            revoked_tenants: 0,
+            nodes: 2,
+            active_nodes: 1,
+            revoked_nodes: 1,
+            tenant_policies: 1,
+            accounting_records: 1,
+            accounting_window_started_unix: Some(1_763_596_800),
+            sessions_authenticated: 2,
+            sessions_resumed: 1,
+            envelopes_sent: 3,
+            bytes_sent: 33,
+            envelopes_received: 4,
+            bytes_received: 44,
+            envelopes_mailboxed: 1,
+            bytes_mailboxed: 11,
+            abuse_records: 1,
+            abuse_window_started_unix: Some(1_763_596_800),
+            admin_unauthorized: 1,
+            admin_failed: 1,
+            unauthorized_sessions: 2,
+            credential_denied_sessions: 1,
+            tenant_denied_sessions: 1,
+            rate_limited_sessions: 1,
+            session_expired: 1,
+            quota_denied_forwards: 1,
+            undelivered_forwards: 1,
+            mailbox_rejected_forwards: 1,
+            malformed_client_frames: 1,
+            ..RelayAdminResult::new(conu_core::relay::RelayAdminAction::Dashboard, "snapshotted")
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_admin_dashboard_text(&result, "ws://127.0.0.1:8787"),
+            render_admin_dashboard_json(&result, "ws://127.0.0.1:8787"),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("dashboard") || output.contains("snapshotted"));
+            assert!(output.contains("credentials"));
+            assert!(output.contains("accounting"));
+            assert!(output.contains("abuse"));
+            assert!(output.contains("token"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
         }
     }
 

@@ -297,6 +297,7 @@ pub enum RelayAdminAction {
     Rotate,
     Revoke,
     Audit,
+    Dashboard,
 }
 
 impl RelayAdminAction {
@@ -306,6 +307,7 @@ impl RelayAdminAction {
             Self::Rotate => "rotate",
             Self::Revoke => "revoke",
             Self::Audit => "audit",
+            Self::Dashboard => "dashboard",
         }
     }
 
@@ -315,6 +317,7 @@ impl RelayAdminAction {
             "rotate" => Ok(Self::Rotate),
             "revoke" => Ok(Self::Revoke),
             "audit" => Ok(Self::Audit),
+            "dashboard" => Ok(Self::Dashboard),
             _ => Err(RelayFrameError::new("unsupported relay admin action")),
         }
     }
@@ -408,6 +411,26 @@ impl RelayAdminRequest {
         })
     }
 
+    pub fn dashboard(
+        admin_token: impl Into<String>,
+        account_id: Option<String>,
+        node_id: Option<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::Dashboard,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: account_id
+                .map(|value| validate_identifier(value, "account id"))
+                .transpose()?,
+            node_id: node_id
+                .map(|value| validate_identifier(value, "node id"))
+                .transpose()?,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+        })
+    }
+
     fn credential_update(
         action: RelayAdminAction,
         admin_token: impl Into<String>,
@@ -465,8 +488,98 @@ pub struct RelayAdminResult {
     pub accounts: usize,
     pub token_length: Option<usize>,
     pub expires_at_unix: Option<u64>,
+    pub tenants: usize,
+    pub active_tenants: usize,
+    pub revoked_tenants: usize,
+    pub nodes: usize,
+    pub active_nodes: usize,
+    pub revoked_nodes: usize,
+    pub tenant_policies: usize,
+    pub accounting_records: usize,
+    pub accounting_window_started_unix: Option<u64>,
+    pub sessions_authenticated: u64,
+    pub sessions_resumed: u64,
+    pub envelopes_sent: u64,
+    pub bytes_sent: u64,
+    pub envelopes_received: u64,
+    pub bytes_received: u64,
+    pub envelopes_mailboxed: u64,
+    pub bytes_mailboxed: u64,
+    pub abuse_records: usize,
+    pub abuse_window_started_unix: Option<u64>,
+    pub admin_unauthorized: u64,
+    pub admin_failed: u64,
+    pub unauthorized_sessions: u64,
+    pub credential_denied_sessions: u64,
+    pub tenant_denied_sessions: u64,
+    pub rate_limited_sessions: u64,
+    pub session_expired: u64,
+    pub quota_denied_forwards: u64,
+    pub undelivered_forwards: u64,
+    pub mailbox_rejected_forwards: u64,
+    pub malformed_client_frames: u64,
+    pub payload_displayed: bool,
     pub token_displayed: bool,
+    pub token_hash_displayed: bool,
+    pub key_material_displayed: bool,
+    pub session_id_displayed: bool,
+    pub ciphertext_displayed: bool,
     pub contents_displayed: bool,
+}
+
+impl RelayAdminResult {
+    pub fn new(action: RelayAdminAction, status: impl Into<String>) -> Self {
+        Self {
+            action,
+            status: status.into(),
+            account_id: None,
+            node_id: None,
+            credentials: 0,
+            active: 0,
+            revoked: 0,
+            expired: 0,
+            accounts: 0,
+            token_length: None,
+            expires_at_unix: None,
+            tenants: 0,
+            active_tenants: 0,
+            revoked_tenants: 0,
+            nodes: 0,
+            active_nodes: 0,
+            revoked_nodes: 0,
+            tenant_policies: 0,
+            accounting_records: 0,
+            accounting_window_started_unix: None,
+            sessions_authenticated: 0,
+            sessions_resumed: 0,
+            envelopes_sent: 0,
+            bytes_sent: 0,
+            envelopes_received: 0,
+            bytes_received: 0,
+            envelopes_mailboxed: 0,
+            bytes_mailboxed: 0,
+            abuse_records: 0,
+            abuse_window_started_unix: None,
+            admin_unauthorized: 0,
+            admin_failed: 0,
+            unauthorized_sessions: 0,
+            credential_denied_sessions: 0,
+            tenant_denied_sessions: 0,
+            rate_limited_sessions: 0,
+            session_expired: 0,
+            quota_denied_forwards: 0,
+            undelivered_forwards: 0,
+            mailbox_rejected_forwards: 0,
+            malformed_client_frames: 0,
+            payload_displayed: false,
+            token_displayed: false,
+            token_hash_displayed: false,
+            key_material_displayed: false,
+            session_id_displayed: false,
+            ciphertext_displayed: false,
+            contents_displayed: false,
+        }
+    }
 }
 
 /// Client frames a runtime can send to the relay.
@@ -510,7 +623,7 @@ pub enum RelayServerFrame {
         envelope_id: String,
         reason: String,
     },
-    AdminResult(RelayAdminResult),
+    AdminResult(Box<RelayAdminResult>),
     Pong,
     Error {
         reason: String,
@@ -652,7 +765,9 @@ pub fn parse_server_frame(line: &str) -> Result<RelayServerFrame, RelayFrameErro
             envelope_id: validate_identifier(required(&values, "envelope")?, "envelope id")?,
             reason: required(&values, "reason")?,
         }),
-        "ADMIN_RESULT" => Ok(RelayServerFrame::AdminResult(parse_admin_result(&values)?)),
+        "ADMIN_RESULT" => Ok(RelayServerFrame::AdminResult(Box::new(parse_admin_result(
+            &values,
+        )?))),
         "PONG" => Ok(RelayServerFrame::Pong),
         "ERROR" => Ok(RelayServerFrame::Error {
             reason: required(&values, "reason")?,
@@ -871,6 +986,11 @@ fn parse_admin_request(
             required(values, "admin_token")?,
             values.get("account").cloned(),
         ),
+        RelayAdminAction::Dashboard => RelayAdminRequest::dashboard(
+            required(values, "admin_token")?,
+            values.get("account").cloned(),
+            values.get("node").cloned(),
+        ),
     }
 }
 
@@ -897,9 +1017,60 @@ fn render_admin_result_line(result: &RelayAdminResult) -> String {
     if let Some(expires_at_unix) = result.expires_at_unix {
         line.push_str(&format!(" expires={expires_at_unix}"));
     }
+    if result.action == RelayAdminAction::Dashboard {
+        line.push_str(&format!(
+            " tenants={} active_tenants={} revoked_tenants={} nodes={} active_nodes={} revoked_nodes={} tenant_policies={}",
+            result.tenants,
+            result.active_tenants,
+            result.revoked_tenants,
+            result.nodes,
+            result.active_nodes,
+            result.revoked_nodes,
+            result.tenant_policies
+        ));
+        line.push_str(&format!(
+            " accounting_records={} sessions_authenticated={} sessions_resumed={} envelopes_sent={} bytes_sent={} envelopes_received={} bytes_received={} envelopes_mailboxed={} bytes_mailboxed={}",
+            result.accounting_records,
+            result.sessions_authenticated,
+            result.sessions_resumed,
+            result.envelopes_sent,
+            result.bytes_sent,
+            result.envelopes_received,
+            result.bytes_received,
+            result.envelopes_mailboxed,
+            result.bytes_mailboxed
+        ));
+        if let Some(window_started_unix) = result.accounting_window_started_unix {
+            line.push_str(&format!(" accounting_window_started={window_started_unix}"));
+        }
+        line.push_str(&format!(
+            " abuse_records={} admin_unauthorized={} admin_failed={} unauthorized_sessions={} credential_denied_sessions={} tenant_denied_sessions={} rate_limited_sessions={} session_expired={} quota_denied_forwards={} undelivered_forwards={} mailbox_rejected_forwards={} malformed_client_frames={}",
+            result.abuse_records,
+            result.admin_unauthorized,
+            result.admin_failed,
+            result.unauthorized_sessions,
+            result.credential_denied_sessions,
+            result.tenant_denied_sessions,
+            result.rate_limited_sessions,
+            result.session_expired,
+            result.quota_denied_forwards,
+            result.undelivered_forwards,
+            result.mailbox_rejected_forwards,
+            result.malformed_client_frames
+        ));
+        if let Some(window_started_unix) = result.abuse_window_started_unix {
+            line.push_str(&format!(" abuse_window_started={window_started_unix}"));
+        }
+    }
     line.push_str(&format!(
-        " token_displayed={} contents_displayed={} payload=not_observed",
-        result.token_displayed, result.contents_displayed
+        " payload_displayed={} token_displayed={} token_hash_displayed={} key_material_displayed={} session_id_displayed={} ciphertext_displayed={} contents_displayed={} payload=not_observed",
+        result.payload_displayed,
+        result.token_displayed,
+        result.token_hash_displayed,
+        result.key_material_displayed,
+        result.session_id_displayed,
+        result.ciphertext_displayed,
+        result.contents_displayed
     ));
     line
 }
@@ -919,7 +1090,43 @@ fn parse_admin_result(
         accounts: parse_usize(&required(values, "accounts")?)?,
         token_length: optional_usize(values, "token_length")?,
         expires_at_unix: optional_u64(values, "expires")?,
+        tenants: optional_count(values, "tenants")?,
+        active_tenants: optional_count(values, "active_tenants")?,
+        revoked_tenants: optional_count(values, "revoked_tenants")?,
+        nodes: optional_count(values, "nodes")?,
+        active_nodes: optional_count(values, "active_nodes")?,
+        revoked_nodes: optional_count(values, "revoked_nodes")?,
+        tenant_policies: optional_count(values, "tenant_policies")?,
+        accounting_records: optional_count(values, "accounting_records")?,
+        accounting_window_started_unix: optional_u64(values, "accounting_window_started")?,
+        sessions_authenticated: optional_u64(values, "sessions_authenticated")?.unwrap_or(0),
+        sessions_resumed: optional_u64(values, "sessions_resumed")?.unwrap_or(0),
+        envelopes_sent: optional_u64(values, "envelopes_sent")?.unwrap_or(0),
+        bytes_sent: optional_u64(values, "bytes_sent")?.unwrap_or(0),
+        envelopes_received: optional_u64(values, "envelopes_received")?.unwrap_or(0),
+        bytes_received: optional_u64(values, "bytes_received")?.unwrap_or(0),
+        envelopes_mailboxed: optional_u64(values, "envelopes_mailboxed")?.unwrap_or(0),
+        bytes_mailboxed: optional_u64(values, "bytes_mailboxed")?.unwrap_or(0),
+        abuse_records: optional_count(values, "abuse_records")?,
+        abuse_window_started_unix: optional_u64(values, "abuse_window_started")?,
+        admin_unauthorized: optional_u64(values, "admin_unauthorized")?.unwrap_or(0),
+        admin_failed: optional_u64(values, "admin_failed")?.unwrap_or(0),
+        unauthorized_sessions: optional_u64(values, "unauthorized_sessions")?.unwrap_or(0),
+        credential_denied_sessions: optional_u64(values, "credential_denied_sessions")?
+            .unwrap_or(0),
+        tenant_denied_sessions: optional_u64(values, "tenant_denied_sessions")?.unwrap_or(0),
+        rate_limited_sessions: optional_u64(values, "rate_limited_sessions")?.unwrap_or(0),
+        session_expired: optional_u64(values, "session_expired")?.unwrap_or(0),
+        quota_denied_forwards: optional_u64(values, "quota_denied_forwards")?.unwrap_or(0),
+        undelivered_forwards: optional_u64(values, "undelivered_forwards")?.unwrap_or(0),
+        mailbox_rejected_forwards: optional_u64(values, "mailbox_rejected_forwards")?.unwrap_or(0),
+        malformed_client_frames: optional_u64(values, "malformed_client_frames")?.unwrap_or(0),
+        payload_displayed: optional_bool(values, "payload_displayed")?.unwrap_or(false),
         token_displayed: optional_bool(values, "token_displayed")?.unwrap_or(false),
+        token_hash_displayed: optional_bool(values, "token_hash_displayed")?.unwrap_or(false),
+        key_material_displayed: optional_bool(values, "key_material_displayed")?.unwrap_or(false),
+        session_id_displayed: optional_bool(values, "session_id_displayed")?.unwrap_or(false),
+        ciphertext_displayed: optional_bool(values, "ciphertext_displayed")?.unwrap_or(false),
         contents_displayed: optional_bool(values, "contents_displayed")?.unwrap_or(false),
     })
 }
@@ -1144,6 +1351,17 @@ fn optional_usize(
         .get(key)
         .map(|value| parse_usize(value).and_then(validate_token_length))
         .transpose()
+}
+
+fn optional_count(
+    values: &HashMap<String, String>,
+    key: &'static str,
+) -> Result<usize, RelayFrameError> {
+    values
+        .get(key)
+        .map(|value| parse_usize(value))
+        .transpose()
+        .map(|value| value.unwrap_or(0))
 }
 
 fn optional_u64(
@@ -1696,7 +1914,7 @@ mod tests {
         let rendered = render_client_frame(&frame);
         let parsed = parse_client_frame(&rendered).expect("admin request parses");
         let debug = format!("{frame:?}");
-        let result = RelayServerFrame::AdminResult(RelayAdminResult {
+        let result = RelayServerFrame::AdminResult(Box::new(RelayAdminResult {
             action: RelayAdminAction::Issue,
             status: "issued".to_string(),
             account_id: Some("account.prod".to_string()),
@@ -1710,7 +1928,8 @@ mod tests {
             expires_at_unix: Some(4_000),
             token_displayed: false,
             contents_displayed: false,
-        });
+            ..RelayAdminResult::new(RelayAdminAction::Issue, "issued")
+        }));
         let rendered_result = render_server_frame(&result);
         let parsed_result = parse_server_frame(&rendered_result).expect("admin result parses");
 
@@ -1726,6 +1945,52 @@ mod tests {
         assert!(rendered_result.contains("contents_displayed=false"));
         assert!(!rendered_result.contains("admin-secret-token-1234567890"));
         assert!(!rendered_result.contains(&token_hash));
+
+        let dashboard_request = RelayAdminRequest::dashboard(
+            "admin-secret-token-1234567890",
+            Some("account.prod".to_string()),
+            Some("node.hosted".to_string()),
+        )
+        .expect("dashboard request parses");
+        let dashboard_frame = RelayClientFrame::Admin(Box::new(dashboard_request));
+        let rendered_dashboard = render_client_frame(&dashboard_frame);
+        let parsed_dashboard =
+            parse_client_frame(&rendered_dashboard).expect("dashboard request parses");
+        let dashboard_debug = format!("{dashboard_frame:?}");
+        let dashboard_result = RelayServerFrame::AdminResult(Box::new(RelayAdminResult {
+            account_id: Some("account.prod".to_string()),
+            node_id: Some("node.hosted".to_string()),
+            credentials: 1,
+            active: 1,
+            accounts: 1,
+            tenants: 1,
+            active_tenants: 1,
+            nodes: 1,
+            active_nodes: 1,
+            tenant_policies: 1,
+            accounting_records: 1,
+            sessions_authenticated: 1,
+            abuse_records: 1,
+            admin_unauthorized: 1,
+            ..RelayAdminResult::new(RelayAdminAction::Dashboard, "snapshotted")
+        }));
+        let rendered_dashboard_result = render_server_frame(&dashboard_result);
+        let parsed_dashboard_result =
+            parse_server_frame(&rendered_dashboard_result).expect("dashboard result parses");
+
+        assert_eq!(parsed_dashboard, dashboard_frame);
+        assert!(rendered_dashboard.contains("ADMIN action=dashboard"));
+        assert!(rendered_dashboard.contains("account=account.prod"));
+        assert!(rendered_dashboard.contains("node=node.hosted"));
+        assert!(!dashboard_debug.contains("admin-secret-token-1234567890"));
+        assert_eq!(parsed_dashboard_result, dashboard_result);
+        assert!(rendered_dashboard_result.contains("ADMIN_RESULT action=dashboard"));
+        assert!(rendered_dashboard_result.contains("tenants=1"));
+        assert!(rendered_dashboard_result.contains("accounting_records=1"));
+        assert!(rendered_dashboard_result.contains("admin_unauthorized=1"));
+        assert!(rendered_dashboard_result.contains("payload_displayed=false"));
+        assert!(!rendered_dashboard_result.contains("admin-secret-token-1234567890"));
+        assert!(!rendered_dashboard_result.contains(&token_hash));
     }
 
     #[test]
