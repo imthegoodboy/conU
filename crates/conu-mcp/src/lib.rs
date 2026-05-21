@@ -400,6 +400,7 @@ impl McpServer {
                 "exchangeKeyTrusted": peer.exchange_public_key_hex.is_some(),
                 "peerCardSigned": peer.signature_hex.is_some(),
                 "relayEndpoint": peer.relay_endpoint.as_deref(),
+                "directQuicEndpoint": peer.direct_quic_endpoint.as_deref(),
                 "createdAtUnix": peer.created_at_unix,
                 "updatedAtUnix": peer.updated_at_unix
             })).collect::<Vec<_>>(),
@@ -414,6 +415,7 @@ impl McpServer {
             "displayName": card.display_name,
             "exchangePublicKeyHex": card.exchange_public_key_hex,
             "relayEndpoint": card.relay_endpoint,
+            "directQuicEndpoint": card.direct_quic_endpoint,
             "signingPublicKeyHex": card.signing_public_key_hex,
             "signatureAlgorithm": card.signature_algorithm,
             "signatureKeyId": card.signature_key_id,
@@ -430,6 +432,7 @@ impl McpServer {
             exchange_public_key_hex: required_string(args, "exchangePublicKeyHex")?,
             relay_endpoint: optional_string(args, "relayEndpoint")?
                 .unwrap_or_else(|| "ws://127.0.0.1:8787".to_string()),
+            direct_quic_endpoint: optional_string(args, "directQuicEndpoint")?,
             signing_public_key_hex: optional_string(args, "signingPublicKeyHex")?,
             signature_algorithm: optional_string(args, "signatureAlgorithm")?,
             signature_key_id: optional_string(args, "signatureKeyId")?,
@@ -444,6 +447,7 @@ impl McpServer {
             "exchangeKeyTrusted": peer.exchange_public_key_hex.is_some(),
             "peerCardSigned": peer.signature_hex.is_some(),
             "relayEndpoint": peer.relay_endpoint,
+            "directQuicEndpoint": peer.direct_quic_endpoint,
             "contentsDisplayed": false
         }))
     }
@@ -871,6 +875,7 @@ impl McpServer {
                         "displayName": { "type": "string" },
                         "exchangePublicKeyHex": { "type": "string" },
                         "relayEndpoint": { "type": "string" },
+                        "directQuicEndpoint": { "type": "string" },
                         "signingPublicKeyHex": { "type": "string" },
                         "signatureAlgorithm": { "type": "string" },
                         "signatureKeyId": { "type": "string" },

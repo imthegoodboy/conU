@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::state::{self, NodeIdentity, StateError, StatePaths};
-use crate::{agents, messages, relay_delivery, sessions};
+use crate::{agents, direct_transport, messages, relay_delivery, sessions};
 
 const STATUS_VERSION: &str = "1";
 const STALE_AFTER_SECS: u64 = 10;
@@ -109,6 +109,11 @@ pub struct RuntimeProcessReport {
     pub relay_undelivered: usize,
     pub relay_rejected: usize,
     pub relay_error: bool,
+    pub direct_attempted: bool,
+    pub direct_listening: bool,
+    pub direct_received: usize,
+    pub direct_rejected: usize,
+    pub direct_error: bool,
 }
 
 /// An acquired local runtime slot.
@@ -163,6 +168,11 @@ impl RuntimeLease {
             relay_undelivered: 0,
             relay_rejected: 0,
             relay_error: false,
+            direct_attempted: false,
+            direct_listening: false,
+            direct_received: 0,
+            direct_rejected: 0,
+            direct_error: false,
         };
 
         self.pump_relay_once(&mut report, relay_wait)?;
@@ -173,6 +183,7 @@ impl RuntimeLease {
     pub fn serve_until_stop(&self, heartbeat_every: Duration) -> Result<(), RuntimeError> {
         let mut next_relay_attempt = Instant::now();
         let mut relay_pump = relay_delivery::RelayRuntimePump::new();
+        let mut direct_server = direct_transport::DirectRuntimeServer::new().ok();
 
         while !self.stop_requested() {
             self.heartbeat()?;
@@ -180,13 +191,14 @@ impl RuntimeLease {
                 let report = self.process_once_with_relay_pump(
                     Duration::from_millis(RELAY_PUMP_WAIT_MS),
                     &mut relay_pump,
+                    direct_server.as_mut(),
                 )?;
                 if report.relay_error {
                     next_relay_attempt =
                         Instant::now() + Duration::from_secs(RELAY_PUMP_ERROR_BACKOFF_SECS);
                 }
             } else {
-                self.process_local_once()?;
+                self.process_local_once(direct_server.as_mut())?;
             }
             thread::sleep(heartbeat_every);
         }
@@ -230,12 +242,16 @@ impl RuntimeLease {
         Ok(status)
     }
 
-    fn process_local_once(&self) -> Result<(), RuntimeError> {
+    fn process_local_once(
+        &self,
+        direct_server: Option<&mut direct_transport::DirectRuntimeServer>,
+    ) -> Result<(), RuntimeError> {
         agents::process_gateway_requests_from_paths(&self.paths, &self.node.node_id)
             .map_err(RuntimeError::Agent)?;
         messages::process_message_requests_from_paths(&self.paths)
             .map_err(RuntimeError::Message)?;
         sessions::sync_remote_sessions_from_paths(&self.paths).map_err(RuntimeError::Session)?;
+        self.pump_direct_once(direct_server, Duration::from_millis(100))?;
         Ok(())
     }
 
@@ -243,6 +259,7 @@ impl RuntimeLease {
         &self,
         relay_wait: Duration,
         relay_pump: &mut relay_delivery::RelayRuntimePump,
+        direct_server: Option<&mut direct_transport::DirectRuntimeServer>,
     ) -> Result<RuntimeProcessReport, RuntimeError> {
         let agent_report =
             agents::process_gateway_requests_from_paths(&self.paths, &self.node.node_id)
@@ -265,9 +282,15 @@ impl RuntimeLease {
             relay_undelivered: 0,
             relay_rejected: 0,
             relay_error: false,
+            direct_attempted: false,
+            direct_listening: false,
+            direct_received: 0,
+            direct_rejected: 0,
+            direct_error: false,
         };
 
         self.pump_relay_persistent(&mut report, relay_pump, relay_wait)?;
+        self.pump_direct_persistent(&mut report, direct_server, Duration::from_millis(100))?;
         Ok(report)
     }
 
@@ -382,6 +405,65 @@ impl RuntimeLease {
             }
         }
 
+        Ok(())
+    }
+
+    fn pump_direct_once(
+        &self,
+        direct_server: Option<&mut direct_transport::DirectRuntimeServer>,
+        wait: Duration,
+    ) -> Result<(), RuntimeError> {
+        let Some(server) = direct_server else {
+            return Ok(());
+        };
+        match server.tick_from_paths(&self.paths, &self.node.node_id, wait) {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                append_log(
+                    &self.paths,
+                    "direct_quic_retry",
+                    self.pid,
+                    &self.node.node_id,
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    fn pump_direct_persistent(
+        &self,
+        report: &mut RuntimeProcessReport,
+        direct_server: Option<&mut direct_transport::DirectRuntimeServer>,
+        wait: Duration,
+    ) -> Result<(), RuntimeError> {
+        let Some(server) = direct_server else {
+            return Ok(());
+        };
+        match server.tick_from_paths(&self.paths, &self.node.node_id, wait) {
+            Ok(direct_report) => {
+                report.direct_attempted = direct_report.enabled;
+                report.direct_listening = direct_report.listening;
+                report.direct_received = direct_report.received;
+                report.direct_rejected = direct_report.rejected;
+                if direct_report.received > 0 || direct_report.rejected > 0 {
+                    append_log(
+                        &self.paths,
+                        "direct_quic_activity",
+                        self.pid,
+                        &self.node.node_id,
+                    )?;
+                }
+            }
+            Err(_) => {
+                report.direct_error = true;
+                append_log(
+                    &self.paths,
+                    "direct_quic_retry",
+                    self.pid,
+                    &self.node.node_id,
+                )?;
+            }
+        }
         Ok(())
     }
 }

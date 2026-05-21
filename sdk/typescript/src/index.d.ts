@@ -62,6 +62,7 @@ export interface RoomTopicPolicyOptions {
 
 export interface TrustPeerOptions {
   relayEndpoint?: string;
+  directQuicEndpoint?: string;
   signingPublicKeyHex?: string;
   signatureHex?: string;
   signatureKeyId?: string;

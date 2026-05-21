@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use conu_protocol::OpaquePayload;
 
 use crate::agents;
+use crate::direct_transport;
 use crate::policy::{self, PeerPermission, PolicyError};
 use crate::relay_delivery::{self, RemoteStreamChunk};
 use crate::routes;
@@ -105,6 +106,7 @@ pub enum StreamError {
     Policy(PolicyError),
     Route(routes::RouteError),
     Relay(relay_delivery::RelayDeliveryError),
+    Direct(direct_transport::DirectTransportError),
     Io {
         action: &'static str,
         path: PathBuf,
@@ -134,6 +136,7 @@ impl fmt::Display for StreamError {
             Self::Policy(error) => write!(formatter, "{error}"),
             Self::Route(error) => write!(formatter, "{error}"),
             Self::Relay(error) => write!(formatter, "{error}"),
+            Self::Direct(error) => write!(formatter, "{error}"),
             Self::Io {
                 action,
                 path,
@@ -181,6 +184,12 @@ impl From<routes::RouteError> for StreamError {
 impl From<relay_delivery::RelayDeliveryError> for StreamError {
     fn from(error: relay_delivery::RelayDeliveryError) -> Self {
         Self::Relay(error)
+    }
+}
+
+impl From<direct_transport::DirectTransportError> for StreamError {
+    fn from(error: direct_transport::DirectTransportError) -> Self {
+        Self::Direct(error)
     }
 }
 
@@ -280,14 +289,6 @@ pub fn write_stream(
 
     let remote_peer_node_id = remote_peer_for_stream_target(&init.paths, &streams[index])?;
     if let Some(peer_node_id) = remote_peer_node_id {
-        if !matches!(
-            streams[index].route.as_str(),
-            "relay-websocket" | "metadata-relay"
-        ) {
-            return Err(StreamError::InvalidRequest {
-                reason: "relay-backed stream bytes require a relay route".to_string(),
-            });
-        }
         let chunk = RemoteStreamChunk::new(
             streams[index].stream_id.clone(),
             streams[index].from_agent_id.clone(),
@@ -295,11 +296,37 @@ pub fn write_stream(
             peer_node_id,
             payload,
         )?;
-        relay_delivery::submit_remote_stream_chunk_from_paths(
-            &init.paths,
-            &init.node.node_id,
-            chunk,
-        )?;
+        match streams[index].route.as_str() {
+            "direct-quic" => match direct_transport::send_direct_stream_chunk_from_paths(
+                &init.paths,
+                &init.node.node_id,
+                chunk.clone(),
+            ) {
+                Ok(_) => {}
+                Err(error) if error.is_safe_for_relay_fallback() => {
+                    relay_delivery::submit_remote_stream_chunk_from_paths(
+                        &init.paths,
+                        &init.node.node_id,
+                        chunk,
+                    )?;
+                    streams[index].route = "relay-websocket".to_string();
+                }
+                Err(error) => return Err(StreamError::Direct(error)),
+            },
+            "relay-websocket" | "metadata-relay" => {
+                relay_delivery::submit_remote_stream_chunk_from_paths(
+                    &init.paths,
+                    &init.node.node_id,
+                    chunk,
+                )?;
+            }
+            _ => {
+                return Err(StreamError::InvalidRequest {
+                    reason: "remote stream bytes require an available direct or relay route"
+                        .to_string(),
+                });
+            }
+        }
     }
 
     streams[index].chunks_written = streams[index].chunks_written.saturating_add(1);

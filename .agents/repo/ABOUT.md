@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes daemon-pumped relay-backed one-shot message, stream-chunk, and room-event delivery, peer-scoped default-deny policy grants for trusted peers, automatic encrypted signed agent-card exchange during session sync, bounded offline relay mailbox delivery with optional durable ciphertext files, offline scoped relay credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifests, metadata-only relay accounting/quotas, plus local rooms/pub/sub metadata with encrypted-at-rest local fanout to joined local participants.
+The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, daemon-pumped relay-backed one-shot message, stream-chunk, and room-event delivery, peer-scoped default-deny policy grants for trusted peers, automatic encrypted signed agent-card exchange during session sync, bounded offline relay mailbox delivery with optional durable ciphertext files, offline scoped relay credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifests, metadata-only relay accounting/quotas, plus local rooms/pub/sub metadata with encrypted-at-rest local fanout to joined local participants.
 
 Implemented so far:
 
@@ -83,7 +83,8 @@ Implemented so far:
 - payload-safe watch event bus under `streams/events.toml`
 - payload-safe room event bus under `rooms/events.toml`
 - `conu watch` private transport animation
-- conUD-owned direct/relay route manager through `conu routes`
+- conUD-owned direct/relay route manager through `conu routes`, including authenticated direct QUIC probes and relay fallback
+- peer-encrypted direct QUIC one-shot message and stream-chunk delivery for reachable trusted peer endpoints
 - conUD-owned reusable relay session pump for peer-encrypted one-shot remote message delivery
 - metadata-only route registry under `routes/registry.toml`
 - metadata-only route probes under `routes/probes.toml`

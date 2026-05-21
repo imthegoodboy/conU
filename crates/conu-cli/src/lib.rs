@@ -16,6 +16,7 @@ use std::time::Duration;
 use conu_core::agents::{
     self, AgentPresence, AgentRegistration, LocalAgentRecord, PresenceHeartbeat, SignedAgentCard,
 };
+use conu_core::direct_transport;
 use conu_core::messages::{self, DeliveryReceipt, InboxEntry, LocalMessage};
 use conu_core::observability::{self, LogRotationPolicy, LogRotationReport};
 use conu_core::policy::{self, PeerPolicyRecord, PeerPolicyUpdate};
@@ -1414,6 +1415,62 @@ fn render_remote_message_send(
             return CliOutput::failure(2, format!("conU messages send failed\n\n{error}"));
         }
     };
+    let selected_route = routes::selected_route_for_peer(home_override.clone(), peer_node_id)
+        .ok()
+        .flatten();
+    if selected_route
+        .as_ref()
+        .is_some_and(|route| route.transport == RouteTransport::DirectQuic && route.is_selected())
+    {
+        match direct_transport::send_direct_message(home_override.clone(), message.clone()) {
+            Ok(submission) => {
+                if parsed.json {
+                    return CliOutput::success(format!(
+                        r#"{{
+  "status": "sent_remote",
+  "fromAgentId": "{}",
+  "toAgentId": "{}",
+  "peerNodeId": "{}",
+  "envelopeId": "{}",
+  "payloadBytes": {},
+  "route": "direct-quic",
+  "contentsDisplayed": false
+}}"#,
+                        json_escape(&parsed.from_agent_id),
+                        json_escape(&parsed.to_agent_id),
+                        json_escape(&submission.peer_node_id),
+                        json_escape(&submission.envelope_id),
+                        payload_bytes
+                    ));
+                }
+
+                return CliOutput::success(format!(
+                    r"conU messages send
+
+status: sent directly
+from: {}
+to: {}
+peer: {}
+envelope: {}
+bytes: {}
+route: direct-quic
+
+privacy
+  payload view  contents are not displayed by conU",
+                    parsed.from_agent_id,
+                    parsed.to_agent_id,
+                    submission.peer_node_id,
+                    submission.envelope_id,
+                    payload_bytes
+                ));
+            }
+            Err(error) if error.is_safe_for_relay_fallback() => {}
+            Err(error) => {
+                return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
+            }
+        }
+    }
+
     let submission = match relay_delivery::submit_remote_message(home_override, message) {
         Ok(submission) => submission,
         Err(error) => {
@@ -4302,6 +4359,7 @@ fn render_identity_export(args: &[String], home_override: Option<PathBuf>) -> Cl
   "displayName": "{}",
   "exchangePublicKeyHex": "{}",
   "relayEndpoint": "{}",
+  "directQuicEndpoint": "{}",
   "signingPublicKeyHex": "{}",
   "signatureAlgorithm": "{}",
   "signatureKeyId": "{}",
@@ -4313,6 +4371,7 @@ fn render_identity_export(args: &[String], home_override: Option<PathBuf>) -> Cl
             json_escape(&card.display_name),
             json_escape(&card.exchange_public_key_hex),
             json_escape(&card.relay_endpoint),
+            json_escape(card.direct_quic_endpoint.as_deref().unwrap_or("")),
             json_escape(card.signing_public_key_hex.as_deref().unwrap_or("")),
             json_escape(card.signature_algorithm.as_deref().unwrap_or("")),
             json_escape(card.signature_key_id.as_deref().unwrap_or("")),
@@ -4328,12 +4387,13 @@ node: {}
 name: {}
 exchange public key: {}
 relay: {}
+direct QUIC: {}
 signing public key: {}
 signature key id: {}
 signature: {}
 
 share this public card with a peer, then import their card with:
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay {} --signing-key <hex> --signature <hex> --signature-key-id <id>
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay {} --direct <quic://host:port> --signing-key <hex> --signature <hex> --signature-key-id <id>
 
 privacy
   key view      public exchange key only
@@ -4343,6 +4403,9 @@ privacy
         card.display_name,
         card.exchange_public_key_hex,
         card.relay_endpoint,
+        card.direct_quic_endpoint
+            .as_deref()
+            .unwrap_or("not configured"),
         card.signing_public_key_hex
             .as_deref()
             .unwrap_or("not available"),
@@ -4423,6 +4486,7 @@ fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutp
         display_name: parsed.display_name,
         exchange_public_key_hex: parsed.exchange_key,
         relay_endpoint: parsed.relay_endpoint,
+        direct_quic_endpoint: parsed.direct_endpoint,
         signing_public_key_hex: parsed.signing_key,
         signature_algorithm: parsed.signature_algorithm,
         signature_key_id: parsed.signature_key_id,
@@ -4442,6 +4506,7 @@ fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutp
   "exchangeKeyTrusted": {},
   "peerCardSigned": {},
   "relayEndpoint": "{}",
+  "directQuicEndpoint": "{}",
   "contentsDisplayed": false
 }}"#,
             peer.status.as_str(),
@@ -4449,7 +4514,8 @@ fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutp
             json_escape(&peer.display_name),
             peer.exchange_public_key_hex.is_some(),
             peer.signature_hex.is_some(),
-            json_escape(peer.relay_endpoint.as_deref().unwrap_or(""))
+            json_escape(peer.relay_endpoint.as_deref().unwrap_or("")),
+            json_escape(peer.direct_quic_endpoint.as_deref().unwrap_or(""))
         ));
     }
 
@@ -4462,6 +4528,7 @@ name: {}
 exchange key: trusted
 peer card signature: {}
 relay: {}
+direct QUIC: {}
 
 next
   conu start
@@ -4477,7 +4544,10 @@ privacy
         } else {
             "not provided"
         },
-        peer.relay_endpoint.as_deref().unwrap_or("not configured")
+        peer.relay_endpoint.as_deref().unwrap_or("not configured"),
+        peer.direct_quic_endpoint
+            .as_deref()
+            .unwrap_or("not configured")
     ))
 }
 
@@ -4581,6 +4651,7 @@ fn render_peers_json(peers: &[TrustedPeer]) -> String {
       "exchangeKeyTrusted": {},
       "peerCardSigned": {},
       "relayEndpoint": "{}",
+      "directQuicEndpoint": "{}",
       "updatedAtUnix": {}
     }}"#,
                 json_escape(&peer.peer_node_id),
@@ -4590,6 +4661,7 @@ fn render_peers_json(peers: &[TrustedPeer]) -> String {
                 peer.exchange_public_key_hex.is_some(),
                 peer.signature_hex.is_some(),
                 json_escape(peer.relay_endpoint.as_deref().unwrap_or("")),
+                json_escape(peer.direct_quic_endpoint.as_deref().unwrap_or("")),
                 peer.updated_at_unix
             )
         })
@@ -4619,7 +4691,7 @@ fn render_peers_text(peers: &[TrustedPeer]) -> String {
             .iter()
             .map(|peer| {
                 format!(
-                    "  {}  {}  {}  key {}  signed {}  relay {}",
+                    "  {}  {}  {}  key {}  signed {}  relay {}  direct {}",
                     peer.peer_node_id,
                     peer.status.as_str(),
                     peer.display_name,
@@ -4633,7 +4705,8 @@ fn render_peers_text(peers: &[TrustedPeer]) -> String {
                     } else {
                         "no"
                     },
-                    peer.relay_endpoint.as_deref().unwrap_or("-")
+                    peer.relay_endpoint.as_deref().unwrap_or("-"),
+                    peer.direct_quic_endpoint.as_deref().unwrap_or("-")
                 )
             })
             .collect::<Vec<_>>()
@@ -4650,7 +4723,7 @@ next
   conu pair
   conu join <code>
   conu identity export
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--signing-key <hex> --signature <hex> --signature-key-id <id>]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>]
   conu peers policy <peer-node-id> --messages true --streams true
   conu peers revoke <peer-node-id>"
     )
@@ -4783,6 +4856,7 @@ struct PeerTrustArgs {
     display_name: String,
     exchange_key: String,
     relay_endpoint: String,
+    direct_endpoint: Option<String>,
     signing_key: Option<String>,
     signature_algorithm: Option<String>,
     signature_key_id: Option<String>,
@@ -4864,6 +4938,7 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
     let mut json = false;
     let mut exchange_key = None;
     let mut relay_endpoint = "ws://127.0.0.1:8787".to_string();
+    let mut direct_endpoint = None;
     let mut signing_key = None;
     let mut signature_algorithm = None;
     let mut signature_key_id = None;
@@ -4886,6 +4961,13 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
                     return Err(CliOutput::failure(2, render_peer_trust_usage()));
                 };
                 relay_endpoint = value.clone();
+                index += 1;
+            }
+            "--direct" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                };
+                direct_endpoint = Some(value.clone());
                 index += 1;
             }
             "--signing-key" => {
@@ -4941,6 +5023,7 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
         display_name: positional.remove(0),
         exchange_key,
         relay_endpoint,
+        direct_endpoint,
         signing_key,
         signature_algorithm,
         signature_key_id,
@@ -4950,7 +5033,7 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
 }
 
 fn render_peer_trust_usage() -> String {
-    "usage: conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--signature-algorithm <algorithm>] [--json]".to_string()
+    "usage: conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--signature-algorithm <algorithm>] [--json]".to_string()
 }
 
 fn parse_peer_revoke_args(args: &[String]) -> Result<(String, bool), CliOutput> {
@@ -6715,7 +6798,7 @@ Usage:
   conu security retire storage --confirm [--json]
   conu identity export [--json]
   conu peers [--json]
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--json]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--json]
   conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]
   conu peers revoke <peer-node-id> [--json]
   conu pair [--json]
@@ -7386,7 +7469,7 @@ mod tests {
         assert!(sync.stdout.contains("\"selectedDirect\": 0"));
         assert!(sync.stdout.contains("\"selectedRelay\": 1"));
         assert!(routes.stdout.contains("direct-quic"));
-        assert!(routes.stdout.contains("direct_quic_transport_inactive"));
+        assert!(routes.stdout.contains("direct_quic_probe_failed"));
         assert!(session_sync.stdout.contains("sessions: 1"));
         assert!(sessions.stdout.contains("route relay-websocket"));
         assert!(!routes.stdout.contains("private message contents"));

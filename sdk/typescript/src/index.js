@@ -149,6 +149,9 @@ export class ConuClient {
     if (options.relayEndpoint !== undefined) {
       args.push("--relay", String(options.relayEndpoint));
     }
+    if (options.directQuicEndpoint !== undefined) {
+      args.push("--direct", String(options.directQuicEndpoint));
+    }
     if (options.signingPublicKeyHex !== undefined) {
       args.push("--signing-key", String(options.signingPublicKeyHex));
     }

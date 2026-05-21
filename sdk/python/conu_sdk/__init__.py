@@ -133,6 +133,7 @@ class ConuClient:
         display_name: str,
         exchange_public_key_hex: str,
         relay_endpoint: str | None = None,
+        direct_quic_endpoint: str | None = None,
         signing_public_key_hex: str | None = None,
         signature_hex: str | None = None,
         signature_key_id: str | None = None,
@@ -149,6 +150,8 @@ class ConuClient:
         ]
         if relay_endpoint is not None:
             args.extend(["--relay", relay_endpoint])
+        if direct_quic_endpoint is not None:
+            args.extend(["--direct", direct_quic_endpoint])
         if signing_public_key_hex is not None:
             args.extend(["--signing-key", signing_public_key_hex])
         if signature_hex is not None:
