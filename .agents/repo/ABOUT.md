@@ -88,7 +88,7 @@ Implemented so far:
 - release build scripts under `scripts/`
 - packaging templates under `packaging/`, including Windows install, Linux systemd, macOS launchd, Docker relay, and npm launcher templates
 - platform-named release artifacts with SHA-256 checksum support
-- GitHub CI and release artifact workflows
+- GitHub CI and release artifact workflows, including Rust OS-matrix checks plus TypeScript SDK and npm launcher package checks
 - release checklist and observability docs
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs

@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-21
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-process same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, live-reloaded hashed relay credential manifest, relay accounting/quotas, direct route selection guard, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, Windows DPAPI secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, and TypeScript/JavaScript SDK wrapper passes are complete. Public hosted internet readiness remains scoped by the known managed hosted account auth, online credential issuance APIs, distributed hosted session state, distributed hosted accounting/dashboards, direct transport, multi-tenant hosted permission administration, managed hosted identity/key administration, and non-Windows keychain gaps.
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-process same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, live-reloaded hashed relay credential manifest, relay accounting/quotas, direct route selection guard, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, Windows DPAPI secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, and GitHub CI package-validation passes are complete. Public hosted internet readiness remains scoped by the known managed hosted account auth, online credential issuance APIs, distributed hosted session state, distributed hosted accounting/dashboards, direct transport, multi-tenant hosted permission administration, managed hosted identity/key administration, and non-Windows keychain gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -3477,6 +3477,42 @@ Next recommendation:
 
 - Open a PR for the TypeScript SDK wrapper slice, then prioritize either a TypeScript explicit receive helper or managed hosted relay/account work depending on the next release target.
 
+## Post Phase 15 GitHub CI Package Validation
+
+Status: completed
+
+Summary:
+
+- Added a dedicated GitHub Actions package-validation job that installs Node 20 and runs the TypeScript SDK package check plus the npm native launcher package check on every push and pull request.
+- Kept Python wrapper compile coverage in the existing Rust OS matrix.
+- Updated production-readiness docs, release checklist, repo memory, and implementation guardrails so package checks are part of the expected CI gate rather than only local release practice.
+
+Files changed:
+
+- `.github/workflows/ci.yml`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `plan.md`
+
+Validation:
+
+- `npm run check --prefix sdk/typescript` passed locally.
+- `npm run check --prefix packaging/npm/conu-cli` passed locally.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed locally.
+- `cargo fmt --all -- --check` passed locally.
+- `git diff --check` passed locally.
+
+Known gaps:
+
+- The CI package job validates syntax and package install logic only; it does not publish `@conu/sdk` or `@conu/cli`.
+- GitHub Release asset publication, npm publication, signed installers, managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted telemetry/dashboards, direct transport, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Open a PR for package CI validation and let GitHub prove the new job, then prioritize either a TypeScript explicit receive helper or managed hosted relay/account work.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -3534,4 +3570,5 @@ Add entries here when a phase is completed.
 2026-05-21 - Post Phase 15 identity-key rotation completed. Added `conu security rotate identity --confirm-peer-refresh`, archived old signing/exchange keys with secret-backend protection, refreshed active peer-card material, old exchange-key decrypt compatibility during refresh, payload-safe CLI/JSON reports, docs/skill updates, and validation. Next: managed hosted identity/key administration, non-Windows keychain support, direct QUIC/NAT traversal, and managed hosted account APIs.
 2026-05-21 - Post Phase 15 identity archive retirement completed. Added `conu security retire identity --confirm-peer-refresh-complete`, payload-safe archive retirement reports, active-key preservation with old-key decrypt compatibility removal after refresh, docs/skill updates, and validation. Next: managed hosted identity/key administration, non-Windows keychain support, direct QUIC/NAT traversal, and managed hosted account APIs.
 2026-05-21 - Post Phase 15 TypeScript SDK wrapper completed. Added dependency-free `@conu/sdk` wrapper around installed `conu`/`conud`, stdin-only payload helpers, TypeScript declarations, smoke tests, a local example, docs/skill updates, and full validation. Next: TypeScript explicit receive helper or managed hosted relay/account work.
+2026-05-21 - Post Phase 15 GitHub CI package validation completed. Added a Node 20 package job for `sdk/typescript` and `packaging/npm/conu-cli`, documented package checks as a CI gate, and validated package/Python checks locally. Next: TypeScript explicit receive helper or managed hosted relay/account work.
 ```
