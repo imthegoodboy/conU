@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, daemon-pumped relay-backed one-shot message, stream-chunk, and room-event delivery, peer-scoped default-deny policy grants for trusted peers, automatic encrypted signed agent-card exchange during session sync, bounded offline relay mailbox delivery with optional durable ciphertext files, offline scoped relay credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifests, metadata-only relay accounting/quotas, metadata-only relay abuse counters, payload-safe hosted dashboard snapshots, plus local rooms/pub/sub metadata with encrypted-at-rest local fanout to joined local participants.
+The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, daemon-pumped relay-backed one-shot message, stream-chunk, and room-event delivery, peer-scoped default-deny policy grants for trusted peers, automatic encrypted signed agent-card exchange during session sync, bounded offline relay mailbox delivery with optional durable ciphertext files, payload-safe relay mailbox retention audits, offline scoped relay credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifests, metadata-only relay accounting/quotas, metadata-only relay abuse counters, payload-safe hosted dashboard snapshots, plus local rooms/pub/sub metadata with encrypted-at-rest local fanout to joined local participants.
 
 Implemented so far:
 
@@ -43,7 +43,7 @@ Implemented so far:
 - relay-backed peer-encrypted remote stream chunks through `conu streams write`
 - relay-backed peer-encrypted room events through `conu rooms publish`
 - metadata-only room topic publish/subscribe grants through `conu rooms policy`
-- bounded relay mailbox delivery for peer-encrypted message, stream-chunk, room-event, and signed-card control envelopes when the target node reconnects, with optional `CONU_RELAY_MAILBOX_DIR` persistence across relay restarts
+- bounded relay mailbox delivery for peer-encrypted message, stream-chunk, room-event, and signed-card control envelopes when the target node reconnects, with optional `CONU_RELAY_MAILBOX_DIR` persistence across relay restarts and payload-safe `conu-relay --mailbox-audit` retention snapshots
 - daemon-owned relay send/receive pump with reusable relay sessions and same-node resume when relay config or trusted relay peer endpoints exist, plus optional `CONU_RELAY_SESSION_STATE_DIR` metadata persistence across relay restarts
 - explicit manual relay send/receive sync through `conu relay sync`
 - replay protection for local message request and envelope ids
