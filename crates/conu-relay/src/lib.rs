@@ -39,6 +39,7 @@ const RELAY_MAILBOX_FILE_VERSION: &str = "1";
 const RELAY_SESSION_FILE_VERSION: &str = "1";
 const RELAY_CREDENTIALS_FILE_VERSION: &str = "1";
 const RELAY_ACCOUNTING_FILE_VERSION: &str = "1";
+const HOSTED_TENANT_FILE_VERSION: &str = "1";
 const LOCAL_DEV_TOKEN: &str = "local-dev-token";
 const MIN_PUBLIC_BIND_TOKEN_LEN: usize = 24;
 const MAX_TOKEN_LEN: usize = 200;
@@ -136,6 +137,7 @@ pub enum RelayAdminConfig {
     Token {
         token: String,
         credentials_file: PathBuf,
+        tenants_file: Option<PathBuf>,
     },
 }
 
@@ -160,7 +162,28 @@ impl RelayAdminConfig {
         Ok(Self::Token {
             token,
             credentials_file,
+            tenants_file: None,
         })
+    }
+
+    fn with_tenants_file(mut self, tenants_file: impl Into<PathBuf>) -> Result<Self, RelayError> {
+        let tenants_file = tenants_file.into();
+        if tenants_file.as_os_str().is_empty() {
+            return Err(RelayError::InvalidConfig(
+                "relay admin tenants file cannot be empty",
+            ));
+        }
+        match &mut self {
+            Self::Disabled => Err(RelayError::InvalidConfig(
+                "relay admin tenants file requires admin token configuration",
+            )),
+            Self::Token {
+                tenants_file: slot, ..
+            } => {
+                *slot = Some(tenants_file);
+                Ok(self)
+            }
+        }
     }
 
     fn authorize(&self, token: &str) -> bool {
@@ -180,6 +203,13 @@ impl RelayAdminConfig {
             } => Some(credentials_file.as_path()),
         }
     }
+
+    fn tenants_file(&self) -> Option<&Path> {
+        match self {
+            Self::Disabled => None,
+            Self::Token { tenants_file, .. } => tenants_file.as_deref(),
+        }
+    }
 }
 
 impl fmt::Debug for RelayAdminConfig {
@@ -192,6 +222,7 @@ impl fmt::Debug for RelayAdminConfig {
                 .debug_struct("RelayAdminConfig::Token")
                 .field("token", &"<redacted>")
                 .field("credentials_file", credentials_file)
+                .field("tenants_file", &self.tenants_file())
                 .finish(),
         }
     }
@@ -341,6 +372,81 @@ pub struct HostedCredentialAudit {
     pub expired: usize,
     pub accounts: usize,
     pub token_displayed: bool,
+    pub contents_displayed: bool,
+}
+
+/// Hosted tenant/account lifecycle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedTenantStatus {
+    Active,
+    Revoked,
+}
+
+impl HostedTenantStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Revoked => "revoked",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, RelayError> {
+        match value.trim() {
+            "active" => Ok(Self::Active),
+            "revoked" => Ok(Self::Revoked),
+            _ => Err(RelayError::InvalidConfig(
+                "hosted tenant status must be active or revoked",
+            )),
+        }
+    }
+}
+
+/// Hosted permission metadata for a node inside an account.
+///
+/// These flags are an operator-side hosted boundary. They do not grant local
+/// peer permissions; conUD still enforces local peer policy before delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HostedTenantPermissions {
+    pub messages: bool,
+    pub streams: bool,
+    pub rooms: bool,
+    pub files: bool,
+    pub mailbox: bool,
+}
+
+impl HostedTenantPermissions {
+    pub const fn any(self) -> bool {
+        self.messages || self.streams || self.rooms || self.files || self.mailbox
+    }
+}
+
+/// Payload-safe result of updating hosted tenant metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedTenantManifestUpdate {
+    pub path: PathBuf,
+    pub account_id: String,
+    pub node_id: Option<String>,
+    pub status: HostedTenantStatus,
+    pub tenants: usize,
+    pub nodes: usize,
+    pub token_displayed: bool,
+    pub key_material_displayed: bool,
+    pub contents_displayed: bool,
+}
+
+/// Metadata-only hosted tenant audit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedTenantAudit {
+    pub account_id: Option<String>,
+    pub tenants: usize,
+    pub active_tenants: usize,
+    pub revoked_tenants: usize,
+    pub nodes: usize,
+    pub active_nodes: usize,
+    pub revoked_nodes: usize,
+    pub policies: usize,
+    pub token_displayed: bool,
+    pub key_material_displayed: bool,
     pub contents_displayed: bool,
 }
 
@@ -857,6 +963,14 @@ impl RelayConfig {
         self.admin = RelayAdminConfig::with_token(&self.bind_addr, token, credentials_file)?;
         Ok(self)
     }
+
+    pub fn with_admin_tenants_file(
+        mut self,
+        tenants_file: impl Into<PathBuf>,
+    ) -> Result<Self, RelayError> {
+        self.admin = self.admin.with_tenants_file(tenants_file)?;
+        Ok(self)
+    }
 }
 
 /// Read a scoped relay credential manifest from disk.
@@ -1244,6 +1358,265 @@ pub fn audit_hosted_relay_credentials_file(
     })
 }
 
+/// Add or reactivate a hosted tenant account in a metadata-only registry.
+pub fn upsert_hosted_tenant_in_file(
+    path: impl AsRef<Path>,
+    account_id: impl Into<String>,
+) -> Result<HostedTenantManifestUpdate, RelayError> {
+    let path = path.as_ref();
+    let account_id = validate_account_id(account_id.into())?;
+    let mut manifest = load_hosted_tenant_manifest_or_empty(path)?;
+    let now_unix = current_unix_seconds();
+
+    match manifest
+        .tenants
+        .iter_mut()
+        .find(|tenant| tenant.account_id == account_id)
+    {
+        Some(tenant) => {
+            tenant.status = HostedTenantStatus::Active;
+            tenant.updated_at_unix = Some(now_unix);
+        }
+        None => manifest.tenants.push(HostedTenantRecord {
+            account_id: account_id.clone(),
+            status: HostedTenantStatus::Active,
+            created_at_unix: Some(now_unix),
+            updated_at_unix: Some(now_unix),
+        }),
+    }
+
+    write_hosted_tenant_manifest(path, &manifest)?;
+    Ok(hosted_tenant_update(
+        path,
+        account_id,
+        None,
+        HostedTenantStatus::Active,
+        &manifest,
+    ))
+}
+
+/// Mark a hosted tenant account revoked without deleting its metadata.
+pub fn revoke_hosted_tenant_in_file(
+    path: impl AsRef<Path>,
+    account_id: impl Into<String>,
+) -> Result<HostedTenantManifestUpdate, RelayError> {
+    let path = path.as_ref();
+    let account_id = validate_account_id(account_id.into())?;
+    let mut manifest = load_hosted_tenant_manifest(path)?;
+    let now_unix = current_unix_seconds();
+    let Some(tenant) = manifest
+        .tenants
+        .iter_mut()
+        .find(|tenant| tenant.account_id == account_id)
+    else {
+        return Err(RelayError::InvalidConfig(
+            "hosted tenant account was not found",
+        ));
+    };
+    tenant.status = HostedTenantStatus::Revoked;
+    tenant.updated_at_unix = Some(now_unix);
+
+    write_hosted_tenant_manifest(path, &manifest)?;
+    Ok(hosted_tenant_update(
+        path,
+        account_id,
+        None,
+        HostedTenantStatus::Revoked,
+        &manifest,
+    ))
+}
+
+/// Add or reactivate one node's hosted policy metadata.
+///
+/// Hosted permissions are operator metadata only. They do not grant local peer
+/// policy inside a user's runtime.
+pub fn upsert_hosted_tenant_node_in_file(
+    path: impl AsRef<Path>,
+    account_id: impl Into<String>,
+    node_id: impl Into<String>,
+    permissions: HostedTenantPermissions,
+    signing_key_id: Option<String>,
+    exchange_key_id: Option<String>,
+) -> Result<HostedTenantManifestUpdate, RelayError> {
+    let path = path.as_ref();
+    let account_id = validate_account_id(account_id.into())?;
+    let node_id = validate_node_id(node_id.into())?;
+    let signing_key_id = signing_key_id
+        .map(|value| validate_key_id(value, "signing key id"))
+        .transpose()?;
+    let exchange_key_id = exchange_key_id
+        .map(|value| validate_key_id(value, "exchange key id"))
+        .transpose()?;
+    let mut manifest = load_hosted_tenant_manifest(path)?;
+    ensure_tenant_active(&manifest, &account_id)?;
+    let now_unix = current_unix_seconds();
+
+    match manifest
+        .nodes
+        .iter_mut()
+        .find(|node| node.node_id == node_id)
+    {
+        Some(node) if node.account_id != account_id => {
+            return Err(RelayError::InvalidConfig(
+                "hosted tenant node belongs to a different account",
+            ));
+        }
+        Some(node) => {
+            node.status = HostedTenantStatus::Active;
+            node.permissions = permissions;
+            node.signing_key_id = signing_key_id;
+            node.exchange_key_id = exchange_key_id;
+            node.updated_at_unix = Some(now_unix);
+        }
+        None => manifest.nodes.push(HostedTenantNodeRecord {
+            account_id: account_id.clone(),
+            node_id: node_id.clone(),
+            status: HostedTenantStatus::Active,
+            permissions,
+            signing_key_id,
+            exchange_key_id,
+            created_at_unix: Some(now_unix),
+            updated_at_unix: Some(now_unix),
+        }),
+    }
+
+    write_hosted_tenant_manifest(path, &manifest)?;
+    Ok(hosted_tenant_update(
+        path,
+        account_id,
+        Some(node_id),
+        HostedTenantStatus::Active,
+        &manifest,
+    ))
+}
+
+/// Revoke one hosted node without deleting its policy metadata.
+pub fn revoke_hosted_tenant_node_in_file(
+    path: impl AsRef<Path>,
+    account_id: impl Into<String>,
+    node_id: impl Into<String>,
+) -> Result<HostedTenantManifestUpdate, RelayError> {
+    let path = path.as_ref();
+    let account_id = validate_account_id(account_id.into())?;
+    let node_id = validate_node_id(node_id.into())?;
+    let mut manifest = load_hosted_tenant_manifest(path)?;
+    ensure_tenant_exists(&manifest, &account_id)?;
+    let now_unix = current_unix_seconds();
+    let Some(node) = manifest
+        .nodes
+        .iter_mut()
+        .find(|node| node.account_id == account_id && node.node_id == node_id)
+    else {
+        return Err(RelayError::InvalidConfig(
+            "hosted tenant node was not found",
+        ));
+    };
+    node.status = HostedTenantStatus::Revoked;
+    node.updated_at_unix = Some(now_unix);
+
+    write_hosted_tenant_manifest(path, &manifest)?;
+    Ok(hosted_tenant_update(
+        path,
+        account_id,
+        Some(node_id),
+        HostedTenantStatus::Revoked,
+        &manifest,
+    ))
+}
+
+/// Summarize hosted tenant metadata without exposing payloads, tokens, hashes,
+/// private keys, ciphertext bodies, or manifest contents.
+pub fn audit_hosted_tenants_file(
+    path: impl AsRef<Path>,
+    account_id: Option<&str>,
+) -> Result<HostedTenantAudit, RelayError> {
+    let path = path.as_ref();
+    let account_id = account_id
+        .map(|value| validate_account_id(value.to_string()))
+        .transpose()?;
+    let manifest = match fs::read_to_string(path) {
+        Ok(contents) => parse_hosted_tenant_manifest(&contents)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => HostedTenantManifest::default(),
+        Err(error) => return Err(RelayError::io("read hosted tenant file", error)),
+    };
+    let mut tenants = 0_usize;
+    let mut active_tenants = 0_usize;
+    let mut revoked_tenants = 0_usize;
+    let mut nodes = 0_usize;
+    let mut active_nodes = 0_usize;
+    let mut revoked_nodes = 0_usize;
+    let mut policies = 0_usize;
+
+    for tenant in &manifest.tenants {
+        if account_id
+            .as_deref()
+            .is_some_and(|target| target != tenant.account_id)
+        {
+            continue;
+        }
+        tenants += 1;
+        match tenant.status {
+            HostedTenantStatus::Active => active_tenants += 1,
+            HostedTenantStatus::Revoked => revoked_tenants += 1,
+        }
+    }
+    for node in &manifest.nodes {
+        if account_id
+            .as_deref()
+            .is_some_and(|target| target != node.account_id)
+        {
+            continue;
+        }
+        nodes += 1;
+        match node.status {
+            HostedTenantStatus::Active => active_nodes += 1,
+            HostedTenantStatus::Revoked => revoked_nodes += 1,
+        }
+        if node.permissions.any() {
+            policies += 1;
+        }
+    }
+
+    Ok(HostedTenantAudit {
+        account_id,
+        tenants,
+        active_tenants,
+        revoked_tenants,
+        nodes,
+        active_nodes,
+        revoked_nodes,
+        policies,
+        token_displayed: false,
+        key_material_displayed: false,
+        contents_displayed: false,
+    })
+}
+
+fn hosted_tenant_registry_authorizes_node(
+    path: impl AsRef<Path>,
+    node_id: &str,
+) -> Result<(), RelayError> {
+    let node_id = validate_node_id(node_id.to_string())?;
+    let manifest = load_hosted_tenant_manifest_or_empty(path.as_ref())?;
+    let Some(node) = manifest.nodes.iter().find(|node| node.node_id == node_id) else {
+        return Err(RelayError::InvalidConfig(
+            "hosted tenant node was not found",
+        ));
+    };
+    ensure_account_node_active(&manifest, &node.account_id, &node.node_id)
+}
+
+fn hosted_tenant_registry_authorizes_account_node(
+    path: impl AsRef<Path>,
+    account_id: &str,
+    node_id: &str,
+) -> Result<(), RelayError> {
+    let account_id = validate_account_id(account_id.to_string())?;
+    let node_id = validate_node_id(node_id.to_string())?;
+    let manifest = load_hosted_tenant_manifest_or_empty(path.as_ref())?;
+    ensure_account_node_active(&manifest, &account_id, &node_id)
+}
+
 /// Return the SHA-256 hash used by relay credential manifest entries.
 pub fn relay_token_sha256_hex(token: &str) -> Result<String, RelayError> {
     validate_token(token)?;
@@ -1448,6 +1821,331 @@ fn credential_manifest_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
         file_name.to_string_lossy(),
         current_unix_nanos()
     )))
+}
+
+fn load_hosted_tenant_manifest_or_empty(path: &Path) -> Result<HostedTenantManifest, RelayError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => parse_hosted_tenant_manifest(&contents),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Ok(HostedTenantManifest::default())
+        }
+        Err(error) => Err(RelayError::io("read hosted tenant file", error)),
+    }
+}
+
+fn load_hosted_tenant_manifest(path: impl AsRef<Path>) -> Result<HostedTenantManifest, RelayError> {
+    let path = path.as_ref();
+    let contents = fs::read_to_string(path)
+        .map_err(|error| RelayError::io("read hosted tenant file", error))?;
+    parse_hosted_tenant_manifest(&contents)
+}
+
+fn parse_hosted_tenant_manifest(contents: &str) -> Result<HostedTenantManifest, RelayError> {
+    let mut version = None::<String>;
+    let mut section = None::<HostedTenantManifestSection>;
+    let mut tenants = Vec::new();
+    let mut nodes = Vec::new();
+
+    for (line_index, raw_line) in contents.lines().enumerate() {
+        let line_number = line_index + 1;
+        let line = strip_config_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "[[tenant]]" || line == "[[tenant_node]]" {
+            if let Some(previous) = section.take() {
+                push_hosted_tenant_section(previous, &mut tenants, &mut nodes)?;
+            }
+            section = if line == "[[tenant]]" {
+                Some(HostedTenantManifestSection::Tenant(
+                    HostedTenantFileRecord::default(),
+                ))
+            } else {
+                Some(HostedTenantManifestSection::Node(
+                    HostedTenantNodeFileRecord::default(),
+                ))
+            };
+            continue;
+        }
+
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            RelayError::InvalidConfigValue(format!(
+                "hosted tenant file line {line_number} must use key = value"
+            ))
+        })?;
+        let key = key.trim();
+        let value = clean_config_value(value);
+
+        match section.as_mut() {
+            Some(HostedTenantManifestSection::Tenant(record)) => {
+                record.set(key, &value, line_number)?;
+            }
+            Some(HostedTenantManifestSection::Node(record)) => {
+                record.set(key, &value, line_number)?;
+            }
+            None => match key {
+                "version" => version = Some(value),
+                _ => {
+                    return Err(RelayError::InvalidConfigValue(format!(
+                        "hosted tenant file line {line_number} has key before a section"
+                    )));
+                }
+            },
+        }
+    }
+
+    if let Some(previous) = section.take() {
+        push_hosted_tenant_section(previous, &mut tenants, &mut nodes)?;
+    }
+
+    match version.as_deref() {
+        Some(HOSTED_TENANT_FILE_VERSION) => {}
+        Some(_) => {
+            return Err(RelayError::InvalidConfig(
+                "hosted tenant file version is unsupported",
+            ));
+        }
+        None => {
+            return Err(RelayError::InvalidConfig(
+                "hosted tenant file version is required",
+            ));
+        }
+    }
+
+    validate_hosted_tenant_manifest(&tenants, &nodes)?;
+    Ok(HostedTenantManifest { tenants, nodes })
+}
+
+enum HostedTenantManifestSection {
+    Tenant(HostedTenantFileRecord),
+    Node(HostedTenantNodeFileRecord),
+}
+
+fn push_hosted_tenant_section(
+    section: HostedTenantManifestSection,
+    tenants: &mut Vec<HostedTenantRecord>,
+    nodes: &mut Vec<HostedTenantNodeRecord>,
+) -> Result<(), RelayError> {
+    match section {
+        HostedTenantManifestSection::Tenant(record) => tenants.push(record.into_record()?),
+        HostedTenantManifestSection::Node(record) => nodes.push(record.into_record()?),
+    }
+    Ok(())
+}
+
+fn validate_hosted_tenant_manifest(
+    tenants: &[HostedTenantRecord],
+    nodes: &[HostedTenantNodeRecord],
+) -> Result<(), RelayError> {
+    let mut account_ids = HashSet::new();
+    for tenant in tenants {
+        if !account_ids.insert(tenant.account_id.clone()) {
+            return Err(RelayError::InvalidConfig(
+                "hosted tenant accounts must be unique",
+            ));
+        }
+    }
+    let mut node_ids = HashSet::new();
+    for node in nodes {
+        if !account_ids.contains(&node.account_id) {
+            return Err(RelayError::InvalidConfig(
+                "hosted tenant node references an unknown account",
+            ));
+        }
+        if !node_ids.insert(node.node_id.clone()) {
+            return Err(RelayError::InvalidConfig(
+                "hosted tenant nodes must be unique",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_hosted_tenant_manifest(
+    path: &Path,
+    manifest: &HostedTenantManifest,
+) -> Result<(), RelayError> {
+    validate_hosted_tenant_manifest(&manifest.tenants, &manifest.nodes)?;
+    let mut tenants = manifest.tenants.clone();
+    tenants.sort_by(|left, right| left.account_id.cmp(&right.account_id));
+    let mut nodes = manifest.nodes.clone();
+    nodes.sort_by(|left, right| {
+        left.account_id
+            .cmp(&right.account_id)
+            .then(left.node_id.cmp(&right.node_id))
+    });
+
+    let mut contents = format!("version = \"{}\"\n", HOSTED_TENANT_FILE_VERSION);
+    for tenant in &tenants {
+        contents.push_str("\n[[tenant]]\n");
+        contents.push_str(&format!(
+            "account_id = \"{}\"\nstatus = \"{}\"\n",
+            tenant.account_id,
+            tenant.status.as_str()
+        ));
+        if let Some(created_at_unix) = tenant.created_at_unix {
+            contents.push_str(&format!("created_at_unix = {created_at_unix}\n"));
+        }
+        if let Some(updated_at_unix) = tenant.updated_at_unix {
+            contents.push_str(&format!("updated_at_unix = {updated_at_unix}\n"));
+        }
+        contents.push_str(
+            "payload_displayed = false\ntoken_displayed = false\nkey_material_displayed = false\ncontents_displayed = false\n",
+        );
+    }
+    for node in &nodes {
+        contents.push_str("\n[[tenant_node]]\n");
+        contents.push_str(&format!(
+            "account_id = \"{}\"\nnode_id = \"{}\"\nstatus = \"{}\"\nmessages = {}\nstreams = {}\nrooms = {}\nfiles = {}\nmailbox = {}\n",
+            node.account_id,
+            node.node_id,
+            node.status.as_str(),
+            node.permissions.messages,
+            node.permissions.streams,
+            node.permissions.rooms,
+            node.permissions.files,
+            node.permissions.mailbox
+        ));
+        if let Some(signing_key_id) = &node.signing_key_id {
+            contents.push_str(&format!("signing_key_id = \"{signing_key_id}\"\n"));
+        }
+        if let Some(exchange_key_id) = &node.exchange_key_id {
+            contents.push_str(&format!("exchange_key_id = \"{exchange_key_id}\"\n"));
+        }
+        if let Some(created_at_unix) = node.created_at_unix {
+            contents.push_str(&format!("created_at_unix = {created_at_unix}\n"));
+        }
+        if let Some(updated_at_unix) = node.updated_at_unix {
+            contents.push_str(&format!("updated_at_unix = {updated_at_unix}\n"));
+        }
+        contents.push_str(
+            "payload_displayed = false\ntoken_displayed = false\nkey_material_displayed = false\ncontents_displayed = false\n",
+        );
+    }
+
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)
+            .map_err(|error| RelayError::io("create hosted tenant file directory", error))?;
+    }
+    let temp_path = credential_manifest_temp_path(path)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|error| RelayError::io("create temporary hosted tenant file", error))?;
+    if let Err(error) = file
+        .write_all(contents.as_bytes())
+        .and_then(|_| file.sync_all())
+    {
+        let _ = fs::remove_file(&temp_path);
+        return Err(RelayError::io("write temporary hosted tenant file", error));
+    }
+    drop(file);
+
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| RelayError::io("replace hosted tenant file", error))?;
+    }
+
+    if let Err(error) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(RelayError::io("replace hosted tenant file", error));
+    }
+    Ok(())
+}
+
+fn hosted_tenant_update(
+    path: &Path,
+    account_id: String,
+    node_id: Option<String>,
+    status: HostedTenantStatus,
+    manifest: &HostedTenantManifest,
+) -> HostedTenantManifestUpdate {
+    HostedTenantManifestUpdate {
+        path: path.to_path_buf(),
+        account_id,
+        node_id,
+        status,
+        tenants: manifest.tenants.len(),
+        nodes: manifest.nodes.len(),
+        token_displayed: false,
+        key_material_displayed: false,
+        contents_displayed: false,
+    }
+}
+
+fn ensure_tenant_exists(
+    manifest: &HostedTenantManifest,
+    account_id: &str,
+) -> Result<(), RelayError> {
+    manifest
+        .tenants
+        .iter()
+        .find(|tenant| tenant.account_id == account_id)
+        .map(|_| ())
+        .ok_or(RelayError::InvalidConfig(
+            "hosted tenant account was not found",
+        ))
+}
+
+fn ensure_tenant_active(
+    manifest: &HostedTenantManifest,
+    account_id: &str,
+) -> Result<(), RelayError> {
+    let tenant = manifest
+        .tenants
+        .iter()
+        .find(|tenant| tenant.account_id == account_id)
+        .ok_or(RelayError::InvalidConfig(
+            "hosted tenant account was not found",
+        ))?;
+    if tenant.status != HostedTenantStatus::Active {
+        return Err(RelayError::InvalidConfig(
+            "hosted tenant account is revoked",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_account_node_active(
+    manifest: &HostedTenantManifest,
+    account_id: &str,
+    node_id: &str,
+) -> Result<(), RelayError> {
+    ensure_tenant_active(manifest, account_id)?;
+    let node = manifest
+        .nodes
+        .iter()
+        .find(|node| node.account_id == account_id && node.node_id == node_id)
+        .ok_or(RelayError::InvalidConfig(
+            "hosted tenant node was not found",
+        ))?;
+    if node.status != HostedTenantStatus::Active {
+        return Err(RelayError::InvalidConfig("hosted tenant node is revoked"));
+    }
+    Ok(())
+}
+
+fn parse_manifest_bool(value: &str, key: &str, line_number: usize) -> Result<bool, RelayError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(RelayError::InvalidConfigValue(format!(
+            "hosted tenant file line {line_number} {key} must be true or false"
+        ))),
+    }
+}
+
+fn parse_manifest_u64(value: &str, key: &str, line_number: usize) -> Result<u64, RelayError> {
+    value.parse::<u64>().map_err(|_| {
+        RelayError::InvalidConfigValue(format!(
+            "hosted tenant file line {line_number} {key} must be an unsigned integer"
+        ))
+    })
 }
 
 fn authorize_scoped_credentials(
@@ -1720,6 +2418,164 @@ status = \"{}\"\n",
         Ok(credential
             .with_status(self.status.unwrap_or(RelayCredentialStatus::Active))
             .with_expires_at_unix(self.expires_at_unix))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostedTenantManifest {
+    tenants: Vec<HostedTenantRecord>,
+    nodes: Vec<HostedTenantNodeRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostedTenantRecord {
+    account_id: String,
+    status: HostedTenantStatus,
+    created_at_unix: Option<u64>,
+    updated_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostedTenantNodeRecord {
+    account_id: String,
+    node_id: String,
+    status: HostedTenantStatus,
+    permissions: HostedTenantPermissions,
+    signing_key_id: Option<String>,
+    exchange_key_id: Option<String>,
+    created_at_unix: Option<u64>,
+    updated_at_unix: Option<u64>,
+}
+
+#[derive(Clone, Default)]
+struct HostedTenantFileRecord {
+    account_id: Option<String>,
+    status: Option<HostedTenantStatus>,
+    created_at_unix: Option<u64>,
+    updated_at_unix: Option<u64>,
+}
+
+#[derive(Clone, Default)]
+struct HostedTenantNodeFileRecord {
+    account_id: Option<String>,
+    node_id: Option<String>,
+    status: Option<HostedTenantStatus>,
+    messages: Option<bool>,
+    streams: Option<bool>,
+    rooms: Option<bool>,
+    files: Option<bool>,
+    mailbox: Option<bool>,
+    signing_key_id: Option<String>,
+    exchange_key_id: Option<String>,
+    created_at_unix: Option<u64>,
+    updated_at_unix: Option<u64>,
+}
+
+impl HostedTenantFileRecord {
+    fn set(&mut self, key: &str, value: &str, line_number: usize) -> Result<(), RelayError> {
+        match key {
+            "account_id" => self.account_id = Some(validate_account_id(value.to_string())?),
+            "status" => self.status = Some(HostedTenantStatus::parse(value)?),
+            "created_at_unix" => {
+                self.created_at_unix = Some(parse_manifest_u64(value, key, line_number)?);
+            }
+            "updated_at_unix" => {
+                self.updated_at_unix = Some(parse_manifest_u64(value, key, line_number)?);
+            }
+            "payload_displayed"
+            | "token_displayed"
+            | "key_material_displayed"
+            | "contents_displayed" => {
+                if value != "false" {
+                    return Err(RelayError::InvalidConfigValue(format!(
+                        "hosted tenant file line {line_number} {key} must be false"
+                    )));
+                }
+            }
+            _ => {
+                return Err(RelayError::InvalidConfigValue(format!(
+                    "hosted tenant file line {line_number} uses unsupported tenant key {key}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn into_record(self) -> Result<HostedTenantRecord, RelayError> {
+        Ok(HostedTenantRecord {
+            account_id: self.account_id.ok_or(RelayError::InvalidConfig(
+                "hosted tenant entry is missing account_id",
+            ))?,
+            status: self.status.unwrap_or(HostedTenantStatus::Active),
+            created_at_unix: self.created_at_unix,
+            updated_at_unix: self.updated_at_unix,
+        })
+    }
+}
+
+impl HostedTenantNodeFileRecord {
+    fn set(&mut self, key: &str, value: &str, line_number: usize) -> Result<(), RelayError> {
+        match key {
+            "account_id" => self.account_id = Some(validate_account_id(value.to_string())?),
+            "node_id" => self.node_id = Some(validate_node_id(value.to_string())?),
+            "status" => self.status = Some(HostedTenantStatus::parse(value)?),
+            "messages" => self.messages = Some(parse_manifest_bool(value, key, line_number)?),
+            "streams" => self.streams = Some(parse_manifest_bool(value, key, line_number)?),
+            "rooms" => self.rooms = Some(parse_manifest_bool(value, key, line_number)?),
+            "files" => self.files = Some(parse_manifest_bool(value, key, line_number)?),
+            "mailbox" => self.mailbox = Some(parse_manifest_bool(value, key, line_number)?),
+            "signing_key_id" => {
+                self.signing_key_id = Some(validate_key_id(value.to_string(), "signing key id")?);
+            }
+            "exchange_key_id" => {
+                self.exchange_key_id = Some(validate_key_id(value.to_string(), "exchange key id")?);
+            }
+            "created_at_unix" => {
+                self.created_at_unix = Some(parse_manifest_u64(value, key, line_number)?);
+            }
+            "updated_at_unix" => {
+                self.updated_at_unix = Some(parse_manifest_u64(value, key, line_number)?);
+            }
+            "payload_displayed"
+            | "token_displayed"
+            | "key_material_displayed"
+            | "contents_displayed" => {
+                if value != "false" {
+                    return Err(RelayError::InvalidConfigValue(format!(
+                        "hosted tenant file line {line_number} {key} must be false"
+                    )));
+                }
+            }
+            _ => {
+                return Err(RelayError::InvalidConfigValue(format!(
+                    "hosted tenant file line {line_number} uses unsupported node key {key}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn into_record(self) -> Result<HostedTenantNodeRecord, RelayError> {
+        Ok(HostedTenantNodeRecord {
+            account_id: self.account_id.ok_or(RelayError::InvalidConfig(
+                "hosted tenant node entry is missing account_id",
+            ))?,
+            node_id: self.node_id.ok_or(RelayError::InvalidConfig(
+                "hosted tenant node entry is missing node_id",
+            ))?,
+            status: self.status.unwrap_or(HostedTenantStatus::Active),
+            permissions: HostedTenantPermissions {
+                messages: self.messages.unwrap_or(false),
+                streams: self.streams.unwrap_or(false),
+                rooms: self.rooms.unwrap_or(false),
+                files: self.files.unwrap_or(false),
+                mailbox: self.mailbox.unwrap_or(false),
+            },
+            signing_key_id: self.signing_key_id,
+            exchange_key_id: self.exchange_key_id,
+            created_at_unix: self.created_at_unix,
+            updated_at_unix: self.updated_at_unix,
+        })
     }
 }
 
@@ -2105,6 +2961,16 @@ impl RelayHub {
                 } else {
                     "rotated"
                 };
+                if let Some(tenants_file) = self.admin.tenants_file() {
+                    if let Err(error) = hosted_tenant_registry_authorizes_account_node(
+                        tenants_file,
+                        account_id,
+                        node_id,
+                    ) {
+                        return self
+                            .admin_result_for_update_error(request, account_id, node_id, error);
+                    }
+                }
                 if let Err(error) = upsert_hosted_relay_credential_hash_in_file(
                     &credentials_file,
                     account_id,
@@ -2316,6 +3182,18 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                         }),
                     )?;
                     break;
+                }
+                if let Some(tenants_file) = hub.admin.tenants_file() {
+                    if hosted_tenant_registry_authorizes_node(tenants_file, &hello.node_id).is_err()
+                    {
+                        write_text_frame(
+                            &mut stream,
+                            &render_server_frame(&RelayServerFrame::Error {
+                                reason: "unauthorized".to_string(),
+                            }),
+                        )?;
+                        break;
+                    }
                 }
                 let (session_id, resumed, queued) = hub.add_client(
                     hello.node_id.clone(),
@@ -3577,6 +4455,29 @@ fn validate_account_id_ref(value: &str) -> Result<&str, RelayError> {
     Ok(value)
 }
 
+fn validate_key_id(value: String, label: &'static str) -> Result<String, RelayError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(RelayError::InvalidConfigValue(format!(
+            "{label} cannot be empty"
+        )));
+    }
+    if value.len() > 160 {
+        return Err(RelayError::InvalidConfigValue(format!(
+            "{label} is too long"
+        )));
+    }
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return Err(RelayError::InvalidConfigValue(format!(
+            "{label} must use ASCII letters, numbers, dash, underscore, or dot"
+        )));
+    }
+    Ok(value)
+}
+
 fn validate_token(value: &str) -> Result<(), RelayError> {
     if value.trim().is_empty() || value.chars().any(char::is_whitespace) {
         return Err(RelayError::InvalidConfig(
@@ -3620,6 +4521,16 @@ fn hosted_admin_error_status(error: &RelayError) -> Option<&'static str> {
     let message = error.to_string();
     if message.contains("already exists") {
         Some("already_exists")
+    } else if message.contains("hosted tenant account was not found") {
+        Some("tenant_not_found")
+    } else if message.contains("hosted tenant account is revoked") {
+        Some("tenant_revoked")
+    } else if message.contains("hosted tenant node was not found") {
+        Some("tenant_node_not_found")
+    } else if message.contains("hosted tenant node is revoked") {
+        Some("tenant_node_revoked")
+    } else if message.contains("hosted tenant node belongs to a different account") {
+        Some("account_mismatch")
     } else if message.contains("was not found") {
         Some("not_found")
     } else if message.contains("different account") {
@@ -4409,6 +5320,200 @@ token_displayed = false\n",
         assert!(response.contains("ERROR reason=admin_unauthorized"));
         assert!(!response.contains(admin_token));
         assert!(!response.contains(wrong_admin_token));
+    }
+
+    #[test]
+    fn hosted_tenant_registry_updates_and_audits_without_secret_material() {
+        let home = test_home("hosted-tenant-registry-safe");
+        let tenants_path = home.join("tenants.toml");
+        let token = "hosted-node-token-that-must-not-appear";
+        let token_hash = relay_token_sha256_hex(token).expect("hash generated");
+        let permissions = HostedTenantPermissions {
+            messages: true,
+            streams: true,
+            rooms: false,
+            files: false,
+            mailbox: true,
+        };
+
+        let tenant_update =
+            upsert_hosted_tenant_in_file(&tenants_path, "account.prod").expect("tenant upserts");
+        let node_update = upsert_hosted_tenant_node_in_file(
+            &tenants_path,
+            "account.prod",
+            "node.hosted",
+            permissions,
+            Some("signing.key.1".to_string()),
+            Some("exchange.key.1".to_string()),
+        )
+        .expect("tenant node upserts");
+        let audit =
+            audit_hosted_tenants_file(&tenants_path, Some("account.prod")).expect("tenant audit");
+        let manifest = fs::read_to_string(&tenants_path).expect("tenant manifest reads");
+
+        assert_eq!(tenant_update.tenants, 1);
+        assert_eq!(node_update.nodes, 1);
+        assert_eq!(audit.tenants, 1);
+        assert_eq!(audit.active_tenants, 1);
+        assert_eq!(audit.nodes, 1);
+        assert_eq!(audit.active_nodes, 1);
+        assert_eq!(audit.policies, 1);
+        assert!(!tenant_update.token_displayed);
+        assert!(!tenant_update.key_material_displayed);
+        assert!(!tenant_update.contents_displayed);
+        assert!(!node_update.token_displayed);
+        assert!(!node_update.key_material_displayed);
+        assert!(!node_update.contents_displayed);
+        assert!(!audit.token_displayed);
+        assert!(!audit.key_material_displayed);
+        assert!(!audit.contents_displayed);
+        assert!(manifest.contains("payload_displayed = false"));
+        assert!(manifest.contains("token_displayed = false"));
+        assert!(manifest.contains("key_material_displayed = false"));
+        assert!(manifest.contains("contents_displayed = false"));
+        assert!(manifest.contains("signing_key_id = \"signing.key.1\""));
+        assert!(manifest.contains("exchange_key_id = \"exchange.key.1\""));
+        assert!(!manifest.contains(token));
+        assert!(!manifest.contains(&token_hash));
+        assert!(!manifest.contains("BEGIN PRIVATE KEY"));
+        assert!(!manifest.contains("payload-body"));
+        assert!(!manifest.contains("ciphertext_body"));
+    }
+
+    #[test]
+    fn hosted_tenant_registry_gates_admin_and_runtime_fail_closed() {
+        let home = test_home("hosted-tenant-admin-runtime-gate");
+        let manifest_path = home.join("credentials.toml");
+        let tenants_path = home.join("tenants.toml");
+        let admin_token = "hosted-admin-control-token-with-tenants";
+        let first = issue_relay_credential_from_token_bytes(
+            "node.hosted",
+            &[31_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            1_000,
+        )
+        .and_then(|credential| credential.with_account_id("account.prod"))
+        .expect("first credential issues");
+        let second = issue_relay_credential_from_token_bytes(
+            "node.hosted",
+            &[37_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            2_000,
+        )
+        .and_then(|credential| credential.with_account_id("account.prod"))
+        .expect("second credential issues");
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("missing manifest starts fail-closed")
+                .with_admin_token(admin_token, manifest_path.clone())
+                .expect("admin token configures")
+                .with_admin_tenants_file(tenants_path.clone())
+                .expect("tenant registry configures");
+        let relay = spawn_relay(config).expect("relay starts");
+
+        let missing_tenant = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::issue(
+                admin_token,
+                "account.prod",
+                first.node_id(),
+                first.token_sha256_hex().to_string(),
+                first.token_length(),
+                first.expires_at_unix(),
+            )
+            .expect("issue request"),
+        );
+        assert!(missing_tenant.contains("ADMIN_RESULT action=issue status=tenant_not_found"));
+        assert!(!missing_tenant.contains(admin_token));
+        assert!(!missing_tenant.contains(first.token()));
+        assert!(!missing_tenant.contains(first.token_sha256_hex()));
+        assert!(!manifest_path.exists());
+
+        upsert_hosted_tenant_in_file(&tenants_path, "account.prod").expect("tenant upserts");
+        upsert_hosted_tenant_node_in_file(
+            &tenants_path,
+            "account.prod",
+            first.node_id(),
+            HostedTenantPermissions {
+                messages: true,
+                streams: true,
+                rooms: true,
+                files: false,
+                mailbox: true,
+            },
+            Some("signing.key.1".to_string()),
+            Some("exchange.key.1".to_string()),
+        )
+        .expect("tenant node upserts");
+
+        let issued = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::issue(
+                admin_token,
+                "account.prod",
+                first.node_id(),
+                first.token_sha256_hex().to_string(),
+                first.token_length(),
+                first.expires_at_unix(),
+            )
+            .expect("issue request"),
+        );
+        assert!(issued.contains("ADMIN_RESULT action=issue status=issued"));
+        assert!(!issued.contains(admin_token));
+        assert!(!issued.contains(first.token()));
+        assert!(!issued.contains(first.token_sha256_hex()));
+
+        let mut active_client = connect_client(relay.local_addr());
+        write_client_text(
+            &mut active_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new(first.node_id(), first.token()).expect("hello"),
+            )),
+        );
+        assert!(read_server_text(&mut active_client).contains("WELCOME"));
+
+        revoke_hosted_tenant_node_in_file(&tenants_path, "account.prod", first.node_id())
+            .expect("tenant node revokes");
+
+        let mut revoked_tenant_client = connect_client(relay.local_addr());
+        write_client_text(
+            &mut revoked_tenant_client,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new(first.node_id(), first.token()).expect("hello"),
+            )),
+        );
+        let revoked_tenant_response = read_server_text(&mut revoked_tenant_client);
+        assert!(revoked_tenant_response.contains("ERROR reason=unauthorized"));
+        assert!(!revoked_tenant_response.contains(first.token()));
+        assert!(!revoked_tenant_response.contains(first.token_sha256_hex()));
+
+        let denied_rotate = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::rotate(
+                admin_token,
+                "account.prod",
+                second.node_id(),
+                second.token_sha256_hex().to_string(),
+                second.token_length(),
+                second.expires_at_unix(),
+            )
+            .expect("rotate request"),
+        );
+        assert!(denied_rotate.contains("ADMIN_RESULT action=rotate status=tenant_node_revoked"));
+        assert!(!denied_rotate.contains(admin_token));
+        assert!(!denied_rotate.contains(first.token()));
+        assert!(!denied_rotate.contains(second.token()));
+        assert!(!denied_rotate.contains(second.token_sha256_hex()));
+
+        let revoked_credential = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::revoke(admin_token, "account.prod", first.node_id())
+                .expect("revoke request"),
+        );
+        assert!(revoked_credential.contains("ADMIN_RESULT action=revoke status=revoked"));
+        assert!(!revoked_credential.contains(admin_token));
+        assert!(!revoked_credential.contains(first.token()));
+        assert!(!revoked_credential.contains(first.token_sha256_hex()));
     }
 
     #[test]

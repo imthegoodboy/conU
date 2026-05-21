@@ -19,17 +19,63 @@ Hosted relay credentials are scoped by:
 
 Runtime clients still authenticate with `HELLO node=<node-id> token=<node-token> payload=not_observed`. The relay maps the node credential to account metadata server-side. Payloads, room topics, message contents, stream chunks, private keys, and raw node tokens are not part of account records or admin output.
 
+## Tenant Registry
+
+Managed relays can add a metadata-only tenant registry beside the credential manifest:
+
+- tenant account id and `active` or `revoked` status
+- hosted node id and `active` or `revoked` status
+- hosted permission booleans for `messages`, `streams`, `rooms`, `files`, and `mailbox`
+- optional public signing/exchange key ids
+- display guards proving tokens, key material, payloads, ciphertext bodies, and manifest contents were not displayed
+
+These hosted permission booleans are an operator-side boundary only. They do not grant local peer policy. conUD still enforces local trust, peer policy, agent capabilities, room topic policy, and peer encryption before delivery.
+
 ## Relay Setup
 
 Online admin lifecycle requires the live credential manifest:
 
 ```powershell
 $env:CONU_RELAY_CREDENTIALS_FILE = "C:\conu-relay\credentials.toml"
+$env:CONU_RELAY_TENANTS_FILE = "C:\conu-relay\tenants.toml"
 $env:CONU_RELAY_ADMIN_TOKEN = (Get-Content -Raw C:\secure\relay-admin.token).Trim()
 conu-relay --serve 0.0.0.0:8787
 ```
 
-`CONU_RELAY_ADMIN_TOKEN` must be custom, contain no whitespace, and be at least 24 characters. It is accepted only when `CONU_RELAY_CREDENTIALS_FILE` is configured. The manifest may start missing or empty; new runtime sessions fail closed until credentials are issued.
+`CONU_RELAY_ADMIN_TOKEN` must be custom, contain no whitespace, and be at least 24 characters. It is accepted only when `CONU_RELAY_CREDENTIALS_FILE` is configured. `CONU_RELAY_TENANTS_FILE` is optional, but when set it also requires `CONU_RELAY_ADMIN_TOKEN` and `CONU_RELAY_CREDENTIALS_FILE`. Missing credential or tenant records fail closed for new runtime sessions.
+
+## Tenant Lifecycle
+
+Tenant commands are local/offline file updates for the relay operator:
+
+```powershell
+conu-relay --tenant-upsert account.prod `
+  --tenants-file C:\conu-relay\tenants.toml
+
+conu-relay --tenant-node-upsert account.prod node-a-id `
+  --tenants-file C:\conu-relay\tenants.toml `
+  --messages true `
+  --streams true `
+  --rooms true `
+  --files false `
+  --mailbox true `
+  --signing-key-id signing.key.2026-05 `
+  --exchange-key-id exchange.key.2026-05 `
+  --json
+
+conu-relay --tenant-node-revoke account.prod node-a-id `
+  --tenants-file C:\conu-relay\tenants.toml
+
+conu-relay --tenant-revoke account.prod `
+  --tenants-file C:\conu-relay\tenants.toml
+
+conu-relay --tenant-audit `
+  --tenants-file C:\conu-relay\tenants.toml `
+  --account account.prod `
+  --json
+```
+
+When `CONU_RELAY_TENANTS_FILE` is configured, online issue and rotate require an active tenant account and active hosted node. Revoke remains available so operators can clean up credential metadata even after tenant or node revocation.
 
 ## Online Lifecycle
 
@@ -80,9 +126,13 @@ They never report raw node tokens, token hashes, admin tokens, payload plaintext
 - Wrong or disabled admin token returns `admin_unauthorized` without echoing either token.
 - Duplicate issue returns `already_exists`.
 - Rotate/revoke for a missing credential returns `not_found`.
+- Issue/rotate with a missing hosted tenant returns `tenant_not_found`.
+- Issue/rotate with a revoked hosted tenant returns `tenant_revoked`.
+- Issue/rotate with a missing hosted node returns `tenant_node_not_found`.
+- Issue/rotate with a revoked hosted node returns `tenant_node_revoked`.
 - Rotate refuses to move an existing node credential to a different account.
-- Revoked, expired, missing, malformed, or public-bind-invalid credentials fail closed for new `HELLO` sessions.
+- Revoked, expired, missing, malformed, public-bind-invalid, or tenant-revoked credentials fail closed for new `HELLO` sessions.
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap for a single running relay and file-backed manifest. Public managed hosting still needs distributed multi-instance session migration, distributed accounting dashboards, abuse workflows, hosted mailbox retention policy, multi-tenant permission administration, hosted identity/key administration, and managed direct NAT traversal/rendezvous.
+This closes the online credential lifecycle gap and adds a single-writer hosted tenant registry foundation. Public managed hosting still needs distributed tenant lifecycle, hosted dashboards and abuse workflows, distributed multi-instance session migration, distributed accounting, hosted mailbox retention policy, full hosted identity/key administration, and managed direct NAT traversal.

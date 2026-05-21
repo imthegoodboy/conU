@@ -375,6 +375,8 @@ conu-relay --serve 0.0.0.0:8787
 
 `conu-relay --issue-credential <node-id> --token-out <path> --credentials-file <path>` writes the raw token only to a new token file and creates or updates `credentials.toml` with `version = "1"` plus one `[[credential]]` entry per node containing `node_id`, `token_sha256_hex`, `token_length`, lifecycle status, optional expiry, `payload_displayed = false`, and `token_displayed = false`. Use `--replace` on the issue command to rotate an existing node credential, or `conu-relay --revoke-credential <node-id> --credentials-file <path>` to mark a credential revoked. A revoked or expired credential is rejected for new sessions without restarting the relay. Existing authenticated sessions remain bounded by idle timeout and max TTL. Missing or invalid manifests fail closed for new sessions.
 
+Managed relay operators can also set `CONU_RELAY_ADMIN_TOKEN` and optional `CONU_RELAY_TENANTS_FILE`. Tenant commands such as `conu-relay --tenant-upsert`, `--tenant-node-upsert`, `--tenant-node-revoke`, `--tenant-revoke`, and `--tenant-audit` store account/node status, hosted permission booleans, and public key ids only. When the tenant file is configured, credential issue/rotate and new relay sessions fail closed for missing or revoked tenant/node records.
+
 `local-dev-token` is loopback-only. Use a custom shared token or scoped credential token with at least 24 characters before binding a relay to `0.0.0.0`. For a self-hosted relay with multiple known nodes, prefer `CONU_RELAY_CREDENTIALS_FILE` so each node has its own relay token without storing raw tokens on the server. On each node, either set `CONU_RELAY_TOKEN` to that node's assigned scoped token before starting conUD, or store it locally without printing the token:
 
 ```powershell
@@ -706,9 +708,9 @@ conu messages inbox agent.b --json
 
 To make conU genuinely useful over the internet, the next phase should build:
 
-- Distributed hosted session lifecycle, distributed hosted dashboards/accounting, hosted mailbox retention policy, and full hosted tenant administration around the single-relay account credential lifecycle.
+- Distributed hosted session lifecycle, distributed hosted dashboards/accounting, hosted mailbox retention policy, and distributed tenant lifecycle beyond the single-relay account credential and tenant registry lifecycle.
 - Published npm package backed by platform release assets and checksums.
-- Hosted multi-tenant room permission administration beyond the current local topic policy file.
+- Hosted dashboard permission workflows beyond the current local topic policy file and single-writer hosted tenant registry.
 - Managed direct NAT traversal beyond static candidate metadata, including ICE/STUN/TURN or hosted direct-candidate rendezvous.
 - Browser-native TypeScript protocol support remains future work; the current Node wrapper uses installed binaries and MCP for explicit payload receive, while browser-conditioned imports fail closed through a safe unsupported stub.
 - OS package-manager installers, detached Linux package signatures, and managed hosted account/key administration after local packaging stabilizes.
