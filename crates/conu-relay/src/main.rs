@@ -9,16 +9,17 @@ use conu_core::relay::{
     RelayAdminRequest, RelayAdminResult, RelayClientFrame, RelayServerFrame, RelayWebSocketClient,
 };
 use conu_relay::{
-    CredentialManifestUpdate, HostedAccountSuspension, HostedCredentialAudit, HostedTenantAudit,
-    HostedTenantManifestUpdate, HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit,
-    RelayAbusePolicy, RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy,
-    RelayAccountingStorage, RelayConfig, RelayCredential, RelayMailboxAudit,
-    RelayMailboxMaintenancePolicy, RelayMailboxPolicy, RelayMailboxPurgeReport,
-    RelayMailboxStorage, RelaySessionAudit, RelaySessionPolicy, RelaySessionStorage,
-    audit_hosted_relay_credentials_file, audit_hosted_tenants_file, audit_relay_abuse_dir,
-    audit_relay_accounting_dir, audit_relay_mailbox_dir, audit_relay_session_state_dir,
-    issue_relay_credential, purge_relay_mailbox_dir, relay_credential_manifest_contains_node,
-    relay_token_sha256_hex, revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
+    CredentialManifestUpdate, HostedAccountSuspension, HostedAdminTokenAudit,
+    HostedCredentialAudit, HostedTenantAudit, HostedTenantManifestUpdate, HostedTenantPermissions,
+    IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy, RelayAbuseStorage,
+    RelayAccountingAudit, RelayAccountingPolicy, RelayAccountingStorage, RelayConfig,
+    RelayCredential, RelayMailboxAudit, RelayMailboxMaintenancePolicy, RelayMailboxPolicy,
+    RelayMailboxPurgeReport, RelayMailboxStorage, RelaySessionAudit, RelaySessionPolicy,
+    RelaySessionStorage, audit_hosted_admin_tokens_file, audit_hosted_relay_credentials_file,
+    audit_hosted_tenants_file, audit_relay_abuse_dir, audit_relay_accounting_dir,
+    audit_relay_mailbox_dir, audit_relay_session_state_dir, issue_relay_credential,
+    purge_relay_mailbox_dir, relay_credential_manifest_contains_node, relay_token_sha256_hex,
+    revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
     revoke_relay_credential_in_file, suspend_hosted_account_in_files, upsert_hosted_tenant_in_file,
     upsert_hosted_tenant_node_in_file, upsert_issued_relay_credential_in_file,
     write_issued_relay_token_file,
@@ -36,6 +37,13 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("--hash-token") => match hash_token_from_stdin() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
+        Some("--admin-token-audit") => match admin_token_audit_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("conU relay failed: {error}");
@@ -313,6 +321,7 @@ Usage:
   conu-relay
   conu-relay --serve [addr]
   conu-relay --hash-token
+  conu-relay --admin-token-audit --admin-tokens-file <path> [--bind-addr <addr>] [--account <account-id>] [--json]
   conu-relay --issue-credential <node-id> --token-out <path> [--credentials-file <path>] [--replace] [--expires-at-unix <seconds>] [--json]
   conu-relay --revoke-credential <node-id> --credentials-file <path> [--json]
   conu-relay --admin-issue-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin --token-out <path> [--expires-at-unix <seconds>] [--json]
@@ -405,8 +414,270 @@ threshold reports accept reusable --thresholds-file policy files with version se
 threshold keys, and explicit false display guards; CLI --max-* values override file values.
 At least one threshold must be supplied by file or CLI. Abuse threshold reports preserve stdout
 report output and return exit code 3 only when --fail-on-threshold is set and one or more configured
-thresholds are exceeded."
+thresholds are exceeded. Use --admin-token-audit to inspect scoped admin-token manifest counts,
+account boundaries, expiry metadata, and granted scopes without printing raw admin tokens or hashes."
     );
+}
+
+#[derive(Debug, Clone)]
+struct AdminTokenAuditArgs {
+    admin_tokens_file: PathBuf,
+    bind_addr: String,
+    account_id: Option<String>,
+    json: bool,
+}
+
+fn admin_token_audit_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_admin_token_audit_args(args)?;
+    let audit = audit_hosted_admin_tokens_file(
+        &parsed.admin_tokens_file,
+        parsed.account_id.as_deref(),
+        &parsed.bind_addr,
+    )
+    .map_err(|error| error.to_string())?;
+
+    if parsed.json {
+        println!(
+            "{}",
+            render_admin_token_audit_json(&audit, &parsed.admin_tokens_file, &parsed.bind_addr)
+        );
+    } else {
+        println!(
+            "{}",
+            render_admin_token_audit_text(&audit, &parsed.admin_tokens_file, &parsed.bind_addr)
+        );
+    }
+    Ok(())
+}
+
+fn parse_admin_token_audit_args(args: Vec<String>) -> Result<AdminTokenAuditArgs, String> {
+    let mut admin_tokens_file = None::<PathBuf>;
+    let mut bind_addr = "127.0.0.1:0".to_string();
+    let mut account_id = None::<String>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--admin-tokens-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_token_audit_usage());
+                };
+                admin_tokens_file = Some(PathBuf::from(value));
+            }
+            "--bind-addr" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_token_audit_usage());
+                };
+                bind_addr = value.to_string();
+            }
+            "--account" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_token_audit_usage());
+                };
+                account_id = Some(value.to_string());
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(admin_token_audit_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(admin_token_audit_usage()),
+        }
+        index += 1;
+    }
+
+    let admin_tokens_file = admin_tokens_file
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(admin_token_audit_usage)?;
+    let bind_addr = validate_relay_bind_addr(bind_addr)?;
+    let account_id = account_id
+        .map(|value| validate_admin_token_audit_filter_id(value, "account id"))
+        .transpose()?;
+
+    Ok(AdminTokenAuditArgs {
+        admin_tokens_file,
+        bind_addr,
+        account_id,
+        json,
+    })
+}
+
+fn admin_token_audit_usage() -> String {
+    "usage: conu-relay --admin-token-audit --admin-tokens-file <path> [--bind-addr <addr>] [--account <account-id>] [--json]".to_string()
+}
+
+fn validate_relay_bind_addr(value: String) -> Result<String, String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err("relay bind addr cannot be empty".to_string());
+    }
+    if value.len() > 256 {
+        return Err("relay bind addr is too long".to_string());
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err("relay bind addr cannot contain whitespace".to_string());
+    }
+    if !value.chars().all(|character| {
+        character.is_ascii_alphanumeric()
+            || matches!(character, '.' | ':' | '-' | '_' | '[' | ']' | '*')
+    }) {
+        return Err(
+            "relay bind addr must use host:port characters only and cannot contain secrets"
+                .to_string(),
+        );
+    }
+    Ok(value)
+}
+
+fn validate_admin_token_audit_filter_id(
+    value: String,
+    label: &'static str,
+) -> Result<String, String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(format!("relay admin-token audit {label} cannot be empty"));
+    }
+    if value.len() > 120 {
+        return Err(format!("relay admin-token audit {label} is too long"));
+    }
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return Err(format!(
+            "relay admin-token audit {label} must use ASCII letters, numbers, dash, underscore, or dot"
+        ));
+    }
+    Ok(value)
+}
+
+fn render_admin_token_audit_text(
+    audit: &HostedAdminTokenAudit,
+    admin_tokens_file: &Path,
+    bind_addr: &str,
+) -> String {
+    format!(
+        r"conU hosted relay admin-token audit
+
+account: {}
+admin tokens file: {}
+bind addr: {}
+records: {}
+active: {}
+revoked: {}
+expired: {}
+account scoped records: {}
+global records: {}
+accounts: {}
+expiring records: {}
+next expires at unix: {}
+last expires at unix: {}
+scope credentials: {}
+scope tenants: {}
+scope dashboard: {}
+scope sessions: {}
+scope mailbox audit: {}
+scope mailbox purge: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        audit.account_id.as_deref().unwrap_or("all"),
+        admin_tokens_file.display(),
+        bind_addr,
+        audit.records,
+        audit.active,
+        audit.revoked,
+        audit.expired,
+        audit.account_scoped_records,
+        audit.global_records,
+        audit.accounts,
+        audit.expiring_records,
+        optional_u64_text(audit.next_expires_at_unix),
+        optional_u64_text(audit.last_expires_at_unix),
+        audit.scope_credentials,
+        audit.scope_tenants,
+        audit.scope_dashboard,
+        audit.scope_sessions,
+        audit.scope_mailbox_audit,
+        audit.scope_mailbox_purge,
+        yes_no(audit.payload_displayed),
+        yes_no(audit.token_displayed),
+        yes_no(audit.token_hash_displayed),
+        yes_no(audit.key_material_displayed),
+        yes_no(audit.session_id_displayed),
+        yes_no(audit.ciphertext_displayed),
+        yes_no(audit.contents_displayed)
+    )
+}
+
+fn render_admin_token_audit_json(
+    audit: &HostedAdminTokenAudit,
+    admin_tokens_file: &Path,
+    bind_addr: &str,
+) -> String {
+    format!(
+        r#"{{
+  "status": "audited",
+  "accountId": {},
+  "adminTokensFile": "{}",
+  "bindAddr": "{}",
+  "records": {},
+  "active": {},
+  "revoked": {},
+  "expired": {},
+  "accountScopedRecords": {},
+  "globalRecords": {},
+  "accounts": {},
+  "expiringRecords": {},
+  "nextExpiresAtUnix": {},
+  "lastExpiresAtUnix": {},
+  "scopeCredentials": {},
+  "scopeTenants": {},
+  "scopeDashboard": {},
+  "scopeSessions": {},
+  "scopeMailboxAudit": {},
+  "scopeMailboxPurge": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        optional_string_json(audit.account_id.as_deref()),
+        json_escape(&admin_tokens_file.display().to_string()),
+        json_escape(bind_addr),
+        audit.records,
+        audit.active,
+        audit.revoked,
+        audit.expired,
+        audit.account_scoped_records,
+        audit.global_records,
+        audit.accounts,
+        audit.expiring_records,
+        optional_u64_json(audit.next_expires_at_unix),
+        optional_u64_json(audit.last_expires_at_unix),
+        audit.scope_credentials,
+        audit.scope_tenants,
+        audit.scope_dashboard,
+        audit.scope_sessions,
+        audit.scope_mailbox_audit,
+        audit.scope_mailbox_purge,
+        bool_json(audit.payload_displayed),
+        bool_json(audit.token_displayed),
+        bool_json(audit.token_hash_displayed),
+        bool_json(audit.key_material_displayed),
+        bool_json(audit.session_id_displayed),
+        bool_json(audit.ciphertext_displayed),
+        bool_json(audit.contents_displayed)
+    )
 }
 
 fn hash_token_from_stdin() -> Result<(), String> {
@@ -6303,6 +6574,99 @@ mod tests {
         ));
         fs::write(&path, contents).expect("write mailbox retention policy file");
         path
+    }
+
+    #[test]
+    fn admin_token_audit_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_admin_token_audit_args(vec![
+            "--admin-tokens-file".to_string(),
+            "admin-tokens.toml".to_string(),
+            "--bind-addr".to_string(),
+            "0.0.0.0:8787".to_string(),
+            "--account".to_string(),
+            "account.prod".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("admin token audit args parse");
+        assert_eq!(
+            parsed.admin_tokens_file.as_path(),
+            Path::new("admin-tokens.toml")
+        );
+        assert_eq!(parsed.bind_addr, "0.0.0.0:8787");
+        assert_eq!(parsed.account_id.as_deref(), Some("account.prod"));
+        assert!(parsed.json);
+
+        let parsed_default = parse_admin_token_audit_args(vec![
+            "--admin-tokens-file".to_string(),
+            "admin-tokens.toml".to_string(),
+        ])
+        .expect("default bind addr parses");
+        assert_eq!(parsed_default.bind_addr, "127.0.0.1:0");
+        assert!(parse_admin_token_audit_args(Vec::new()).is_err());
+        let invalid_filter = parse_admin_token_audit_args(vec![
+            "--admin-tokens-file".to_string(),
+            "admin-tokens.toml".to_string(),
+            "--account".to_string(),
+            "bad secret value".to_string(),
+        ])
+        .expect_err("invalid account filter should fail closed");
+        assert!(!invalid_filter.contains("bad secret value"));
+        let invalid_bind = parse_admin_token_audit_args(vec![
+            "--admin-tokens-file".to_string(),
+            "admin-tokens.toml".to_string(),
+            "--bind-addr".to_string(),
+            "0.0.0.0:8787/secret".to_string(),
+        ])
+        .expect_err("invalid bind addr should fail closed");
+        assert!(!invalid_bind.contains("0.0.0.0:8787/secret"));
+
+        let audit = HostedAdminTokenAudit {
+            account_id: Some("account.prod".to_string()),
+            records: 3,
+            active: 1,
+            revoked: 1,
+            expired: 1,
+            account_scoped_records: 2,
+            global_records: 1,
+            accounts: 1,
+            expiring_records: 2,
+            next_expires_at_unix: Some(1_763_596_900),
+            last_expires_at_unix: Some(1_763_597_900),
+            scope_credentials: 1,
+            scope_tenants: 1,
+            scope_dashboard: 1,
+            scope_sessions: 1,
+            scope_mailbox_audit: 1,
+            scope_mailbox_purge: 1,
+            payload_displayed: false,
+            token_displayed: false,
+            token_hash_displayed: false,
+            key_material_displayed: false,
+            session_id_displayed: false,
+            ciphertext_displayed: false,
+            contents_displayed: false,
+        };
+        let secret_token = "relay-admin-secret-token-123456";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_admin_token_audit_text(&audit, Path::new("admin-tokens.toml"), "0.0.0.0:8787"),
+            render_admin_token_audit_json(&audit, Path::new("admin-tokens.toml"), "0.0.0.0:8787"),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("admin-token") || output.contains("adminTokensFile"));
+            assert!(output.contains("account.prod"));
+            assert!(output.contains("scope"));
+            assert!(output.contains("false") || output.contains("no"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
     }
 
     #[test]
