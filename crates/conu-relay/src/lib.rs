@@ -1901,7 +1901,11 @@ impl RelayHubState {
         }
 
         for (node_id, mut envelopes) in loaded {
-            envelopes.sort_by_key(|envelope| envelope.queued_at_millis);
+            envelopes.sort_by(|left, right| {
+                left.queued_at_nanos
+                    .cmp(&right.queued_at_nanos)
+                    .then_with(|| left.forwarded.envelope_id.cmp(&right.forwarded.envelope_id))
+            });
             while envelopes.len() > policy.max_envelopes_per_node {
                 if let Some(entry) = envelopes.pop() {
                     remove_entry_storage(&entry).map_err(|error| {
@@ -1953,8 +1957,10 @@ impl RelayHubState {
             return Err("mailbox_full");
         }
 
+        let queued_at_nanos = current_unix_nanos();
         let mut envelope = QueuedRelayEnvelope {
-            queued_at_millis: current_unix_millis(),
+            queued_at_millis: queued_at_nanos / 1_000_000,
+            queued_at_nanos,
             storage_path: None,
             forwarded,
         };
@@ -2156,6 +2162,7 @@ impl RelayAccountingRecord {
 #[derive(Debug)]
 struct QueuedRelayEnvelope {
     queued_at_millis: u128,
+    queued_at_nanos: u128,
     storage_path: Option<PathBuf>,
     forwarded: RelayForwarded,
 }
@@ -2427,7 +2434,7 @@ fn persist_mailbox_entry(
     fs::create_dir_all(&node_dir).map_err(|_| "mailbox_unavailable")?;
     let path = node_dir.join(format!(
         "{}-{}.mailbox",
-        current_unix_nanos(),
+        entry.queued_at_nanos,
         sanitize_identifier(&entry.forwarded.envelope_id)
     ));
     let contents = render_mailbox_file(entry);
@@ -2447,8 +2454,8 @@ fn render_mailbox_file(entry: &QueuedRelayEnvelope) -> String {
         entry.forwarded.clone(),
     )));
     format!(
-        "version = \"{}\"\nqueued_at_millis = {}\nframe = {}\npayload_displayed = false\n",
-        RELAY_MAILBOX_FILE_VERSION, entry.queued_at_millis, frame
+        "version = \"{}\"\nqueued_at_millis = {}\nqueued_at_nanos = {}\nframe = {}\npayload_displayed = false\n",
+        RELAY_MAILBOX_FILE_VERSION, entry.queued_at_millis, entry.queued_at_nanos, frame
     )
 }
 
@@ -2462,6 +2469,10 @@ fn read_mailbox_file(path: &Path) -> Result<Option<QueuedRelayEnvelope>, RelayEr
     let queued_at_millis = mailbox_value(&contents, "queued_at_millis")
         .and_then(|value| value.parse::<u128>().ok())
         .ok_or_else(|| RelayError::Protocol("relay mailbox entry is invalid".to_string()))?;
+    let queued_at_nanos = mailbox_value(&contents, "queued_at_nanos")
+        .and_then(|value| value.parse::<u128>().ok())
+        .or_else(|| mailbox_file_sequence(path))
+        .unwrap_or_else(|| queued_at_millis.saturating_mul(1_000_000));
     let frame = mailbox_value(&contents, "frame")
         .ok_or_else(|| RelayError::Protocol("relay mailbox entry is invalid".to_string()))?;
     let forwarded = match parse_server_frame(&frame) {
@@ -2474,9 +2485,17 @@ fn read_mailbox_file(path: &Path) -> Result<Option<QueuedRelayEnvelope>, RelayEr
 
     Ok(Some(QueuedRelayEnvelope {
         queued_at_millis,
+        queued_at_nanos,
         storage_path: Some(path.to_path_buf()),
         forwarded,
     }))
+}
+
+fn mailbox_file_sequence(path: &Path) -> Option<u128> {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .and_then(|value| value.split_once('-').map(|(sequence, _)| sequence))
+        .and_then(|value| value.parse::<u128>().ok())
 }
 
 fn persist_accounting_record(
