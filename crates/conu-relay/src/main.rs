@@ -50,6 +50,13 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--hosted-readiness") => match hosted_readiness_from_args(args.collect()) {
+            Ok(status) => status.exit_code(),
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--issue-credential") => match issue_credential_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -322,6 +329,7 @@ Usage:
   conu-relay --serve [addr]
   conu-relay --hash-token
   conu-relay --admin-token-audit --admin-tokens-file <path> [--bind-addr <addr>] [--account <account-id>] [--json]
+  conu-relay --hosted-readiness [--bind-addr <addr>] [--credentials-file <path>] [--tenants-file <path>] [--admin-tokens-file <path>] [--session-state-dir <path>] [--mailbox-dir <path>] [--ttl-seconds <seconds>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json] [--fail-on-warning]
   conu-relay --issue-credential <node-id> --token-out <path> [--credentials-file <path>] [--replace] [--expires-at-unix <seconds>] [--json]
   conu-relay --revoke-credential <node-id> --credentials-file <path> [--json]
   conu-relay --admin-issue-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin --token-out <path> [--expires-at-unix <seconds>] [--json]
@@ -415,7 +423,10 @@ threshold keys, and explicit false display guards; CLI --max-* values override f
 At least one threshold must be supplied by file or CLI. Abuse threshold reports preserve stdout
 report output and return exit code 3 only when --fail-on-threshold is set and one or more configured
 thresholds are exceeded. Use --admin-token-audit to inspect scoped admin-token manifest counts,
-account boundaries, expiry metadata, and granted scopes without printing raw admin tokens or hashes."
+account boundaries, expiry metadata, and granted scopes without printing raw admin tokens or hashes.
+Use --hosted-readiness before startup or release smoke to combine the same local credential,
+tenant, admin-token, session-state, mailbox, accounting, and abuse checks into one metadata-only
+preflight; --fail-on-warning preserves stdout and returns exit code 3 when attention is needed."
     );
 }
 
@@ -678,6 +689,896 @@ fn render_admin_token_audit_json(
         bool_json(audit.ciphertext_displayed),
         bool_json(audit.contents_displayed)
     )
+}
+
+#[derive(Debug, Clone)]
+struct HostedReadinessArgs {
+    bind_addr: String,
+    credentials_file: Option<PathBuf>,
+    tenants_file: Option<PathBuf>,
+    admin_tokens_file: Option<PathBuf>,
+    session_state_dir: Option<PathBuf>,
+    mailbox_dir: Option<PathBuf>,
+    mailbox_ttl: Option<Duration>,
+    accounting_dir: Option<PathBuf>,
+    abuse_dir: Option<PathBuf>,
+    account_id: Option<String>,
+    node_id: Option<String>,
+    json: bool,
+    fail_on_warning: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HostedReadinessReport {
+    bind_addr: String,
+    public_bind: bool,
+    credentials_file: Option<PathBuf>,
+    tenants_file: Option<PathBuf>,
+    admin_tokens_file: Option<PathBuf>,
+    session_state_dir: Option<PathBuf>,
+    mailbox_dir: Option<PathBuf>,
+    mailbox_ttl: Option<Duration>,
+    accounting_dir: Option<PathBuf>,
+    abuse_dir: Option<PathBuf>,
+    account_id: Option<String>,
+    node_id: Option<String>,
+    credentials: Option<HostedCredentialAudit>,
+    tenants: Option<HostedTenantAudit>,
+    admin_tokens: Option<HostedAdminTokenAudit>,
+    session_state: Option<RelaySessionAudit>,
+    mailbox: Option<RelayMailboxAudit>,
+    accounting: Option<RelayAccountingAudit>,
+    abuse: Option<RelayAbuseAudit>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HostedReadinessExit {
+    warnings: usize,
+    fail_on_warning: bool,
+}
+
+impl HostedReadinessExit {
+    fn exit_code(self) -> ExitCode {
+        if self.fail_on_warning && self.warnings > 0 {
+            ExitCode::from(3)
+        } else {
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+fn hosted_readiness_from_args(args: Vec<String>) -> Result<HostedReadinessExit, String> {
+    let parsed = parse_hosted_readiness_args(args)?;
+    let report = hosted_readiness_report(&parsed)?;
+    let warnings = report.warning_count();
+    if parsed.json {
+        println!("{}", render_hosted_readiness_json(&report));
+    } else {
+        println!("{}", render_hosted_readiness_text(&report));
+    }
+    Ok(HostedReadinessExit {
+        warnings,
+        fail_on_warning: parsed.fail_on_warning,
+    })
+}
+
+fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs, String> {
+    let mut bind_addr = "127.0.0.1:0".to_string();
+    let mut credentials_file = None::<PathBuf>;
+    let mut tenants_file = None::<PathBuf>;
+    let mut admin_tokens_file = None::<PathBuf>;
+    let mut session_state_dir = None::<PathBuf>;
+    let mut mailbox_dir = None::<PathBuf>;
+    let mut mailbox_ttl = None::<Duration>;
+    let mut accounting_dir = None::<PathBuf>;
+    let mut abuse_dir = None::<PathBuf>;
+    let mut account_id = None::<String>;
+    let mut node_id = None::<String>;
+    let mut json = false;
+    let mut fail_on_warning = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--bind-addr" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                bind_addr = value.to_string();
+            }
+            "--credentials-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                credentials_file = Some(PathBuf::from(value));
+            }
+            "--tenants-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                tenants_file = Some(PathBuf::from(value));
+            }
+            "--admin-tokens-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                admin_tokens_file = Some(PathBuf::from(value));
+            }
+            "--session-state-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                session_state_dir = Some(PathBuf::from(value));
+            }
+            "--mailbox-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                mailbox_dir = Some(PathBuf::from(value));
+            }
+            "--ttl-seconds" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                mailbox_ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
+            }
+            "--accounting-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                accounting_dir = Some(PathBuf::from(value));
+            }
+            "--abuse-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                abuse_dir = Some(PathBuf::from(value));
+            }
+            "--account" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                account_id = Some(value.to_string());
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                node_id = Some(value.to_string());
+            }
+            "--json" => json = true,
+            "--fail-on-warning" => fail_on_warning = true,
+            "--help" | "-h" => return Err(hosted_readiness_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(hosted_readiness_usage()),
+        }
+        index += 1;
+    }
+
+    let bind_addr = validate_relay_bind_addr(bind_addr)?;
+    credentials_file = credentials_file.filter(|path| !path.as_os_str().is_empty());
+    tenants_file = tenants_file.filter(|path| !path.as_os_str().is_empty());
+    admin_tokens_file = admin_tokens_file.filter(|path| !path.as_os_str().is_empty());
+    session_state_dir = session_state_dir.filter(|path| !path.as_os_str().is_empty());
+    mailbox_dir = mailbox_dir.filter(|path| !path.as_os_str().is_empty());
+    accounting_dir = accounting_dir.filter(|path| !path.as_os_str().is_empty());
+    abuse_dir = abuse_dir.filter(|path| !path.as_os_str().is_empty());
+    let account_id = account_id
+        .map(|value| validate_dashboard_filter_id(value, "account id"))
+        .transpose()?;
+    let node_id = node_id
+        .map(|value| validate_dashboard_filter_id(value, "node id"))
+        .transpose()?;
+
+    if credentials_file.is_none()
+        && tenants_file.is_none()
+        && admin_tokens_file.is_none()
+        && session_state_dir.is_none()
+        && mailbox_dir.is_none()
+        && accounting_dir.is_none()
+        && abuse_dir.is_none()
+    {
+        return Err(hosted_readiness_usage());
+    }
+
+    Ok(HostedReadinessArgs {
+        bind_addr,
+        credentials_file,
+        tenants_file,
+        admin_tokens_file,
+        session_state_dir,
+        mailbox_dir,
+        mailbox_ttl,
+        accounting_dir,
+        abuse_dir,
+        account_id,
+        node_id,
+        json,
+        fail_on_warning,
+    })
+}
+
+fn hosted_readiness_usage() -> String {
+    "usage: conu-relay --hosted-readiness [--bind-addr <addr>] [--credentials-file <path>] [--tenants-file <path>] [--admin-tokens-file <path>] [--session-state-dir <path>] [--mailbox-dir <path>] [--ttl-seconds <seconds>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json] [--fail-on-warning]".to_string()
+}
+
+fn hosted_readiness_report(args: &HostedReadinessArgs) -> Result<HostedReadinessReport, String> {
+    let credentials = args
+        .credentials_file
+        .as_ref()
+        .map(|path| audit_hosted_relay_credentials_file(path, args.account_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let tenants = args
+        .tenants_file
+        .as_ref()
+        .map(|path| audit_hosted_tenants_file(path, args.account_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let admin_tokens = args
+        .admin_tokens_file
+        .as_ref()
+        .map(|path| {
+            audit_hosted_admin_tokens_file(path, args.account_id.as_deref(), &args.bind_addr)
+        })
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let session_state = args
+        .session_state_dir
+        .as_ref()
+        .map(|path| audit_relay_session_state_dir(path, args.node_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let mailbox = args
+        .mailbox_dir
+        .as_ref()
+        .map(|path| audit_relay_mailbox_dir(path, args.node_id.as_deref(), args.mailbox_ttl))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let accounting = args
+        .accounting_dir
+        .as_ref()
+        .map(|path| audit_relay_accounting_dir(path, args.node_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let abuse = args
+        .abuse_dir
+        .as_ref()
+        .map(|path| audit_relay_abuse_dir(path, args.node_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+
+    Ok(HostedReadinessReport {
+        bind_addr: args.bind_addr.clone(),
+        public_bind: readiness_bind_addr_is_public(&args.bind_addr),
+        credentials_file: args.credentials_file.clone(),
+        tenants_file: args.tenants_file.clone(),
+        admin_tokens_file: args.admin_tokens_file.clone(),
+        session_state_dir: args.session_state_dir.clone(),
+        mailbox_dir: args.mailbox_dir.clone(),
+        mailbox_ttl: args.mailbox_ttl,
+        accounting_dir: args.accounting_dir.clone(),
+        abuse_dir: args.abuse_dir.clone(),
+        account_id: args.account_id.clone(),
+        node_id: args.node_id.clone(),
+        credentials,
+        tenants,
+        admin_tokens,
+        session_state,
+        mailbox,
+        accounting,
+        abuse,
+    })
+}
+
+impl HostedReadinessReport {
+    fn status(&self) -> &'static str {
+        if self.warning_count() == 0 {
+            "ready"
+        } else {
+            "needs_attention"
+        }
+    }
+
+    fn checked_surfaces(&self) -> usize {
+        [
+            self.credentials.is_some(),
+            self.tenants.is_some(),
+            self.admin_tokens.is_some(),
+            self.session_state.is_some(),
+            self.mailbox.is_some(),
+            self.accounting.is_some(),
+            self.abuse.is_some(),
+        ]
+        .into_iter()
+        .filter(|configured| *configured)
+        .count()
+    }
+
+    fn warning_count(&self) -> usize {
+        [
+            self.public_bind && self.credentials.is_none(),
+            self.credentials.is_none(),
+            self.credentials
+                .as_ref()
+                .is_some_and(|audit| audit.active == 0),
+            self.admin_tokens.is_none(),
+            self.admin_tokens
+                .as_ref()
+                .is_some_and(|audit| audit.active == 0),
+            self.tenants
+                .as_ref()
+                .is_some_and(|audit| audit.active_tenants == 0 || audit.active_nodes == 0),
+            self.session_state
+                .as_ref()
+                .is_some_and(|audit| audit.invalid_records > 0),
+            self.mailbox
+                .as_ref()
+                .is_some_and(|audit| audit.invalid_records > 0),
+            self.accounting.is_none(),
+            self.abuse.is_none(),
+            !self.display_guards_clean(),
+        ]
+        .into_iter()
+        .filter(|warning| *warning)
+        .count()
+    }
+
+    fn public_bind_has_credentials(&self) -> bool {
+        !self.public_bind || self.credentials.is_some()
+    }
+
+    fn display_guards_clean(&self) -> bool {
+        !readiness_payload_displayed(self)
+            && !readiness_token_displayed(self)
+            && !readiness_token_hash_displayed(self)
+            && !readiness_key_material_displayed(self)
+            && !readiness_session_id_displayed(self)
+            && !readiness_ciphertext_displayed(self)
+            && !readiness_contents_displayed(self)
+    }
+}
+
+fn readiness_bind_addr_is_public(bind_addr: &str) -> bool {
+    let host = readiness_bind_host(bind_addr);
+    if host == "localhost" || host.eq_ignore_ascii_case("localhost.localdomain") {
+        return false;
+    }
+    if host == "*" {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| !ip.is_loopback())
+        .unwrap_or(true)
+}
+
+fn readiness_bind_host(bind_addr: &str) -> String {
+    let bind_addr = bind_addr.trim();
+    if let Some(rest) = bind_addr.strip_prefix('[') {
+        return rest
+            .split_once(']')
+            .map(|(host, _)| host)
+            .unwrap_or(rest)
+            .to_string();
+    }
+    bind_addr
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(bind_addr)
+        .to_string()
+}
+
+fn render_hosted_readiness_text(report: &HostedReadinessReport) -> String {
+    format!(
+        r"conU hosted relay readiness
+
+status: {}
+warnings: {}
+checked surfaces: {}
+bind addr: {}
+public bind: {}
+public bind has credential manifest: {}
+account: {}
+node: {}
+credentials file: {}
+credentials active: {}
+admin tokens file: {}
+admin tokens active: {}
+tenants file: {}
+tenant active nodes: {}
+session state dir: {}
+session invalid records: {}
+mailbox dir: {}
+mailbox ttl seconds: {}
+mailbox invalid records: {}
+accounting dir: {}
+accounting records: {}
+abuse dir: {}
+abuse records: {}
+display guards clean: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        report.status(),
+        report.warning_count(),
+        report.checked_surfaces(),
+        report.bind_addr,
+        yes_no(report.public_bind),
+        yes_no(report.public_bind_has_credentials()),
+        report.account_id.as_deref().unwrap_or("all"),
+        report.node_id.as_deref().unwrap_or("all"),
+        optional_path_text(report.credentials_file.as_deref()),
+        report
+            .credentials
+            .as_ref()
+            .map(|audit| audit.active)
+            .unwrap_or(0),
+        optional_path_text(report.admin_tokens_file.as_deref()),
+        report
+            .admin_tokens
+            .as_ref()
+            .map(|audit| audit.active)
+            .unwrap_or(0),
+        optional_path_text(report.tenants_file.as_deref()),
+        report
+            .tenants
+            .as_ref()
+            .map(|audit| audit.active_nodes)
+            .unwrap_or(0),
+        optional_path_text(report.session_state_dir.as_deref()),
+        report
+            .session_state
+            .as_ref()
+            .map(|audit| audit.invalid_records)
+            .unwrap_or(0),
+        optional_path_text(report.mailbox_dir.as_deref()),
+        optional_u64_text(report.mailbox_ttl.map(|ttl| ttl.as_secs())),
+        report
+            .mailbox
+            .as_ref()
+            .map(|audit| audit.invalid_records)
+            .unwrap_or(0),
+        optional_path_text(report.accounting_dir.as_deref()),
+        report
+            .accounting
+            .as_ref()
+            .map(|audit| audit.records)
+            .unwrap_or(0),
+        optional_path_text(report.abuse_dir.as_deref()),
+        report
+            .abuse
+            .as_ref()
+            .map(|audit| audit.records)
+            .unwrap_or(0),
+        yes_no(report.display_guards_clean()),
+        yes_no(readiness_payload_displayed(report)),
+        yes_no(readiness_token_displayed(report)),
+        yes_no(readiness_token_hash_displayed(report)),
+        yes_no(readiness_key_material_displayed(report)),
+        yes_no(readiness_session_id_displayed(report)),
+        yes_no(readiness_ciphertext_displayed(report)),
+        yes_no(readiness_contents_displayed(report))
+    )
+}
+
+fn render_hosted_readiness_json(report: &HostedReadinessReport) -> String {
+    format!(
+        r#"{{
+  "status": "{}",
+  "warningCount": {},
+  "checkedSurfaces": {},
+  "bindAddr": "{}",
+  "publicBind": {},
+  "accountId": {},
+  "nodeId": {},
+  "sources": {{
+    "credentialsFile": {},
+    "tenantsFile": {},
+    "adminTokensFile": {},
+    "sessionStateDir": {},
+    "mailboxDir": {},
+    "accountingDir": {},
+    "abuseDir": {}
+  }},
+  "checks": {{
+    "publicBindHasCredentialManifest": {},
+    "credentialsConfigured": {},
+    "adminTokensConfigured": {},
+    "tenantRegistryConfigured": {},
+    "sessionStateConfigured": {},
+    "mailboxConfigured": {},
+    "accountingConfigured": {},
+    "abuseConfigured": {},
+    "displayGuardsClean": {}
+  }},
+  "credentials": {},
+  "adminTokens": {},
+  "tenants": {},
+  "sessionState": {},
+  "mailbox": {},
+  "accounting": {},
+  "abuse": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        report.status(),
+        report.warning_count(),
+        report.checked_surfaces(),
+        json_escape(&report.bind_addr),
+        bool_json(report.public_bind),
+        optional_string_json(report.account_id.as_deref()),
+        optional_string_json(report.node_id.as_deref()),
+        optional_path_json(report.credentials_file.as_deref()),
+        optional_path_json(report.tenants_file.as_deref()),
+        optional_path_json(report.admin_tokens_file.as_deref()),
+        optional_path_json(report.session_state_dir.as_deref()),
+        optional_path_json(report.mailbox_dir.as_deref()),
+        optional_path_json(report.accounting_dir.as_deref()),
+        optional_path_json(report.abuse_dir.as_deref()),
+        bool_json(report.public_bind_has_credentials()),
+        bool_json(report.credentials.is_some()),
+        bool_json(report.admin_tokens.is_some()),
+        bool_json(report.tenants.is_some()),
+        bool_json(report.session_state.is_some()),
+        bool_json(report.mailbox.is_some()),
+        bool_json(report.accounting.is_some()),
+        bool_json(report.abuse.is_some()),
+        bool_json(report.display_guards_clean()),
+        render_dashboard_credentials_json(report.credentials.as_ref()),
+        render_readiness_admin_tokens_json(report.admin_tokens.as_ref()),
+        render_dashboard_tenants_json(report.tenants.as_ref()),
+        render_readiness_session_state_json(report.session_state.as_ref()),
+        render_readiness_mailbox_json(report.mailbox.as_ref()),
+        render_dashboard_accounting_json(report.accounting.as_ref()),
+        render_dashboard_abuse_json(report.abuse.as_ref()),
+        bool_json(readiness_payload_displayed(report)),
+        bool_json(readiness_token_displayed(report)),
+        bool_json(readiness_token_hash_displayed(report)),
+        bool_json(readiness_key_material_displayed(report)),
+        bool_json(readiness_session_id_displayed(report)),
+        bool_json(readiness_ciphertext_displayed(report)),
+        bool_json(readiness_contents_displayed(report))
+    )
+}
+
+fn render_readiness_admin_tokens_json(audit: Option<&HostedAdminTokenAudit>) -> String {
+    match audit {
+        Some(audit) => format!(
+            r#"{{
+    "configured": true,
+    "records": {},
+    "active": {},
+    "revoked": {},
+    "expired": {},
+    "accountScopedRecords": {},
+    "globalRecords": {},
+    "accounts": {},
+    "expiringRecords": {},
+    "nextExpiresAtUnix": {},
+    "lastExpiresAtUnix": {},
+    "scopeCredentials": {},
+    "scopeTenants": {},
+    "scopeDashboard": {},
+    "scopeSessions": {},
+    "scopeMailboxAudit": {},
+    "scopeMailboxPurge": {},
+    "payloadDisplayed": {},
+    "tokenDisplayed": {},
+    "tokenHashDisplayed": {},
+    "keyMaterialDisplayed": {},
+    "sessionIdDisplayed": {},
+    "ciphertextDisplayed": {},
+    "contentsDisplayed": {}
+  }}"#,
+            audit.records,
+            audit.active,
+            audit.revoked,
+            audit.expired,
+            audit.account_scoped_records,
+            audit.global_records,
+            audit.accounts,
+            audit.expiring_records,
+            optional_u64_json(audit.next_expires_at_unix),
+            optional_u64_json(audit.last_expires_at_unix),
+            audit.scope_credentials,
+            audit.scope_tenants,
+            audit.scope_dashboard,
+            audit.scope_sessions,
+            audit.scope_mailbox_audit,
+            audit.scope_mailbox_purge,
+            bool_json(audit.payload_displayed),
+            bool_json(audit.token_displayed),
+            bool_json(audit.token_hash_displayed),
+            bool_json(audit.key_material_displayed),
+            bool_json(audit.session_id_displayed),
+            bool_json(audit.ciphertext_displayed),
+            bool_json(audit.contents_displayed)
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn render_readiness_session_state_json(audit: Option<&RelaySessionAudit>) -> String {
+    match audit {
+        Some(audit) => format!(
+            r#"{{
+    "configured": true,
+    "records": {},
+    "activeRecords": {},
+    "expiredRecords": {},
+    "invalidRecords": {},
+    "oldestCreatedUnixMillis": {},
+    "newestLastSeenUnixMillis": {},
+    "nextExpiresUnixMillis": {},
+    "payloadDisplayed": {},
+    "tokenDisplayed": {},
+    "tokenHashDisplayed": {},
+    "keyMaterialDisplayed": {},
+    "sessionIdDisplayed": {},
+    "ciphertextDisplayed": {},
+    "contentsDisplayed": {}
+  }}"#,
+            audit.records,
+            audit.active_records,
+            audit.expired_records,
+            audit.invalid_records,
+            optional_u64_json(audit.oldest_created_unix_millis),
+            optional_u64_json(audit.newest_last_seen_unix_millis),
+            optional_u64_json(audit.next_expires_unix_millis),
+            bool_json(audit.payload_displayed),
+            bool_json(audit.token_displayed),
+            bool_json(audit.token_hash_displayed),
+            bool_json(audit.key_material_displayed),
+            bool_json(audit.session_id_displayed),
+            bool_json(audit.ciphertext_displayed),
+            bool_json(audit.contents_displayed)
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn render_readiness_mailbox_json(audit: Option<&RelayMailboxAudit>) -> String {
+    match audit {
+        Some(audit) => format!(
+            r#"{{
+    "configured": true,
+    "retentionTtlSeconds": {},
+    "nodes": {},
+    "records": {},
+    "invalidRecords": {},
+    "bytes": {},
+    "oldestQueuedUnixMillis": {},
+    "newestQueuedUnixMillis": {},
+    "expiredRecords": {},
+    "expiredBytes": {},
+    "payloadDisplayed": {},
+    "tokenDisplayed": {},
+    "tokenHashDisplayed": {},
+    "keyMaterialDisplayed": {},
+    "sessionIdDisplayed": {},
+    "ciphertextDisplayed": {},
+    "contentsDisplayed": {}
+  }}"#,
+            optional_u64_json(audit.retention_ttl_seconds),
+            audit.nodes,
+            audit.records,
+            audit.invalid_records,
+            audit.bytes,
+            optional_u64_json(audit.oldest_queued_unix_millis),
+            optional_u64_json(audit.newest_queued_unix_millis),
+            optional_u64_json(audit.expired_records),
+            optional_u64_json(audit.expired_bytes),
+            bool_json(audit.payload_displayed),
+            bool_json(audit.token_displayed),
+            bool_json(audit.token_hash_displayed),
+            bool_json(audit.key_material_displayed),
+            bool_json(audit.session_id_displayed),
+            bool_json(audit.ciphertext_displayed),
+            bool_json(audit.contents_displayed)
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn readiness_payload_displayed(report: &HostedReadinessReport) -> bool {
+    report
+        .admin_tokens
+        .as_ref()
+        .is_some_and(|audit| audit.payload_displayed)
+        || report
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+        || report
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+        || report
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+        || report
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+}
+
+fn readiness_token_displayed(report: &HostedReadinessReport) -> bool {
+    report
+        .credentials
+        .as_ref()
+        .is_some_and(|audit| audit.token_displayed)
+        || report
+            .tenants
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || report
+            .admin_tokens
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || report
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || report
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || report
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || report
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+}
+
+fn readiness_token_hash_displayed(report: &HostedReadinessReport) -> bool {
+    report
+        .admin_tokens
+        .as_ref()
+        .is_some_and(|audit| audit.token_hash_displayed)
+        || report
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+        || report
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+        || report
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+        || report
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+}
+
+fn readiness_key_material_displayed(report: &HostedReadinessReport) -> bool {
+    report
+        .tenants
+        .as_ref()
+        .is_some_and(|audit| audit.key_material_displayed)
+        || report
+            .admin_tokens
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+        || report
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+        || report
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+        || report
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+        || report
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+}
+
+fn readiness_session_id_displayed(report: &HostedReadinessReport) -> bool {
+    report
+        .admin_tokens
+        .as_ref()
+        .is_some_and(|audit| audit.session_id_displayed)
+        || report
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
+        || report
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
+        || report
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
+        || report
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
+}
+
+fn readiness_ciphertext_displayed(report: &HostedReadinessReport) -> bool {
+    report
+        .admin_tokens
+        .as_ref()
+        .is_some_and(|audit| audit.ciphertext_displayed)
+        || report
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+        || report
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+        || report
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+        || report
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+}
+
+fn readiness_contents_displayed(report: &HostedReadinessReport) -> bool {
+    report
+        .credentials
+        .as_ref()
+        .is_some_and(|audit| audit.contents_displayed)
+        || report
+            .tenants
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || report
+            .admin_tokens
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || report
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || report
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || report
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || report
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
 }
 
 fn hash_token_from_stdin() -> Result<(), String> {
@@ -6672,6 +7573,241 @@ mod tests {
             assert!(!output.contains("payload-body"));
             assert!(!output.contains("ciphertext_body"));
         }
+    }
+
+    #[test]
+    fn hosted_readiness_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_hosted_readiness_args(vec![
+            "--bind-addr".to_string(),
+            "0.0.0.0:8787".to_string(),
+            "--credentials-file".to_string(),
+            "credentials.toml".to_string(),
+            "--tenants-file".to_string(),
+            "tenants.toml".to_string(),
+            "--admin-tokens-file".to_string(),
+            "admin-tokens.toml".to_string(),
+            "--session-state-dir".to_string(),
+            "sessions".to_string(),
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--ttl-seconds".to_string(),
+            "3600".to_string(),
+            "--accounting-dir".to_string(),
+            "accounting".to_string(),
+            "--abuse-dir".to_string(),
+            "abuse".to_string(),
+            "--account".to_string(),
+            "account.prod".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--json".to_string(),
+            "--fail-on-warning".to_string(),
+        ])
+        .expect("hosted readiness args parse");
+        assert_eq!(parsed.bind_addr, "0.0.0.0:8787");
+        assert_eq!(
+            parsed.credentials_file.as_deref(),
+            Some(Path::new("credentials.toml"))
+        );
+        assert_eq!(
+            parsed.admin_tokens_file.as_deref(),
+            Some(Path::new("admin-tokens.toml"))
+        );
+        assert_eq!(parsed.mailbox_ttl, Some(Duration::from_secs(3600)));
+        assert_eq!(parsed.account_id.as_deref(), Some("account.prod"));
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert!(parsed.json);
+        assert!(parsed.fail_on_warning);
+        assert!(parse_hosted_readiness_args(Vec::new()).is_err());
+        let invalid_filter = parse_hosted_readiness_args(vec![
+            "--credentials-file".to_string(),
+            "credentials.toml".to_string(),
+            "--account".to_string(),
+            "bad secret value".to_string(),
+        ])
+        .expect_err("invalid account filter should fail closed");
+        assert!(!invalid_filter.contains("bad secret value"));
+        let invalid_bind = parse_hosted_readiness_args(vec![
+            "--credentials-file".to_string(),
+            "credentials.toml".to_string(),
+            "--bind-addr".to_string(),
+            "0.0.0.0:8787/secret".to_string(),
+        ])
+        .expect_err("invalid bind addr should fail closed");
+        assert!(!invalid_bind.contains("0.0.0.0:8787/secret"));
+
+        let report = HostedReadinessReport {
+            bind_addr: "0.0.0.0:8787".to_string(),
+            public_bind: true,
+            credentials_file: Some(PathBuf::from("credentials.toml")),
+            tenants_file: Some(PathBuf::from("tenants.toml")),
+            admin_tokens_file: Some(PathBuf::from("admin-tokens.toml")),
+            session_state_dir: Some(PathBuf::from("sessions")),
+            mailbox_dir: Some(PathBuf::from("mailbox")),
+            mailbox_ttl: Some(Duration::from_secs(3600)),
+            accounting_dir: Some(PathBuf::from("accounting")),
+            abuse_dir: Some(PathBuf::from("abuse")),
+            account_id: Some("account.prod".to_string()),
+            node_id: Some("node.hosted".to_string()),
+            credentials: Some(HostedCredentialAudit {
+                account_id: Some("account.prod".to_string()),
+                credentials: 2,
+                active: 2,
+                revoked: 0,
+                expired: 0,
+                accounts: 1,
+                token_displayed: false,
+                contents_displayed: false,
+            }),
+            tenants: Some(HostedTenantAudit {
+                account_id: Some("account.prod".to_string()),
+                tenants: 1,
+                active_tenants: 1,
+                revoked_tenants: 0,
+                nodes: 1,
+                active_nodes: 1,
+                revoked_nodes: 0,
+                policies: 1,
+                token_displayed: false,
+                key_material_displayed: false,
+                contents_displayed: false,
+            }),
+            admin_tokens: Some(HostedAdminTokenAudit {
+                account_id: Some("account.prod".to_string()),
+                records: 2,
+                active: 2,
+                revoked: 0,
+                expired: 0,
+                account_scoped_records: 2,
+                global_records: 0,
+                accounts: 1,
+                expiring_records: 1,
+                next_expires_at_unix: Some(1_763_596_900),
+                last_expires_at_unix: Some(1_763_596_900),
+                scope_credentials: 1,
+                scope_tenants: 1,
+                scope_dashboard: 1,
+                scope_sessions: 1,
+                scope_mailbox_audit: 1,
+                scope_mailbox_purge: 1,
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+            session_state: Some(RelaySessionAudit {
+                node_id: Some("node.hosted".to_string()),
+                records: 1,
+                active_records: 1,
+                expired_records: 0,
+                invalid_records: 0,
+                oldest_created_unix_millis: Some(1_763_596_000_000),
+                newest_last_seen_unix_millis: Some(1_763_596_500_000),
+                next_expires_unix_millis: Some(1_763_600_000_000),
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+            mailbox: Some(RelayMailboxAudit {
+                node_id: Some("node.hosted".to_string()),
+                retention_ttl_seconds: Some(3600),
+                nodes: 1,
+                records: 2,
+                invalid_records: 0,
+                bytes: 2048,
+                oldest_queued_unix_millis: Some(1_763_596_000_000),
+                newest_queued_unix_millis: Some(1_763_596_500_000),
+                expired_records: Some(0),
+                expired_bytes: Some(0),
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+            accounting: Some(RelayAccountingAudit {
+                node_id: Some("node.hosted".to_string()),
+                records: 1,
+                window_started_unix: Some(1_763_596_000),
+                sessions_authenticated: 2,
+                sessions_resumed: 1,
+                envelopes_sent: 3,
+                bytes_sent: 300,
+                envelopes_received: 4,
+                bytes_received: 400,
+                envelopes_mailboxed: 1,
+                bytes_mailboxed: 100,
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+            abuse: Some(RelayAbuseAudit {
+                node_id: Some("node.hosted".to_string()),
+                records: 1,
+                window_started_unix: Some(1_763_596_000),
+                admin_unauthorized: 0,
+                admin_failed: 0,
+                unauthorized_sessions: 0,
+                credential_denied_sessions: 0,
+                tenant_denied_sessions: 0,
+                rate_limited_sessions: 0,
+                session_expired: 0,
+                quota_denied_forwards: 0,
+                undelivered_forwards: 0,
+                mailbox_rejected_forwards: 0,
+                malformed_client_frames: 0,
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+        };
+        assert_eq!(report.status(), "ready");
+        assert_eq!(report.warning_count(), 0);
+        assert_eq!(report.checked_surfaces(), 7);
+        assert!(report.public_bind_has_credentials());
+        assert!(report.display_guards_clean());
+
+        let secret_token = "hosted-readiness-admin-token-123456";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+        let outputs = [
+            render_hosted_readiness_text(&report),
+            render_hosted_readiness_json(&report),
+        ];
+        for output in outputs {
+            assert!(output.contains("readiness") || output.contains("\"status\""));
+            assert!(output.contains("account.prod"));
+            assert!(output.contains("node.hosted"));
+            assert!(output.contains("false") || output.contains("no"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+
+        let mut warning_report = report;
+        warning_report.credentials = None;
+        assert_eq!(warning_report.status(), "needs_attention");
+        assert!(warning_report.warning_count() >= 1);
     }
 
     #[test]
