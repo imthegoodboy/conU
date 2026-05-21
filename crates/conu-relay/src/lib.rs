@@ -525,6 +525,35 @@ pub struct HostedCredentialAudit {
     pub contents_displayed: bool,
 }
 
+/// Metadata-only summary of hosted relay scoped admin-token records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedAdminTokenAudit {
+    pub account_id: Option<String>,
+    pub records: usize,
+    pub active: usize,
+    pub revoked: usize,
+    pub expired: usize,
+    pub account_scoped_records: usize,
+    pub global_records: usize,
+    pub accounts: usize,
+    pub expiring_records: usize,
+    pub next_expires_at_unix: Option<u64>,
+    pub last_expires_at_unix: Option<u64>,
+    pub scope_credentials: usize,
+    pub scope_tenants: usize,
+    pub scope_dashboard: usize,
+    pub scope_sessions: usize,
+    pub scope_mailbox_audit: usize,
+    pub scope_mailbox_purge: usize,
+    pub payload_displayed: bool,
+    pub token_displayed: bool,
+    pub token_hash_displayed: bool,
+    pub key_material_displayed: bool,
+    pub session_id_displayed: bool,
+    pub ciphertext_displayed: bool,
+    pub contents_displayed: bool,
+}
+
 /// Hosted tenant/account lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostedTenantStatus {
@@ -1955,6 +1984,131 @@ pub fn audit_hosted_relay_credentials_file(
         expired,
         accounts: accounts.len(),
         token_displayed: false,
+        contents_displayed: false,
+    })
+}
+
+/// Summarize hosted relay scoped admin-token records without exposing tokens,
+/// token hashes, or manifest contents.
+pub fn audit_hosted_admin_tokens_file(
+    path: impl AsRef<Path>,
+    account_id: Option<&str>,
+    bind_addr: &str,
+) -> Result<HostedAdminTokenAudit, RelayError> {
+    let path = path.as_ref();
+    let account_id = account_id
+        .map(|value| validate_account_id(value.to_string()))
+        .transpose()?;
+    let contents = fs::read_to_string(path)
+        .map_err(|error| RelayError::io("read relay admin tokens file", error))?;
+    let manifest = parse_admin_tokens_file(&contents, bind_addr)?;
+    let now_unix = current_unix_seconds();
+    let mut accounts = HashSet::new();
+    let mut records = 0_usize;
+    let mut active = 0_usize;
+    let mut revoked = 0_usize;
+    let mut expired = 0_usize;
+    let mut account_scoped_records = 0_usize;
+    let mut global_records = 0_usize;
+    let mut expiring_records = 0_usize;
+    let mut next_expires_at_unix = None::<u64>;
+    let mut last_expires_at_unix = None::<u64>;
+    let mut scope_credentials = 0_usize;
+    let mut scope_tenants = 0_usize;
+    let mut scope_dashboard = 0_usize;
+    let mut scope_sessions = 0_usize;
+    let mut scope_mailbox_audit = 0_usize;
+    let mut scope_mailbox_purge = 0_usize;
+
+    for record in manifest.records {
+        if account_id
+            .as_deref()
+            .is_some_and(|target| record.account_id.as_deref() != Some(target))
+        {
+            continue;
+        }
+
+        if let Some(record_account) = record.account_id.as_deref() {
+            accounts.insert(record_account.to_string());
+        }
+        records += 1;
+        if record.account_id.is_some() {
+            account_scoped_records += 1;
+        } else {
+            global_records += 1;
+        }
+
+        let is_expired = record
+            .expires_at_unix
+            .is_some_and(|expires_at| expires_at <= now_unix);
+        if record.status == RelayCredentialStatus::Revoked {
+            revoked += 1;
+        } else if is_expired {
+            expired += 1;
+        } else {
+            active += 1;
+        }
+
+        if let Some(expires_at_unix) = record.expires_at_unix {
+            expiring_records += 1;
+            last_expires_at_unix = Some(
+                last_expires_at_unix
+                    .map(|current| current.max(expires_at_unix))
+                    .unwrap_or(expires_at_unix),
+            );
+            if record.status == RelayCredentialStatus::Active && expires_at_unix > now_unix {
+                next_expires_at_unix = Some(
+                    next_expires_at_unix
+                        .map(|current| current.min(expires_at_unix))
+                        .unwrap_or(expires_at_unix),
+                );
+            }
+        }
+
+        if record.scopes.credentials {
+            scope_credentials += 1;
+        }
+        if record.scopes.tenants {
+            scope_tenants += 1;
+        }
+        if record.scopes.dashboard {
+            scope_dashboard += 1;
+        }
+        if record.scopes.sessions {
+            scope_sessions += 1;
+        }
+        if record.scopes.mailbox_audit {
+            scope_mailbox_audit += 1;
+        }
+        if record.scopes.mailbox_purge {
+            scope_mailbox_purge += 1;
+        }
+    }
+
+    Ok(HostedAdminTokenAudit {
+        account_id,
+        records,
+        active,
+        revoked,
+        expired,
+        account_scoped_records,
+        global_records,
+        accounts: accounts.len(),
+        expiring_records,
+        next_expires_at_unix,
+        last_expires_at_unix,
+        scope_credentials,
+        scope_tenants,
+        scope_dashboard,
+        scope_sessions,
+        scope_mailbox_audit,
+        scope_mailbox_purge,
+        payload_displayed: false,
+        token_displayed: false,
+        token_hash_displayed: false,
+        key_material_displayed: false,
+        session_id_displayed: false,
+        ciphertext_displayed: false,
         contents_displayed: false,
     })
 }
@@ -3396,6 +3550,9 @@ impl AdminTokenFileRecord {
             "payload_displayed"
             | "token_displayed"
             | "token_hash_displayed"
+            | "key_material_displayed"
+            | "session_id_displayed"
+            | "ciphertext_displayed"
             | "contents_displayed" => {
                 if value != "false" {
                     return Err(RelayError::InvalidConfigValue(format!(
@@ -8236,6 +8393,152 @@ token_hash_displayed = false\n",
         assert!(empty_scope_error.to_string().contains("at least one scope"));
         assert!(!empty_scope_error.to_string().contains(token));
         assert!(!empty_scope_error.to_string().contains(&hash));
+
+        let key_material_displayed = format!(
+            "version = \"1\"\n\n\
+[[admin_token]]\n\
+token_sha256_hex = \"{hash}\"\n\
+token_length = {}\n\
+scope_dashboard = true\n\
+key_material_displayed = true\n",
+            token.len()
+        );
+        let key_material_error = parse_admin_tokens_file(&key_material_displayed, "127.0.0.1:0")
+            .expect_err("key material display guard should be rejected");
+        assert!(
+            key_material_error
+                .to_string()
+                .contains("key_material_displayed must be false")
+        );
+        assert!(!key_material_error.to_string().contains(token));
+        assert!(!key_material_error.to_string().contains(&hash));
+    }
+
+    #[test]
+    fn hosted_admin_token_audit_summarizes_scopes_without_secret_leak() {
+        let home = test_home("hosted-admin-token-audit");
+        let manifest_path = home.join("admin-tokens.toml");
+        let credential_token = "credential-admin-token-1234567890";
+        let tenant_token = "tenant-admin-token-1234567890";
+        let mailbox_token = "mailbox-admin-token-1234567890";
+        let session_token = "session-admin-token-1234567890";
+        let credential_hash = relay_token_sha256_hex(credential_token).expect("credential hash");
+        let tenant_hash = relay_token_sha256_hex(tenant_token).expect("tenant hash");
+        let mailbox_hash = relay_token_sha256_hex(mailbox_token).expect("mailbox hash");
+        let session_hash = relay_token_sha256_hex(session_token).expect("session hash");
+        let now_unix = current_unix_seconds();
+        fs::create_dir_all(&home).expect("home creates");
+        fs::write(
+            &manifest_path,
+            format!(
+                "version = \"1\"\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{credential_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+expires_at_unix = {}\n\
+scope_credentials = true\n\
+scope_dashboard = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+key_material_displayed = false\n\
+session_id_displayed = false\n\
+ciphertext_displayed = false\n\
+contents_displayed = false\n\n\
+[[admin_token]]\n\
+account_id = \"account.prod\"\n\
+token_sha256_hex = \"{tenant_hash}\"\n\
+token_length = {}\n\
+status = \"revoked\"\n\
+scope_tenants = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n\n\
+[[admin_token]]\n\
+account_id = \"account.other\"\n\
+token_sha256_hex = \"{mailbox_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+expires_at_unix = {}\n\
+scope_mailbox_audit = true\n\
+scope_mailbox_purge = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n\n\
+[[admin_token]]\n\
+token_sha256_hex = \"{session_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+scope_sessions = true\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = false\n\
+contents_displayed = false\n",
+                credential_token.len(),
+                now_unix + 3_600,
+                tenant_token.len(),
+                mailbox_token.len(),
+                now_unix.saturating_sub(1),
+                session_token.len()
+            ),
+        )
+        .expect("manifest writes");
+
+        let audit = audit_hosted_admin_tokens_file(&manifest_path, None, "0.0.0.0:8787")
+            .expect("admin token audit succeeds");
+        assert_eq!(audit.records, 4);
+        assert_eq!(audit.active, 2);
+        assert_eq!(audit.revoked, 1);
+        assert_eq!(audit.expired, 1);
+        assert_eq!(audit.account_scoped_records, 3);
+        assert_eq!(audit.global_records, 1);
+        assert_eq!(audit.accounts, 2);
+        assert_eq!(audit.expiring_records, 2);
+        assert_eq!(audit.next_expires_at_unix, Some(now_unix + 3_600));
+        assert_eq!(audit.last_expires_at_unix, Some(now_unix + 3_600));
+        assert_eq!(audit.scope_credentials, 1);
+        assert_eq!(audit.scope_tenants, 1);
+        assert_eq!(audit.scope_dashboard, 1);
+        assert_eq!(audit.scope_sessions, 1);
+        assert_eq!(audit.scope_mailbox_audit, 1);
+        assert_eq!(audit.scope_mailbox_purge, 1);
+        assert!(!audit.payload_displayed);
+        assert!(!audit.token_displayed);
+        assert!(!audit.token_hash_displayed);
+        assert!(!audit.key_material_displayed);
+        assert!(!audit.session_id_displayed);
+        assert!(!audit.ciphertext_displayed);
+        assert!(!audit.contents_displayed);
+
+        let account_audit =
+            audit_hosted_admin_tokens_file(&manifest_path, Some("account.prod"), "0.0.0.0:8787")
+                .expect("account admin token audit succeeds");
+        assert_eq!(account_audit.account_id.as_deref(), Some("account.prod"));
+        assert_eq!(account_audit.records, 2);
+        assert_eq!(account_audit.active, 1);
+        assert_eq!(account_audit.revoked, 1);
+        assert_eq!(account_audit.expired, 0);
+        assert_eq!(account_audit.account_scoped_records, 2);
+        assert_eq!(account_audit.global_records, 0);
+        assert_eq!(account_audit.accounts, 1);
+
+        let debug = format!("{audit:?}");
+        for secret in [
+            credential_token,
+            tenant_token,
+            mailbox_token,
+            session_token,
+            &credential_hash,
+            &tenant_hash,
+            &mailbox_hash,
+            &session_hash,
+        ] {
+            assert!(!debug.contains(secret));
+        }
     }
 
     #[test]

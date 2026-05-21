@@ -65,6 +65,9 @@ scope_mailbox_purge = false
 payload_displayed = false
 token_displayed = false
 token_hash_displayed = false
+key_material_displayed = false
+session_id_displayed = false
+ciphertext_displayed = false
 contents_displayed = false
 
 [[admin_token]]
@@ -81,8 +84,23 @@ scope_mailbox_purge = false
 payload_displayed = false
 token_displayed = false
 token_hash_displayed = false
+key_material_displayed = false
+session_id_displayed = false
+ciphertext_displayed = false
 contents_displayed = false
 ```
+
+Audit a local scoped admin-token manifest before using it on a managed relay:
+
+```powershell
+conu-relay --admin-token-audit `
+  --admin-tokens-file C:\conu-relay\admin-tokens.toml `
+  --bind-addr 0.0.0.0:8787 `
+  --account account.prod `
+  --json
+```
+
+The audit reports record counts, active/revoked/expired totals, account-scoped versus global records, scope counts, expiry bounds, and false display guards only. It does not print raw admin tokens, token hashes, private keys, session ids, payloads, ciphertext bodies, frame contents, or manifest contents.
 
 Scopes map to admin actions: `scope_credentials` allows issue/rotate/revoke/audit credential commands, `scope_tenants` allows tenant upsert/revoke/audit commands, `scope_dashboard` allows hosted dashboard snapshots and hosted abuse threshold reports, `scope_sessions` allows read-only session-state audits, and the mailbox scopes allow read-only mailbox audits or confirm-gated mailbox purges. Hosted account suspension requires either the full-admin compatibility token or a scoped admin token with both `scope_credentials = true` and `scope_tenants = true`, because it revokes tenant and credential metadata together. If `account_id` is present, credential, tenant, and account-suspension actions are limited to that account. Account-scoped dashboard snapshots or threshold reports without a node filter suppress global accounting and abuse counters; account-scoped session audit and mailbox audit/purge require a node filter and an active tenant-node record. Scope failures return `admin_scope_denied` without echoing the submitted token or stored hash.
 
@@ -452,4 +470,4 @@ This is still single-relay and file-backed/admin-gated, even with scoped admin t
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token, hosted account-suspension, abuse-audit, local/admin-gated session-state audit, local/admin-gated abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration beyond single-relay session-state audits, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token manifest audit, hosted account-suspension, abuse-audit, local/admin-gated session-state audit, local/admin-gated abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration beyond single-relay session-state audits, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.
