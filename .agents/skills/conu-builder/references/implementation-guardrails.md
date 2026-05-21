@@ -184,7 +184,7 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Windows service, Linux systemd, and macOS launchd files are templates until a signed installer configures platform-specific users and paths.
 - Docker relay templates are acceptable for controlled self-hosted tests. Relay clients accept `wss://` through platform TLS verification, but the bundled relay server still requires TLS termination in front of it; public hosted relay claims still require managed account auth, online credential issuance APIs, distributed hosted monitoring/accounting, and distributed hosted session state.
 - A local release may be marked ready only with documented limits. Do not claim public hosted internet readiness until hosted account auth, distributed hosted session state, distributed hosted accounting dashboards, hosted mailbox retention policy, multi-tenant hosted permission administration, and non-Windows OS-backed key storage are implemented.
-- CI/release workflows must run metadata-only checks, including package checks for `sdk/typescript` and `packaging/npm/conu-cli`, and must not upload conU state directories or logs as artifacts.
+- CI/release workflows must run metadata-only checks, including package checks for `sdk/typescript` and `packaging/npm/conu-cli`, verify release archives with `scripts/verify-release-artifacts.py`, and must not upload conU state directories, logs, private keys, inboxes, route registries, telemetry dumps, vendored package binaries, or payload-bearing files as artifacts.
 
 ## Privacy Rules
 

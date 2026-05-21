@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-21
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-process same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, live-reloaded hashed relay credential manifest, relay accounting/quotas, direct route selection guard, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, and GitHub CI package-validation passes are complete. Public hosted internet readiness remains scoped by the known managed hosted account auth, online credential issuance APIs, distributed hosted session state, distributed hosted accounting/dashboards, direct transport, multi-tenant hosted permission administration, managed hosted identity/key administration, and non-Windows keychain gaps.
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-process same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, live-reloaded hashed relay credential manifest, relay accounting/quotas, direct route selection guard, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, GitHub CI package-validation passes, and release publishing workflow hardening are complete. Public hosted internet readiness remains scoped by the known managed hosted account auth, online credential issuance APIs, distributed hosted session state, distributed hosted accounting/dashboards, direct transport, multi-tenant hosted permission administration, managed hosted identity/key administration, platform code-signing, and non-Windows keychain gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -3566,6 +3566,54 @@ Next recommendation:
 
 - Prioritize managed hosted relay/account work, npm/release publication, browser-native protocol support, or non-Windows OS-backed key storage depending on the next release target.
 
+## Post Phase 15 Release Publishing Workflow
+
+Status: completed
+
+Summary:
+
+- Added `scripts/verify-release-artifacts.py` to validate release archives and checksum files before upload.
+- The verifier checks required binaries, `manifest.toml`, `payload_contents_included = false`, matching SHA-256 files, and rejects common local-state or payload-bearing paths such as `.conu`, `security/`, `messages/`, `runtime/`, `logs/`, `routes/`, `node_modules/`, `target/`, and vendored npm binaries.
+- Hardened `.github/workflows/release.yml` with a package-check job, npm dry-runs for `@conu/cli` and `@conu/sdk`, archive verification on every platform build, automatic GitHub Release asset upload for `v*` tags, and optional npm publication with provenance when `NPM_TOKEN` is configured.
+- Updated distribution, packaging, release checklist, production readiness, repo memory, and security guardrails so release publication is no longer a manual-only path.
+
+Files changed:
+
+- `.github/workflows/release.yml`
+- `scripts/verify-release-artifacts.py`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `npm run check --prefix sdk/typescript` passed locally.
+- `npm run check --prefix packaging/npm/conu-cli` passed locally.
+- `npm pack --dry-run --json` passed locally in `sdk/typescript`.
+- `npm pack --dry-run --json` passed locally in `packaging/npm/conu-cli`.
+- `python -m py_compile scripts/verify-release-artifacts.py` passed locally.
+- `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text())"` passed locally.
+- `powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed locally.
+- `python scripts\verify-release-artifacts.py dist` passed locally against the generated Windows archive.
+- `cargo fmt --all -- --check` passed locally.
+- `git diff --check` passed locally.
+
+Known gaps:
+
+- Platform code signing/notarization is not implemented; current release trust is CI-built archives, SHA-256 checksums, GitHub Release assets, and npm provenance when `NPM_TOKEN` is configured.
+- npm publication still requires maintainers to configure the repository `NPM_TOKEN` secret before a tagged release that should publish packages.
+- Managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted telemetry/dashboards, direct transport, hosted multi-tenant permission administration, and non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Add platform code signing/notarization or prioritize managed hosted relay/account work depending on the next public release target.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -3625,4 +3673,5 @@ Add entries here when a phase is completed.
 2026-05-21 - Post Phase 15 TypeScript SDK wrapper completed. Added dependency-free `@conu/sdk` wrapper around installed `conu`/`conud`, stdin-only payload helpers, TypeScript declarations, smoke tests, a local example, docs/skill updates, and full validation. Next then: TypeScript receive helper or managed hosted relay/account work.
 2026-05-21 - Post Phase 15 GitHub CI package validation completed. Added a Node 20 package job for `sdk/typescript` and `packaging/npm/conu-cli`, documented package checks as a CI gate, stabilized durable relay mailbox FIFO reload ordering and relay sync bounded-wait handling exposed by GitHub CI, and validated package/Python/Rust checks locally. Next then: TypeScript receive helper or managed hosted relay/account work.
 2026-05-21 - Post Phase 15 TypeScript explicit receive helper completed. Added MCP-backed `receiveMessage()` and `receiveMessageBytes()` to the TypeScript SDK wrapper, kept normal metadata surfaces payload-safe, updated docs/skills/examples, and validated package/Python/fmt checks locally. Next: managed hosted relay/account work, npm/release publication, browser-native protocol support, or non-Windows keychain support.
+2026-05-21 - Post Phase 15 release publishing workflow completed. Added release archive verification, package dry-runs, tag-driven GitHub Release asset upload, optional npm provenance publication, docs/skill updates, and local archive validation. Next: platform code signing/notarization, managed hosted relay/account work, or non-Windows keychain support.
 ```

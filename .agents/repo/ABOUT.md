@@ -87,9 +87,10 @@ Implemented so far:
 - `conu doctor` local install/readiness check with payload-safe log scanning
 - `conu telemetry snapshot` local structured telemetry with an explicit payload-safe field allowlist and aggregate counters only
 - release build scripts under `scripts/`
+- release archive verifier under `scripts/verify-release-artifacts.py`
 - packaging templates under `packaging/`, including Windows install, Linux systemd, macOS launchd, Docker relay, and npm launcher templates
 - platform-named release artifacts with SHA-256 checksum support
-- GitHub CI and release artifact workflows, including Rust OS-matrix checks plus TypeScript SDK and npm launcher package checks
+- GitHub CI and release artifact workflows, including Rust OS-matrix checks plus TypeScript SDK, npm launcher package checks, release archive verification, GitHub Release asset upload, and optional npm package publishing
 - release checklist and observability docs
 - payload-safe status and agent registry reporting
 - payload-safe runtime and agent metadata logs

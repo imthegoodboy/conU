@@ -32,8 +32,10 @@ cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
 cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 npm run check --prefix sdk/typescript
+npm run check --prefix packaging/npm/conu-cli
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64
+python scripts\verify-release-artifacts.py dist
 ```
 
 macOS/Linux:
@@ -44,9 +46,11 @@ cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 npm run check --prefix sdk/typescript
+npm run check --prefix packaging/npm/conu-cli
 ./scripts/build-release.sh
 PACKAGE_SUFFIX=linux-x64 ./scripts/build-release.sh
 PACKAGE_SUFFIX=macos-arm64 ./scripts/build-release.sh
+python scripts/verify-release-artifacts.py dist
 ```
 
 ## Smoke
@@ -104,6 +108,7 @@ conu stop
 - Release archive includes docs and packaging templates.
 - `manifest.toml` contains `payload_contents_included = false`.
 - Release archive has a matching `.sha256` checksum file.
+- `scripts/verify-release-artifacts.py dist` passes for every archive and rejects local conU state, logs, private key files, inboxes, route registries, telemetry dumps, node modules, vendored package binaries, and payload-bearing paths.
 - Windows install script copies binaries to a current-user install directory.
 - Linux systemd template is present and documents the required user/state path edits.
 - macOS launchd template is present and documents the required user/state path edits.
@@ -115,8 +120,11 @@ conu stop
 
 - CI passed on pull request or equivalent local validation is recorded, including the Rust OS matrix and the package job for `sdk/typescript` plus `packaging/npm/conu-cli`.
 - PR body lists validation commands.
+- The `Release Artifacts` workflow is green for the release tag.
 - GitHub Release has platform-named archives plus matching `.sha256` files before npm publishing.
-- `@conu/cli` is published only after the matching GitHub Release assets are available.
+- `@conu/cli` and `@conu/sdk` npm package dry-runs pass before publication.
+- `@conu/cli` and `@conu/sdk` are published only after the matching GitHub Release assets are available; configure the repository `NPM_TOKEN` secret for automated npm publication with provenance.
+- Platform code signing is not implemented yet; the current release trust decision is CI-built archives, SHA-256 checksums, GitHub Release assets, and npm provenance when `NPM_TOKEN` is configured.
 - `plan.md` completion log is updated.
 - Issue is closed by PR merge.
 
