@@ -104,6 +104,13 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--admin-mailbox-purge") => match admin_mailbox_purge_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--tenant-upsert") => match tenant_upsert_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -221,6 +228,7 @@ Usage:
   conu-relay --admin-audit-credentials --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
   conu-relay --admin-hosted-dashboard --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --admin-mailbox-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--ttl-seconds <seconds>] [--json]
+  conu-relay --admin-mailbox-purge --relay <ws://host:port/path> --admin-token-stdin --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
   conu-relay --tenant-upsert <account-id> --tenants-file <path> [--json]
   conu-relay --tenant-revoke <account-id> --tenants-file <path> [--json]
   conu-relay --tenant-node-upsert <account-id> <node-id> --tenants-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
@@ -272,14 +280,14 @@ relay, and write the raw node token locally only after the relay confirms the up
 commands manage account, node, public key-id, and hosted permission metadata only; they never grant
 local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Admin
 hosted dashboard snapshots require the admin token over the relay control plane and return
-metadata-only credential, tenant, accounting, and abuse counters. Admin mailbox audits require the
-admin token over the relay control plane and return durable mailbox retention metadata from the
-running relay only. Abuse audit reads aggregate enforcement counters only, mailbox audit reads
-durable mailbox timestamps and file sizes only, manual mailbox purge requires dry-run or explicit
-confirmation, and scheduled mailbox purge requires an explicit local interval plus
-CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted dashboard snapshots
-combine configured credential, tenant, accounting, and abuse summaries without displaying tokens,
-token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids."
+metadata-only credential, tenant, accounting, and abuse counters. Admin mailbox audits and purges
+require the admin token over the relay control plane and inspect or clean durable mailbox retention
+metadata from the running relay only. Abuse audit reads aggregate enforcement counters only, mailbox
+audit reads durable mailbox timestamps and file sizes only, manual and admin mailbox purge require
+dry-run or explicit confirmation, and scheduled mailbox purge requires an explicit local interval
+plus CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted dashboard
+snapshots combine configured credential, tenant, accounting, and abuse summaries without displaying
+tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids."
     );
 }
 
@@ -1112,6 +1120,124 @@ fn admin_mailbox_audit_usage() -> String {
     "usage: conu-relay --admin-mailbox-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--ttl-seconds <seconds>] [--json]".to_string()
 }
 
+fn admin_mailbox_purge_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_admin_mailbox_purge_args(args)?;
+    let admin_token = read_admin_token_from_stdin(parsed.admin_token_stdin)?;
+    let request = RelayAdminRequest::mailbox_purge(
+        admin_token,
+        parsed.node_id.clone(),
+        parsed.ttl.as_secs(),
+        parsed.dry_run,
+    )
+    .map_err(|error| error.to_string())?;
+    let result = send_admin_request(&parsed.relay, request)?;
+    if !matches!(result.status.as_str(), "dry_run" | "purged") {
+        return Err(format!(
+            "relay admin mailbox purge did not complete: status={}",
+            result.status
+        ));
+    }
+
+    if parsed.json {
+        println!(
+            "{}",
+            render_admin_mailbox_purge_json(&result, &parsed.relay)
+        );
+    } else {
+        println!(
+            "{}",
+            render_admin_mailbox_purge_text(&result, &parsed.relay)
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct AdminMailboxPurgeArgs {
+    node_id: Option<String>,
+    ttl: Duration,
+    dry_run: bool,
+    relay: String,
+    admin_token_stdin: bool,
+    json: bool,
+}
+
+fn parse_admin_mailbox_purge_args(args: Vec<String>) -> Result<AdminMailboxPurgeArgs, String> {
+    let mut node_id = None::<String>;
+    let mut ttl = None::<Duration>;
+    let mut dry_run = false;
+    let mut confirm = false;
+    let mut relay = None::<String>;
+    let mut admin_token_stdin = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_mailbox_purge_usage());
+                };
+                node_id = Some(validate_dashboard_filter_id(value.to_string(), "node id")?);
+            }
+            "--ttl-seconds" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_mailbox_purge_usage());
+                };
+                ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
+            }
+            "--relay" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_mailbox_purge_usage());
+                };
+                relay = Some(value.to_string());
+            }
+            "--dry-run" => dry_run = true,
+            "--confirm" => confirm = true,
+            "--admin-token-stdin" => admin_token_stdin = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(admin_mailbox_purge_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(admin_mailbox_purge_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(relay) = relay.filter(|value| !value.trim().is_empty()) else {
+        return Err(admin_mailbox_purge_usage());
+    };
+    if !admin_token_stdin {
+        return Err("--admin-token-stdin is required".to_string());
+    }
+    let Some(ttl) = ttl else {
+        return Err(admin_mailbox_purge_usage());
+    };
+    match (dry_run, confirm) {
+        (true, false) | (false, true) => {}
+        _ => {
+            return Err(
+                "--admin-mailbox-purge requires exactly one of --dry-run or --confirm".to_string(),
+            );
+        }
+    }
+
+    Ok(AdminMailboxPurgeArgs {
+        node_id,
+        ttl,
+        dry_run,
+        relay,
+        admin_token_stdin,
+        json,
+    })
+}
+
+fn admin_mailbox_purge_usage() -> String {
+    "usage: conu-relay --admin-mailbox-purge --relay <ws://host:port/path> --admin-token-stdin --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]".to_string()
+}
+
 fn read_admin_token_from_stdin(required: bool) -> Result<String, String> {
     if !required {
         return Err("--admin-token-stdin is required".to_string());
@@ -1580,6 +1706,112 @@ fn render_admin_mailbox_audit_json(result: &RelayAdminResult, relay: &str) -> St
         optional_u64_json(result.mailbox_newest_queued_unix_millis),
         optional_u64_json(result.mailbox_expired_records),
         optional_u64_json(result.mailbox_expired_bytes),
+        bool_json(result.payload_displayed),
+        bool_json(result.token_displayed),
+        bool_json(result.token_hash_displayed),
+        bool_json(result.key_material_displayed),
+        bool_json(result.session_id_displayed),
+        bool_json(result.ciphertext_displayed),
+        bool_json(result.contents_displayed)
+    )
+}
+
+fn render_admin_mailbox_purge_text(result: &RelayAdminResult, relay: &str) -> String {
+    let dry_run = result.mailbox_dry_run.unwrap_or(false);
+    let confirmed = result.mailbox_confirmed.unwrap_or(!dry_run);
+    format!(
+        r"conU hosted relay admin mailbox purge
+
+mode: {}
+node: {}
+relay: {}
+retention ttl seconds: {}
+dry run: {}
+confirmed: {}
+nodes: {}
+records: {}
+invalid records: {}
+bytes: {}
+expired records: {}
+expired bytes: {}
+purged records: {}
+purged bytes: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        if dry_run { "dry-run" } else { "confirmed" },
+        result.node_id.as_deref().unwrap_or("all"),
+        relay,
+        optional_u64_text(result.retention_ttl_seconds),
+        yes_no(dry_run),
+        yes_no(confirmed),
+        result.mailbox_nodes,
+        result.mailbox_records,
+        result.mailbox_invalid_records,
+        result.mailbox_bytes,
+        optional_u64_text(result.mailbox_expired_records),
+        optional_u64_text(result.mailbox_expired_bytes),
+        optional_u64_text(result.mailbox_purged_records),
+        optional_u64_text(result.mailbox_purged_bytes),
+        yes_no(result.payload_displayed),
+        yes_no(result.token_displayed),
+        yes_no(result.token_hash_displayed),
+        yes_no(result.key_material_displayed),
+        yes_no(result.session_id_displayed),
+        yes_no(result.ciphertext_displayed),
+        yes_no(result.contents_displayed)
+    )
+}
+
+fn render_admin_mailbox_purge_json(result: &RelayAdminResult, relay: &str) -> String {
+    let dry_run = result.mailbox_dry_run.unwrap_or(false);
+    let confirmed = result.mailbox_confirmed.unwrap_or(!dry_run);
+    format!(
+        r#"{{
+  "status": "{}",
+  "action": "{}",
+  "mode": "{}",
+  "nodeId": {},
+  "relay": "{}",
+  "retentionTtlSeconds": {},
+  "dryRun": {},
+  "confirmed": {},
+  "nodes": {},
+  "records": {},
+  "invalidRecords": {},
+  "bytes": {},
+  "expiredRecords": {},
+  "expiredBytes": {},
+  "purgedRecords": {},
+  "purgedBytes": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        json_escape(&result.status),
+        result.action.as_str(),
+        if dry_run { "dry-run" } else { "confirmed" },
+        optional_string_json(result.node_id.as_deref()),
+        json_escape(relay),
+        optional_u64_json(result.retention_ttl_seconds),
+        bool_json(dry_run),
+        bool_json(confirmed),
+        result.mailbox_nodes,
+        result.mailbox_records,
+        result.mailbox_invalid_records,
+        result.mailbox_bytes,
+        optional_u64_json(result.mailbox_expired_records),
+        optional_u64_json(result.mailbox_expired_bytes),
+        optional_u64_json(result.mailbox_purged_records),
+        optional_u64_json(result.mailbox_purged_bytes),
         bool_json(result.payload_displayed),
         bool_json(result.token_displayed),
         bool_json(result.token_hash_displayed),
@@ -4002,6 +4234,112 @@ mod tests {
         for output in outputs {
             assert!(output.contains("mailbox"));
             assert!(output.contains("audit") || output.contains("audited"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+            assert!(!output.contains("ENVELOPE from=node.a"));
+        }
+    }
+
+    #[test]
+    fn admin_mailbox_purge_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_admin_mailbox_purge_args(vec![
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--ttl-seconds".to_string(),
+            "3600".to_string(),
+            "--dry-run".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("admin mailbox purge args parse");
+        assert_eq!(parsed.relay, "ws://127.0.0.1:8787");
+        assert!(parsed.admin_token_stdin);
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert_eq!(parsed.ttl, Duration::from_secs(3600));
+        assert!(parsed.dry_run);
+        assert!(parsed.json);
+        assert!(parse_admin_mailbox_purge_args(Vec::new()).is_err());
+        assert!(
+            parse_admin_mailbox_purge_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--ttl-seconds".to_string(),
+                "3600".to_string(),
+                "--dry-run".to_string(),
+            ])
+            .expect_err("admin token stdin required")
+            .contains("--admin-token-stdin")
+        );
+        assert!(
+            parse_admin_mailbox_purge_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--admin-token-stdin".to_string(),
+                "--ttl-seconds".to_string(),
+                "0".to_string(),
+                "--dry-run".to_string(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse_admin_mailbox_purge_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--admin-token-stdin".to_string(),
+                "--ttl-seconds".to_string(),
+                "3600".to_string(),
+            ])
+            .expect_err("purge mode required")
+            .contains("exactly one")
+        );
+        assert!(
+            parse_admin_mailbox_purge_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--admin-token-stdin".to_string(),
+                "--ttl-seconds".to_string(),
+                "3600".to_string(),
+                "--dry-run".to_string(),
+                "--confirm".to_string(),
+            ])
+            .expect_err("one purge mode required")
+            .contains("exactly one")
+        );
+
+        let result = RelayAdminResult {
+            node_id: Some("node.hosted".to_string()),
+            retention_ttl_seconds: Some(3600),
+            mailbox_nodes: 1,
+            mailbox_records: 2,
+            mailbox_invalid_records: 1,
+            mailbox_bytes: 512,
+            mailbox_expired_records: Some(1),
+            mailbox_expired_bytes: Some(256),
+            mailbox_dry_run: Some(false),
+            mailbox_confirmed: Some(true),
+            mailbox_purged_records: Some(1),
+            mailbox_purged_bytes: Some(256),
+            ..RelayAdminResult::new(conu_core::relay::RelayAdminAction::MailboxPurge, "purged")
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_admin_mailbox_purge_text(&result, "ws://127.0.0.1:8787"),
+            render_admin_mailbox_purge_json(&result, "ws://127.0.0.1:8787"),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("mailbox"));
+            assert!(output.contains("purge") || output.contains("purged"));
             assert!(output.contains("contents"));
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));

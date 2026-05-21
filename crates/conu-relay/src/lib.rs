@@ -3707,7 +3707,62 @@ impl RelayHub {
             }
             RelayAdminAction::Dashboard => self.admin_dashboard_result(request, &credentials_file),
             RelayAdminAction::MailboxAudit => self.admin_mailbox_audit_result(request),
+            RelayAdminAction::MailboxPurge => self.admin_mailbox_purge_result(request),
         }
+    }
+
+    fn admin_mailbox_purge_result(
+        &self,
+        request: &RelayAdminRequest,
+    ) -> Result<RelayAdminResult, RelayError> {
+        let RelayMailboxStorage::FileBacked(mailbox_dir) = &self.mailbox_storage else {
+            return Ok(RelayAdminResult {
+                action: request.action,
+                status: "mailbox_unavailable".to_string(),
+                node_id: request.node_id.clone(),
+                retention_ttl_seconds: request.retention_ttl_seconds,
+                mailbox_dry_run: request.mailbox_purge_dry_run,
+                ..RelayAdminResult::new(request.action, "mailbox_unavailable")
+            });
+        };
+        let retention_ttl_seconds = request.retention_ttl_seconds.ok_or_else(|| {
+            RelayError::Protocol("relay admin mailbox purge ttl is required".to_string())
+        })?;
+        let dry_run = request.mailbox_purge_dry_run.ok_or_else(|| {
+            RelayError::Protocol("relay admin mailbox purge mode is required".to_string())
+        })?;
+        let report = purge_relay_mailbox_dir(
+            mailbox_dir,
+            request.node_id.as_deref(),
+            Duration::from_secs(retention_ttl_seconds),
+            dry_run,
+        )?;
+        let status = if report.dry_run { "dry_run" } else { "purged" };
+
+        Ok(RelayAdminResult {
+            action: request.action,
+            status: status.to_string(),
+            node_id: report.node_id,
+            retention_ttl_seconds: Some(report.retention_ttl_seconds),
+            mailbox_nodes: report.nodes,
+            mailbox_records: report.records,
+            mailbox_invalid_records: report.invalid_records,
+            mailbox_bytes: report.bytes,
+            mailbox_expired_records: Some(report.expired_records),
+            mailbox_expired_bytes: Some(report.expired_bytes),
+            mailbox_dry_run: Some(report.dry_run),
+            mailbox_confirmed: Some(report.confirmed),
+            mailbox_purged_records: Some(report.purged_records),
+            mailbox_purged_bytes: Some(report.purged_bytes),
+            payload_displayed: report.payload_displayed,
+            token_displayed: report.token_displayed,
+            token_hash_displayed: report.token_hash_displayed,
+            key_material_displayed: report.key_material_displayed,
+            session_id_displayed: report.session_id_displayed,
+            ciphertext_displayed: report.ciphertext_displayed,
+            contents_displayed: report.contents_displayed,
+            ..RelayAdminResult::new(request.action, status)
+        })
     }
 
     fn admin_mailbox_audit_result(
@@ -6902,6 +6957,138 @@ token_displayed = false\n",
         assert!(!audit.contains("ENVELOPE from=node.a"));
         assert!(!audit.contains("ciphertext_body"));
         assert!(!audit.contains("env.admin.mailbox"));
+    }
+
+    #[test]
+    fn hosted_admin_mailbox_purge_dry_run_and_confirm_with_admin_token() {
+        let home = test_home("hosted-admin-mailbox-purge");
+        let manifest_path = home.join("credentials.toml");
+        let mailbox_dir = home.join("relay-mailbox");
+        let node_dir = mailbox_dir.join("node.hosted");
+        let admin_token = "hosted-admin-mailbox-purge-token-123456";
+        let wrong_admin_token = "wrong-hosted-mailbox-purge-token-123456";
+
+        let config =
+            RelayConfig::with_scoped_credentials_file("127.0.0.1:0", manifest_path.clone())
+                .expect("missing manifest starts fail-closed")
+                .with_mailbox_storage(
+                    RelayMailboxStorage::file_backed(mailbox_dir.clone()).expect("mailbox storage"),
+                )
+                .with_admin_token(admin_token, manifest_path)
+                .expect("admin token configures");
+        let relay = spawn_relay(config).expect("relay starts");
+        fs::create_dir_all(&node_dir).expect("mailbox node dir");
+        let now = current_unix_millis();
+        let expired_queued_at = now.saturating_sub(10_000);
+        let fresh_queued_at = now;
+
+        let expired = QueuedRelayEnvelope {
+            queued_at_millis: expired_queued_at,
+            queued_at_nanos: expired_queued_at.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.hosted", "env.admin.mailbox.purge.expired"),
+            ),
+        };
+        let fresh = QueuedRelayEnvelope {
+            queued_at_millis: fresh_queued_at,
+            queued_at_nanos: fresh_queued_at.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.hosted", "env.admin.mailbox.purge.fresh"),
+            ),
+        };
+        let expired_path = node_dir.join("expired.mailbox");
+        let fresh_path = node_dir.join("fresh.mailbox");
+        let invalid_path = node_dir.join("invalid.mailbox");
+        let display_guard_path = node_dir.join("display-guard.mailbox");
+        fs::write(&expired_path, render_mailbox_file(&expired)).expect("expired mailbox file");
+        fs::write(&fresh_path, render_mailbox_file(&fresh)).expect("fresh mailbox file");
+        fs::write(
+            &invalid_path,
+            "version = \"1\"\nqueued_at_millis = invalid\nframe = ENVELOPE from=node.a body_ciphertext=ciphertext_body\npayload_displayed = false\n",
+        )
+        .expect("invalid mailbox file");
+        fs::write(
+            &display_guard_path,
+            render_mailbox_file(&expired)
+                .replace("payload_displayed = false", "payload_displayed = true"),
+        )
+        .expect("display guard mailbox file");
+
+        let rejected = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_purge(
+                wrong_admin_token,
+                Some("node.hosted".to_string()),
+                1,
+                true,
+            )
+            .expect("mailbox purge request"),
+        );
+        assert!(rejected.contains("ERROR reason=admin_unauthorized"));
+        assert!(!rejected.contains(admin_token));
+        assert!(!rejected.contains(wrong_admin_token));
+        assert!(expired_path.exists());
+
+        let dry_run = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_purge(admin_token, Some("node.hosted".to_string()), 1, true)
+                .expect("mailbox purge request"),
+        );
+
+        assert!(dry_run.contains("ADMIN_RESULT action=mailbox_purge status=dry_run"));
+        assert!(dry_run.contains("node=node.hosted"));
+        assert!(dry_run.contains("ttl_seconds=1"));
+        assert!(dry_run.contains("mailbox_nodes=1"));
+        assert!(dry_run.contains("mailbox_records=4"));
+        assert!(dry_run.contains("mailbox_invalid_records=2"));
+        assert!(dry_run.contains("mailbox_expired_records=1"));
+        assert!(dry_run.contains("mailbox_purged_records=0"));
+        assert!(dry_run.contains("dry_run=true"));
+        assert!(dry_run.contains("confirmed=false"));
+        assert!(dry_run.contains("payload_displayed=false"));
+        assert!(dry_run.contains("token_displayed=false"));
+        assert!(dry_run.contains("ciphertext_displayed=false"));
+        assert!(dry_run.contains("contents_displayed=false"));
+        assert!(!dry_run.contains(admin_token));
+        assert!(!dry_run.contains(wrong_admin_token));
+        assert!(!dry_run.contains("ENVELOPE from=node.a"));
+        assert!(!dry_run.contains("ciphertext_body"));
+        assert!(!dry_run.contains("env.admin.mailbox"));
+        assert!(expired_path.exists());
+
+        let confirmed = send_admin_text(
+            relay.local_addr(),
+            RelayAdminRequest::mailbox_purge(
+                admin_token,
+                Some("node.hosted".to_string()),
+                1,
+                false,
+            )
+            .expect("mailbox purge request"),
+        );
+
+        assert!(confirmed.contains("ADMIN_RESULT action=mailbox_purge status=purged"));
+        assert!(confirmed.contains("mailbox_expired_records=1"));
+        assert!(confirmed.contains("mailbox_purged_records=1"));
+        assert!(confirmed.contains("dry_run=false"));
+        assert!(confirmed.contains("confirmed=true"));
+        assert!(confirmed.contains("payload_displayed=false"));
+        assert!(confirmed.contains("token_displayed=false"));
+        assert!(confirmed.contains("ciphertext_displayed=false"));
+        assert!(confirmed.contains("contents_displayed=false"));
+        assert!(!confirmed.contains(admin_token));
+        assert!(!confirmed.contains(wrong_admin_token));
+        assert!(!confirmed.contains("ENVELOPE from=node.a"));
+        assert!(!confirmed.contains("ciphertext_body"));
+        assert!(!confirmed.contains("env.admin.mailbox"));
+        assert!(!expired_path.exists());
+        assert!(fresh_path.exists());
+        assert!(invalid_path.exists());
+        assert!(display_guard_path.exists());
     }
 
     #[test]

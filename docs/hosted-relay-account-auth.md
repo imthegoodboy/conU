@@ -124,6 +124,15 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --node node-a-id `
     --ttl-seconds 3600 `
     --json
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-mailbox-purge `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --node node-a-id `
+    --ttl-seconds 3600 `
+    --dry-run `
+    --json
 ```
 
 Admin results report only metadata:
@@ -133,6 +142,7 @@ Admin results report only metadata:
 - credential, active, revoked, expired, and account counts
 - dashboard credential, tenant, accounting, and abuse counts for `--admin-hosted-dashboard`
 - durable mailbox node/file/byte/timestamp and optional expired counts for `--admin-mailbox-audit`
+- durable mailbox scanned, invalid, expired, and purged counts for `--admin-mailbox-purge`
 - token length and expiry where applicable
 - `payloadDisplayed=false`, `tokenHashDisplayed=false`, `sessionIdDisplayed=false`, and `ciphertextDisplayed=false` on dashboard snapshots
 - `tokenDisplayed=false`
@@ -215,9 +225,27 @@ conu-relay --mailbox-purge `
   --ttl-seconds 3600 `
   --confirm `
   --json
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-mailbox-purge `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --node node-a-id `
+    --ttl-seconds 3600 `
+    --dry-run `
+    --json
+
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-mailbox-purge `
+    --relay wss://relay.example.com/conu `
+    --admin-token-stdin `
+    --node node-a-id `
+    --ttl-seconds 3600 `
+    --confirm `
+    --json
 ```
 
-Dry-run deletes nothing. Confirm mode deletes only expired valid `.mailbox` files under the selected durable mailbox directories. Purge output reports aggregate scanned, invalid, expired, purged, and byte counts with false display guards only; it never prints stored frames, ciphertext bodies, plaintext payloads, tokens, hashes, private keys, or session ids.
+Dry-run deletes nothing. Confirm mode deletes only expired valid `.mailbox` files under the selected durable mailbox directories. The admin form performs the same single-relay cleanup against the running relay's configured durable mailbox storage and requires `--admin-token-stdin`, a positive TTL, and exactly one of `--dry-run` or `--confirm`. Purge output reports aggregate scanned, invalid, expired, purged, and byte counts with false display guards only; it never prints stored frames, ciphertext bodies, plaintext payloads, tokens, hashes, private keys, or session ids.
 
 For unattended single-relay cleanup, set `CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS` beside `CONU_RELAY_MAILBOX_DIR`. The relay uses `CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS` as the retention boundary, deletes only expired valid `.mailbox` files, leaves invalid or display-guard-failed files untouched, and does not render stored contents. `0` or an empty interval disables the scheduled worker.
 
@@ -258,4 +286,4 @@ This is still single-relay and file-backed/admin-gated. It is not distributed da
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, local and admin-gated online mailbox-audit, mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, destructive distributed hosted mailbox retention orchestration, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, abuse-audit, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, local dashboard-snapshot, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle, distributed hosted dashboards and adaptive abuse workflows, distributed multi-instance session migration, distributed accounting, distributed hosted mailbox retention orchestration beyond single-relay purge, full hosted identity/key administration, and managed direct NAT traversal.
