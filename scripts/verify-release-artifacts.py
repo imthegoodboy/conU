@@ -118,10 +118,7 @@ def normalize_member(name: str) -> str:
 
 def verify_members(archive: Path, members: dict[str, bytes | None]) -> None:
     paths = set(members)
-    required_bins = {
-        f"bin/{binary}{'.exe' if archive.suffix == '.zip' else ''}"
-        for binary in REQUIRED_BINARIES
-    }
+    required_bins = required_binary_paths(paths)
     missing_bins = sorted(required_bins - paths)
     if missing_bins:
         raise SystemExit(f"{archive.name} missing binaries: {', '.join(missing_bins)}")
@@ -146,6 +143,13 @@ def verify_members(archive: Path, members: dict[str, bytes | None]) -> None:
         parts = set(member_path.parts)
         if parts & FORBIDDEN_PARTS or member_path.name in FORBIDDEN_NAMES:
             raise SystemExit(f"{archive.name} contains forbidden state path: {path}")
+
+
+def required_binary_paths(paths: set[str]) -> set[str]:
+    windows_bins = {f"bin/{binary}.exe" for binary in REQUIRED_BINARIES}
+    if windows_bins <= paths:
+        return windows_bins
+    return {f"bin/{binary}" for binary in REQUIRED_BINARIES}
 
 
 if __name__ == "__main__":
