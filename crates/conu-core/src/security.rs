@@ -1997,6 +1997,7 @@ fn unprotect_os_secret(
     })
 }
 
+#[cfg(windows)]
 fn secret_entropy(field: &str, key_id: &str) -> String {
     format!("conu local secret v1:{field}:{key_id}")
 }
