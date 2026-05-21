@@ -9,6 +9,8 @@ use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
@@ -27,16 +29,24 @@ const SECURITY_VERSION: &str = "1";
 const NONCE_BYTES: usize = 24;
 const SECRET_BACKEND_FILESYSTEM: &str = "filesystem-permissions";
 const SECRET_BACKEND_WINDOWS_DPAPI: &str = "windows-dpapi-user";
+const SECRET_BACKEND_MACOS_KEYCHAIN: &str = "macos-keychain-user";
+const SECRET_BACKEND_LINUX_SECRET_SERVICE: &str = "linux-secret-service-user";
 const SECRET_BACKEND_USER_MANAGED_WRAP_KEY: &str = "user-managed-wrap-key-v1";
 const USER_MANAGED_SECRET_ALGORITHM: &str = "XChaCha20Poly1305";
+#[cfg(target_os = "macos")]
+const NATIVE_OS_SECRET_SERVICE: &str = "conu.local-secret";
 const SECRET_WRAP_KEY_HEX_ENV: &str = "CONU_SECRET_WRAP_KEY_HEX";
 const SECRET_WRAP_KEY_FILE_ENV: &str = "CONU_SECRET_WRAP_KEY_FILE";
+#[cfg(not(windows))]
+const DISABLE_OS_SECRET_BACKEND_ENV: &str = "CONU_DISABLE_OS_SECRET_BACKEND";
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SecretBackendKind {
     Filesystem,
     WindowsDpapi,
+    MacosKeychain,
+    LinuxSecretService,
     UserManagedWrapKey,
 }
 
@@ -357,6 +367,7 @@ pub fn clear_relay_credential(
     home_override: Option<PathBuf>,
 ) -> Result<RelayCredentialStatus, SecurityError> {
     let paths = StatePaths::resolve(home_override)?;
+    delete_secret_references(&paths.relay_credential, "token")?;
     match fs::remove_file(&paths.relay_credential) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -1252,6 +1263,18 @@ fn render_secret_field(
                 hex_encode(&protected)
             ))
         }
+        SecretBackendKind::MacosKeychain | SecretBackendKind::LinuxSecretService => {
+            let reference = native_os_secret_reference(field, key_id);
+            protect_native_os_secret(&reference, secret)?;
+            Ok(format!(
+                "secret_protection = \"{}\"\n{}_os_secret_ref = \"{}\"\n{}_plaintext_len = {}\n",
+                secret_storage_backend(),
+                field,
+                escape_file_value(&reference),
+                field,
+                secret.len()
+            ))
+        }
         SecretBackendKind::UserManagedWrapKey => {
             let protected = protect_user_managed_secret(secret, field, key_id)?;
             Ok(format!(
@@ -1327,6 +1350,20 @@ fn migrate_relay_credential_to_secret_protection(paths: &StatePaths) -> Result<(
     let created_at = created_at_value(&values);
     let contents = render_relay_credential_file(&token, &created_at)?;
     replace_secret_file(&paths.relay_credential, &contents)
+}
+
+fn delete_secret_references(path: &Path, field: &'static str) -> Result<(), SecurityError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let values = read_key_values(path)?;
+    if let Some(reference) = values
+        .get(&format!("{field}_os_secret_ref"))
+        .filter(|value| !value.trim().is_empty())
+    {
+        delete_native_os_secret(reference)?;
+    }
+    Ok(())
 }
 
 fn relay_token_from_values(
@@ -1903,6 +1940,14 @@ fn secret_bytes_vec(
         return unprotect_os_secret(&wrapped, field, entropy_id, path);
     }
 
+    let native_ref_field = format!("{field}_os_secret_ref");
+    if let Some(reference) = values
+        .get(&native_ref_field)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return unprotect_native_os_secret(values, field, entropy_id, reference, path);
+    }
+
     let wrapped_field = format!("{field}_wrapped_hex");
     if let Some(wrapped) = values
         .get(&wrapped_field)
@@ -1935,6 +1980,9 @@ fn secret_field_has_protected_data(values: &HashMap<String, String>, field: &str
     values
         .get(&format!("{field}_dpapi_hex"))
         .is_some_and(|value| !value.trim().is_empty())
+        || values
+            .get(&format!("{field}_os_secret_ref"))
+            .is_some_and(|value| !value.trim().is_empty())
         || values
             .get(&format!("{field}_wrapped_hex"))
             .is_some_and(|value| !value.trim().is_empty())
@@ -1985,6 +2033,9 @@ fn all_secret_files_use_os_protection(paths: &StatePaths) -> bool {
 fn secret_file_uses_selected_protection(values: &HashMap<String, String>, field: &str) -> bool {
     match selected_secret_backend() {
         SecretBackendKind::WindowsDpapi => secret_file_uses_os_protection(values, field),
+        SecretBackendKind::MacosKeychain | SecretBackendKind::LinuxSecretService => {
+            secret_file_uses_os_protection(values, field)
+        }
         SecretBackendKind::UserManagedWrapKey => {
             secret_file_uses_user_managed_protection(values, field)
         }
@@ -1993,12 +2044,28 @@ fn secret_file_uses_selected_protection(values: &HashMap<String, String>, field:
 }
 
 fn secret_file_uses_os_protection(values: &HashMap<String, String>, field: &str) -> bool {
-    values
-        .get("secret_protection")
-        .is_some_and(|value| value == SECRET_BACKEND_WINDOWS_DPAPI)
-        && values
+    match values.get("secret_protection").map(String::as_str) {
+        Some(SECRET_BACKEND_WINDOWS_DPAPI) if cfg!(windows) => values
             .get(&format!("{field}_dpapi_hex"))
-            .is_some_and(|value| !value.trim().is_empty())
+            .is_some_and(|value| !value.trim().is_empty()),
+        Some(SECRET_BACKEND_MACOS_KEYCHAIN) if cfg!(target_os = "macos") => {
+            values
+                .get(&format!("{field}_os_secret_ref"))
+                .is_some_and(|value| !value.trim().is_empty())
+                && values
+                    .get(&format!("{field}_plaintext_len"))
+                    .is_some_and(|value| value.parse::<usize>().is_ok())
+        }
+        Some(SECRET_BACKEND_LINUX_SECRET_SERVICE) if cfg!(target_os = "linux") => {
+            values
+                .get(&format!("{field}_os_secret_ref"))
+                .is_some_and(|value| !value.trim().is_empty())
+                && values
+                    .get(&format!("{field}_plaintext_len"))
+                    .is_some_and(|value| value.parse::<usize>().is_ok())
+        }
+        _ => false,
+    }
 }
 
 fn secret_file_uses_user_managed_protection(values: &HashMap<String, String>, field: &str) -> bool {
@@ -2019,6 +2086,8 @@ fn secret_file_uses_user_managed_protection(values: &HashMap<String, String>, fi
 fn secret_storage_backend() -> &'static str {
     match selected_secret_backend() {
         SecretBackendKind::WindowsDpapi => SECRET_BACKEND_WINDOWS_DPAPI,
+        SecretBackendKind::MacosKeychain => SECRET_BACKEND_MACOS_KEYCHAIN,
+        SecretBackendKind::LinuxSecretService => SECRET_BACKEND_LINUX_SECRET_SERVICE,
         SecretBackendKind::UserManagedWrapKey => SECRET_BACKEND_USER_MANAGED_WRAP_KEY,
         SecretBackendKind::Filesystem => SECRET_BACKEND_FILESYSTEM,
     }
@@ -2033,7 +2102,29 @@ fn selected_secret_backend() -> SecretBackendKind {
     SecretBackendKind::WindowsDpapi
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn selected_secret_backend() -> SecretBackendKind {
+    if os_secret_protection_available() {
+        SecretBackendKind::MacosKeychain
+    } else if user_managed_wrap_key_configured() {
+        SecretBackendKind::UserManagedWrapKey
+    } else {
+        SecretBackendKind::Filesystem
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn selected_secret_backend() -> SecretBackendKind {
+    if os_secret_protection_available() {
+        SecretBackendKind::LinuxSecretService
+    } else if user_managed_wrap_key_configured() {
+        SecretBackendKind::UserManagedWrapKey
+    } else {
+        SecretBackendKind::Filesystem
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn selected_secret_backend() -> SecretBackendKind {
     if user_managed_wrap_key_configured() {
         SecretBackendKind::UserManagedWrapKey
@@ -2162,7 +2253,7 @@ fn user_managed_wrap_key_configured() -> bool {
 }
 
 fn user_managed_wrap_key() -> Result<[u8; 32], SecurityError> {
-    #[cfg(test)]
+    #[cfg(all(test, not(windows)))]
     {
         if let Some(key) = test_user_managed_wrap_key() {
             return Ok(key);
@@ -2205,15 +2296,65 @@ fn parse_user_managed_wrap_key(value: &str) -> Result<[u8; 32], SecurityError> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 thread_local! {
     static TEST_USER_MANAGED_WRAP_KEY: std::cell::RefCell<Option<[u8; 32]>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_NATIVE_OS_SECRET_STORE: std::cell::RefCell<Option<HashMap<String, Vec<u8>>>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_NATIVE_OS_SECRET_BACKEND_DISABLED: std::cell::RefCell<bool> =
+        const { std::cell::RefCell::new(false) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 fn test_user_managed_wrap_key() -> Option<[u8; 32]> {
     TEST_USER_MANAGED_WRAP_KEY.with(|key| *key.borrow())
+}
+
+#[cfg(all(test, not(windows)))]
+fn test_native_os_secret_store_enabled() -> bool {
+    TEST_NATIVE_OS_SECRET_STORE.with(|store| store.borrow().is_some())
+}
+
+#[cfg(all(test, not(windows)))]
+fn test_native_os_secret_backend_disabled() -> bool {
+    TEST_NATIVE_OS_SECRET_BACKEND_DISABLED.with(|disabled| *disabled.borrow())
+}
+
+#[cfg(all(test, not(windows)))]
+fn test_native_os_secret_store_write(reference: &str, secret: &[u8]) -> bool {
+    TEST_NATIVE_OS_SECRET_STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        if let Some(secrets) = store.as_mut() {
+            secrets.insert(reference.to_string(), secret.to_vec());
+            true
+        } else {
+            false
+        }
+    })
+}
+
+#[cfg(all(test, not(windows)))]
+fn test_native_os_secret_store_read(reference: &str) -> Option<Vec<u8>> {
+    TEST_NATIVE_OS_SECRET_STORE.with(|store| {
+        store
+            .borrow()
+            .as_ref()
+            .and_then(|secrets| secrets.get(reference).cloned())
+    })
+}
+
+#[cfg(all(test, not(windows)))]
+fn test_native_os_secret_store_delete(reference: &str) -> bool {
+    TEST_NATIVE_OS_SECRET_STORE.with(|store| {
+        let mut store = store.borrow_mut();
+        if let Some(secrets) = store.as_mut() {
+            secrets.remove(reference);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 #[cfg(windows)]
@@ -2221,9 +2362,297 @@ fn os_secret_protection_available() -> bool {
     true
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn os_secret_protection_available() -> bool {
+    if os_secret_backend_disabled() {
+        return false;
+    }
+
+    #[cfg(test)]
+    {
+        test_native_os_secret_store_enabled()
+    }
+
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn os_secret_protection_available() -> bool {
+    if os_secret_backend_disabled() {
+        return false;
+    }
+
+    #[cfg(test)]
+    {
+        test_native_os_secret_store_enabled()
+    }
+
+    #[cfg(not(test))]
+    {
+        linux_secret_service_available()
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn os_secret_protection_available() -> bool {
     false
+}
+
+#[cfg(not(windows))]
+fn os_secret_backend_disabled() -> bool {
+    #[cfg(test)]
+    {
+        if test_native_os_secret_backend_disabled() {
+            return true;
+        }
+    }
+
+    std::env::var(DISABLE_OS_SECRET_BACKEND_ENV)
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn linux_secret_service_available() -> bool {
+    let has_session = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || std::env::var("XDG_RUNTIME_DIR")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+
+    has_session && command_available("secret-tool")
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn command_available(command: &str) -> bool {
+    Command::new(command)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
+
+fn native_os_secret_reference(field: &str, key_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"conu native local secret v1");
+    hasher.update([0]);
+    hasher.update(field.as_bytes());
+    hasher.update([0]);
+    hasher.update(key_id.as_bytes());
+    let digest = hex_encode(&hasher.finalize());
+    format!("conu-local-secret-v1-{field}-{}", &digest[..32])
+}
+
+fn unprotect_native_os_secret(
+    values: &HashMap<String, String>,
+    field: &'static str,
+    _key_id: &str,
+    reference: &str,
+    path: &Path,
+) -> Result<Vec<u8>, SecurityError> {
+    if !secret_file_uses_os_protection(values, field) {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "invalid native OS secret protection fields".to_string(),
+        });
+    }
+
+    let plaintext_len = required(values, &format!("{field}_plaintext_len"), path)?
+        .parse::<usize>()
+        .map_err(|_| SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "invalid native OS protected secret length".to_string(),
+        })?;
+    let secret = read_native_os_secret(reference, path)?;
+    if secret.len() != plaintext_len {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "native OS protected secret length mismatch".to_string(),
+        });
+    }
+    Ok(secret)
+}
+
+fn protect_native_os_secret(reference: &str, secret: &[u8]) -> Result<(), SecurityError> {
+    #[cfg(all(test, not(windows)))]
+    {
+        if test_native_os_secret_store_write(reference, secret) {
+            return Ok(());
+        }
+    }
+
+    protect_native_os_secret_platform(reference, secret)
+}
+
+fn read_native_os_secret(reference: &str, path: &Path) -> Result<Vec<u8>, SecurityError> {
+    #[cfg(all(test, not(windows)))]
+    {
+        if let Some(secret) = test_native_os_secret_store_read(reference) {
+            return Ok(secret);
+        }
+    }
+
+    read_native_os_secret_platform(reference, path)
+}
+
+fn delete_native_os_secret(reference: &str) -> Result<(), SecurityError> {
+    #[cfg(all(test, not(windows)))]
+    {
+        if test_native_os_secret_store_delete(reference) {
+            return Ok(());
+        }
+    }
+
+    delete_native_os_secret_platform(reference)
+}
+
+#[cfg(target_os = "macos")]
+fn protect_native_os_secret_platform(reference: &str, secret: &[u8]) -> Result<(), SecurityError> {
+    let entry = keyring::Entry::new(NATIVE_OS_SECRET_SERVICE, reference).map_err(|_| {
+        SecurityError::Crypto {
+            action: "open macOS Keychain entry failed",
+        }
+    })?;
+    entry.set_secret(secret).map_err(|_| SecurityError::Crypto {
+        action: "store local secret in macOS Keychain failed",
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn read_native_os_secret_platform(reference: &str, path: &Path) -> Result<Vec<u8>, SecurityError> {
+    let entry = keyring::Entry::new(NATIVE_OS_SECRET_SERVICE, reference).map_err(|_| {
+        SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "open macOS Keychain entry failed".to_string(),
+        }
+    })?;
+    entry.get_secret().map_err(|_| SecurityError::InvalidKey {
+        path: path.to_path_buf(),
+        reason: "could not read local secret from macOS Keychain".to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn delete_native_os_secret_platform(reference: &str) -> Result<(), SecurityError> {
+    let entry = keyring::Entry::new(NATIVE_OS_SECRET_SERVICE, reference).map_err(|_| {
+        SecurityError::Crypto {
+            action: "open macOS Keychain entry for deletion failed",
+        }
+    })?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err(SecurityError::Crypto {
+            action: "delete local secret from macOS Keychain failed",
+        }),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn protect_native_os_secret_platform(reference: &str, secret: &[u8]) -> Result<(), SecurityError> {
+    let mut child = Command::new("secret-tool")
+        .arg("store")
+        .arg("--label")
+        .arg("conU local secret")
+        .arg("conu-ref")
+        .arg(reference)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| SecurityError::Crypto {
+            action: "open Linux Secret Service store failed",
+        })?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(hex_encode(secret).as_bytes())
+            .map_err(|_| SecurityError::Crypto {
+                action: "write local secret to Linux Secret Service failed",
+            })?;
+    }
+
+    child
+        .wait()
+        .map_err(|_| SecurityError::Crypto {
+            action: "wait for Linux Secret Service store failed",
+        })
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(SecurityError::Crypto {
+                    action: "store local secret in Linux Secret Service failed",
+                })
+            }
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn read_native_os_secret_platform(reference: &str, path: &Path) -> Result<Vec<u8>, SecurityError> {
+    let output = Command::new("secret-tool")
+        .arg("lookup")
+        .arg("conu-ref")
+        .arg(reference)
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|_| SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "open Linux Secret Service lookup failed".to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "could not read local secret from Linux Secret Service".to_string(),
+        });
+    }
+
+    let value = String::from_utf8(output.stdout).map_err(|_| SecurityError::InvalidKey {
+        path: path.to_path_buf(),
+        reason: "Linux Secret Service returned non-UTF-8 secret data".to_string(),
+    })?;
+    hex_decode(value.trim_end_matches(['\r', '\n'])).map_err(|reason| SecurityError::InvalidKey {
+        path: path.to_path_buf(),
+        reason,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn delete_native_os_secret_platform(reference: &str) -> Result<(), SecurityError> {
+    let _ = Command::new("secret-tool")
+        .arg("clear")
+        .arg("conu-ref")
+        .arg(reference)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn protect_native_os_secret_platform(
+    _reference: &str,
+    _secret: &[u8],
+) -> Result<(), SecurityError> {
+    Err(SecurityError::Crypto {
+        action: "native OS secret storage is unavailable on this platform",
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_native_os_secret_platform(_reference: &str, path: &Path) -> Result<Vec<u8>, SecurityError> {
+    Err(SecurityError::InvalidKey {
+        path: path.to_path_buf(),
+        reason: "native OS protected secret cannot be read on this platform".to_string(),
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn delete_native_os_secret_platform(_reference: &str) -> Result<(), SecurityError> {
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -2531,8 +2960,8 @@ mod tests {
 
         let signing = fs::read_to_string(paths.identity_signing_key).expect("signing key reads");
         if os_secret_protection_available() {
-            assert!(signing.contains("secret_protection = \"windows-dpapi-user\""));
-            assert!(signing.contains("secret_key_dpapi_hex"));
+            let values = parse_key_values(&signing);
+            assert!(secret_file_uses_os_protection(&values, "secret_key"));
             assert!(!signing.contains("secret_key_hex"));
             assert!(report.secrets_os_protected);
         } else {
@@ -2598,8 +3027,9 @@ mod tests {
         assert_eq!(report.signing_key_id, signing_key_id);
         assert_eq!(storage.key, storage_key);
         if os_secret_protection_available() {
+            let values = parse_key_values(&signing);
             assert!(report.secrets_os_protected);
-            assert!(signing.contains("secret_key_dpapi_hex"));
+            assert!(secret_file_uses_os_protection(&values, "secret_key"));
             assert!(!signing.contains("secret_key_hex"));
         } else {
             assert!(!report.secrets_os_protected);
@@ -2625,8 +3055,9 @@ mod tests {
         assert!(contents.contains("contents_displayed = false"));
         assert!(!contents.contains(token));
         if os_secret_protection_available() {
+            let values = parse_key_values(&contents);
             assert!(status.os_protected);
-            assert!(contents.contains("token_dpapi_hex"));
+            assert!(secret_file_uses_os_protection(&values, "token"));
             assert!(!contents.contains("token_hex"));
         } else {
             assert!(!status.os_protected);
@@ -2641,8 +3072,134 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn user_managed_wrap_key_encrypts_and_migrates_non_windows_secrets() {
-        with_test_user_managed_wrap_key([42_u8; 32], || {
-            let home = test_home("user-managed-wrap");
+        with_test_native_os_secret_backend_disabled(|| {
+            with_test_user_managed_wrap_key([42_u8; 32], || {
+                let home = test_home("user-managed-wrap");
+                let paths = StatePaths::from_home(home.clone());
+                fs::create_dir_all(&paths.security_dir).expect("security dir created");
+
+                let signing_key = SigningKey::generate(&mut OsRng);
+                let signing_public = signing_key.verifying_key().to_bytes();
+                let signing_secret = signing_key.to_bytes();
+                let signing_key_id = key_id("ed25519", &signing_public);
+                fs::write(
+                &paths.identity_signing_key,
+                format!(
+                    "# conU node signing key\nversion = \"1\"\nalgorithm = \"Ed25519\"\nkey_id = \"{}\"\nsecret_key_hex = \"{}\"\npublic_key_hex = \"{}\"\ncreated_at_unix = 1\n",
+                    signing_key_id,
+                    hex_encode(&signing_secret),
+                    hex_encode(&signing_public)
+                ),
+            )
+            .expect("signing key writes");
+
+                let exchange_secret = StaticSecret::random_from_rng(OsRng);
+                let exchange_public = X25519PublicKey::from(&exchange_secret).to_bytes();
+                let exchange_secret_bytes = exchange_secret.to_bytes();
+                let exchange_key_id = key_id("x25519", &exchange_public);
+                fs::write(
+                &paths.identity_exchange_key,
+                format!(
+                    "# conU node X25519 exchange key\nversion = \"1\"\nalgorithm = \"X25519\"\nkey_id = \"{}\"\nsecret_key_hex = \"{}\"\npublic_key_hex = \"{}\"\ncreated_at_unix = 1\n",
+                    exchange_key_id,
+                    hex_encode(&exchange_secret_bytes),
+                    hex_encode(&exchange_public)
+                ),
+            )
+            .expect("exchange key writes");
+
+                let storage_key: [u8; 32] = XChaCha20Poly1305::generate_key(&mut OsRng).into();
+                let storage_key_id = key_id("storage", &storage_key);
+                fs::write(
+                &paths.storage_key,
+                format!(
+                    "# conU local storage encryption key\nversion = \"1\"\nalgorithm = \"XChaCha20Poly1305\"\nkey_id = \"{}\"\nkey_hex = \"{}\"\ncreated_at_unix = 1\n",
+                    storage_key_id,
+                    hex_encode(&storage_key)
+                ),
+            )
+            .expect("storage key writes");
+                let token = "relay-token-for-node-a-1234567890";
+                fs::write(
+                &paths.relay_credential,
+                format!(
+                    "# conU relay client credential\nversion = \"1\"\nkind = \"relay_token\"\ntoken_hex = \"{}\"\ncreated_at_unix = 1\nupdated_at_unix = 1\ncontents_displayed = false\n",
+                    hex_encode(token.as_bytes())
+                ),
+            )
+            .expect("relay credential writes");
+
+                let report = ensure_security_state_from_paths(&paths)
+                    .expect("security state migrates to user-managed wrapping");
+                let audit = security_audit(Some(home)).expect("audit reads wrapped secrets");
+                let signing = fs::read_to_string(&paths.identity_signing_key)
+                    .expect("wrapped signing key reads");
+                let exchange = fs::read_to_string(&paths.identity_exchange_key)
+                    .expect("wrapped exchange key reads");
+                let storage =
+                    fs::read_to_string(&paths.storage_key).expect("wrapped storage reads");
+                let credential_status =
+                    relay_credential_status_from_paths(&paths).expect("credential status reads");
+                let credential =
+                    fs::read_to_string(&paths.relay_credential).expect("credential reads");
+                let read_back =
+                    read_relay_credential_from_paths(&paths).expect("credential unwraps");
+
+                assert_eq!(
+                    report.secret_storage_backend,
+                    SECRET_BACKEND_USER_MANAGED_WRAP_KEY
+                );
+                assert_eq!(
+                    audit.secret_storage_backend,
+                    SECRET_BACKEND_USER_MANAGED_WRAP_KEY
+                );
+                assert!(!report.secrets_os_protected);
+                assert!(!audit.secrets_os_protected);
+                assert_eq!(report.signing_key_id, signing_key_id);
+                assert_eq!(
+                    read_identity_exchange_key(&paths)
+                        .expect("exchange key unwraps")
+                        .key_id,
+                    exchange_key_id
+                );
+                assert_eq!(
+                    read_storage_key(&paths).expect("storage key unwraps").key,
+                    storage_key
+                );
+                assert_eq!(read_back.as_deref(), Some(token));
+                assert!(credential_status.configured);
+                assert!(!credential_status.os_protected);
+
+                let contains_field = |contents: &str, field: &str| {
+                    let prefix = format!("{field} =");
+                    contents
+                        .lines()
+                        .any(|line| line.trim_start().starts_with(&prefix))
+                };
+
+                for contents in [&signing, &exchange, &storage, &credential] {
+                    assert!(contents.contains(&format!(
+                        "secret_protection = \"{}\"",
+                        SECRET_BACKEND_USER_MANAGED_WRAP_KEY
+                    )));
+                    assert!(contents.contains("secret_algorithm = \"XChaCha20Poly1305\""));
+                    assert!(contents.contains("_wrapped_hex"));
+                    assert!(contents.contains("_wrap_nonce_hex"));
+                    assert!(!contains_field(contents, "secret_key_hex"));
+                    assert!(!contains_field(contents, "key_hex"));
+                    assert!(!contains_field(contents, "token_hex"));
+                    assert!(!contents.contains(token));
+                    assert!(!contents.contains("private message contents"));
+                }
+            });
+        });
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn native_os_secret_store_encrypts_and_migrates_non_windows_secrets() {
+        with_test_native_os_secret_store(|| {
+            let home = test_home("native-os-secret-store");
             let paths = StatePaths::from_home(home.clone());
             fs::create_dir_all(&paths.security_dir).expect("security dir created");
 
@@ -2698,28 +3255,22 @@ mod tests {
             .expect("relay credential writes");
 
             let report = ensure_security_state_from_paths(&paths)
-                .expect("security state migrates to user-managed wrapping");
-            let audit = security_audit(Some(home)).expect("audit reads wrapped secrets");
+                .expect("security state migrates to native OS store");
+            let audit = security_audit(Some(home)).expect("audit reads native OS secrets");
             let signing =
-                fs::read_to_string(&paths.identity_signing_key).expect("wrapped signing key reads");
+                fs::read_to_string(&paths.identity_signing_key).expect("native signing key reads");
             let exchange = fs::read_to_string(&paths.identity_exchange_key)
-                .expect("wrapped exchange key reads");
-            let storage = fs::read_to_string(&paths.storage_key).expect("wrapped storage reads");
+                .expect("native exchange key reads");
+            let storage = fs::read_to_string(&paths.storage_key).expect("native storage reads");
             let credential_status =
                 relay_credential_status_from_paths(&paths).expect("credential status reads");
             let credential = fs::read_to_string(&paths.relay_credential).expect("credential reads");
             let read_back = read_relay_credential_from_paths(&paths).expect("credential unwraps");
 
-            assert_eq!(
-                report.secret_storage_backend,
-                SECRET_BACKEND_USER_MANAGED_WRAP_KEY
-            );
-            assert_eq!(
-                audit.secret_storage_backend,
-                SECRET_BACKEND_USER_MANAGED_WRAP_KEY
-            );
-            assert!(!report.secrets_os_protected);
-            assert!(!audit.secrets_os_protected);
+            assert_eq!(report.secret_storage_backend, native_test_backend_name());
+            assert_eq!(audit.secret_storage_backend, native_test_backend_name());
+            assert!(report.secrets_os_protected);
+            assert!(audit.secrets_os_protected);
             assert_eq!(report.signing_key_id, signing_key_id);
             assert_eq!(
                 read_identity_exchange_key(&paths)
@@ -2733,7 +3284,7 @@ mod tests {
             );
             assert_eq!(read_back.as_deref(), Some(token));
             assert!(credential_status.configured);
-            assert!(!credential_status.os_protected);
+            assert!(credential_status.os_protected);
 
             let contains_field = |contents: &str, field: &str| {
                 let prefix = format!("{field} =");
@@ -2742,20 +3293,34 @@ mod tests {
                     .any(|line| line.trim_start().starts_with(&prefix))
             };
 
-            for contents in [&signing, &exchange, &storage, &credential] {
+            for (contents, field) in [
+                (&signing, "secret_key"),
+                (&exchange, "secret_key"),
+                (&storage, "key"),
+                (&credential, "token"),
+            ] {
+                let values = parse_key_values(contents);
                 assert!(contents.contains(&format!(
                     "secret_protection = \"{}\"",
-                    SECRET_BACKEND_USER_MANAGED_WRAP_KEY
+                    native_test_backend_name()
                 )));
-                assert!(contents.contains("secret_algorithm = \"XChaCha20Poly1305\""));
-                assert!(contents.contains("_wrapped_hex"));
-                assert!(contents.contains("_wrap_nonce_hex"));
+                assert!(contents.contains("_os_secret_ref"));
+                assert!(secret_file_uses_os_protection(&values, field));
                 assert!(!contains_field(contents, "secret_key_hex"));
                 assert!(!contains_field(contents, "key_hex"));
                 assert!(!contains_field(contents, "token_hex"));
                 assert!(!contents.contains(token));
                 assert!(!contents.contains("private message contents"));
             }
+
+            clear_relay_credential(Some(paths.home.clone())).expect("relay credential clears");
+            assert!(
+                test_native_os_secret_store_read(&native_os_secret_reference(
+                    "token",
+                    "relay-credential"
+                ))
+                .is_none()
+            );
         });
     }
 
@@ -3237,6 +3802,41 @@ mod tests {
             slot.replace(previous);
             result
         })
+    }
+
+    #[cfg(not(windows))]
+    fn with_test_native_os_secret_store<T>(test: impl FnOnce() -> T) -> T {
+        TEST_NATIVE_OS_SECRET_STORE.with(|slot| {
+            let previous = slot.replace(Some(HashMap::new()));
+            let result = test();
+            slot.replace(previous);
+            result
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn with_test_native_os_secret_backend_disabled<T>(test: impl FnOnce() -> T) -> T {
+        TEST_NATIVE_OS_SECRET_BACKEND_DISABLED.with(|slot| {
+            let previous = slot.replace(true);
+            let result = test();
+            slot.replace(previous);
+            result
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn native_test_backend_name() -> &'static str {
+        SECRET_BACKEND_MACOS_KEYCHAIN
+    }
+
+    #[cfg(target_os = "linux")]
+    fn native_test_backend_name() -> &'static str {
+        SECRET_BACKEND_LINUX_SECRET_SERVICE
+    }
+
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    fn native_test_backend_name() -> &'static str {
+        SECRET_BACKEND_FILESYSTEM
     }
 
     fn test_home(label: &str) -> PathBuf {
