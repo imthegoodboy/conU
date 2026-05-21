@@ -298,6 +298,7 @@ pub enum RelayAdminAction {
     Revoke,
     Audit,
     Dashboard,
+    MailboxAudit,
 }
 
 impl RelayAdminAction {
@@ -308,6 +309,7 @@ impl RelayAdminAction {
             Self::Revoke => "revoke",
             Self::Audit => "audit",
             Self::Dashboard => "dashboard",
+            Self::MailboxAudit => "mailbox_audit",
         }
     }
 
@@ -318,6 +320,7 @@ impl RelayAdminAction {
             "revoke" => Ok(Self::Revoke),
             "audit" => Ok(Self::Audit),
             "dashboard" => Ok(Self::Dashboard),
+            "mailbox_audit" => Ok(Self::MailboxAudit),
             _ => Err(RelayFrameError::new("unsupported relay admin action")),
         }
     }
@@ -337,6 +340,7 @@ pub struct RelayAdminRequest {
     pub token_sha256_hex: Option<String>,
     pub token_length: Option<usize>,
     pub expires_at_unix: Option<u64>,
+    pub retention_ttl_seconds: Option<u64>,
 }
 
 impl RelayAdminRequest {
@@ -391,6 +395,7 @@ impl RelayAdminRequest {
             token_sha256_hex: None,
             token_length: None,
             expires_at_unix: None,
+            retention_ttl_seconds: None,
         })
     }
 
@@ -408,6 +413,7 @@ impl RelayAdminRequest {
             token_sha256_hex: None,
             token_length: None,
             expires_at_unix: None,
+            retention_ttl_seconds: None,
         })
     }
 
@@ -428,6 +434,28 @@ impl RelayAdminRequest {
             token_sha256_hex: None,
             token_length: None,
             expires_at_unix: None,
+            retention_ttl_seconds: None,
+        })
+    }
+
+    pub fn mailbox_audit(
+        admin_token: impl Into<String>,
+        node_id: Option<String>,
+        retention_ttl_seconds: Option<u64>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::MailboxAudit,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: None,
+            node_id: node_id
+                .map(|value| validate_identifier(value, "node id"))
+                .transpose()?,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: retention_ttl_seconds
+                .map(validate_positive_seconds)
+                .transpose()?,
         })
     }
 
@@ -452,6 +480,7 @@ impl RelayAdminRequest {
             )?),
             token_length: Some(validate_token_length(token_length)?),
             expires_at_unix,
+            retention_ttl_seconds: None,
         })
     }
 }
@@ -470,6 +499,7 @@ impl fmt::Debug for RelayAdminRequest {
             )
             .field("token_length", &self.token_length)
             .field("expires_at_unix", &self.expires_at_unix)
+            .field("retention_ttl_seconds", &self.retention_ttl_seconds)
             .finish()
     }
 }
@@ -518,6 +548,15 @@ pub struct RelayAdminResult {
     pub undelivered_forwards: u64,
     pub mailbox_rejected_forwards: u64,
     pub malformed_client_frames: u64,
+    pub retention_ttl_seconds: Option<u64>,
+    pub mailbox_nodes: usize,
+    pub mailbox_records: usize,
+    pub mailbox_invalid_records: usize,
+    pub mailbox_bytes: u64,
+    pub mailbox_oldest_queued_unix_millis: Option<u64>,
+    pub mailbox_newest_queued_unix_millis: Option<u64>,
+    pub mailbox_expired_records: Option<u64>,
+    pub mailbox_expired_bytes: Option<u64>,
     pub payload_displayed: bool,
     pub token_displayed: bool,
     pub token_hash_displayed: bool,
@@ -571,6 +610,15 @@ impl RelayAdminResult {
             undelivered_forwards: 0,
             mailbox_rejected_forwards: 0,
             malformed_client_frames: 0,
+            retention_ttl_seconds: None,
+            mailbox_nodes: 0,
+            mailbox_records: 0,
+            mailbox_invalid_records: 0,
+            mailbox_bytes: 0,
+            mailbox_oldest_queued_unix_millis: None,
+            mailbox_newest_queued_unix_millis: None,
+            mailbox_expired_records: None,
+            mailbox_expired_bytes: None,
             payload_displayed: false,
             token_displayed: false,
             token_hash_displayed: false,
@@ -952,6 +1000,9 @@ fn render_admin_request_line(request: &RelayAdminRequest) -> String {
     if let Some(expires_at_unix) = request.expires_at_unix {
         line.push_str(&format!(" expires={expires_at_unix}"));
     }
+    if let Some(retention_ttl_seconds) = request.retention_ttl_seconds {
+        line.push_str(&format!(" ttl_seconds={retention_ttl_seconds}"));
+    }
     line.push_str(" token_displayed=false payload=not_observed");
     line
 }
@@ -990,6 +1041,11 @@ fn parse_admin_request(
             required(values, "admin_token")?,
             values.get("account").cloned(),
             values.get("node").cloned(),
+        ),
+        RelayAdminAction::MailboxAudit => RelayAdminRequest::mailbox_audit(
+            required(values, "admin_token")?,
+            values.get("node").cloned(),
+            optional_u64(values, "ttl_seconds")?,
         ),
     }
 }
@@ -1062,6 +1118,34 @@ fn render_admin_result_line(result: &RelayAdminResult) -> String {
             line.push_str(&format!(" abuse_window_started={window_started_unix}"));
         }
     }
+    if result.action == RelayAdminAction::MailboxAudit {
+        line.push_str(&format!(
+            " mailbox_nodes={} mailbox_records={} mailbox_invalid_records={} mailbox_bytes={}",
+            result.mailbox_nodes,
+            result.mailbox_records,
+            result.mailbox_invalid_records,
+            result.mailbox_bytes
+        ));
+        if let Some(retention_ttl_seconds) = result.retention_ttl_seconds {
+            line.push_str(&format!(" ttl_seconds={retention_ttl_seconds}"));
+        }
+        if let Some(oldest_queued_unix_millis) = result.mailbox_oldest_queued_unix_millis {
+            line.push_str(&format!(
+                " mailbox_oldest_queued_unix_millis={oldest_queued_unix_millis}"
+            ));
+        }
+        if let Some(newest_queued_unix_millis) = result.mailbox_newest_queued_unix_millis {
+            line.push_str(&format!(
+                " mailbox_newest_queued_unix_millis={newest_queued_unix_millis}"
+            ));
+        }
+        if let Some(expired_records) = result.mailbox_expired_records {
+            line.push_str(&format!(" mailbox_expired_records={expired_records}"));
+        }
+        if let Some(expired_bytes) = result.mailbox_expired_bytes {
+            line.push_str(&format!(" mailbox_expired_bytes={expired_bytes}"));
+        }
+    }
     line.push_str(&format!(
         " payload_displayed={} token_displayed={} token_hash_displayed={} key_material_displayed={} session_id_displayed={} ciphertext_displayed={} contents_displayed={} payload=not_observed",
         result.payload_displayed,
@@ -1121,6 +1205,21 @@ fn parse_admin_result(
         undelivered_forwards: optional_u64(values, "undelivered_forwards")?.unwrap_or(0),
         mailbox_rejected_forwards: optional_u64(values, "mailbox_rejected_forwards")?.unwrap_or(0),
         malformed_client_frames: optional_u64(values, "malformed_client_frames")?.unwrap_or(0),
+        retention_ttl_seconds: optional_u64(values, "ttl_seconds")?,
+        mailbox_nodes: optional_count(values, "mailbox_nodes")?,
+        mailbox_records: optional_count(values, "mailbox_records")?,
+        mailbox_invalid_records: optional_count(values, "mailbox_invalid_records")?,
+        mailbox_bytes: optional_u64(values, "mailbox_bytes")?.unwrap_or(0),
+        mailbox_oldest_queued_unix_millis: optional_u64(
+            values,
+            "mailbox_oldest_queued_unix_millis",
+        )?,
+        mailbox_newest_queued_unix_millis: optional_u64(
+            values,
+            "mailbox_newest_queued_unix_millis",
+        )?,
+        mailbox_expired_records: optional_u64(values, "mailbox_expired_records")?,
+        mailbox_expired_bytes: optional_u64(values, "mailbox_expired_bytes")?,
         payload_displayed: optional_bool(values, "payload_displayed")?.unwrap_or(false),
         token_displayed: optional_bool(values, "token_displayed")?.unwrap_or(false),
         token_hash_displayed: optional_bool(values, "token_hash_displayed")?.unwrap_or(false),
@@ -1333,6 +1432,15 @@ fn validate_token_length(value: usize) -> Result<usize, RelayFrameError> {
     }
     if value > 200 {
         return Err(RelayFrameError::new("token length is too large"));
+    }
+    Ok(value)
+}
+
+fn validate_positive_seconds(value: u64) -> Result<u64, RelayFrameError> {
+    if value == 0 {
+        return Err(RelayFrameError::new(
+            "retention ttl seconds must be greater than zero",
+        ));
     }
     Ok(value)
 }
@@ -1991,6 +2099,48 @@ mod tests {
         assert!(rendered_dashboard_result.contains("payload_displayed=false"));
         assert!(!rendered_dashboard_result.contains("admin-secret-token-1234567890"));
         assert!(!rendered_dashboard_result.contains(&token_hash));
+
+        let mailbox_request = RelayAdminRequest::mailbox_audit(
+            "admin-secret-token-1234567890",
+            Some("node.hosted".to_string()),
+            Some(3600),
+        )
+        .expect("mailbox audit request parses");
+        let mailbox_frame = RelayClientFrame::Admin(Box::new(mailbox_request));
+        let rendered_mailbox = render_client_frame(&mailbox_frame);
+        let parsed_mailbox =
+            parse_client_frame(&rendered_mailbox).expect("mailbox audit request parses");
+        let mailbox_debug = format!("{mailbox_frame:?}");
+        let mailbox_result = RelayServerFrame::AdminResult(Box::new(RelayAdminResult {
+            node_id: Some("node.hosted".to_string()),
+            retention_ttl_seconds: Some(3600),
+            mailbox_nodes: 1,
+            mailbox_records: 2,
+            mailbox_invalid_records: 1,
+            mailbox_bytes: 512,
+            mailbox_oldest_queued_unix_millis: Some(1_763_596_800_000),
+            mailbox_newest_queued_unix_millis: Some(1_763_596_900_000),
+            mailbox_expired_records: Some(1),
+            mailbox_expired_bytes: Some(256),
+            ..RelayAdminResult::new(RelayAdminAction::MailboxAudit, "audited")
+        }));
+        let rendered_mailbox_result = render_server_frame(&mailbox_result);
+        let parsed_mailbox_result =
+            parse_server_frame(&rendered_mailbox_result).expect("mailbox audit result parses");
+
+        assert_eq!(parsed_mailbox, mailbox_frame);
+        assert!(rendered_mailbox.contains("ADMIN action=mailbox_audit"));
+        assert!(rendered_mailbox.contains("node=node.hosted"));
+        assert!(rendered_mailbox.contains("ttl_seconds=3600"));
+        assert!(!mailbox_debug.contains("admin-secret-token-1234567890"));
+        assert_eq!(parsed_mailbox_result, mailbox_result);
+        assert!(rendered_mailbox_result.contains("ADMIN_RESULT action=mailbox_audit"));
+        assert!(rendered_mailbox_result.contains("mailbox_records=2"));
+        assert!(rendered_mailbox_result.contains("mailbox_invalid_records=1"));
+        assert!(rendered_mailbox_result.contains("mailbox_expired_records=1"));
+        assert!(rendered_mailbox_result.contains("payload_displayed=false"));
+        assert!(!rendered_mailbox_result.contains("admin-secret-token-1234567890"));
+        assert!(!rendered_mailbox_result.contains(&token_hash));
     }
 
     #[test]
