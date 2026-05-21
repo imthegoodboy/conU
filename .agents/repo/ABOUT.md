@@ -6,7 +6,7 @@ conU is not an agent framework. It is the runtime, protocol, CLI, and network la
 
 ## Current State
 
-The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, daemon-pumped relay-backed one-shot message, stream-chunk, and room-event delivery, peer-scoped default-deny policy grants for trusted peers, automatic encrypted signed agent-card exchange during session sync, bounded offline relay mailbox delivery with optional durable ciphertext files, offline scoped relay credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifests, metadata-only relay accounting/quotas, metadata-only relay abuse counters, plus local rooms/pub/sub metadata with encrypted-at-rest local fanout to joined local participants.
+The repository has completed Phase 14 and Phase 15 for the current local-first app. It includes authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, daemon-pumped relay-backed one-shot message, stream-chunk, and room-event delivery, peer-scoped default-deny policy grants for trusted peers, automatic encrypted signed agent-card exchange during session sync, bounded offline relay mailbox delivery with optional durable ciphertext files, offline scoped relay credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, live-reloaded hashed relay credential manifests, metadata-only relay accounting/quotas, metadata-only relay abuse counters, payload-safe hosted dashboard snapshots, plus local rooms/pub/sub metadata with encrypted-at-rest local fanout to joined local participants.
 
 Implemented so far:
 
@@ -68,6 +68,7 @@ Implemented so far:
 - configurable relay idle timeout and max session TTL
 - metadata-only relay accounting with optional file-backed authenticated/resumed session counters and per-node sent quotas
 - metadata-only relay abuse/dashboard counters for denial and enforcement trends
+- payload-safe `conu-relay --hosted-dashboard` snapshots across credential, tenant, accounting, and abuse stores
 - relay public-bind guard that keeps `local-dev-token` loopback-only
 - local relay client credential storage through `conu relay credential set --stdin`, with token-safe status and clear commands
 - relay client support for `ws://` plus certificate-validated `wss://` endpoints through TLS termination

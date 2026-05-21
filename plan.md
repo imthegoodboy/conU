@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-21
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, metadata-only hosted tenant registry, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, relay session state storage, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, and platform signing/notarization workflow hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse workflows, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, distributed tenant lifecycle, and hosted account dashboard gaps.
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, metadata-only hosted tenant registry, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, relay session state storage, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, and platform signing/notarization workflow hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse workflows beyond local snapshots, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, distributed tenant lifecycle, and hosted dashboard permission workflow gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -4117,6 +4117,68 @@ Next recommendation:
 
 - Open the PR for issue #66, wait for CI, merge if green, and preserve both local and remote feature branches.
 
+## Post Phase 15 - Hosted Relay Dashboard Snapshot
+
+Status: completed
+
+Goal:
+
+Give hosted or self-hosted relay operators a single payload-safe snapshot command that summarizes credential, tenant, accounting, and abuse stores without exposing relay secrets, payload material, ciphertext bodies, or session ids.
+
+Completed work:
+
+- Created GitHub issue #72 for the dashboard snapshot slice.
+- Added public `RelayAccountingAudit` and `audit_relay_accounting_dir` support so relay accounting files can be summarized without exposing tokens, token hashes, session ids, payloads, ciphertext bodies, or private key material.
+- Added `conu-relay --hosted-dashboard` with optional `--credentials-file`, `--tenants-file`, `--accounting-dir`, `--abuse-dir`, `--account`, `--node`, and `--json` flags.
+- Kept dashboard output aggregate-only: credential counts, tenant/node counts, accounting counters, abuse counters, configured paths, optional filters, and false display guards.
+- Added renderer/parser privacy coverage and accounting audit coverage.
+- Updated hosted relay docs, distribution/hosting docs, production readiness, release checklist, user guide, SDK/MCP notes, packaging docs, repo memory, architecture notes, and future-agent guardrails.
+
+Files changed:
+
+- `crates/conu-relay/src/lib.rs`
+- `crates/conu-relay/src/main.rs`
+- `README.md`
+- `architecture.md`
+- `docs/hosted-relay-account-auth.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/docker/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_dashboard -- --nocapture` passed with `PATH` including `C:\Users\parth\Downloads\llama\w64devkit\bin` and `RUSTFLAGS=-C linker=rust-lld`.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay accounting_audit -- --nocapture` passed with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed with the same GNU environment.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed with the same GNU environment.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --hosted-dashboard --credentials-file <temp>\credentials.toml --tenants-file <temp>\tenants.toml --accounting-dir <temp>\accounting --abuse-dir <temp>\abuse --account account.prod --node node.hosted --json` passed and returned `tokenDisplayed=false`, `tokenHashDisplayed=false`, `sessionIdDisplayed=false`, `ciphertextDisplayed=false`, and `contentsDisplayed=false`.
+- `git diff --check` passed.
+
+Known gaps:
+
+- The hosted dashboard snapshot is single-relay and file-backed. It is not distributed dashboard storage, a hosted UI, RBAC, alert routing, tenant suspension, billing, or adaptive abuse response.
+- Accounting, abuse, tenant, and credential stores are still single-writer local files; distributed hosted accounting, tenant lifecycle, and multi-instance session migration remain future work.
+- Hosted key administration still stores only public key ids; no hosted private-key custody, HSM, Secure Enclave, or managed key rotation service exists.
+- Managed direct NAT traversal still needs ICE/STUN/TURN-style candidate gathering, hosted direct-candidate rendezvous, and UDP hole punching beyond the current static direct candidate metadata.
+
+Next recommendation:
+
+- Open the PR for issue #72, wait for CI, merge if green, and preserve both local and remote feature branches.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -4188,4 +4250,5 @@ Add entries here when a phase is completed.
 2026-05-21 - Post Phase 15 managed direct NAT rendezvous foundation completed. Added static direct candidate source/kind/rendezvous metadata, explicit `nat_traversal_unavailable` reporting, invalid endpoint secret sanitization, CLI/MCP route surfaces, docs/skill updates, and full GNU-toolchain/package validation. Next: hosted dashboards/abuse workflows, ICE/STUN/TURN managed traversal, hosted tenant administration, distributed multi-instance session migration, and managed hosted identity/key administration.
 2026-05-21 - Post Phase 15 hosted tenant admin foundation completed. Added `CONU_RELAY_TENANTS_FILE`, metadata-only tenant/node lifecycle commands, hosted permission and public key-id metadata, fail-closed admin issue/rotate and new-session authorization, docs/skill updates, CLI smoke, and full GNU-toolchain/package validation. Next: hosted dashboards/abuse workflows, distributed tenant lifecycle, distributed multi-instance session migration, managed hosted identity/key administration, or ICE/STUN/TURN managed traversal.
 2026-05-21 - Post Phase 15 hosted relay abuse dashboard foundation completed. Added `CONU_RELAY_ABUSE_DIR`, metadata-only `.abuse` denial/enforcement counters, `conu-relay --abuse-audit`, payload-safe per-node/global audit output, credential/tenant deny, quota, rate-limit, session-expiry, mailbox-reject, and malformed-frame coverage, docs/skill updates, and GNU-toolchain targeted validation. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant lifecycle, distributed multi-instance session migration, managed hosted identity/key administration, or ICE/STUN/TURN managed traversal.
+2026-05-21 - Post Phase 15 hosted relay dashboard snapshot completed. Added public metadata-only accounting audit support and `conu-relay --hosted-dashboard` to combine credential, tenant, accounting, and abuse summaries with account/node filters and JSON/text output without tokens, token hashes, session ids, private keys, payloads, ciphertext bodies, or frame contents. Updated docs/skills/plan and full GNU-toolchain/package validation passed. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant lifecycle, distributed multi-instance session migration, managed hosted identity/key administration, or ICE/STUN/TURN managed traversal.
 ```

@@ -9,11 +9,12 @@ use conu_core::relay::{
     RelayAdminRequest, RelayAdminResult, RelayClientFrame, RelayServerFrame, RelayWebSocketClient,
 };
 use conu_relay::{
-    CredentialManifestUpdate, HostedTenantAudit, HostedTenantManifestUpdate,
+    CredentialManifestUpdate, HostedCredentialAudit, HostedTenantAudit, HostedTenantManifestUpdate,
     HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy,
-    RelayAbuseStorage, RelayAccountingPolicy, RelayAccountingStorage, RelayConfig, RelayCredential,
-    RelayMailboxPolicy, RelayMailboxStorage, RelaySessionPolicy, RelaySessionStorage,
-    audit_hosted_tenants_file, audit_relay_abuse_dir, issue_relay_credential,
+    RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy, RelayAccountingStorage,
+    RelayConfig, RelayCredential, RelayMailboxPolicy, RelayMailboxStorage, RelaySessionPolicy,
+    RelaySessionStorage, audit_hosted_relay_credentials_file, audit_hosted_tenants_file,
+    audit_relay_abuse_dir, audit_relay_accounting_dir, issue_relay_credential,
     relay_credential_manifest_contains_node, relay_token_sha256_hex, revoke_hosted_tenant_in_file,
     revoke_hosted_tenant_node_in_file, revoke_relay_credential_in_file,
     upsert_hosted_tenant_in_file, upsert_hosted_tenant_node_in_file,
@@ -127,6 +128,13 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--hosted-dashboard") => match hosted_dashboard_from_args(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("conU relay failed: {error}");
+                ExitCode::from(2)
+            }
+        },
         Some("--serve") => {
             let addr = args.next().unwrap_or_else(|| "127.0.0.1:8787".to_string());
             let config = match relay_config_from_env(addr) {
@@ -185,6 +193,7 @@ Usage:
   conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
+  conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --check
   conu-relay --help
   conu-relay --version
@@ -224,8 +233,9 @@ commands authenticate with an admin token read from stdin, send only node-token 
 relay, and write the raw node token locally only after the relay confirms the update. Tenant
 commands manage account, node, public key-id, and hosted permission metadata only; they never grant
 local peer policy or display private keys, tokens, hashes, payloads, or ciphertext bodies. Abuse
-audit reads aggregate enforcement counters only and never displays tokens, token hashes, payloads,
-ciphertext bodies, frame contents, private keys, or relay session ids."
+audit reads aggregate enforcement counters only. Hosted dashboard snapshots combine configured
+credential, tenant, accounting, and abuse summaries without displaying tokens, token hashes,
+payloads, ciphertext bodies, frame contents, private keys, or relay session ids."
     );
 }
 
@@ -1438,6 +1448,199 @@ fn abuse_audit_usage() -> String {
     "usage: conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]".to_string()
 }
 
+#[derive(Debug, Clone)]
+struct HostedDashboardArgs {
+    credentials_file: Option<PathBuf>,
+    tenants_file: Option<PathBuf>,
+    accounting_dir: Option<PathBuf>,
+    abuse_dir: Option<PathBuf>,
+    account_id: Option<String>,
+    node_id: Option<String>,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HostedDashboardSnapshot {
+    credentials_file: Option<PathBuf>,
+    tenants_file: Option<PathBuf>,
+    accounting_dir: Option<PathBuf>,
+    abuse_dir: Option<PathBuf>,
+    account_id: Option<String>,
+    node_id: Option<String>,
+    credentials: Option<HostedCredentialAudit>,
+    tenants: Option<HostedTenantAudit>,
+    accounting: Option<RelayAccountingAudit>,
+    abuse: Option<RelayAbuseAudit>,
+}
+
+fn hosted_dashboard_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_hosted_dashboard_args(args)?;
+    let snapshot = hosted_dashboard_snapshot(&parsed)?;
+    if parsed.json {
+        println!("{}", render_hosted_dashboard_json(&snapshot));
+    } else {
+        println!("{}", render_hosted_dashboard_text(&snapshot));
+    }
+    Ok(())
+}
+
+fn parse_hosted_dashboard_args(args: Vec<String>) -> Result<HostedDashboardArgs, String> {
+    let mut credentials_file = None::<PathBuf>;
+    let mut tenants_file = None::<PathBuf>;
+    let mut accounting_dir = None::<PathBuf>;
+    let mut abuse_dir = None::<PathBuf>;
+    let mut account_id = None::<String>;
+    let mut node_id = None::<String>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--credentials-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_dashboard_usage());
+                };
+                credentials_file = Some(PathBuf::from(value));
+            }
+            "--tenants-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_dashboard_usage());
+                };
+                tenants_file = Some(PathBuf::from(value));
+            }
+            "--accounting-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_dashboard_usage());
+                };
+                accounting_dir = Some(PathBuf::from(value));
+            }
+            "--abuse-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_dashboard_usage());
+                };
+                abuse_dir = Some(PathBuf::from(value));
+            }
+            "--account" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_dashboard_usage());
+                };
+                account_id = Some(value.to_string());
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_dashboard_usage());
+                };
+                node_id = Some(value.to_string());
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(hosted_dashboard_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(hosted_dashboard_usage()),
+        }
+        index += 1;
+    }
+
+    credentials_file = credentials_file.filter(|path| !path.as_os_str().is_empty());
+    tenants_file = tenants_file.filter(|path| !path.as_os_str().is_empty());
+    accounting_dir = accounting_dir.filter(|path| !path.as_os_str().is_empty());
+    abuse_dir = abuse_dir.filter(|path| !path.as_os_str().is_empty());
+    let account_id = account_id
+        .map(|value| validate_dashboard_filter_id(value, "account id"))
+        .transpose()?;
+    let node_id = node_id
+        .map(|value| validate_dashboard_filter_id(value, "node id"))
+        .transpose()?;
+
+    if credentials_file.is_none()
+        && tenants_file.is_none()
+        && accounting_dir.is_none()
+        && abuse_dir.is_none()
+    {
+        return Err(hosted_dashboard_usage());
+    }
+
+    Ok(HostedDashboardArgs {
+        credentials_file,
+        tenants_file,
+        accounting_dir,
+        abuse_dir,
+        account_id,
+        node_id,
+        json,
+    })
+}
+
+fn hosted_dashboard_usage() -> String {
+    "usage: conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]".to_string()
+}
+
+fn validate_dashboard_filter_id(value: String, label: &'static str) -> Result<String, String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(format!("relay dashboard {label} cannot be empty"));
+    }
+    if value.len() > 120 {
+        return Err(format!("relay dashboard {label} is too long"));
+    }
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return Err(format!(
+            "relay dashboard {label} must use ASCII letters, numbers, dash, underscore, or dot"
+        ));
+    }
+    Ok(value)
+}
+
+fn hosted_dashboard_snapshot(
+    args: &HostedDashboardArgs,
+) -> Result<HostedDashboardSnapshot, String> {
+    let credentials = args
+        .credentials_file
+        .as_ref()
+        .map(|path| audit_hosted_relay_credentials_file(path, args.account_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let tenants = args
+        .tenants_file
+        .as_ref()
+        .map(|path| audit_hosted_tenants_file(path, args.account_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let accounting = args
+        .accounting_dir
+        .as_ref()
+        .map(|path| audit_relay_accounting_dir(path, args.node_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let abuse = args
+        .abuse_dir
+        .as_ref()
+        .map(|path| audit_relay_abuse_dir(path, args.node_id.as_deref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+
+    Ok(HostedDashboardSnapshot {
+        credentials_file: args.credentials_file.clone(),
+        tenants_file: args.tenants_file.clone(),
+        accounting_dir: args.accounting_dir.clone(),
+        abuse_dir: args.abuse_dir.clone(),
+        account_id: args.account_id.clone(),
+        node_id: args.node_id.clone(),
+        credentials,
+        tenants,
+        accounting,
+        abuse,
+    })
+}
+
 fn parse_cli_bool(value: &str, flag: &str) -> Result<bool, String> {
     match value {
         "true" => Ok(true),
@@ -1663,6 +1866,439 @@ fn render_abuse_audit_json(audit: &RelayAbuseAudit, abuse_dir: &Path) -> String 
         bool_json(audit.ciphertext_displayed),
         bool_json(audit.contents_displayed)
     )
+}
+
+fn render_hosted_dashboard_text(snapshot: &HostedDashboardSnapshot) -> String {
+    let credentials = snapshot.credentials.as_ref();
+    let tenants = snapshot.tenants.as_ref();
+    let accounting = snapshot.accounting.as_ref();
+    let abuse = snapshot.abuse.as_ref();
+
+    format!(
+        r"conU hosted relay dashboard snapshot
+
+account: {}
+node: {}
+credentials file: {}
+credentials configured: {}
+credentials: {}
+active credentials: {}
+revoked credentials: {}
+expired credentials: {}
+credential accounts: {}
+tenants file: {}
+tenants configured: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+nodes: {}
+active nodes: {}
+revoked nodes: {}
+hosted policies: {}
+accounting dir: {}
+accounting configured: {}
+accounting records: {}
+accounting window started unix: {}
+sessions authenticated: {}
+sessions resumed: {}
+envelopes sent: {}
+bytes sent: {}
+envelopes received: {}
+bytes received: {}
+envelopes mailboxed: {}
+bytes mailboxed: {}
+abuse dir: {}
+abuse configured: {}
+abuse records: {}
+abuse window started unix: {}
+admin unauthorized: {}
+admin failed: {}
+unauthorized sessions: {}
+credential denied sessions: {}
+tenant denied sessions: {}
+rate limited sessions: {}
+session expired: {}
+quota denied forwards: {}
+undelivered forwards: {}
+mailbox rejected forwards: {}
+malformed client frames: {}
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        snapshot.account_id.as_deref().unwrap_or("all"),
+        snapshot.node_id.as_deref().unwrap_or("all"),
+        optional_path_text(snapshot.credentials_file.as_deref()),
+        yes_no(credentials.is_some()),
+        credentials.map(|audit| audit.credentials).unwrap_or(0),
+        credentials.map(|audit| audit.active).unwrap_or(0),
+        credentials.map(|audit| audit.revoked).unwrap_or(0),
+        credentials.map(|audit| audit.expired).unwrap_or(0),
+        credentials.map(|audit| audit.accounts).unwrap_or(0),
+        optional_path_text(snapshot.tenants_file.as_deref()),
+        yes_no(tenants.is_some()),
+        tenants.map(|audit| audit.tenants).unwrap_or(0),
+        tenants.map(|audit| audit.active_tenants).unwrap_or(0),
+        tenants.map(|audit| audit.revoked_tenants).unwrap_or(0),
+        tenants.map(|audit| audit.nodes).unwrap_or(0),
+        tenants.map(|audit| audit.active_nodes).unwrap_or(0),
+        tenants.map(|audit| audit.revoked_nodes).unwrap_or(0),
+        tenants.map(|audit| audit.policies).unwrap_or(0),
+        optional_path_text(snapshot.accounting_dir.as_deref()),
+        yes_no(accounting.is_some()),
+        accounting.map(|audit| audit.records).unwrap_or(0),
+        optional_u64_text(accounting.and_then(|audit| audit.window_started_unix)),
+        accounting
+            .map(|audit| audit.sessions_authenticated)
+            .unwrap_or(0),
+        accounting.map(|audit| audit.sessions_resumed).unwrap_or(0),
+        accounting.map(|audit| audit.envelopes_sent).unwrap_or(0),
+        accounting.map(|audit| audit.bytes_sent).unwrap_or(0),
+        accounting
+            .map(|audit| audit.envelopes_received)
+            .unwrap_or(0),
+        accounting.map(|audit| audit.bytes_received).unwrap_or(0),
+        accounting
+            .map(|audit| audit.envelopes_mailboxed)
+            .unwrap_or(0),
+        accounting.map(|audit| audit.bytes_mailboxed).unwrap_or(0),
+        optional_path_text(snapshot.abuse_dir.as_deref()),
+        yes_no(abuse.is_some()),
+        abuse.map(|audit| audit.records).unwrap_or(0),
+        optional_u64_text(abuse.and_then(|audit| audit.window_started_unix)),
+        abuse.map(|audit| audit.admin_unauthorized).unwrap_or(0),
+        abuse.map(|audit| audit.admin_failed).unwrap_or(0),
+        abuse.map(|audit| audit.unauthorized_sessions).unwrap_or(0),
+        abuse
+            .map(|audit| audit.credential_denied_sessions)
+            .unwrap_or(0),
+        abuse.map(|audit| audit.tenant_denied_sessions).unwrap_or(0),
+        abuse.map(|audit| audit.rate_limited_sessions).unwrap_or(0),
+        abuse.map(|audit| audit.session_expired).unwrap_or(0),
+        abuse.map(|audit| audit.quota_denied_forwards).unwrap_or(0),
+        abuse.map(|audit| audit.undelivered_forwards).unwrap_or(0),
+        abuse
+            .map(|audit| audit.mailbox_rejected_forwards)
+            .unwrap_or(0),
+        abuse
+            .map(|audit| audit.malformed_client_frames)
+            .unwrap_or(0),
+        yes_no(snapshot_payload_displayed(snapshot)),
+        yes_no(snapshot_token_displayed(snapshot)),
+        yes_no(snapshot_token_hash_displayed(snapshot)),
+        yes_no(snapshot_key_material_displayed(snapshot)),
+        yes_no(snapshot_session_id_displayed(snapshot)),
+        yes_no(snapshot_ciphertext_displayed(snapshot)),
+        yes_no(snapshot_contents_displayed(snapshot))
+    )
+}
+
+fn render_hosted_dashboard_json(snapshot: &HostedDashboardSnapshot) -> String {
+    format!(
+        r#"{{
+  "status": "snapshotted",
+  "accountId": {},
+  "nodeId": {},
+  "sources": {{
+    "credentialsFile": {},
+    "tenantsFile": {},
+    "accountingDir": {},
+    "abuseDir": {}
+  }},
+  "credentials": {},
+  "tenants": {},
+  "accounting": {},
+  "abuse": {},
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        optional_string_json(snapshot.account_id.as_deref()),
+        optional_string_json(snapshot.node_id.as_deref()),
+        optional_path_json(snapshot.credentials_file.as_deref()),
+        optional_path_json(snapshot.tenants_file.as_deref()),
+        optional_path_json(snapshot.accounting_dir.as_deref()),
+        optional_path_json(snapshot.abuse_dir.as_deref()),
+        render_dashboard_credentials_json(snapshot.credentials.as_ref()),
+        render_dashboard_tenants_json(snapshot.tenants.as_ref()),
+        render_dashboard_accounting_json(snapshot.accounting.as_ref()),
+        render_dashboard_abuse_json(snapshot.abuse.as_ref()),
+        bool_json(snapshot_payload_displayed(snapshot)),
+        bool_json(snapshot_token_displayed(snapshot)),
+        bool_json(snapshot_token_hash_displayed(snapshot)),
+        bool_json(snapshot_key_material_displayed(snapshot)),
+        bool_json(snapshot_session_id_displayed(snapshot)),
+        bool_json(snapshot_ciphertext_displayed(snapshot)),
+        bool_json(snapshot_contents_displayed(snapshot))
+    )
+}
+
+fn render_dashboard_credentials_json(audit: Option<&HostedCredentialAudit>) -> String {
+    match audit {
+        Some(audit) => format!(
+            r#"{{
+    "configured": true,
+    "credentials": {},
+    "active": {},
+    "revoked": {},
+    "expired": {},
+    "accounts": {},
+    "tokenDisplayed": {},
+    "contentsDisplayed": {}
+  }}"#,
+            audit.credentials,
+            audit.active,
+            audit.revoked,
+            audit.expired,
+            audit.accounts,
+            bool_json(audit.token_displayed),
+            bool_json(audit.contents_displayed)
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn render_dashboard_tenants_json(audit: Option<&HostedTenantAudit>) -> String {
+    match audit {
+        Some(audit) => format!(
+            r#"{{
+    "configured": true,
+    "tenants": {},
+    "activeTenants": {},
+    "revokedTenants": {},
+    "nodes": {},
+    "activeNodes": {},
+    "revokedNodes": {},
+    "policies": {},
+    "tokenDisplayed": {},
+    "keyMaterialDisplayed": {},
+    "contentsDisplayed": {}
+  }}"#,
+            audit.tenants,
+            audit.active_tenants,
+            audit.revoked_tenants,
+            audit.nodes,
+            audit.active_nodes,
+            audit.revoked_nodes,
+            audit.policies,
+            bool_json(audit.token_displayed),
+            bool_json(audit.key_material_displayed),
+            bool_json(audit.contents_displayed)
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn render_dashboard_accounting_json(audit: Option<&RelayAccountingAudit>) -> String {
+    match audit {
+        Some(audit) => format!(
+            r#"{{
+    "configured": true,
+    "records": {},
+    "windowStartedUnix": {},
+    "sessionsAuthenticated": {},
+    "sessionsResumed": {},
+    "envelopesSent": {},
+    "bytesSent": {},
+    "envelopesReceived": {},
+    "bytesReceived": {},
+    "envelopesMailboxed": {},
+    "bytesMailboxed": {},
+    "payloadDisplayed": {},
+    "tokenDisplayed": {},
+    "tokenHashDisplayed": {},
+    "keyMaterialDisplayed": {},
+    "sessionIdDisplayed": {},
+    "ciphertextDisplayed": {},
+    "contentsDisplayed": {}
+  }}"#,
+            audit.records,
+            optional_u64_json(audit.window_started_unix),
+            audit.sessions_authenticated,
+            audit.sessions_resumed,
+            audit.envelopes_sent,
+            audit.bytes_sent,
+            audit.envelopes_received,
+            audit.bytes_received,
+            audit.envelopes_mailboxed,
+            audit.bytes_mailboxed,
+            bool_json(audit.payload_displayed),
+            bool_json(audit.token_displayed),
+            bool_json(audit.token_hash_displayed),
+            bool_json(audit.key_material_displayed),
+            bool_json(audit.session_id_displayed),
+            bool_json(audit.ciphertext_displayed),
+            bool_json(audit.contents_displayed)
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn render_dashboard_abuse_json(audit: Option<&RelayAbuseAudit>) -> String {
+    match audit {
+        Some(audit) => format!(
+            r#"{{
+    "configured": true,
+    "records": {},
+    "windowStartedUnix": {},
+    "adminUnauthorized": {},
+    "adminFailed": {},
+    "unauthorizedSessions": {},
+    "credentialDeniedSessions": {},
+    "tenantDeniedSessions": {},
+    "rateLimitedSessions": {},
+    "sessionExpired": {},
+    "quotaDeniedForwards": {},
+    "undeliveredForwards": {},
+    "mailboxRejectedForwards": {},
+    "malformedClientFrames": {},
+    "payloadDisplayed": {},
+    "tokenDisplayed": {},
+    "tokenHashDisplayed": {},
+    "keyMaterialDisplayed": {},
+    "sessionIdDisplayed": {},
+    "ciphertextDisplayed": {},
+    "contentsDisplayed": {}
+  }}"#,
+            audit.records,
+            optional_u64_json(audit.window_started_unix),
+            audit.admin_unauthorized,
+            audit.admin_failed,
+            audit.unauthorized_sessions,
+            audit.credential_denied_sessions,
+            audit.tenant_denied_sessions,
+            audit.rate_limited_sessions,
+            audit.session_expired,
+            audit.quota_denied_forwards,
+            audit.undelivered_forwards,
+            audit.mailbox_rejected_forwards,
+            audit.malformed_client_frames,
+            bool_json(audit.payload_displayed),
+            bool_json(audit.token_displayed),
+            bool_json(audit.token_hash_displayed),
+            bool_json(audit.key_material_displayed),
+            bool_json(audit.session_id_displayed),
+            bool_json(audit.ciphertext_displayed),
+            bool_json(audit.contents_displayed)
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn snapshot_payload_displayed(snapshot: &HostedDashboardSnapshot) -> bool {
+    snapshot
+        .accounting
+        .as_ref()
+        .is_some_and(|audit| audit.payload_displayed)
+        || snapshot
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+}
+
+fn snapshot_token_displayed(snapshot: &HostedDashboardSnapshot) -> bool {
+    snapshot
+        .credentials
+        .as_ref()
+        .is_some_and(|audit| audit.token_displayed)
+        || snapshot
+            .tenants
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || snapshot
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || snapshot
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+}
+
+fn snapshot_token_hash_displayed(snapshot: &HostedDashboardSnapshot) -> bool {
+    snapshot
+        .accounting
+        .as_ref()
+        .is_some_and(|audit| audit.token_hash_displayed)
+        || snapshot
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+}
+
+fn snapshot_key_material_displayed(snapshot: &HostedDashboardSnapshot) -> bool {
+    snapshot
+        .tenants
+        .as_ref()
+        .is_some_and(|audit| audit.key_material_displayed)
+        || snapshot
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+        || snapshot
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+}
+
+fn snapshot_session_id_displayed(snapshot: &HostedDashboardSnapshot) -> bool {
+    snapshot
+        .accounting
+        .as_ref()
+        .is_some_and(|audit| audit.session_id_displayed)
+        || snapshot
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
+}
+
+fn snapshot_ciphertext_displayed(snapshot: &HostedDashboardSnapshot) -> bool {
+    snapshot
+        .accounting
+        .as_ref()
+        .is_some_and(|audit| audit.ciphertext_displayed)
+        || snapshot
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+}
+
+fn snapshot_contents_displayed(snapshot: &HostedDashboardSnapshot) -> bool {
+    snapshot
+        .credentials
+        .as_ref()
+        .is_some_and(|audit| audit.contents_displayed)
+        || snapshot
+            .tenants
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || snapshot
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || snapshot
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+}
+
+fn optional_path_text(value: Option<&Path>) -> String {
+    value
+        .map(|value| value.display().to_string())
+        .unwrap_or_else(|| "not configured".to_string())
+}
+
+fn optional_path_json(value: Option<&Path>) -> String {
+    value
+        .map(|value| format!("\"{}\"", json_escape(&value.display().to_string())))
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -2082,6 +2718,147 @@ mod tests {
         for output in outputs {
             assert!(output.contains("credential"));
             assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+    }
+
+    #[test]
+    fn hosted_dashboard_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_hosted_dashboard_args(vec![
+            "--credentials-file".to_string(),
+            "credentials.toml".to_string(),
+            "--tenants-file".to_string(),
+            "tenants.toml".to_string(),
+            "--accounting-dir".to_string(),
+            "accounting".to_string(),
+            "--abuse-dir".to_string(),
+            "abuse".to_string(),
+            "--account".to_string(),
+            "account.prod".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("hosted dashboard args parse");
+        assert_eq!(
+            parsed.credentials_file.as_deref(),
+            Some(Path::new("credentials.toml"))
+        );
+        assert_eq!(
+            parsed.tenants_file.as_deref(),
+            Some(Path::new("tenants.toml"))
+        );
+        assert_eq!(
+            parsed.accounting_dir.as_deref(),
+            Some(Path::new("accounting"))
+        );
+        assert_eq!(parsed.abuse_dir.as_deref(), Some(Path::new("abuse")));
+        assert_eq!(parsed.account_id.as_deref(), Some("account.prod"));
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert!(parsed.json);
+        assert!(parse_hosted_dashboard_args(Vec::new()).is_err());
+        let invalid_filter = parse_hosted_dashboard_args(vec![
+            "--accounting-dir".to_string(),
+            "accounting".to_string(),
+            "--account".to_string(),
+            "bad secret value".to_string(),
+        ])
+        .expect_err("invalid account filter should fail closed");
+        assert!(!invalid_filter.contains("bad secret value"));
+
+        let snapshot = HostedDashboardSnapshot {
+            credentials_file: Some(PathBuf::from("credentials.toml")),
+            tenants_file: Some(PathBuf::from("tenants.toml")),
+            accounting_dir: Some(PathBuf::from("accounting")),
+            abuse_dir: Some(PathBuf::from("abuse")),
+            account_id: Some("account.prod".to_string()),
+            node_id: Some("node.hosted".to_string()),
+            credentials: Some(HostedCredentialAudit {
+                account_id: Some("account.prod".to_string()),
+                credentials: 3,
+                active: 1,
+                revoked: 1,
+                expired: 1,
+                accounts: 1,
+                token_displayed: false,
+                contents_displayed: false,
+            }),
+            tenants: Some(HostedTenantAudit {
+                account_id: Some("account.prod".to_string()),
+                tenants: 1,
+                active_tenants: 1,
+                revoked_tenants: 0,
+                nodes: 2,
+                active_nodes: 1,
+                revoked_nodes: 1,
+                policies: 1,
+                token_displayed: false,
+                key_material_displayed: false,
+                contents_displayed: false,
+            }),
+            accounting: Some(RelayAccountingAudit {
+                node_id: Some("node.hosted".to_string()),
+                records: 1,
+                window_started_unix: Some(1_763_596_800),
+                sessions_authenticated: 2,
+                sessions_resumed: 1,
+                envelopes_sent: 3,
+                bytes_sent: 33,
+                envelopes_received: 4,
+                bytes_received: 44,
+                envelopes_mailboxed: 1,
+                bytes_mailboxed: 11,
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+            abuse: Some(RelayAbuseAudit {
+                node_id: Some("node.hosted".to_string()),
+                records: 1,
+                window_started_unix: Some(1_763_596_800),
+                admin_unauthorized: 1,
+                admin_failed: 1,
+                unauthorized_sessions: 2,
+                credential_denied_sessions: 1,
+                tenant_denied_sessions: 1,
+                rate_limited_sessions: 1,
+                session_expired: 1,
+                quota_denied_forwards: 1,
+                undelivered_forwards: 1,
+                mailbox_rejected_forwards: 1,
+                malformed_client_frames: 1,
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_hosted_dashboard_text(&snapshot),
+            render_hosted_dashboard_json(&snapshot),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("dashboard") || output.contains("snapshotted"));
+            assert!(output.contains("credentials"));
+            assert!(output.contains("accounting"));
+            assert!(output.contains("abuse"));
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));
             assert!(!output.contains(session_id));
