@@ -38,6 +38,10 @@ jobs:
     name: Build ${{ matrix.name }}
     needs: packages
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -79,6 +83,10 @@ jobs:
         run: ${{ matrix.script }}
       - name: Verify release artifact
         run: python scripts/verify-release-artifacts.py dist
+      - name: Attest release artifact provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ matrix.artifact }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -94,10 +102,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Verify downloaded release assets
+        run: python scripts/verify-release-artifacts.py dist
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}

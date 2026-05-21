@@ -55,9 +55,17 @@ python scripts/verify-release-artifacts.py dist
 ```
 
 The release workflow runs the same verifier before publishing artifacts. It
-checks checksums, required binaries, `manifest.toml`, and common forbidden
-local-state paths so developer `CONU_HOME`, logs, private keys, inboxes, route
-registries, package `node_modules`, and vendored npm binaries are not shipped.
+checks checksums, required binaries, `manifest.toml`, required install/service
+templates, and common forbidden local-state paths so developer `CONU_HOME`,
+logs, private keys, inboxes, route registries, package `node_modules`, and
+vendored npm binaries are not shipped. Tagged release builds also create
+GitHub artifact attestations for each platform archive and checksum file.
+
+Verify a downloaded archive's provenance when `gh` is available:
+
+```sh
+gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
+```
 
 ## npm Launcher Package
 

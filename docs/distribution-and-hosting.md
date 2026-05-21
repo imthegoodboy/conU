@@ -63,7 +63,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 2. Confirm `sdk/typescript/package.json` has the same version if publishing `@conu/sdk`.
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
-5. Let the `Release Artifacts` GitHub Actions workflow build platform archives, verify that they exclude conU state/log/payload paths, upload the archives and `.sha256` files to the GitHub Release, and run npm package dry-runs.
+5. Let the `Release Artifacts` GitHub Actions workflow build platform archives, verify that they exclude conU state/log/payload paths and include the required install/service templates, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, and run npm package dry-runs.
 6. Configure the repository `NPM_TOKEN` secret before tag builds that should publish npm packages. When that token is present, the release workflow publishes `@conu/cli` and `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
@@ -86,10 +86,16 @@ For a local archive verification pass after running a build script:
 python scripts/verify-release-artifacts.py dist
 ```
 
+For a downloaded release archive, verify the GitHub artifact attestation when `gh` is available:
+
+```sh
+gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
+```
+
 The verifier checks each archive checksum, required binaries, `manifest.toml`
-payload flags, and common forbidden local-state paths such as `.conu`,
-`security/`, `messages/`, `runtime/`, `logs/`, `routes/`, `node_modules/`,
-and vendored package binaries.
+payload flags, required install/service templates, and common forbidden
+local-state paths such as `.conu`, `security/`, `messages/`, `runtime/`,
+`logs/`, `routes/`, `node_modules/`, and vendored package binaries.
 
 ## User Install Choices
 

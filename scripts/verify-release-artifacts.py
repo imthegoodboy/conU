@@ -32,6 +32,17 @@ FORBIDDEN_NAMES = {
     "trust.toml",
 }
 REQUIRED_BINARIES = {"conu", "conud", "conu-relay", "conu-mcp"}
+REQUIRED_PACKAGING_FILES = {
+    "packaging/README.md",
+    "packaging/docker/README.md",
+    "packaging/docker/relay.Dockerfile",
+    "packaging/linux/conud.service",
+    "packaging/macos/com.conu.conud.plist",
+    "packaging/npm/conu-cli/package.json",
+    "packaging/npm/conu-cli/scripts/install.js",
+    "packaging/windows/install.ps1",
+    "packaging/windows/uninstall.ps1",
+}
 
 
 def main() -> int:
@@ -114,6 +125,12 @@ def verify_members(archive: Path, members: dict[str, bytes | None]) -> None:
     missing_bins = sorted(required_bins - paths)
     if missing_bins:
         raise SystemExit(f"{archive.name} missing binaries: {', '.join(missing_bins)}")
+
+    missing_packaging = sorted(REQUIRED_PACKAGING_FILES - paths)
+    if missing_packaging:
+        raise SystemExit(
+            f"{archive.name} missing packaging templates: {', '.join(missing_packaging)}"
+        )
 
     manifest = members.get("manifest.toml")
     if manifest is None:
