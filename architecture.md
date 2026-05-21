@@ -206,7 +206,7 @@ It helps with:
 
 The relay should not read payloads. It should only see route metadata needed to deliver encrypted envelopes.
 
-The current self-hosted relay supports offline scoped credential issuance, helper-driven manifest upsert/rotation/revocation, and a live-reloaded hashed credential manifest for token revocation/expiry on new session authentication attempts. That is operational hardening for controlled deployments, not a managed hosted account system, online credential issuance API, or tenant lifecycle.
+The current relay supports offline scoped credential issuance, helper-driven manifest upsert/rotation/revocation, account-scoped online issue/rotate/revoke/audit, and a live-reloaded hashed credential manifest for token revocation/expiry on new session authentication attempts. That is enough for a single managed relay operator to control node credentials without storing raw node tokens server-side; it is not distributed tenant lifecycle, hosted dashboards, or a full managed public relay service.
 
 The relay can also persist metadata-only per-node accounting counters and enforce self-hosted sent-envelope or sent-byte quotas. These counters include authenticated and resumed session counts, envelope counts, byte counts, and mailbox accepts. They help controlled deployments understand usage without payload access; they are not a hosted billing, tenant, abuse-response, or analytics service.
 

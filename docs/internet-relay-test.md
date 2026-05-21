@@ -30,6 +30,15 @@ conu-relay --serve 0.0.0.0:8787
 
 `local-dev-token` is accepted only for loopback binds such as `127.0.0.1`; a relay exposed on `0.0.0.0` requires a custom shared token or scoped credential token with at least 24 characters. For a self-hosted two-node relay, prefer `CONU_RELAY_CREDENTIALS_FILE` after the node ids are known. `conu-relay --issue-credential <node-id> --token-out <path> --credentials-file <path>` writes the raw token to a new file and creates or updates the manifest with only hashed metadata; `--replace` rotates an existing node credential and `conu-relay --revoke-credential <node-id> --credentials-file <path>` marks it revoked. `conu-relay --hash-token` remains available for already-created tokens. The manifest stores only token hashes plus status/expiry metadata, reloads on each new `HELLO` authentication attempt, and overrides `CONU_RELAY_CREDENTIALS`, which remains available for controlled compatibility tests. On each node, either set `CONU_RELAY_TOKEN` to that node's assigned scoped token before starting conUD, or store it with `conu relay credential set --stdin`.
 
+For a managed relay test, set `CONU_RELAY_ADMIN_TOKEN` on the relay process together with `CONU_RELAY_CREDENTIALS_FILE`, then issue or rotate node credentials online:
+
+```powershell
+Get-Content -Raw C:\secure\relay-admin.token |
+  conu-relay --admin-issue-credential account.test node-a-id --relay wss://relay.example.com/conu --admin-token-stdin --token-out C:\conu-relay\node-a.token
+```
+
+The admin frame sends only the generated node token hash and length to the relay. The raw node token is written locally after the relay confirms the manifest update, and admin/audit output reports only counts, statuses, ids, and display guards.
+
 For same-machine testing, use `ws://127.0.0.1:8787`. For two machines on a trusted private path, use the reachable host or IP, for example `ws://203.0.113.10:8787`. For public internet testing, terminate TLS in front of the relay and use a certificate-valid endpoint such as `wss://relay.example.com/conu`.
 
 ## 2. Prepare Node A And Node B

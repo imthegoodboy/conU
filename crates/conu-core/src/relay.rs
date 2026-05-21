@@ -290,11 +290,191 @@ impl fmt::Debug for RelayOpaqueBody {
     }
 }
 
+/// Hosted relay admin lifecycle action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayAdminAction {
+    Issue,
+    Rotate,
+    Revoke,
+    Audit,
+}
+
+impl RelayAdminAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Issue => "issue",
+            Self::Rotate => "rotate",
+            Self::Revoke => "revoke",
+            Self::Audit => "audit",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self, RelayFrameError> {
+        match value {
+            "issue" => Ok(Self::Issue),
+            "rotate" => Ok(Self::Rotate),
+            "revoke" => Ok(Self::Revoke),
+            "audit" => Ok(Self::Audit),
+            _ => Err(RelayFrameError::new("unsupported relay admin action")),
+        }
+    }
+}
+
+/// Authenticated hosted-relay admin request.
+///
+/// Issue and rotate requests carry only token hash metadata. The raw relay
+/// credential token is generated and stored by the admin client, not sent to or
+/// stored by the relay service.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RelayAdminRequest {
+    pub action: RelayAdminAction,
+    pub admin_token: String,
+    pub account_id: Option<String>,
+    pub node_id: Option<String>,
+    pub token_sha256_hex: Option<String>,
+    pub token_length: Option<usize>,
+    pub expires_at_unix: Option<u64>,
+}
+
+impl RelayAdminRequest {
+    pub fn issue(
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+        node_id: impl Into<String>,
+        token_sha256_hex: impl Into<String>,
+        token_length: usize,
+        expires_at_unix: Option<u64>,
+    ) -> Result<Self, RelayFrameError> {
+        Self::credential_update(
+            RelayAdminAction::Issue,
+            admin_token,
+            account_id,
+            node_id,
+            token_sha256_hex,
+            token_length,
+            expires_at_unix,
+        )
+    }
+
+    pub fn rotate(
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+        node_id: impl Into<String>,
+        token_sha256_hex: impl Into<String>,
+        token_length: usize,
+        expires_at_unix: Option<u64>,
+    ) -> Result<Self, RelayFrameError> {
+        Self::credential_update(
+            RelayAdminAction::Rotate,
+            admin_token,
+            account_id,
+            node_id,
+            token_sha256_hex,
+            token_length,
+            expires_at_unix,
+        )
+    }
+
+    pub fn revoke(
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+        node_id: impl Into<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::Revoke,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: Some(validate_identifier(account_id.into(), "account id")?),
+            node_id: Some(validate_identifier(node_id.into(), "node id")?),
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+        })
+    }
+
+    pub fn audit(
+        admin_token: impl Into<String>,
+        account_id: Option<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::Audit,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: account_id
+                .map(|value| validate_identifier(value, "account id"))
+                .transpose()?,
+            node_id: None,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+        })
+    }
+
+    fn credential_update(
+        action: RelayAdminAction,
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+        node_id: impl Into<String>,
+        token_sha256_hex: impl Into<String>,
+        token_length: usize,
+        expires_at_unix: Option<u64>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: Some(validate_identifier(account_id.into(), "account id")?),
+            node_id: Some(validate_identifier(node_id.into(), "node id")?),
+            token_sha256_hex: Some(validate_fixed_hex(
+                token_sha256_hex.into(),
+                "token sha256",
+                64,
+            )?),
+            token_length: Some(validate_token_length(token_length)?),
+            expires_at_unix,
+        })
+    }
+}
+
+impl fmt::Debug for RelayAdminRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RelayAdminRequest")
+            .field("action", &self.action)
+            .field("admin_token", &"<redacted>")
+            .field("account_id", &self.account_id)
+            .field("node_id", &self.node_id)
+            .field(
+                "token_sha256_hex",
+                &self.token_sha256_hex.as_ref().map(|_| "<redacted>"),
+            )
+            .field("token_length", &self.token_length)
+            .field("expires_at_unix", &self.expires_at_unix)
+            .finish()
+    }
+}
+
+/// Metadata-only hosted relay admin result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayAdminResult {
+    pub action: RelayAdminAction,
+    pub status: String,
+    pub account_id: Option<String>,
+    pub node_id: Option<String>,
+    pub credentials: usize,
+    pub active: usize,
+    pub revoked: usize,
+    pub expired: usize,
+    pub accounts: usize,
+    pub token_length: Option<usize>,
+    pub expires_at_unix: Option<u64>,
+    pub token_displayed: bool,
+    pub contents_displayed: bool,
+}
+
 /// Client frames a runtime can send to the relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayClientFrame {
     Hello(RelayHello),
     Forward(Box<RelayForward>),
+    Admin(Box<RelayAdminRequest>),
     Ping,
 }
 
@@ -330,6 +510,7 @@ pub enum RelayServerFrame {
         envelope_id: String,
         reason: String,
     },
+    AdminResult(RelayAdminResult),
     Pong,
     Error {
         reason: String,
@@ -350,6 +531,7 @@ pub fn render_client_frame(frame: &RelayClientFrame) -> String {
         RelayClientFrame::Forward(forward) => {
             render_forward_line("FORWARD", None, forward.as_ref())
         }
+        RelayClientFrame::Admin(request) => render_admin_request_line(request.as_ref()),
         RelayClientFrame::Ping => "PING payload=not_observed".to_string(),
     }
 }
@@ -381,6 +563,9 @@ pub fn parse_client_frame(line: &str) -> Result<RelayClientFrame, RelayFrameErro
             .with_kind_and_stream_from_values(&values)?
             .with_optional_body(&values)?,
         ))),
+        "ADMIN" => Ok(RelayClientFrame::Admin(Box::new(parse_admin_request(
+            &values,
+        )?))),
         "PING" => Ok(RelayClientFrame::Ping),
         _ => Err(RelayFrameError::new("unsupported client frame type")),
     }
@@ -415,6 +600,7 @@ pub fn render_server_frame(frame: &RelayServerFrame) -> String {
             envelope_id,
             sanitize_reason(reason)
         ),
+        RelayServerFrame::AdminResult(result) => render_admin_result_line(result),
         RelayServerFrame::Pong => "PONG payload=not_observed".to_string(),
         RelayServerFrame::Error { reason } => {
             format!(
@@ -466,6 +652,7 @@ pub fn parse_server_frame(line: &str) -> Result<RelayServerFrame, RelayFrameErro
             envelope_id: validate_identifier(required(&values, "envelope")?, "envelope id")?,
             reason: required(&values, "reason")?,
         }),
+        "ADMIN_RESULT" => Ok(RelayServerFrame::AdminResult(parse_admin_result(&values)?)),
         "PONG" => Ok(RelayServerFrame::Pong),
         "ERROR" => Ok(RelayServerFrame::Error {
             reason: required(&values, "reason")?,
@@ -627,6 +814,114 @@ fn append_forward_body(
     } else {
         line.push_str(" payload=opaque");
     }
+}
+
+fn render_admin_request_line(request: &RelayAdminRequest) -> String {
+    let mut line = format!(
+        "ADMIN action={} admin_token={}",
+        request.action.as_str(),
+        request.admin_token
+    );
+    if let Some(account_id) = &request.account_id {
+        line.push_str(&format!(" account={account_id}"));
+    }
+    if let Some(node_id) = &request.node_id {
+        line.push_str(&format!(" node={node_id}"));
+    }
+    if let Some(token_sha256_hex) = &request.token_sha256_hex {
+        line.push_str(&format!(" token_sha256={token_sha256_hex}"));
+    }
+    if let Some(token_length) = request.token_length {
+        line.push_str(&format!(" token_length={token_length}"));
+    }
+    if let Some(expires_at_unix) = request.expires_at_unix {
+        line.push_str(&format!(" expires={expires_at_unix}"));
+    }
+    line.push_str(" token_displayed=false payload=not_observed");
+    line
+}
+
+fn parse_admin_request(
+    values: &HashMap<String, String>,
+) -> Result<RelayAdminRequest, RelayFrameError> {
+    let action = RelayAdminAction::from_str(&required(values, "action")?)?;
+    match action {
+        RelayAdminAction::Issue => RelayAdminRequest::issue(
+            required(values, "admin_token")?,
+            required(values, "account")?,
+            required(values, "node")?,
+            required(values, "token_sha256")?,
+            parse_usize(&required(values, "token_length")?)?,
+            optional_u64(values, "expires")?,
+        ),
+        RelayAdminAction::Rotate => RelayAdminRequest::rotate(
+            required(values, "admin_token")?,
+            required(values, "account")?,
+            required(values, "node")?,
+            required(values, "token_sha256")?,
+            parse_usize(&required(values, "token_length")?)?,
+            optional_u64(values, "expires")?,
+        ),
+        RelayAdminAction::Revoke => RelayAdminRequest::revoke(
+            required(values, "admin_token")?,
+            required(values, "account")?,
+            required(values, "node")?,
+        ),
+        RelayAdminAction::Audit => RelayAdminRequest::audit(
+            required(values, "admin_token")?,
+            values.get("account").cloned(),
+        ),
+    }
+}
+
+fn render_admin_result_line(result: &RelayAdminResult) -> String {
+    let mut line = format!(
+        "ADMIN_RESULT action={} status={} credentials={} active={} revoked={} expired={} accounts={}",
+        result.action.as_str(),
+        sanitize_reason(&result.status),
+        result.credentials,
+        result.active,
+        result.revoked,
+        result.expired,
+        result.accounts
+    );
+    if let Some(account_id) = &result.account_id {
+        line.push_str(&format!(" account={account_id}"));
+    }
+    if let Some(node_id) = &result.node_id {
+        line.push_str(&format!(" node={node_id}"));
+    }
+    if let Some(token_length) = result.token_length {
+        line.push_str(&format!(" token_length={token_length}"));
+    }
+    if let Some(expires_at_unix) = result.expires_at_unix {
+        line.push_str(&format!(" expires={expires_at_unix}"));
+    }
+    line.push_str(&format!(
+        " token_displayed={} contents_displayed={} payload=not_observed",
+        result.token_displayed, result.contents_displayed
+    ));
+    line
+}
+
+fn parse_admin_result(
+    values: &HashMap<String, String>,
+) -> Result<RelayAdminResult, RelayFrameError> {
+    Ok(RelayAdminResult {
+        action: RelayAdminAction::from_str(&required(values, "action")?)?,
+        status: required(values, "status")?,
+        account_id: optional_identifier(values, "account", "account id")?,
+        node_id: optional_identifier(values, "node", "node id")?,
+        credentials: parse_usize(&required(values, "credentials")?)?,
+        active: parse_usize(&required(values, "active")?)?,
+        revoked: parse_usize(&required(values, "revoked")?)?,
+        expired: parse_usize(&required(values, "expired")?)?,
+        accounts: parse_usize(&required(values, "accounts")?)?,
+        token_length: optional_usize(values, "token_length")?,
+        expires_at_unix: optional_u64(values, "expires")?,
+        token_displayed: optional_bool(values, "token_displayed")?.unwrap_or(false),
+        contents_displayed: optional_bool(values, "contents_displayed")?.unwrap_or(false),
+    })
 }
 
 fn relay_kind_from_values(
@@ -809,10 +1104,60 @@ fn validate_hex(value: String, field: &'static str) -> Result<String, RelayFrame
     Ok(value)
 }
 
+fn validate_fixed_hex(
+    value: String,
+    field: &'static str,
+    expected_len: usize,
+) -> Result<String, RelayFrameError> {
+    let value = validate_hex(value, field)?;
+    if value.len() != expected_len {
+        return Err(RelayFrameError::new(format!(
+            "{field} must contain {expected_len} hex characters"
+        )));
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
+fn validate_token_length(value: usize) -> Result<usize, RelayFrameError> {
+    if value == 0 {
+        return Err(RelayFrameError::new(
+            "token length must be greater than zero",
+        ));
+    }
+    if value > 200 {
+        return Err(RelayFrameError::new("token length is too large"));
+    }
+    Ok(value)
+}
+
 fn parse_usize(value: &str) -> Result<usize, RelayFrameError> {
     value
         .parse::<usize>()
         .map_err(|_| RelayFrameError::new("expected unsigned byte count"))
+}
+
+fn optional_usize(
+    values: &HashMap<String, String>,
+    key: &'static str,
+) -> Result<Option<usize>, RelayFrameError> {
+    values
+        .get(key)
+        .map(|value| parse_usize(value).and_then(validate_token_length))
+        .transpose()
+}
+
+fn optional_u64(
+    values: &HashMap<String, String>,
+    key: &'static str,
+) -> Result<Option<u64>, RelayFrameError> {
+    values
+        .get(key)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| RelayFrameError::new(format!("{key} must be an unsigned integer")))
+        })
+        .transpose()
 }
 
 fn sanitize_reason(reason: &str) -> String {
@@ -1333,6 +1678,54 @@ mod tests {
         assert!(!rendered.contains("build"));
         assert!(!rendered.contains("private room event"));
         assert_eq!(parsed, frame);
+    }
+
+    #[test]
+    fn admin_frames_round_trip_with_debug_redaction() {
+        let token_hash = "a".repeat(64);
+        let request = RelayAdminRequest::issue(
+            "admin-secret-token-1234567890",
+            "account.prod",
+            "node.hosted",
+            token_hash.clone(),
+            64,
+            Some(4_000),
+        )
+        .expect("admin request parses");
+        let frame = RelayClientFrame::Admin(Box::new(request.clone()));
+        let rendered = render_client_frame(&frame);
+        let parsed = parse_client_frame(&rendered).expect("admin request parses");
+        let debug = format!("{frame:?}");
+        let result = RelayServerFrame::AdminResult(RelayAdminResult {
+            action: RelayAdminAction::Issue,
+            status: "issued".to_string(),
+            account_id: Some("account.prod".to_string()),
+            node_id: Some("node.hosted".to_string()),
+            credentials: 1,
+            active: 1,
+            revoked: 0,
+            expired: 0,
+            accounts: 1,
+            token_length: Some(64),
+            expires_at_unix: Some(4_000),
+            token_displayed: false,
+            contents_displayed: false,
+        });
+        let rendered_result = render_server_frame(&result);
+        let parsed_result = parse_server_frame(&rendered_result).expect("admin result parses");
+
+        assert_eq!(parsed, frame);
+        assert!(rendered.contains("ADMIN action=issue"));
+        assert!(rendered.contains("token_displayed=false"));
+        assert!(rendered.contains("payload=not_observed"));
+        assert!(!debug.contains("admin-secret-token-1234567890"));
+        assert!(!debug.contains(&token_hash));
+        assert!(debug.contains("<redacted>"));
+        assert_eq!(parsed_result, result);
+        assert!(rendered_result.contains("ADMIN_RESULT action=issue status=issued"));
+        assert!(rendered_result.contains("contents_displayed=false"));
+        assert!(!rendered_result.contains("admin-secret-token-1234567890"));
+        assert!(!rendered_result.contains(&token_hash));
     }
 
     #[test]
