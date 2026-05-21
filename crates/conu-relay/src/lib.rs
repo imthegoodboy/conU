@@ -36,6 +36,7 @@ const DEFAULT_MAX_OFFLINE_ENVELOPES_PER_NODE: usize = 128;
 const DEFAULT_OFFLINE_ENVELOPE_TTL_SECS: u64 = 60 * 60;
 const DEFAULT_ACCOUNTING_WINDOW_SECS: u64 = 24 * 60 * 60;
 const RELAY_MAILBOX_FILE_VERSION: &str = "1";
+const RELAY_SESSION_FILE_VERSION: &str = "1";
 const RELAY_CREDENTIALS_FILE_VERSION: &str = "1";
 const RELAY_ACCOUNTING_FILE_VERSION: &str = "1";
 const LOCAL_DEV_TOKEN: &str = "local-dev-token";
@@ -50,6 +51,7 @@ pub struct RelayConfig {
     pub auth: RelayAuth,
     pub limits: RelayLimits,
     pub session_policy: RelaySessionPolicy,
+    pub session_storage: RelaySessionStorage,
     pub mailbox_policy: RelayMailboxPolicy,
     pub mailbox_storage: RelayMailboxStorage,
     pub accounting_policy: RelayAccountingPolicy,
@@ -65,6 +67,7 @@ impl fmt::Debug for RelayConfig {
             .field("auth", &self.auth)
             .field("limits", &self.limits)
             .field("session_policy", &self.session_policy)
+            .field("session_storage", &self.session_storage)
             .field("mailbox_policy", &self.mailbox_policy)
             .field("mailbox_storage", &self.mailbox_storage)
             .field("accounting_policy", &self.accounting_policy)
@@ -658,6 +661,43 @@ impl fmt::Debug for RelayAccountingStorage {
     }
 }
 
+/// Optional persistence mode for metadata-only authenticated relay session records.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum RelaySessionStorage {
+    #[default]
+    MemoryOnly,
+    FileBacked(PathBuf),
+}
+
+impl RelaySessionStorage {
+    pub fn memory_only() -> Self {
+        Self::MemoryOnly
+    }
+
+    pub fn file_backed(path: impl Into<PathBuf>) -> Result<Self, RelayError> {
+        let path = path.into();
+        if path.as_os_str().is_empty() {
+            return Err(RelayError::InvalidConfig(
+                "relay session state directory cannot be empty",
+            ));
+        }
+
+        Ok(Self::FileBacked(path))
+    }
+}
+
+impl fmt::Debug for RelaySessionStorage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MemoryOnly => formatter.write_str("RelaySessionStorage::MemoryOnly"),
+            Self::FileBacked(path) => formatter
+                .debug_struct("RelaySessionStorage::FileBacked")
+                .field("path", path)
+                .finish(),
+        }
+    }
+}
+
 /// Session lifetime policy for authenticated relay clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelaySessionPolicy {
@@ -712,6 +752,7 @@ impl RelayConfig {
             auth: RelayAuth::SharedToken(auth_token),
             limits: RelayLimits::default(),
             session_policy: RelaySessionPolicy::default(),
+            session_storage: RelaySessionStorage::default(),
             mailbox_policy: RelayMailboxPolicy::default(),
             mailbox_storage: RelayMailboxStorage::default(),
             accounting_policy: RelayAccountingPolicy::default(),
@@ -735,6 +776,7 @@ impl RelayConfig {
             auth: RelayAuth::ScopedCredentials(credentials),
             limits: RelayLimits::default(),
             session_policy: RelaySessionPolicy::default(),
+            session_storage: RelaySessionStorage::default(),
             mailbox_policy: RelayMailboxPolicy::default(),
             mailbox_storage: RelayMailboxStorage::default(),
             accounting_policy: RelayAccountingPolicy::default(),
@@ -763,6 +805,7 @@ impl RelayConfig {
             auth: RelayAuth::ScopedCredentialsFile { path, bind_addr },
             limits: RelayLimits::default(),
             session_policy: RelaySessionPolicy::default(),
+            session_storage: RelaySessionStorage::default(),
             mailbox_policy: RelayMailboxPolicy::default(),
             mailbox_storage: RelayMailboxStorage::default(),
             accounting_policy: RelayAccountingPolicy::default(),
@@ -778,6 +821,11 @@ impl RelayConfig {
 
     pub fn with_session_policy(mut self, session_policy: RelaySessionPolicy) -> Self {
         self.session_policy = session_policy;
+        self
+    }
+
+    pub fn with_session_storage(mut self, session_storage: RelaySessionStorage) -> Self {
+        self.session_storage = session_storage;
         self
     }
 
@@ -1684,6 +1732,7 @@ pub fn run_blocking(config: RelayConfig) -> Result<(), RelayError> {
         auth: config.auth,
         limits: config.limits,
         session_policy: config.session_policy,
+        session_storage: config.session_storage,
         mailbox_policy: config.mailbox_policy,
         mailbox_storage: config.mailbox_storage,
         accounting_policy: config.accounting_policy,
@@ -1730,6 +1779,7 @@ pub fn spawn_relay(config: RelayConfig) -> Result<RelayHandle, RelayError> {
         auth: config.auth,
         limits: config.limits,
         session_policy: config.session_policy,
+        session_storage: config.session_storage,
         mailbox_policy: config.mailbox_policy,
         mailbox_storage: config.mailbox_storage,
         accounting_policy: config.accounting_policy,
@@ -1779,6 +1829,7 @@ struct RelayHubConfig {
     auth: RelayAuth,
     limits: RelayLimits,
     session_policy: RelaySessionPolicy,
+    session_storage: RelaySessionStorage,
     mailbox_policy: RelayMailboxPolicy,
     mailbox_storage: RelayMailboxStorage,
     accounting_policy: RelayAccountingPolicy,
@@ -1790,6 +1841,7 @@ struct RelayHub {
     auth: RelayAuth,
     limits: RelayLimits,
     session_policy: RelaySessionPolicy,
+    session_storage: RelaySessionStorage,
     mailbox_policy: RelayMailboxPolicy,
     mailbox_storage: RelayMailboxStorage,
     accounting_policy: RelayAccountingPolicy,
@@ -1797,6 +1849,7 @@ struct RelayHub {
     admin: RelayAdminConfig,
     connections: Mutex<ConnectionCounts>,
     state: Mutex<RelayHubState>,
+    sessions: Mutex<RelaySessionState>,
     accounting: Mutex<RelayAccountingState>,
     admin_manifest: Mutex<()>,
 }
@@ -1808,6 +1861,7 @@ impl fmt::Debug for RelayHub {
             .field("auth", &self.auth)
             .field("limits", &self.limits)
             .field("session_policy", &self.session_policy)
+            .field("session_storage", &self.session_storage)
             .field("mailbox_policy", &self.mailbox_policy)
             .field("mailbox_storage", &self.mailbox_storage)
             .field("accounting_policy", &self.accounting_policy)
@@ -1815,6 +1869,7 @@ impl fmt::Debug for RelayHub {
             .field("admin", &self.admin)
             .field("connections", &"<connection-counts>")
             .field("state", &"<relay-hub-state>")
+            .field("sessions", &"<relay-session-state>")
             .field("accounting", &"<relay-accounting-state>")
             .field("admin_manifest", &"<admin-manifest-lock>")
             .finish()
@@ -1824,12 +1879,14 @@ impl fmt::Debug for RelayHub {
 impl RelayHub {
     fn new(config: RelayHubConfig) -> Result<Self, RelayError> {
         let state = RelayHubState::load(&config.mailbox_storage, config.mailbox_policy)?;
+        let sessions = RelaySessionState::load(&config.session_storage, config.session_policy)?;
         let accounting =
             RelayAccountingState::load(&config.accounting_storage, config.accounting_policy)?;
         Ok(Self {
             auth: config.auth,
             limits: config.limits,
             session_policy: config.session_policy,
+            session_storage: config.session_storage,
             mailbox_policy: config.mailbox_policy,
             mailbox_storage: config.mailbox_storage,
             accounting_policy: config.accounting_policy,
@@ -1837,6 +1894,7 @@ impl RelayHub {
             admin: config.admin,
             connections: Mutex::new(ConnectionCounts::default()),
             state: Mutex::new(state),
+            sessions: Mutex::new(sessions),
             accounting: Mutex::new(accounting),
             admin_manifest: Mutex::new(()),
         })
@@ -1887,14 +1945,28 @@ impl RelayHub {
             .state
             .lock()
             .map_err(|_| RelayError::Protocol("relay hub state lock failed".to_string()))?;
-        let resumed = resume_session_id.is_some_and(|candidate| {
-            !state.clients.contains_key(&node_id) && session_id_belongs_to_node(candidate, &node_id)
-        });
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| RelayError::Protocol("relay session state lock failed".to_string()))?;
+        let resumed = match resume_session_id {
+            Some(candidate) if !state.clients.contains_key(&node_id) => {
+                sessions.can_resume(&node_id, candidate, &self.session_storage)?
+            }
+            _ => false,
+        };
         let session_id = if resumed {
             resume_session_id.unwrap_or_default().to_string()
         } else {
             session_id(&node_id)
         };
+        sessions.record_authenticated(
+            &node_id,
+            &session_id,
+            resumed,
+            self.session_policy,
+            &self.session_storage,
+        )?;
         state.clients.insert(
             node_id.clone(),
             RelayClientConnection {
@@ -1925,6 +1997,7 @@ impl RelayHub {
     }
 
     fn remove_client(&self, node_id: &str, session_id: &str) {
+        let mut removed = false;
         if let Ok(mut state) = self.state.lock() {
             if state
                 .clients
@@ -1932,6 +2005,12 @@ impl RelayHub {
                 .is_some_and(|connection| connection.session_id == session_id)
             {
                 state.clients.remove(node_id);
+                removed = true;
+            }
+        }
+        if removed {
+            if let Ok(mut sessions) = self.sessions.lock() {
+                let _ = sessions.touch_session(node_id, session_id, &self.session_storage);
             }
         }
     }
@@ -2519,6 +2598,168 @@ impl RelayHubState {
     }
 }
 
+#[derive(Default)]
+struct RelaySessionState {
+    records: HashMap<String, RelaySessionRecord>,
+}
+
+impl fmt::Debug for RelaySessionState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RelaySessionState")
+            .field("records", &self.records.len())
+            .finish()
+    }
+}
+
+impl RelaySessionState {
+    fn load(
+        storage: &RelaySessionStorage,
+        _policy: RelaySessionPolicy,
+    ) -> Result<Self, RelayError> {
+        let mut state = Self::default();
+        let RelaySessionStorage::FileBacked(root) = storage else {
+            return Ok(state);
+        };
+
+        fs::create_dir_all(root)
+            .map_err(|error| RelayError::io("create relay session state directory", error))?;
+        let now = current_unix_millis_u64();
+        for entry in fs::read_dir(root)
+            .map_err(|error| RelayError::io("read relay session state directory", error))?
+        {
+            let entry =
+                entry.map_err(|error| RelayError::io("read relay session state entry", error))?;
+            let path = entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("session") {
+                continue;
+            }
+            let Some(record) = read_session_file(&path)? else {
+                let _ = remove_mailbox_file(&path);
+                continue;
+            };
+            if record.is_expired(now) {
+                let _ = remove_mailbox_file(&path);
+                continue;
+            }
+            state.records.insert(record.node_id.clone(), record);
+        }
+
+        Ok(state)
+    }
+
+    fn can_resume(
+        &mut self,
+        node_id: &str,
+        session_id: &str,
+        storage: &RelaySessionStorage,
+    ) -> Result<bool, RelayError> {
+        if !session_id_belongs_to_node(session_id, node_id) {
+            return Ok(false);
+        }
+
+        let now = current_unix_millis_u64();
+        let Some(record) = self.records.get(node_id) else {
+            return Ok(false);
+        };
+        if record.is_expired(now) {
+            self.records.remove(node_id);
+            remove_session_record(storage, node_id)?;
+            return Ok(false);
+        }
+
+        Ok(record.session_id == session_id)
+    }
+
+    fn record_authenticated(
+        &mut self,
+        node_id: &str,
+        session_id: &str,
+        resumed: bool,
+        policy: RelaySessionPolicy,
+        storage: &RelaySessionStorage,
+    ) -> Result<(), RelayError> {
+        let now = current_unix_millis_u64();
+        let record = if resumed {
+            let mut record =
+                self.records.get(node_id).cloned().ok_or_else(|| {
+                    RelayError::Protocol("relay session state missing".to_string())
+                })?;
+            record.last_seen_unix_millis = now;
+            record
+        } else {
+            RelaySessionRecord::new(node_id, session_id, now, policy)
+        };
+        persist_session_record(storage, &record)?;
+        self.records.insert(node_id.to_string(), record);
+        Ok(())
+    }
+
+    fn touch_session(
+        &mut self,
+        node_id: &str,
+        session_id: &str,
+        storage: &RelaySessionStorage,
+    ) -> Result<(), RelayError> {
+        let Some(record) = self.records.get_mut(node_id) else {
+            return Ok(());
+        };
+        if record.session_id != session_id {
+            return Ok(());
+        }
+        record.last_seen_unix_millis = current_unix_millis_u64();
+        persist_session_record(storage, record)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct RelaySessionRecord {
+    node_id: String,
+    session_id: String,
+    created_at_unix_millis: u64,
+    last_seen_unix_millis: u64,
+    expires_at_unix_millis: u64,
+}
+
+impl fmt::Debug for RelaySessionRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RelaySessionRecord")
+            .field("node_id", &self.node_id)
+            .field("session_id", &"<redacted>")
+            .field("created_at_unix_millis", &self.created_at_unix_millis)
+            .field("last_seen_unix_millis", &self.last_seen_unix_millis)
+            .field("expires_at_unix_millis", &self.expires_at_unix_millis)
+            .finish()
+    }
+}
+
+impl RelaySessionRecord {
+    fn new(
+        node_id: &str,
+        session_id: &str,
+        now_unix_millis: u64,
+        policy: RelaySessionPolicy,
+    ) -> Self {
+        let ttl_millis = policy
+            .max_session_ttl
+            .as_millis()
+            .max(1)
+            .min(u64::MAX as u128) as u64;
+        Self {
+            node_id: node_id.to_string(),
+            session_id: session_id.to_string(),
+            created_at_unix_millis: now_unix_millis,
+            last_seen_unix_millis: now_unix_millis,
+            expires_at_unix_millis: now_unix_millis.saturating_add(ttl_millis),
+        }
+    }
+
+    fn is_expired(&self, now_unix_millis: u64) -> bool {
+        now_unix_millis >= self.expires_at_unix_millis
+    }
+}
+
 #[derive(Debug)]
 struct RelayAccountingState {
     window_started_unix: u64,
@@ -2950,6 +3191,10 @@ fn current_unix_millis() -> u128 {
         .as_millis()
 }
 
+fn current_unix_millis_u64() -> u64 {
+    current_unix_millis().min(u64::MAX as u128) as u64
+}
+
 fn current_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3032,6 +3277,94 @@ fn mailbox_file_sequence(path: &Path) -> Option<u128> {
         .and_then(|value| value.to_str())
         .and_then(|value| value.split_once('-').map(|(sequence, _)| sequence))
         .and_then(|value| value.parse::<u128>().ok())
+}
+
+fn persist_session_record(
+    storage: &RelaySessionStorage,
+    record: &RelaySessionRecord,
+) -> Result<(), RelayError> {
+    let RelaySessionStorage::FileBacked(root) = storage else {
+        return Ok(());
+    };
+
+    fs::create_dir_all(root)
+        .map_err(|error| RelayError::io("create relay session state directory", error))?;
+    let path = relay_session_record_path(root, &record.node_id);
+    let contents = render_session_file(record);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|error| RelayError::io("write relay session state file", error))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| RelayError::io("write relay session state file", error))
+}
+
+fn remove_session_record(storage: &RelaySessionStorage, node_id: &str) -> Result<(), RelayError> {
+    let RelaySessionStorage::FileBacked(root) = storage else {
+        return Ok(());
+    };
+
+    remove_mailbox_file(&relay_session_record_path(root, node_id))
+        .map_err(|error| RelayError::io("remove relay session state file", error))
+}
+
+fn relay_session_record_path(root: &Path, node_id: &str) -> PathBuf {
+    root.join(format!("{}.session", sanitize_identifier(node_id)))
+}
+
+fn render_session_file(record: &RelaySessionRecord) -> String {
+    format!(
+        "version = \"{}\"\nnode_id = \"{}\"\nsession_id = \"{}\"\ncreated_at_unix_millis = {}\nlast_seen_unix_millis = {}\nexpires_at_unix_millis = {}\npayload_displayed = false\ntoken_displayed = false\ncontents_displayed = false\n",
+        RELAY_SESSION_FILE_VERSION,
+        record.node_id,
+        record.session_id,
+        record.created_at_unix_millis,
+        record.last_seen_unix_millis,
+        record.expires_at_unix_millis
+    )
+}
+
+fn read_session_file(path: &Path) -> Result<Option<RelaySessionRecord>, RelayError> {
+    let contents = fs::read_to_string(path)
+        .map_err(|error| RelayError::io("read relay session state file", error))?;
+    let version = mailbox_value(&contents, "version").unwrap_or_default();
+    if version != RELAY_SESSION_FILE_VERSION {
+        return Ok(None);
+    }
+    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false")
+        || mailbox_value(&contents, "token_displayed").as_deref() != Some("false")
+        || mailbox_value(&contents, "contents_displayed").as_deref() != Some("false")
+    {
+        return Ok(None);
+    }
+    let Some(node_id) = mailbox_value(&contents, "node_id") else {
+        return Ok(None);
+    };
+    let Ok(node_id) = validate_node_id(node_id) else {
+        return Ok(None);
+    };
+    let Some(session_id) = mailbox_value(&contents, "session_id") else {
+        return Ok(None);
+    };
+    if !session_id_belongs_to_node(&session_id, &node_id) {
+        return Ok(None);
+    }
+
+    Ok(Some(RelaySessionRecord {
+        node_id,
+        session_id,
+        created_at_unix_millis: parse_session_u64(&contents, "created_at_unix_millis")?,
+        last_seen_unix_millis: parse_session_u64(&contents, "last_seen_unix_millis")?,
+        expires_at_unix_millis: parse_session_u64(&contents, "expires_at_unix_millis")?,
+    }))
+}
+
+fn parse_session_u64(contents: &str, key: &str) -> Result<u64, RelayError> {
+    mailbox_value(contents, key)
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| RelayError::Protocol("relay session state entry is invalid".to_string()))
 }
 
 fn persist_accounting_record(
@@ -4337,6 +4670,108 @@ token_displayed = true\n",
     }
 
     #[test]
+    fn relay_file_backed_session_state_survives_restart_without_payloads() {
+        let session_dir = test_home("relay-session-state").join("sessions");
+        let session_storage =
+            RelaySessionStorage::file_backed(session_dir.clone()).expect("storage config");
+        let relay = spawn_relay(
+            RelayConfig::new("127.0.0.1:0", "test-token")
+                .expect("valid config")
+                .with_session_storage(session_storage.clone()),
+        )
+        .expect("relay starts");
+        let mut node_a = connect_client(relay.local_addr());
+
+        write_client_text(
+            &mut node_a,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new("node.a", "test-token").expect("hello"),
+            )),
+        );
+        let first = read_server_text(&mut node_a);
+        let first_session = match parse_server_frame(&first).expect("welcome parses") {
+            RelayServerFrame::Welcome {
+                session_id,
+                resumed,
+            } => {
+                assert!(!resumed);
+                session_id
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        };
+        drop(node_a);
+        drop(relay);
+
+        let restarted = spawn_relay(
+            RelayConfig::new("127.0.0.1:0", "test-token")
+                .expect("valid config")
+                .with_session_storage(session_storage),
+        )
+        .expect("relay restarts");
+        let mut node_a_again = connect_client(restarted.local_addr());
+        write_client_text(
+            &mut node_a_again,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new("node.a", "test-token")
+                    .expect("hello")
+                    .with_resume_session_id(first_session.clone())
+                    .expect("resume id"),
+            )),
+        );
+        let resumed = read_server_text(&mut node_a_again);
+        match parse_server_frame(&resumed).expect("resumed welcome parses") {
+            RelayServerFrame::Welcome {
+                session_id,
+                resumed,
+            } => {
+                assert_eq!(session_id, first_session);
+                assert!(resumed);
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        };
+
+        let mut node_b = connect_client(restarted.local_addr());
+        write_client_text(
+            &mut node_b,
+            &render_client_frame(&RelayClientFrame::Hello(
+                RelayHello::new("node.b", "test-token")
+                    .expect("hello")
+                    .with_resume_session_id(first_session.clone())
+                    .expect("resume id"),
+            )),
+        );
+        match parse_server_frame(&read_server_text(&mut node_b)).expect("node b welcome parses") {
+            RelayServerFrame::Welcome {
+                session_id,
+                resumed,
+            } => {
+                assert_ne!(session_id, first_session);
+                assert!(!resumed);
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        };
+
+        let joined = read_session_texts(&session_dir).join("\n");
+        assert!(joined.contains("node_id = \"node.a\""));
+        assert!(joined.contains("payload_displayed = false"));
+        assert!(joined.contains("token_displayed = false"));
+        assert!(joined.contains("contents_displayed = false"));
+        assert!(!joined.contains("private message contents"));
+        assert!(!joined.contains("test-token"));
+        assert!(!joined.contains("token_sha256_hex"));
+        assert!(!resumed.contains("test-token"));
+
+        let loaded_state = RelaySessionState::load(
+            &RelaySessionStorage::file_backed(session_dir).expect("storage config"),
+            RelaySessionPolicy::default(),
+        )
+        .expect("session state reloads");
+        let debug = format!("{loaded_state:?}");
+        assert!(!debug.contains(&first_session));
+        assert!(!debug.contains("test-token"));
+    }
+
+    #[test]
     fn relay_session_ttl_expires_without_echoing_payloads() {
         let session_policy =
             RelaySessionPolicy::new(Duration::from_secs(5), Duration::from_millis(10))
@@ -5171,6 +5606,20 @@ token_displayed = true\n",
             let path = entry.expect("accounting entry reads").path();
             if path.extension().and_then(|value| value.to_str()) == Some("accounting") {
                 contents.push(fs::read_to_string(path).expect("accounting file reads"));
+            }
+        }
+        contents
+    }
+
+    fn read_session_texts(root: &Path) -> Vec<String> {
+        let mut contents = Vec::new();
+        if !root.exists() {
+            return contents;
+        }
+        for entry in fs::read_dir(root).expect("session root reads") {
+            let path = entry.expect("session entry reads").path();
+            if path.extension().and_then(|value| value.to_str()) == Some("session") {
+                contents.push(fs::read_to_string(path).expect("session file reads"));
             }
         }
         contents

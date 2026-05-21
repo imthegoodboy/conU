@@ -11,9 +11,9 @@ use conu_core::relay::{
 use conu_relay::{
     CredentialManifestUpdate, IssuedRelayCredential, RelayAccountingPolicy, RelayAccountingStorage,
     RelayConfig, RelayCredential, RelayMailboxPolicy, RelayMailboxStorage, RelaySessionPolicy,
-    issue_relay_credential, relay_credential_manifest_contains_node, relay_token_sha256_hex,
-    revoke_relay_credential_in_file, upsert_issued_relay_credential_in_file,
-    write_issued_relay_token_file,
+    RelaySessionStorage, issue_relay_credential, relay_credential_manifest_contains_node,
+    relay_token_sha256_hex, revoke_relay_credential_in_file,
+    upsert_issued_relay_credential_in_file, write_issued_relay_token_file,
 };
 
 fn main() -> ExitCode {
@@ -146,6 +146,7 @@ Environment:
   CONU_RELAY_MAX_FRAMES_PER_MINUTE    per-session frame cap; defaults to 600
   CONU_RELAY_IDLE_TIMEOUT_SECONDS     authenticated session idle timeout; defaults to 120
   CONU_RELAY_SESSION_TTL_SECONDS      authenticated session max lifetime; defaults to 3600
+  CONU_RELAY_SESSION_STATE_DIR        optional metadata-only session state directory
   CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE
                                         offline ciphertext envelope cap per node; defaults to 128
   CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS
@@ -1037,6 +1038,7 @@ fn json_escape(value: &str) -> String {
 fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
     let limits = relay_limits_from_env()?;
     let session_policy = relay_session_policy_from_env()?;
+    let session_storage = relay_session_storage_from_env()?;
     let mailbox_policy = relay_mailbox_policy_from_env()?;
     let mailbox_storage = relay_mailbox_storage_from_env()?;
     let accounting_policy = relay_accounting_policy_from_env()?;
@@ -1067,6 +1069,7 @@ fn relay_config_from_env(addr: String) -> Result<RelayConfig, String> {
     config = config
         .with_limits(limits)
         .with_session_policy(session_policy)
+        .with_session_storage(session_storage)
         .with_mailbox_policy(mailbox_policy)
         .with_mailbox_storage(mailbox_storage)
         .with_accounting_policy(accounting_policy)
@@ -1109,6 +1112,17 @@ fn relay_session_policy_from_env() -> Result<RelaySessionPolicy, String> {
         )?),
     )
     .map_err(|error| error.to_string())
+}
+
+fn relay_session_storage_from_env() -> Result<RelaySessionStorage, String> {
+    match env::var("CONU_RELAY_SESSION_STATE_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(path) => RelaySessionStorage::file_backed(path).map_err(|error| error.to_string()),
+        None => Ok(RelaySessionStorage::memory_only()),
+    }
 }
 
 fn relay_mailbox_policy_from_env() -> Result<RelayMailboxPolicy, String> {

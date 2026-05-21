@@ -102,11 +102,12 @@ docker run --rm -p 8787:8787 \
   -e CONU_RELAY_MAX_FRAMES_PER_MINUTE=600 \
   -e CONU_RELAY_IDLE_TIMEOUT_SECONDS=120 \
   -e CONU_RELAY_SESSION_TTL_SECONDS=3600 \
+  -e CONU_RELAY_SESSION_STATE_DIR=/var/lib/conu-relay/sessions \
   -e CONU_RELAY_ACCOUNTING_DIR=/var/lib/conu-relay/accounting \
   conu-relay
 ```
 
-The current client accepts `ws://` and certificate-valid `wss://` relay endpoints, and the relay has offline scoped credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online issue/rotate/revoke/audit, live-reloaded scoped credentials, hashed credential manifests with revocation/expiry metadata, configurable connection/frame-rate caps, idle/TTL session policy, same-process same-node session resume, metadata-only per-node accounting with optional sent quotas, bounded offline mailbox delivery with optional durable ciphertext files for peer-encrypted messages, stream chunks, room events, and signed-card control envelopes, plus a guard that rejects `local-dev-token` on non-loopback binds. Room topic policy remains local metadata on each runtime. The Docker relay itself still speaks plain WebSocket, so public `wss://` requires TLS termination in front of this container. Do not market this template as a managed public relay until distributed hosted monitoring/accounting, distributed hosted session state, hosted mailbox retention policy, hosted tenant administration, and hosted multi-tenant permission administration are implemented.
+The current client accepts `ws://` and certificate-valid `wss://` relay endpoints, and the relay has offline scoped credential issuance with manifest upsert/rotate/revoke helpers, account-scoped online issue/rotate/revoke/audit, live-reloaded scoped credentials, hashed credential manifests with revocation/expiry metadata, configurable connection/frame-rate caps, idle/TTL session policy, same-node session resume with optional metadata-only file-backed session records, metadata-only per-node accounting with optional sent quotas, bounded offline mailbox delivery with optional durable ciphertext files for peer-encrypted messages, stream chunks, room events, and signed-card control envelopes, plus a guard that rejects `local-dev-token` on non-loopback binds. Room topic policy remains local metadata on each runtime. The Docker relay itself still speaks plain WebSocket, so public `wss://` requires TLS termination in front of this container. Do not market this template as a managed public relay until distributed hosted monitoring/accounting, distributed multi-instance session migration, hosted mailbox retention policy, hosted tenant administration, and hosted multi-tenant permission administration are implemented.
 
 ## Windows Current-User Install
 

@@ -29,7 +29,7 @@ crates/conu-protocol
   envelopes, agent cards, control-plane messages, data-plane messages
 
 crates/conu-relay
-  small plain WebSocket relay service, offline scoped credential issuance, helper-driven manifest upsert/rotate/revoke, session auth/resume, live-reloaded hashed scoped credential manifests, metadata-only accounting/quotas, blind ciphertext forwarding, relay/bootstrap groundwork
+  small plain WebSocket relay service, offline scoped credential issuance, helper-driven manifest upsert/rotate/revoke, session auth/resume, metadata-only file-backed session state, live-reloaded hashed scoped credential manifests, metadata-only accounting/quotas, blind ciphertext forwarding, relay/bootstrap groundwork
 
 crates/conu-sdk
   Rust agent-facing SDK over registration, presence, peers, peer cards, routes, local/remote messages, optional relay sync, receive, streams, rooms, and security audit
