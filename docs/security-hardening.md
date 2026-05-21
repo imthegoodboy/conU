@@ -25,7 +25,16 @@ security/replay.toml            replay/idempotency cache
 security/key-rotation.md        local key rotation plan
 ```
 
-Private keys are never printed by CLI output. On Windows, new security key files wrap local signing, exchange, and storage secret bytes with current-user DPAPI (`secretStorageBackend = "windows-dpapi-user"`), and `conu security audit` migrates older plaintext-hex key files to wrapped fields when it can read them. On Unix targets, key files are created with owner-only permissions and still need a platform keychain, Secure Enclave, HSM, or user-managed secret backend before high-security public release claims.
+Private keys are never printed by CLI output. On Windows, new security key files wrap local signing, exchange, storage, archived key, and relay credential secret bytes with current-user DPAPI (`secretStorageBackend = "windows-dpapi-user"`), and `conu security audit` migrates older plaintext-hex key files to wrapped fields when it can read them.
+
+On non-Windows targets, conU can use an operator-managed XChaCha20Poly1305 wrap key for local signing, exchange, storage, archived key, and relay credential secret fields. Set exactly one of:
+
+```txt
+CONU_SECRET_WRAP_KEY_HEX=<64 hex chars>
+CONU_SECRET_WRAP_KEY_FILE=<path containing 64 hex chars>
+```
+
+When either value is configured, `conu init`, `conu security audit`, and relay credential status/read paths migrate older plaintext-hex secret files to `secret_protection = "user-managed-wrap-key-v1"` with encrypted `*_wrapped_hex` fields. The wrap key is never stored by conU and must not be passed as a command-line argument. If neither variable is configured on non-Windows, conU falls back to owner-only local secret files (`secretStorageBackend = "filesystem-permissions"`). Native macOS Keychain, Linux Secret Service, Secure Enclave, HSM, or hosted key administration remain future production-hardening work.
 
 ### Encrypted Local Payload Storage
 
@@ -143,7 +152,7 @@ conu relay credential clear
 
 Self-hosted relay operators can generate that token with `conu-relay --issue-credential <node-id> --token-out <path> --credentials-file <path>`. The raw token is written only to the chosen token file, while the manifest receives only hashed metadata with `token_displayed = false`. Use `--replace` to rotate an existing node credential and `conu-relay --revoke-credential <node-id> --credentials-file <path>` to revoke it without printing token material. `conu-relay --hash-token` remains available for already-created tokens.
 
-The credential file is `security/relay-credential.key`. On Windows it stores `token_dpapi_hex` with current-user DPAPI wrapping; on non-Windows it stores an owner-only local secret file until platform keychain support lands. CLI and MCP status surfaces report only configured/backend/protection booleans and never print the token or protected blob.
+The credential file is `security/relay-credential.key`. On Windows it stores `token_dpapi_hex` with current-user DPAPI wrapping. On non-Windows it stores `token_wrapped_hex` when `CONU_SECRET_WRAP_KEY_HEX` or `CONU_SECRET_WRAP_KEY_FILE` is configured, otherwise it stores an owner-only local secret file. CLI and MCP status surfaces report only configured/backend/protection booleans and never print the token or protected blob.
 
 ## SDK And MCP Receive Boundary
 
@@ -158,10 +167,10 @@ Phase 12 adds agent-facing receive APIs without changing CLI privacy:
 
 Phase 11 hardens the current local product surface, but these items still need dedicated future work:
 
-- Non-Windows OS keychain, Secure Enclave, HSM, or user-managed secret backend for private key protection.
+- Native non-Windows OS keychain, Secure Enclave, HSM, or managed key administration beyond the current user-managed wrap-key fallback.
 - Hosted account auth, managed online relay credential issuance APIs beyond the offline issuance helper, distributed hosted relay session state, distributed hosted dashboards/accounting, and hosted relay mailbox retention policy.
 - SDK/MCP permission hardening for multi-tenant or hosted deployments.
-- Non-Windows OS-backed relay secret storage and hosted retention/accounting policy beyond the current durable ciphertext relay mailbox files and metadata-only relay accounting counters.
+- Native non-Windows OS-backed relay secret storage and hosted retention/accounting policy beyond the current user-managed wrap-key fallback, durable ciphertext relay mailbox files, and metadata-only relay accounting counters.
 - CI on Windows, macOS, and Linux with security/privacy regression scans.
 
 ## Implementation References Checked

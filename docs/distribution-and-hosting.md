@@ -248,7 +248,7 @@ Before running a managed public relay, conU still needs:
 - Distributed hosted relay session migration and accounting beyond the current idle-timeout, max-TTL session policy, same-process same-node resume hints, and authenticated/resumed session counters.
 - Managed hosted mailbox retention/accounting dashboards beyond the current self-hosted durable ciphertext files and metadata-only mailbox counters.
 - Multi-tenant hosted permission administration beyond the current local peer and room topic policy files.
-- Non-Windows OS-backed private key storage. Windows local key and stored relay credential files already wrap secret bytes with current-user DPAPI, but hosted relay credentials still need a managed issuance, rotation, and revocation lifecycle.
+- Native non-Windows OS-backed private key storage. Windows local key and stored relay credential files already wrap secret bytes with current-user DPAPI, and non-Windows operators can configure `CONU_SECRET_WRAP_KEY_HEX` or `CONU_SECRET_WRAP_KEY_FILE` for a user-managed encrypted fallback, but native keychain/HSM support and hosted relay credential lifecycle still need dedicated work.
 
 Until those are complete, the best real-world test setup is a self-hosted relay behind TLS on a trusted VPS or a private network relay, using signed peer-card trust, explicit peer policy grants, optional local room topic policy grants, and peer-encrypted messages, stream chunks, and room events only.
 
