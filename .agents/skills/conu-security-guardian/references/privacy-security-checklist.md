@@ -63,9 +63,10 @@
 - Relay mailbox stores encrypted envelopes only; relay accounting stores metadata counters only. Hosted mailbox retention dashboards remain future work.
 - Relay outbox stores peer-encrypted message, stream-chunk, room-event, and signed-card control envelope bodies, not plaintext payloads.
 - Stored relay client credentials must live under `security/relay-credential.key`, use OS wrapping when available, and never appear in CLI output, logs, docs examples, or tests except artificial field-name checks.
+- On non-Windows targets, the user-managed wrap-key fallback may write encrypted `*_wrapped_hex` secret fields when `CONU_SECRET_WRAP_KEY_HEX` or `CONU_SECRET_WRAP_KEY_FILE` is configured. The wrap key is external/operator-managed, never stored by conU, and must not appear in argv, CLI output, logs, docs examples, telemetry, or tests except artificial field-name checks.
 - Logs are payload-safe.
 - Config does not store private keys.
-- Security key files remain local-only and must not appear in CLI output, logs, docs examples, or tests except artificial field-name checks. On Windows, local signing, exchange, and storage secret bytes should be wrapped with current-user DPAPI fields, and older plaintext-hex key files should migrate during security-state ensure.
+- Security key files remain local-only and must not appear in CLI output, logs, docs examples, or tests except artificial field-name checks. On Windows, local signing, exchange, and storage secret bytes should be wrapped with current-user DPAPI fields, and older plaintext-hex key files should migrate during security-state ensure. On non-Windows with a configured user-managed wrap key, older plaintext-hex key and relay credential files should migrate to encrypted wrapped fields; without it, files remain owner-only local secrets.
 
 ## Replay And Signatures
 

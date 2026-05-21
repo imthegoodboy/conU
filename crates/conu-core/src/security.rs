@@ -27,6 +27,18 @@ const SECURITY_VERSION: &str = "1";
 const NONCE_BYTES: usize = 24;
 const SECRET_BACKEND_FILESYSTEM: &str = "filesystem-permissions";
 const SECRET_BACKEND_WINDOWS_DPAPI: &str = "windows-dpapi-user";
+const SECRET_BACKEND_USER_MANAGED_WRAP_KEY: &str = "user-managed-wrap-key-v1";
+const USER_MANAGED_SECRET_ALGORITHM: &str = "XChaCha20Poly1305";
+const SECRET_WRAP_KEY_HEX_ENV: &str = "CONU_SECRET_WRAP_KEY_HEX";
+const SECRET_WRAP_KEY_FILE_ENV: &str = "CONU_SECRET_WRAP_KEY_FILE";
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretBackendKind {
+    Filesystem,
+    WindowsDpapi,
+    UserManagedWrapKey,
+}
 
 /// Result of ensuring the local security state exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +263,7 @@ pub fn ensure_security_state_from_paths(
     let identity_exchange_key_created = ensure_identity_exchange_key(paths)?;
     let storage_key_created = ensure_storage_key(paths)?;
     migrate_storage_key_archives_to_os_protection(paths)?;
+    migrate_relay_credential_to_secret_protection(paths)?;
     let replay_cache_created = ensure_replay_cache(paths)?;
     let key_rotation_plan_created = ensure_key_rotation_plan(paths)?;
 
@@ -373,6 +386,7 @@ pub fn read_relay_credential_from_paths(
     if !paths.relay_credential.exists() {
         return Ok(None);
     }
+    migrate_relay_credential_to_secret_protection(paths)?;
     let values = read_key_values(&paths.relay_credential)?;
     if required(&values, "kind", &paths.relay_credential)? != "relay_token" {
         return Err(SecurityError::InvalidKey {
@@ -380,16 +394,7 @@ pub fn read_relay_credential_from_paths(
             reason: "expected relay token credential".to_string(),
         });
     }
-    let token_bytes = secret_bytes_vec(
-        &values,
-        "token",
-        "relay-credential",
-        &paths.relay_credential,
-    )?;
-    let token = String::from_utf8(token_bytes).map_err(|_| SecurityError::InvalidKey {
-        path: paths.relay_credential.clone(),
-        reason: "relay token credential is not UTF-8".to_string(),
-    })?;
+    let token = relay_token_from_values(&values, &paths.relay_credential)?;
     validate_relay_token(&token)?;
     Ok(Some(token))
 }
@@ -988,11 +993,11 @@ fn generate_storage_key() -> StorageKeyRecord {
 }
 
 fn migrate_identity_signing_key_to_os_protection(paths: &StatePaths) -> Result<(), SecurityError> {
-    if !os_secret_protection_available() {
+    if !secret_protection_available() {
         return Ok(());
     }
     let values = read_key_values(&paths.identity_signing_key)?;
-    if secret_file_uses_os_protection(&values, "secret_key") {
+    if secret_file_uses_selected_protection(&values, "secret_key") {
         return Ok(());
     }
 
@@ -1007,11 +1012,11 @@ fn migrate_identity_signing_key_to_os_protection(paths: &StatePaths) -> Result<(
 }
 
 fn migrate_identity_exchange_key_to_os_protection(paths: &StatePaths) -> Result<(), SecurityError> {
-    if !os_secret_protection_available() {
+    if !secret_protection_available() {
         return Ok(());
     }
     let values = read_key_values(&paths.identity_exchange_key)?;
-    if secret_file_uses_os_protection(&values, "secret_key") {
+    if secret_file_uses_selected_protection(&values, "secret_key") {
         return Ok(());
     }
 
@@ -1026,11 +1031,11 @@ fn migrate_identity_exchange_key_to_os_protection(paths: &StatePaths) -> Result<
 }
 
 fn migrate_identity_signing_key_file_to_os_protection(path: &Path) -> Result<(), SecurityError> {
-    if !os_secret_protection_available() || !path.exists() {
+    if !secret_protection_available() || !path.exists() {
         return Ok(());
     }
     let values = read_key_values(path)?;
-    if secret_file_uses_os_protection(&values, "secret_key") {
+    if secret_file_uses_selected_protection(&values, "secret_key") {
         return Ok(());
     }
 
@@ -1045,11 +1050,11 @@ fn migrate_identity_signing_key_file_to_os_protection(path: &Path) -> Result<(),
 }
 
 fn migrate_identity_exchange_key_file_to_os_protection(path: &Path) -> Result<(), SecurityError> {
-    if !os_secret_protection_available() || !path.exists() {
+    if !secret_protection_available() || !path.exists() {
         return Ok(());
     }
     let values = read_key_values(path)?;
-    if secret_file_uses_os_protection(&values, "secret_key") {
+    if secret_file_uses_selected_protection(&values, "secret_key") {
         return Ok(());
     }
 
@@ -1064,11 +1069,11 @@ fn migrate_identity_exchange_key_file_to_os_protection(path: &Path) -> Result<()
 }
 
 fn migrate_storage_key_to_os_protection(paths: &StatePaths) -> Result<(), SecurityError> {
-    if !os_secret_protection_available() {
+    if !secret_protection_available() {
         return Ok(());
     }
     let values = read_key_values(&paths.storage_key)?;
-    if secret_file_uses_os_protection(&values, "key") {
+    if secret_file_uses_selected_protection(&values, "key") {
         return Ok(());
     }
 
@@ -1151,11 +1156,11 @@ fn identity_key_archive_dir(paths: &StatePaths) -> PathBuf {
 }
 
 fn migrate_storage_key_file_to_os_protection(path: &Path) -> Result<(), SecurityError> {
-    if !os_secret_protection_available() || !path.exists() {
+    if !secret_protection_available() || !path.exists() {
         return Ok(());
     }
     let values = read_key_values(path)?;
-    if secret_file_uses_os_protection(&values, "key") {
+    if secret_file_uses_selected_protection(&values, "key") {
         return Ok(());
     }
 
@@ -1237,16 +1242,33 @@ fn render_secret_field(
     key_id: &str,
     secret: &[u8],
 ) -> Result<String, SecurityError> {
-    if os_secret_protection_available() {
-        let protected = protect_os_secret(secret, field, key_id)?;
-        Ok(format!(
-            "secret_protection = \"{}\"\n{}_dpapi_hex = \"{}\"\n",
-            SECRET_BACKEND_WINDOWS_DPAPI,
-            field,
-            hex_encode(&protected)
-        ))
-    } else {
-        Ok(format!("{}_hex = \"{}\"\n", field, hex_encode(secret)))
+    match selected_secret_backend() {
+        SecretBackendKind::WindowsDpapi => {
+            let protected = protect_os_secret(secret, field, key_id)?;
+            Ok(format!(
+                "secret_protection = \"{}\"\n{}_dpapi_hex = \"{}\"\n",
+                SECRET_BACKEND_WINDOWS_DPAPI,
+                field,
+                hex_encode(&protected)
+            ))
+        }
+        SecretBackendKind::UserManagedWrapKey => {
+            let protected = protect_user_managed_secret(secret, field, key_id)?;
+            Ok(format!(
+                "secret_protection = \"{}\"\nsecret_algorithm = \"{}\"\n{}_wrap_nonce_hex = \"{}\"\n{}_wrapped_hex = \"{}\"\n{}_plaintext_len = {}\n",
+                SECRET_BACKEND_USER_MANAGED_WRAP_KEY,
+                USER_MANAGED_SECRET_ALGORITHM,
+                field,
+                hex_encode(&protected.nonce),
+                field,
+                hex_encode(&protected.ciphertext),
+                field,
+                secret.len()
+            ))
+        }
+        SecretBackendKind::Filesystem => {
+            Ok(format!("{}_hex = \"{}\"\n", field, hex_encode(secret)))
+        }
     }
 }
 
@@ -1269,6 +1291,7 @@ fn relay_credential_status_from_paths(
             contents_displayed: false,
         });
     }
+    migrate_relay_credential_to_secret_protection(paths)?;
     let values = read_key_values(&paths.relay_credential)?;
     if required(&values, "kind", &paths.relay_credential)? != "relay_token" {
         return Err(SecurityError::InvalidKey {
@@ -1281,6 +1304,39 @@ fn relay_credential_status_from_paths(
         secret_storage_backend: secret_storage_backend().to_string(),
         os_protected: secret_file_uses_os_protection(&values, "token"),
         contents_displayed: false,
+    })
+}
+
+fn migrate_relay_credential_to_secret_protection(paths: &StatePaths) -> Result<(), SecurityError> {
+    if !secret_protection_available() || !paths.relay_credential.exists() {
+        return Ok(());
+    }
+    let values = read_key_values(&paths.relay_credential)?;
+    if required(&values, "kind", &paths.relay_credential)? != "relay_token" {
+        return Err(SecurityError::InvalidKey {
+            path: paths.relay_credential.clone(),
+            reason: "expected relay token credential".to_string(),
+        });
+    }
+    if secret_file_uses_selected_protection(&values, "token") {
+        return Ok(());
+    }
+
+    let token = relay_token_from_values(&values, &paths.relay_credential)?;
+    validate_relay_token(&token)?;
+    let created_at = created_at_value(&values);
+    let contents = render_relay_credential_file(&token, &created_at)?;
+    replace_secret_file(&paths.relay_credential, &contents)
+}
+
+fn relay_token_from_values(
+    values: &HashMap<String, String>,
+    path: &Path,
+) -> Result<String, SecurityError> {
+    let token_bytes = secret_bytes_vec(values, "token", "relay-credential", path)?;
+    String::from_utf8(token_bytes).map_err(|_| SecurityError::InvalidKey {
+        path: path.to_path_buf(),
+        reason: "relay token credential is not UTF-8".to_string(),
     })
 }
 
@@ -1818,12 +1874,7 @@ fn secret_bytes<const N: usize>(
     path: &Path,
 ) -> Result<[u8; N], SecurityError> {
     let key_id = required(values, "key_id", path)?;
-    let protected_field = format!("{field}_dpapi_hex");
-    if values
-        .get(&protected_field)
-        .filter(|value| !value.trim().is_empty())
-        .is_some()
-    {
+    if secret_field_has_protected_data(values, field) {
         let secret = secret_bytes_vec(values, field, &key_id, path)?;
         return secret.try_into().map_err(|_| SecurityError::InvalidKey {
             path: path.to_path_buf(),
@@ -1852,6 +1903,14 @@ fn secret_bytes_vec(
         return unprotect_os_secret(&wrapped, field, entropy_id, path);
     }
 
+    let wrapped_field = format!("{field}_wrapped_hex");
+    if let Some(wrapped) = values
+        .get(&wrapped_field)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return unprotect_user_managed_secret(values, field, entropy_id, wrapped, path);
+    }
+
     let raw_field = format!("{field}_hex");
     let value = required(values, &raw_field, path)?;
     hex_decode(&value).map_err(|reason| SecurityError::InvalidKey {
@@ -1870,6 +1929,15 @@ fn key_bytes<const N: usize>(
         path: path.to_path_buf(),
         reason,
     })
+}
+
+fn secret_field_has_protected_data(values: &HashMap<String, String>, field: &str) -> bool {
+    values
+        .get(&format!("{field}_dpapi_hex"))
+        .is_some_and(|value| !value.trim().is_empty())
+        || values
+            .get(&format!("{field}_wrapped_hex"))
+            .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn all_secret_files_use_os_protection(paths: &StatePaths) -> bool {
@@ -1914,6 +1982,16 @@ fn all_secret_files_use_os_protection(paths: &StatePaths) -> bool {
     archived_storage_keys_protected && archived_identity_keys_protected
 }
 
+fn secret_file_uses_selected_protection(values: &HashMap<String, String>, field: &str) -> bool {
+    match selected_secret_backend() {
+        SecretBackendKind::WindowsDpapi => secret_file_uses_os_protection(values, field),
+        SecretBackendKind::UserManagedWrapKey => {
+            secret_file_uses_user_managed_protection(values, field)
+        }
+        SecretBackendKind::Filesystem => false,
+    }
+}
+
 fn secret_file_uses_os_protection(values: &HashMap<String, String>, field: &str) -> bool {
     values
         .get("secret_protection")
@@ -1923,12 +2001,219 @@ fn secret_file_uses_os_protection(values: &HashMap<String, String>, field: &str)
             .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn secret_file_uses_user_managed_protection(values: &HashMap<String, String>, field: &str) -> bool {
+    values
+        .get("secret_protection")
+        .is_some_and(|value| value == SECRET_BACKEND_USER_MANAGED_WRAP_KEY)
+        && values
+            .get("secret_algorithm")
+            .is_some_and(|value| value == USER_MANAGED_SECRET_ALGORITHM)
+        && values
+            .get(&format!("{field}_wrap_nonce_hex"))
+            .is_some_and(|value| !value.trim().is_empty())
+        && values
+            .get(&format!("{field}_wrapped_hex"))
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
 fn secret_storage_backend() -> &'static str {
-    if os_secret_protection_available() {
-        SECRET_BACKEND_WINDOWS_DPAPI
-    } else {
-        SECRET_BACKEND_FILESYSTEM
+    match selected_secret_backend() {
+        SecretBackendKind::WindowsDpapi => SECRET_BACKEND_WINDOWS_DPAPI,
+        SecretBackendKind::UserManagedWrapKey => SECRET_BACKEND_USER_MANAGED_WRAP_KEY,
+        SecretBackendKind::Filesystem => SECRET_BACKEND_FILESYSTEM,
     }
+}
+
+fn secret_protection_available() -> bool {
+    selected_secret_backend() != SecretBackendKind::Filesystem
+}
+
+#[cfg(windows)]
+fn selected_secret_backend() -> SecretBackendKind {
+    SecretBackendKind::WindowsDpapi
+}
+
+#[cfg(not(windows))]
+fn selected_secret_backend() -> SecretBackendKind {
+    if user_managed_wrap_key_configured() {
+        SecretBackendKind::UserManagedWrapKey
+    } else {
+        SecretBackendKind::Filesystem
+    }
+}
+
+struct UserManagedProtectedSecret {
+    nonce: [u8; NONCE_BYTES],
+    ciphertext: Vec<u8>,
+}
+
+fn protect_user_managed_secret(
+    secret: &[u8],
+    field: &'static str,
+    key_id: &str,
+) -> Result<UserManagedProtectedSecret, SecurityError> {
+    let key = user_managed_wrap_key()?;
+    let cipher = XChaCha20Poly1305::new_from_slice(&key).map_err(|_| SecurityError::Crypto {
+        action: "create user-managed secret wrap cipher failed",
+    })?;
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let aad = user_managed_secret_aad(field, key_id);
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: secret,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| SecurityError::Crypto {
+            action: "wrap local secret with user-managed key failed",
+        })?;
+
+    let mut nonce_bytes = [0_u8; NONCE_BYTES];
+    nonce_bytes.copy_from_slice(&nonce);
+
+    Ok(UserManagedProtectedSecret {
+        nonce: nonce_bytes,
+        ciphertext,
+    })
+}
+
+fn unprotect_user_managed_secret(
+    values: &HashMap<String, String>,
+    field: &'static str,
+    key_id: &str,
+    wrapped_hex: &str,
+    path: &Path,
+) -> Result<Vec<u8>, SecurityError> {
+    if !secret_file_uses_user_managed_protection(values, field) {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "invalid user-managed secret protection fields".to_string(),
+        });
+    }
+
+    let nonce = hex_decode_exact::<NONCE_BYTES>(&required(
+        values,
+        &format!("{field}_wrap_nonce_hex"),
+        path,
+    )?)
+    .map_err(|reason| SecurityError::InvalidKey {
+        path: path.to_path_buf(),
+        reason,
+    })?;
+    let ciphertext = hex_decode(wrapped_hex).map_err(|reason| SecurityError::InvalidKey {
+        path: path.to_path_buf(),
+        reason,
+    })?;
+    let plaintext_len = required(values, &format!("{field}_plaintext_len"), path)?
+        .parse::<usize>()
+        .map_err(|_| SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "invalid protected secret length".to_string(),
+        })?;
+    let key = user_managed_wrap_key()?;
+    let cipher = XChaCha20Poly1305::new_from_slice(&key).map_err(|_| SecurityError::Crypto {
+        action: "create user-managed secret wrap cipher failed",
+    })?;
+    let aad = user_managed_secret_aad(field, key_id);
+    let plaintext = cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &ciphertext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "could not unwrap local secret with user-managed key".to_string(),
+        })?;
+
+    if plaintext.len() != plaintext_len {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "unwrapped local secret length mismatch".to_string(),
+        });
+    }
+
+    Ok(plaintext)
+}
+
+fn user_managed_secret_aad(field: &str, key_id: &str) -> String {
+    format!("conu user-managed local secret v1:{field}:{key_id}")
+}
+
+#[cfg(not(windows))]
+fn user_managed_wrap_key_configured() -> bool {
+    #[cfg(test)]
+    {
+        if test_user_managed_wrap_key().is_some() {
+            return true;
+        }
+    }
+
+    std::env::var(SECRET_WRAP_KEY_HEX_ENV)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || std::env::var(SECRET_WRAP_KEY_FILE_ENV)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+}
+
+fn user_managed_wrap_key() -> Result<[u8; 32], SecurityError> {
+    #[cfg(test)]
+    {
+        if let Some(key) = test_user_managed_wrap_key() {
+            return Ok(key);
+        }
+    }
+
+    if let Ok(value) = std::env::var(SECRET_WRAP_KEY_HEX_ENV) {
+        if !value.trim().is_empty() {
+            return parse_user_managed_wrap_key(&value);
+        }
+    }
+
+    if let Ok(path_value) = std::env::var(SECRET_WRAP_KEY_FILE_ENV) {
+        if !path_value.trim().is_empty() {
+            let path = PathBuf::from(path_value);
+            let contents = fs::read_to_string(&path).map_err(|error| {
+                SecurityError::io("read user-managed secret wrap key file", &path, error)
+            })?;
+            let value = contents
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !line.starts_with('#'))
+                .ok_or_else(|| SecurityError::InvalidPayload {
+                    reason: "user-managed secret wrap key file is empty".to_string(),
+                })?;
+            return parse_user_managed_wrap_key(value);
+        }
+    }
+
+    Err(SecurityError::InvalidPayload {
+        reason: format!(
+            "{SECRET_WRAP_KEY_HEX_ENV} or {SECRET_WRAP_KEY_FILE_ENV} is required for user-managed secret wrapping"
+        ),
+    })
+}
+
+fn parse_user_managed_wrap_key(value: &str) -> Result<[u8; 32], SecurityError> {
+    hex_decode_exact::<32>(value.trim()).map_err(|reason| SecurityError::InvalidPayload {
+        reason: format!("user-managed secret wrap key must be 32 bytes of hex: {reason}"),
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_USER_MANAGED_WRAP_KEY: std::cell::RefCell<Option<[u8; 32]>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn test_user_managed_wrap_key() -> Option<[u8; 32]> {
+    TEST_USER_MANAGED_WRAP_KEY.with(|key| *key.borrow())
 }
 
 #[cfg(windows)]
@@ -2351,6 +2636,127 @@ mod tests {
         let cleared = clear_relay_credential(Some(home)).expect("relay credential clears");
         assert!(!cleared.configured);
         assert!(!paths.relay_credential.exists());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn user_managed_wrap_key_encrypts_and_migrates_non_windows_secrets() {
+        with_test_user_managed_wrap_key([42_u8; 32], || {
+            let home = test_home("user-managed-wrap");
+            let paths = StatePaths::from_home(home.clone());
+            fs::create_dir_all(&paths.security_dir).expect("security dir created");
+
+            let signing_key = SigningKey::generate(&mut OsRng);
+            let signing_public = signing_key.verifying_key().to_bytes();
+            let signing_secret = signing_key.to_bytes();
+            let signing_key_id = key_id("ed25519", &signing_public);
+            fs::write(
+                &paths.identity_signing_key,
+                format!(
+                    "# conU node signing key\nversion = \"1\"\nalgorithm = \"Ed25519\"\nkey_id = \"{}\"\nsecret_key_hex = \"{}\"\npublic_key_hex = \"{}\"\ncreated_at_unix = 1\n",
+                    signing_key_id,
+                    hex_encode(&signing_secret),
+                    hex_encode(&signing_public)
+                ),
+            )
+            .expect("signing key writes");
+
+            let exchange_secret = StaticSecret::random_from_rng(OsRng);
+            let exchange_public = X25519PublicKey::from(&exchange_secret).to_bytes();
+            let exchange_secret_bytes = exchange_secret.to_bytes();
+            let exchange_key_id = key_id("x25519", &exchange_public);
+            fs::write(
+                &paths.identity_exchange_key,
+                format!(
+                    "# conU node X25519 exchange key\nversion = \"1\"\nalgorithm = \"X25519\"\nkey_id = \"{}\"\nsecret_key_hex = \"{}\"\npublic_key_hex = \"{}\"\ncreated_at_unix = 1\n",
+                    exchange_key_id,
+                    hex_encode(&exchange_secret_bytes),
+                    hex_encode(&exchange_public)
+                ),
+            )
+            .expect("exchange key writes");
+
+            let storage_key: [u8; 32] = XChaCha20Poly1305::generate_key(&mut OsRng).into();
+            let storage_key_id = key_id("storage", &storage_key);
+            fs::write(
+                &paths.storage_key,
+                format!(
+                    "# conU local storage encryption key\nversion = \"1\"\nalgorithm = \"XChaCha20Poly1305\"\nkey_id = \"{}\"\nkey_hex = \"{}\"\ncreated_at_unix = 1\n",
+                    storage_key_id,
+                    hex_encode(&storage_key)
+                ),
+            )
+            .expect("storage key writes");
+            let token = "relay-token-for-node-a-1234567890";
+            fs::write(
+                &paths.relay_credential,
+                format!(
+                    "# conU relay client credential\nversion = \"1\"\nkind = \"relay_token\"\ntoken_hex = \"{}\"\ncreated_at_unix = 1\nupdated_at_unix = 1\ncontents_displayed = false\n",
+                    hex_encode(token.as_bytes())
+                ),
+            )
+            .expect("relay credential writes");
+
+            let report = ensure_security_state_from_paths(&paths)
+                .expect("security state migrates to user-managed wrapping");
+            let audit = security_audit(Some(home)).expect("audit reads wrapped secrets");
+            let signing =
+                fs::read_to_string(&paths.identity_signing_key).expect("wrapped signing key reads");
+            let exchange = fs::read_to_string(&paths.identity_exchange_key)
+                .expect("wrapped exchange key reads");
+            let storage = fs::read_to_string(&paths.storage_key).expect("wrapped storage reads");
+            let credential_status =
+                relay_credential_status_from_paths(&paths).expect("credential status reads");
+            let credential = fs::read_to_string(&paths.relay_credential).expect("credential reads");
+            let read_back = read_relay_credential_from_paths(&paths).expect("credential unwraps");
+
+            assert_eq!(
+                report.secret_storage_backend,
+                SECRET_BACKEND_USER_MANAGED_WRAP_KEY
+            );
+            assert_eq!(
+                audit.secret_storage_backend,
+                SECRET_BACKEND_USER_MANAGED_WRAP_KEY
+            );
+            assert!(!report.secrets_os_protected);
+            assert!(!audit.secrets_os_protected);
+            assert_eq!(report.signing_key_id, signing_key_id);
+            assert_eq!(
+                read_identity_exchange_key(&paths)
+                    .expect("exchange key unwraps")
+                    .key_id,
+                exchange_key_id
+            );
+            assert_eq!(
+                read_storage_key(&paths).expect("storage key unwraps").key,
+                storage_key
+            );
+            assert_eq!(read_back.as_deref(), Some(token));
+            assert!(credential_status.configured);
+            assert!(!credential_status.os_protected);
+
+            let contains_field = |contents: &str, field: &str| {
+                let prefix = format!("{field} =");
+                contents
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(&prefix))
+            };
+
+            for contents in [&signing, &exchange, &storage, &credential] {
+                assert!(contents.contains(&format!(
+                    "secret_protection = \"{}\"",
+                    SECRET_BACKEND_USER_MANAGED_WRAP_KEY
+                )));
+                assert!(contents.contains("secret_algorithm = \"XChaCha20Poly1305\""));
+                assert!(contents.contains("_wrapped_hex"));
+                assert!(contents.contains("_wrap_nonce_hex"));
+                assert!(!contains_field(contents, "secret_key_hex"));
+                assert!(!contains_field(contents, "key_hex"));
+                assert!(!contains_field(contents, "token_hex"));
+                assert!(!contents.contains(token));
+                assert!(!contents.contains("private message contents"));
+            }
+        });
     }
 
     #[test]
@@ -2821,6 +3227,16 @@ mod tests {
             "version = \"1\"\ntype = \"send_message\"\nrequest_id = \"req.archive\"\nfrom_agent_id = \"agent.sender\"\nto_agent_id = \"agent.receiver\"\npayload_len = 24\npayload_privacy = \"encrypted_at_rest\"\npayload_cipher = \"{}\"\npayload_key_id = \"{}\"\npayload_nonce_hex = \"{}\"\npayload_ciphertext_hex = \"{}\"\n",
             encrypted.algorithm, encrypted.key_id, encrypted.nonce_hex, encrypted.ciphertext_hex
         )
+    }
+
+    #[cfg(not(windows))]
+    fn with_test_user_managed_wrap_key<T>(key: [u8; 32], test: impl FnOnce() -> T) -> T {
+        TEST_USER_MANAGED_WRAP_KEY.with(|slot| {
+            let previous = slot.replace(Some(key));
+            let result = test();
+            slot.replace(previous);
+            result
+        })
     }
 
     fn test_home(label: &str) -> PathBuf {

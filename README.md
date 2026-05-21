@@ -305,7 +305,7 @@ Get-Content -Raw C:\conu-relay\node_a.token | conu relay credential set --stdin
 conu relay credential status
 ```
 
-At runtime, `CONU_RELAY_TOKEN` overrides the stored credential; if neither is present, conU falls back to `local-dev-token` for loopback tests. On Windows, stored relay credentials use the same current-user DPAPI wrapping as local key files; non-Windows builds use owner-only local files until platform keychain support lands. `local-dev-token` is accepted only for loopback relay binds. Any non-loopback bind such as `0.0.0.0:8787` requires a custom shared token or scoped credential token with at least 24 characters.
+At runtime, `CONU_RELAY_TOKEN` overrides the stored credential; if neither is present, conU falls back to `local-dev-token` for loopback tests. On Windows, stored relay credentials use the same current-user DPAPI wrapping as local key files. On non-Windows, set `CONU_SECRET_WRAP_KEY_HEX` or `CONU_SECRET_WRAP_KEY_FILE` to wrap stored relay credentials and local key files under an operator-managed XChaCha20Poly1305 key; otherwise conU uses owner-only local files until native platform keychain support lands. `local-dev-token` is accepted only for loopback relay binds. Any non-loopback bind such as `0.0.0.0:8787` requires a custom shared token or scoped credential token with at least 24 characters.
 
 Relay clients accept `ws://` and `wss://` endpoints. The bundled `conu-relay` server still listens as a plain WebSocket service; public `wss://` deployments should terminate TLS with a certificate-valid reverse proxy or load balancer in front of `conu-relay`.
 
