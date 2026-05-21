@@ -303,6 +303,7 @@ pub enum RelayAdminAction {
     TenantNodeUpsert,
     TenantNodeRevoke,
     TenantAudit,
+    AccountSuspend,
     MailboxAudit,
     MailboxPurge,
 }
@@ -320,6 +321,7 @@ impl RelayAdminAction {
             Self::TenantNodeUpsert => "tenant_node_upsert",
             Self::TenantNodeRevoke => "tenant_node_revoke",
             Self::TenantAudit => "tenant_audit",
+            Self::AccountSuspend => "account_suspend",
             Self::MailboxAudit => "mailbox_audit",
             Self::MailboxPurge => "mailbox_purge",
         }
@@ -337,6 +339,7 @@ impl RelayAdminAction {
             "tenant_node_upsert" => Ok(Self::TenantNodeUpsert),
             "tenant_node_revoke" => Ok(Self::TenantNodeRevoke),
             "tenant_audit" => Ok(Self::TenantAudit),
+            "account_suspend" => Ok(Self::AccountSuspend),
             "mailbox_audit" => Ok(Self::MailboxAudit),
             "mailbox_purge" => Ok(Self::MailboxPurge),
             _ => Err(RelayFrameError::new("unsupported relay admin action")),
@@ -665,6 +668,30 @@ impl RelayAdminRequest {
             account_id: account_id
                 .map(|value| validate_identifier(value, "account id"))
                 .transpose()?,
+            node_id: None,
+            token_sha256_hex: None,
+            token_length: None,
+            expires_at_unix: None,
+            retention_ttl_seconds: None,
+            mailbox_purge_dry_run: None,
+            tenant_messages: None,
+            tenant_streams: None,
+            tenant_rooms: None,
+            tenant_files: None,
+            tenant_mailbox: None,
+            signing_key_id: None,
+            exchange_key_id: None,
+        })
+    }
+
+    pub fn account_suspend(
+        admin_token: impl Into<String>,
+        account_id: impl Into<String>,
+    ) -> Result<Self, RelayFrameError> {
+        Ok(Self {
+            action: RelayAdminAction::AccountSuspend,
+            admin_token: validate_token(admin_token.into())?,
+            account_id: Some(validate_identifier(account_id.into(), "account id")?),
             node_id: None,
             token_sha256_hex: None,
             token_length: None,
@@ -1341,6 +1368,10 @@ fn parse_admin_request(
             required(values, "admin_token")?,
             values.get("account").cloned(),
         ),
+        RelayAdminAction::AccountSuspend => RelayAdminRequest::account_suspend(
+            required(values, "admin_token")?,
+            required(values, "account")?,
+        ),
         RelayAdminAction::MailboxAudit => RelayAdminRequest::mailbox_audit(
             required(values, "admin_token")?,
             values.get("node").cloned(),
@@ -1387,6 +1418,7 @@ fn render_admin_result_line(result: &RelayAdminResult) -> String {
             | RelayAdminAction::TenantNodeUpsert
             | RelayAdminAction::TenantNodeRevoke
             | RelayAdminAction::TenantAudit
+            | RelayAdminAction::AccountSuspend
     ) {
         line.push_str(&format!(
             " tenants={} active_tenants={} revoked_tenants={} nodes={} active_nodes={} revoked_nodes={} tenant_policies={}",
@@ -2495,6 +2527,46 @@ mod tests {
         assert!(!rendered_tenant_result.contains(&token_hash));
         assert!(!rendered_tenant_result.contains("signing.key.1"));
         assert!(!rendered_tenant_result.contains("exchange.key.1"));
+
+        let suspend_request =
+            RelayAdminRequest::account_suspend("admin-secret-token-1234567890", "account.prod")
+                .expect("account suspend request parses");
+        let suspend_frame = RelayClientFrame::Admin(Box::new(suspend_request));
+        let rendered_suspend = render_client_frame(&suspend_frame);
+        let parsed_suspend =
+            parse_client_frame(&rendered_suspend).expect("account suspend request parses");
+        let suspend_debug = format!("{suspend_frame:?}");
+        let suspend_result = RelayServerFrame::AdminResult(Box::new(RelayAdminResult {
+            action: RelayAdminAction::AccountSuspend,
+            status: "suspended".to_string(),
+            account_id: Some("account.prod".to_string()),
+            credentials: 2,
+            active: 0,
+            revoked: 2,
+            accounts: 1,
+            tenants: 1,
+            active_tenants: 0,
+            revoked_tenants: 1,
+            nodes: 1,
+            active_nodes: 1,
+            tenant_policies: 1,
+            ..RelayAdminResult::new(RelayAdminAction::AccountSuspend, "suspended")
+        }));
+        let rendered_suspend_result = render_server_frame(&suspend_result);
+        let parsed_suspend_result =
+            parse_server_frame(&rendered_suspend_result).expect("account suspend result parses");
+
+        assert_eq!(parsed_suspend, suspend_frame);
+        assert!(rendered_suspend.contains("ADMIN action=account_suspend"));
+        assert!(rendered_suspend.contains("account=account.prod"));
+        assert!(!suspend_debug.contains("admin-secret-token-1234567890"));
+        assert_eq!(parsed_suspend_result, suspend_result);
+        assert!(rendered_suspend_result.contains("ADMIN_RESULT action=account_suspend"));
+        assert!(rendered_suspend_result.contains("credentials=2 active=0 revoked=2"));
+        assert!(rendered_suspend_result.contains("tenants=1 active_tenants=0"));
+        assert!(rendered_suspend_result.contains("payload_displayed=false"));
+        assert!(!rendered_suspend_result.contains("admin-secret-token-1234567890"));
+        assert!(!rendered_suspend_result.contains(&token_hash));
 
         let mailbox_request = RelayAdminRequest::mailbox_audit(
             "admin-secret-token-1234567890",
