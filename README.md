@@ -213,7 +213,7 @@ macOS/Linux:
 ./scripts/build-release.sh
 ```
 
-The release artifact includes `conu`, `conud`, `conu-relay`, `conu-mcp`, docs, packaging templates, checksum files, and a manifest that states `payload_contents_included = false`. Service templates live under `packaging/` for Windows, Linux systemd, macOS launchd, Docker relay hosting, and the npm launcher package. See `docs/release-checklist.md`, `docs/observability.md`, `docs/distribution-and-hosting.md`, and `packaging/README.md`.
+The release artifact includes `conu`, `conud`, `conu-relay`, `conu-mcp`, docs, packaging templates, checksum files, and a manifest that states `payload_contents_included = false`. Service templates live under `packaging/` for Windows, Linux systemd, macOS launchd, Docker relay hosting, and the npm launcher package. Tagged release builds generate GitHub artifact attestations for each archive and checksum file. See `docs/release-checklist.md`, `docs/observability.md`, `docs/distribution-and-hosting.md`, and `packaging/README.md`.
 
 The intended public one-command install path is:
 

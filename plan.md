@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-21
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-process same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, live-reloaded hashed relay credential manifest, relay accounting/quotas, direct route selection guard, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, GitHub CI package-validation passes, and release publishing workflow hardening are complete. Public hosted internet readiness remains scoped by the known managed hosted account auth, online credential issuance APIs, distributed hosted session state, distributed hosted accounting/dashboards, direct transport, multi-tenant hosted permission administration, managed hosted identity/key administration, native non-Windows keychain, platform code-signing, and hosted account gaps.
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-process same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, live-reloaded hashed relay credential manifest, relay accounting/quotas, direct route selection guard, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, GitHub CI package-validation passes, release publishing workflow hardening, and GitHub artifact attestation release hardening are complete. Public hosted internet readiness remains scoped by the known managed hosted account auth, online credential issuance APIs, distributed hosted session state, distributed hosted accounting/dashboards, direct transport, multi-tenant hosted permission administration, managed hosted identity/key administration, native non-Windows keychain, platform code-signing, and hosted account gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -3665,6 +3665,58 @@ Next recommendation:
 
 - Add native macOS Keychain/Linux Secret Service or HSM-backed storage when choosing a platform-specific hardening track, or move to managed hosted relay/account work.
 
+## Post Phase 15 Release Artifact Attestation Hardening
+
+Status: completed
+
+Summary:
+
+- Added GitHub artifact attestation generation to the release build matrix for platform archives and matching `.sha256` files.
+- Added a second verifier pass in the GitHub Release publication job after build artifacts are downloaded and before release upload.
+- Strengthened `scripts/verify-release-artifacts.py` so every archive must include the required Windows, Linux, macOS, Docker, and npm packaging templates in addition to binaries, checksums, and `manifest.toml`.
+- Updated release, distribution, packaging, production-readiness, repo memory, and guardrail docs with artifact attestation verification guidance and the stronger release trust boundary.
+
+Files changed:
+
+- `.github/workflows/release.yml`
+- `scripts/verify-release-artifacts.py`
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `python -m py_compile scripts\verify-release-artifacts.py sdk\python\conu_sdk\__init__.py examples\python\local_agent_pair.py` passed locally.
+- `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text())"` passed locally.
+- Synthetic release verifier positive/negative cases passed locally, including rejection when a required packaging template was missing.
+- `cargo fmt --all -- --check` passed locally.
+- `git diff --check` passed locally.
+- `npm run check --prefix sdk/typescript` passed locally.
+- `npm run check --prefix packaging/npm/conu-cli` passed locally.
+- `powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64` passed locally.
+- `python scripts\verify-release-artifacts.py dist` passed locally against the generated Windows release archive.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed locally.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed locally.
+- `npm pack --dry-run --json` passed locally in `sdk/typescript`.
+- `npm pack --dry-run --json` passed locally in `packaging/npm/conu-cli`.
+- `cargo +stable-x86_64-pc-windows-gnu test --workspace` passed locally.
+
+Known gaps:
+
+- Platform-native code signing and notarization are still not implemented; artifact attestations improve provenance but do not replace OS trust prompts or signed installers.
+- npm publication still requires maintainers to configure the repository `NPM_TOKEN` secret before a tagged release that should publish packages.
+- Managed hosted account auth, online credential issuance APIs, distributed hosted session/accounting state, hosted telemetry/dashboards, direct transport, hosted multi-tenant permission administration, and native non-Windows keychain support remain future work.
+
+Next recommendation:
+
+- Add platform code signing/notarization when release certificates are available, or prioritize managed hosted relay/account work for public network readiness.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -3726,4 +3778,5 @@ Add entries here when a phase is completed.
 2026-05-21 - Post Phase 15 TypeScript explicit receive helper completed. Added MCP-backed `receiveMessage()` and `receiveMessageBytes()` to the TypeScript SDK wrapper, kept normal metadata surfaces payload-safe, updated docs/skills/examples, and validated package/Python/fmt checks locally. Next: managed hosted relay/account work, npm/release publication, browser-native protocol support, or non-Windows keychain support.
 2026-05-21 - Post Phase 15 release publishing workflow completed. Added release archive verification, package dry-runs, tag-driven GitHub Release asset upload, optional npm provenance publication, docs/skill updates, and local archive validation. Next: platform code signing/notarization, managed hosted relay/account work, or non-Windows keychain support.
 2026-05-21 - Post Phase 15 non-Windows user-managed secret wrapping completed. Added `CONU_SECRET_WRAP_KEY_HEX`/`CONU_SECRET_WRAP_KEY_FILE` encrypted secret-field wrapping for non-Windows local keys and stored relay credentials, migration from plaintext-hex fields when configured, docs/skill updates, and GNU-toolchain validation. Next: native macOS Keychain/Linux Secret Service/HSM support or managed hosted relay/account work.
+2026-05-21 - Post Phase 15 release artifact attestation hardening completed. Added GitHub artifact attestations for release archives/checksums, a publish-job verifier pass, required packaging-template archive checks, docs/skill updates, and full GNU-toolchain/package/release validation. Next: platform code signing/notarization or managed hosted relay/account work.
 ```

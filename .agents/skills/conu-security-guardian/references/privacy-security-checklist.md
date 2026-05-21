@@ -92,7 +92,7 @@
 - `conu security rotate identity --confirm-peer-refresh` and `conu security retire identity --confirm-peer-refresh-complete` report only key ids, archive counts, refresh/confirmation booleans, compatibility status, and `contentsDisplayed=false`. They must not print private keys, DPAPI blobs, shared secrets, plaintext payloads, or decrypted payloads.
 - `conu security retire storage --confirm` reports only archived-key, migrated-file, and dependent-file counts. It must not print key bytes, DPAPI blobs, plaintext payloads, or decrypted payloads.
 - CI and release workflows upload binaries/docs/templates only.
-- Release workflows must verify archives before upload and reject local conU state, private keys, logs, inboxes, route registries, telemetry dumps, node modules, vendored npm binaries, and payload-bearing files.
+- Release workflows must verify archives before upload, require install/service templates in each archive, reject local conU state, private keys, logs, inboxes, route registries, telemetry dumps, node modules, vendored npm binaries, and payload-bearing files, and generate GitHub artifact attestations for release archives plus checksum files.
 - Service templates must not bake in developer-specific secrets, tokens, or private paths beyond editable placeholders.
 - npm packaging must verify release checksums by default and must not package or inspect local `CONU_HOME` state.
 - Docker relay templates must keep relay tokens in runtime configuration or explicit issued token files only; credential manifests may store token hashes and lifecycle metadata, but never raw relay tokens, and examples should prefer `--credentials-file`, `--replace`, and `--revoke-credential` over hand-editing where possible.
