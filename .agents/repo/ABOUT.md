@@ -43,7 +43,7 @@ Implemented so far:
 - relay-backed peer-encrypted remote stream chunks through `conu streams write`
 - relay-backed peer-encrypted room events through `conu rooms publish`
 - metadata-only room topic publish/subscribe grants through `conu rooms policy`
-- bounded relay mailbox delivery for peer-encrypted message, stream-chunk, room-event, and signed-card control envelopes when the target node reconnects, with optional `CONU_RELAY_MAILBOX_DIR` persistence across relay restarts, payload-safe local `conu-relay --mailbox-audit` and admin-gated online `conu-relay --admin-mailbox-audit` retention snapshots, confirm-gated local `conu-relay --mailbox-purge` and admin-gated online `conu-relay --admin-mailbox-purge` expired-file cleanup, and optional relay-local `CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS` scheduled cleanup
+- bounded relay mailbox delivery for peer-encrypted message, stream-chunk, room-event, and signed-card control envelopes when the target node reconnects, with optional `CONU_RELAY_MAILBOX_DIR` persistence across relay restarts, payload-safe local `conu-relay --mailbox-audit` and admin-gated online `conu-relay --admin-mailbox-audit` retention snapshots with reusable `--retention-policy-file` policy files, confirm-gated local `conu-relay --mailbox-purge` and admin-gated online `conu-relay --admin-mailbox-purge` expired-file cleanup, and optional relay-local `CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS` scheduled cleanup
 - daemon-owned relay send/receive pump with reusable relay sessions and same-node resume when relay config or trusted relay peer endpoints exist, plus optional `CONU_RELAY_SESSION_STATE_DIR` metadata persistence across relay restarts
 - explicit manual relay send/receive sync through `conu relay sync`
 - replay protection for local message request and envelope ids
@@ -71,7 +71,7 @@ Implemented so far:
 - metadata-only relay abuse/dashboard counters for denial and enforcement trends
 - local/admin-gated relay abuse threshold reports that compare aggregate counters against inline or reusable policy-file maximums, optionally exit 3 for script automation, and avoid adaptive enforcement
 - payload-safe local `conu-relay --hosted-dashboard` snapshots and admin-gated online `conu-relay --admin-hosted-dashboard` snapshots across credential, tenant, accounting, and abuse stores
-- admin-gated online `conu-relay --admin-mailbox-audit` snapshots and `conu-relay --admin-mailbox-purge` dry-run/confirm cleanup for running-relay durable mailbox retention metadata
+- admin-gated online `conu-relay --admin-mailbox-audit` snapshots and `conu-relay --admin-mailbox-purge` dry-run/confirm cleanup for running-relay durable mailbox retention metadata, including reusable metadata-only retention policy files for TTL/node settings
 - relay public-bind guard that keeps `local-dev-token` loopback-only
 - local relay client credential storage through `conu relay credential set --stdin`, with token-safe status and clear commands
 - relay client support for `ws://` plus certificate-validated `wss://` endpoints through TLS termination

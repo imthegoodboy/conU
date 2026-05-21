@@ -25,6 +25,7 @@ use conu_relay::{
 };
 
 const ABUSE_THRESHOLD_POLICY_FILE_VERSION: &str = "1";
+const MAILBOX_RETENTION_POLICY_FILE_VERSION: &str = "1";
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -312,8 +313,8 @@ Usage:
   conu-relay --admin-tenant-node-revoke <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
   conu-relay --admin-tenant-audit --relay <ws://host:port/path> --admin-token-stdin [--account <account-id>] [--json]
   conu-relay --admin-hosted-account-suspend <account-id> --relay <ws://host:port/path> --admin-token-stdin [--json]
-  conu-relay --admin-mailbox-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--ttl-seconds <seconds>] [--json]
-  conu-relay --admin-mailbox-purge --relay <ws://host:port/path> --admin-token-stdin --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
+  conu-relay --admin-mailbox-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]
+  conu-relay --admin-mailbox-purge --relay <ws://host:port/path> --admin-token-stdin [--ttl-seconds <seconds>] [--node <node-id>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]
   conu-relay --tenant-upsert <account-id> --tenants-file <path> [--json]
   conu-relay --tenant-revoke <account-id> --tenants-file <path> [--json]
   conu-relay --tenant-node-upsert <account-id> <node-id> --tenants-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] [--json]
@@ -322,8 +323,8 @@ Usage:
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
-  conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--json]
-  conu-relay --mailbox-purge --mailbox-dir <path> --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]
+  conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]
+  conu-relay --mailbox-purge --mailbox-dir <path> [--ttl-seconds <seconds>] [--node <node-id>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --check
   conu-relay --help
@@ -379,11 +380,15 @@ dry-run or explicit confirmation, and scheduled mailbox purge requires an explic
 plus CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted dashboard
 snapshots combine configured credential, tenant, accounting, and abuse summaries without displaying
 tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids.
-Abuse threshold reports accept reusable --thresholds-file policy files with version set to 1,
-max_* threshold keys, and explicit false display guards; CLI --max-* values override file values.
+Mailbox audit and purge commands accept reusable --retention-policy-file policy files with
+version set to 1, optional ttl_seconds and node_id keys, and explicit false display guards;
+CLI --ttl-seconds and --node values override file values. Purge commands still require a
+retention TTL from the policy file or CLI plus exactly one of --dry-run or --confirm. Abuse
+threshold reports accept reusable --thresholds-file policy files with version set to 1, max_*
+threshold keys, and explicit false display guards; CLI --max-* values override file values.
 At least one threshold must be supplied by file or CLI. Abuse threshold reports preserve stdout
-report output and return exit code 3 only when --fail-on-threshold is set and one or more
-configured thresholds are exceeded."
+report output and return exit code 3 only when --fail-on-threshold is set and one or more configured
+thresholds are exceeded."
     );
 }
 
@@ -1835,6 +1840,8 @@ struct AdminMailboxAuditArgs {
     ttl: Option<Duration>,
     relay: String,
     admin_token_stdin: bool,
+    #[cfg(test)]
+    retention_policy_file: Option<PathBuf>,
     json: bool,
 }
 
@@ -1843,6 +1850,7 @@ fn parse_admin_mailbox_audit_args(args: Vec<String>) -> Result<AdminMailboxAudit
     let mut ttl = None::<Duration>;
     let mut relay = None::<String>;
     let mut admin_token_stdin = false;
+    let mut retention_policy_file = None::<PathBuf>;
     let mut json = false;
     let mut index = 0;
 
@@ -1861,6 +1869,16 @@ fn parse_admin_mailbox_audit_args(args: Vec<String>) -> Result<AdminMailboxAudit
                     return Err(admin_mailbox_audit_usage());
                 };
                 ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
+            }
+            "--retention-policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_mailbox_audit_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(admin_mailbox_audit_usage());
+                }
+                retention_policy_file = Some(PathBuf::from(value));
             }
             "--relay" => {
                 index += 1;
@@ -1884,18 +1902,22 @@ fn parse_admin_mailbox_audit_args(args: Vec<String>) -> Result<AdminMailboxAudit
     if !admin_token_stdin {
         return Err("--admin-token-stdin is required".to_string());
     }
+    let retention =
+        merged_mailbox_retention_policy(retention_policy_file.as_deref(), node_id, ttl)?;
 
     Ok(AdminMailboxAuditArgs {
-        node_id,
-        ttl,
+        node_id: retention.node_id,
+        ttl: retention.ttl,
         relay,
         admin_token_stdin,
+        #[cfg(test)]
+        retention_policy_file,
         json,
     })
 }
 
 fn admin_mailbox_audit_usage() -> String {
-    "usage: conu-relay --admin-mailbox-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--ttl-seconds <seconds>] [--json]".to_string()
+    "usage: conu-relay --admin-mailbox-audit --relay <ws://host:port/path> --admin-token-stdin [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]".to_string()
 }
 
 fn admin_mailbox_purge_from_args(args: Vec<String>) -> Result<(), String> {
@@ -1937,6 +1959,8 @@ struct AdminMailboxPurgeArgs {
     dry_run: bool,
     relay: String,
     admin_token_stdin: bool,
+    #[cfg(test)]
+    retention_policy_file: Option<PathBuf>,
     json: bool,
 }
 
@@ -1947,6 +1971,7 @@ fn parse_admin_mailbox_purge_args(args: Vec<String>) -> Result<AdminMailboxPurge
     let mut confirm = false;
     let mut relay = None::<String>;
     let mut admin_token_stdin = false;
+    let mut retention_policy_file = None::<PathBuf>;
     let mut json = false;
     let mut index = 0;
 
@@ -1965,6 +1990,16 @@ fn parse_admin_mailbox_purge_args(args: Vec<String>) -> Result<AdminMailboxPurge
                     return Err(admin_mailbox_purge_usage());
                 };
                 ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
+            }
+            "--retention-policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(admin_mailbox_purge_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(admin_mailbox_purge_usage());
+                }
+                retention_policy_file = Some(PathBuf::from(value));
             }
             "--relay" => {
                 index += 1;
@@ -1990,7 +2025,9 @@ fn parse_admin_mailbox_purge_args(args: Vec<String>) -> Result<AdminMailboxPurge
     if !admin_token_stdin {
         return Err("--admin-token-stdin is required".to_string());
     }
-    let Some(ttl) = ttl else {
+    let retention =
+        merged_mailbox_retention_policy(retention_policy_file.as_deref(), node_id, ttl)?;
+    let Some(ttl) = retention.ttl else {
         return Err(admin_mailbox_purge_usage());
     };
     match (dry_run, confirm) {
@@ -2003,17 +2040,19 @@ fn parse_admin_mailbox_purge_args(args: Vec<String>) -> Result<AdminMailboxPurge
     }
 
     Ok(AdminMailboxPurgeArgs {
-        node_id,
+        node_id: retention.node_id,
         ttl,
         dry_run,
         relay,
         admin_token_stdin,
+        #[cfg(test)]
+        retention_policy_file,
         json,
     })
 }
 
 fn admin_mailbox_purge_usage() -> String {
-    "usage: conu-relay --admin-mailbox-purge --relay <ws://host:port/path> --admin-token-stdin --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]".to_string()
+    "usage: conu-relay --admin-mailbox-purge --relay <ws://host:port/path> --admin-token-stdin [--ttl-seconds <seconds>] [--node <node-id>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]".to_string()
 }
 
 fn read_admin_token_from_stdin(required: bool) -> Result<String, String> {
@@ -3745,6 +3784,8 @@ struct MailboxAuditArgs {
     mailbox_dir: PathBuf,
     node_id: Option<String>,
     ttl: Option<Duration>,
+    #[cfg(test)]
+    retention_policy_file: Option<PathBuf>,
     json: bool,
 }
 
@@ -3764,6 +3805,7 @@ fn parse_mailbox_audit_args(args: Vec<String>) -> Result<MailboxAuditArgs, Strin
     let mut mailbox_dir = None::<PathBuf>;
     let mut node_id = None::<String>;
     let mut ttl = None::<Duration>;
+    let mut retention_policy_file = None::<PathBuf>;
     let mut json = false;
     let mut index = 0;
 
@@ -3790,6 +3832,16 @@ fn parse_mailbox_audit_args(args: Vec<String>) -> Result<MailboxAuditArgs, Strin
                 };
                 ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
             }
+            "--retention-policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mailbox_audit_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(mailbox_audit_usage());
+                }
+                retention_policy_file = Some(PathBuf::from(value));
+            }
             "--json" => json = true,
             "--help" | "-h" => return Err(mailbox_audit_usage()),
             value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
@@ -3801,11 +3853,15 @@ fn parse_mailbox_audit_args(args: Vec<String>) -> Result<MailboxAuditArgs, Strin
     let Some(mailbox_dir) = mailbox_dir.filter(|path| !path.as_os_str().is_empty()) else {
         return Err(mailbox_audit_usage());
     };
+    let retention =
+        merged_mailbox_retention_policy(retention_policy_file.as_deref(), node_id, ttl)?;
 
     Ok(MailboxAuditArgs {
         mailbox_dir,
-        node_id,
-        ttl,
+        node_id: retention.node_id,
+        ttl: retention.ttl,
+        #[cfg(test)]
+        retention_policy_file,
         json,
     })
 }
@@ -3820,8 +3876,156 @@ fn parse_positive_cli_duration(value: &str, flag: &str) -> Result<Duration, Stri
     Ok(Duration::from_secs(seconds))
 }
 
+#[derive(Debug, Clone, Default)]
+struct MailboxRetentionPolicy {
+    node_id: Option<String>,
+    ttl: Option<Duration>,
+}
+
+fn merged_mailbox_retention_policy(
+    retention_policy_file: Option<&Path>,
+    cli_node_id: Option<String>,
+    cli_ttl: Option<Duration>,
+) -> Result<MailboxRetentionPolicy, String> {
+    let mut policy = retention_policy_file
+        .map(load_mailbox_retention_policy_file)
+        .transpose()?
+        .unwrap_or_default();
+    if let Some(node_id) = cli_node_id {
+        policy.node_id = Some(node_id);
+    }
+    if let Some(ttl) = cli_ttl {
+        policy.ttl = Some(ttl);
+    }
+    Ok(policy)
+}
+
+fn load_mailbox_retention_policy_file(path: &Path) -> Result<MailboxRetentionPolicy, String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("read mailbox retention policy file: {error}"))?;
+    parse_mailbox_retention_policy_file(&contents)
+}
+
+fn parse_mailbox_retention_policy_file(contents: &str) -> Result<MailboxRetentionPolicy, String> {
+    let mut version = None::<String>;
+    let mut policy = MailboxRetentionPolicy::default();
+    let mut guards = MailboxRetentionPolicyGuards::default();
+
+    for (line_index, raw_line) in contents.lines().enumerate() {
+        let line_number = line_index + 1;
+        let line = strip_config_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, raw_value) = line.split_once('=').ok_or_else(|| {
+            format!("mailbox retention policy file line {line_number} must use key = value")
+        })?;
+        let key = key.trim();
+        let value = clean_config_value(raw_value);
+        if key.is_empty() {
+            return Err(format!(
+                "mailbox retention policy file line {line_number} must include a key"
+            ));
+        }
+
+        match key {
+            "version" => version = Some(value),
+            "node_id" => {
+                policy.node_id = Some(validate_dashboard_filter_id(value, "node id")?);
+            }
+            "ttl_seconds" => {
+                policy.ttl = Some(parse_mailbox_policy_duration(&value, key, line_number)?);
+            }
+            _ if guards.record_false(key, &value, line_number)? => {}
+            _ => {
+                return Err(format!(
+                    "mailbox retention policy file line {line_number} uses unsupported key {key}"
+                ));
+            }
+        }
+    }
+
+    match version.as_deref() {
+        Some(MAILBOX_RETENTION_POLICY_FILE_VERSION) => {}
+        Some(_) => return Err("mailbox retention policy file version is unsupported".to_string()),
+        None => return Err("mailbox retention policy file version is required".to_string()),
+    }
+    guards.validate()?;
+    Ok(policy)
+}
+
+fn parse_mailbox_policy_duration(
+    value: &str,
+    key: &str,
+    line_number: usize,
+) -> Result<Duration, String> {
+    let seconds = value.parse::<u64>().map_err(|_| {
+        format!(
+            "mailbox retention policy file line {line_number} {key} must be an unsigned integer"
+        )
+    })?;
+    if seconds == 0 {
+        return Err(format!(
+            "mailbox retention policy file line {line_number} {key} must be greater than zero"
+        ));
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
+#[derive(Default)]
+struct MailboxRetentionPolicyGuards {
+    payload_displayed: bool,
+    token_displayed: bool,
+    token_hash_displayed: bool,
+    key_material_displayed: bool,
+    session_id_displayed: bool,
+    ciphertext_displayed: bool,
+    contents_displayed: bool,
+}
+
+impl MailboxRetentionPolicyGuards {
+    fn record_false(&mut self, key: &str, value: &str, line_number: usize) -> Result<bool, String> {
+        let guard = match key {
+            "payload_displayed" => &mut self.payload_displayed,
+            "token_displayed" => &mut self.token_displayed,
+            "token_hash_displayed" => &mut self.token_hash_displayed,
+            "key_material_displayed" => &mut self.key_material_displayed,
+            "session_id_displayed" => &mut self.session_id_displayed,
+            "ciphertext_displayed" => &mut self.ciphertext_displayed,
+            "contents_displayed" => &mut self.contents_displayed,
+            _ => return Ok(false),
+        };
+        if value != "false" {
+            return Err(format!(
+                "mailbox retention policy file line {line_number} {key} must be false"
+            ));
+        }
+        *guard = true;
+        Ok(true)
+    }
+
+    fn validate(self) -> Result<(), String> {
+        for (key, present) in [
+            ("payload_displayed", self.payload_displayed),
+            ("token_displayed", self.token_displayed),
+            ("token_hash_displayed", self.token_hash_displayed),
+            ("key_material_displayed", self.key_material_displayed),
+            ("session_id_displayed", self.session_id_displayed),
+            ("ciphertext_displayed", self.ciphertext_displayed),
+            ("contents_displayed", self.contents_displayed),
+        ] {
+            if !present {
+                return Err(format!(
+                    "mailbox retention policy file requires {key} = false"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn mailbox_audit_usage() -> String {
-    "usage: conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--json]".to_string()
+    "usage: conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -3830,6 +4034,8 @@ struct MailboxPurgeArgs {
     node_id: Option<String>,
     ttl: Duration,
     dry_run: bool,
+    #[cfg(test)]
+    retention_policy_file: Option<PathBuf>,
     json: bool,
 }
 
@@ -3862,6 +4068,7 @@ fn parse_mailbox_purge_args(args: Vec<String>) -> Result<MailboxPurgeArgs, Strin
     let mut ttl = None::<Duration>;
     let mut dry_run = false;
     let mut confirm = false;
+    let mut retention_policy_file = None::<PathBuf>;
     let mut json = false;
     let mut index = 0;
 
@@ -3888,6 +4095,16 @@ fn parse_mailbox_purge_args(args: Vec<String>) -> Result<MailboxPurgeArgs, Strin
                 };
                 ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
             }
+            "--retention-policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mailbox_purge_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(mailbox_purge_usage());
+                }
+                retention_policy_file = Some(PathBuf::from(value));
+            }
             "--dry-run" => dry_run = true,
             "--confirm" => confirm = true,
             "--json" => json = true,
@@ -3901,7 +4118,9 @@ fn parse_mailbox_purge_args(args: Vec<String>) -> Result<MailboxPurgeArgs, Strin
     let Some(mailbox_dir) = mailbox_dir.filter(|path| !path.as_os_str().is_empty()) else {
         return Err(mailbox_purge_usage());
     };
-    let Some(ttl) = ttl else {
+    let retention =
+        merged_mailbox_retention_policy(retention_policy_file.as_deref(), node_id, ttl)?;
+    let Some(ttl) = retention.ttl else {
         return Err(mailbox_purge_usage());
     };
     match (dry_run, confirm) {
@@ -3915,15 +4134,17 @@ fn parse_mailbox_purge_args(args: Vec<String>) -> Result<MailboxPurgeArgs, Strin
 
     Ok(MailboxPurgeArgs {
         mailbox_dir,
-        node_id,
+        node_id: retention.node_id,
         ttl,
         dry_run,
+        #[cfg(test)]
+        retention_policy_file,
         json,
     })
 }
 
 fn mailbox_purge_usage() -> String {
-    "usage: conu-relay --mailbox-purge --mailbox-dir <path> --ttl-seconds <seconds> [--node <node-id>] (--dry-run|--confirm) [--json]".to_string()
+    "usage: conu-relay --mailbox-purge --mailbox-dir <path> [--ttl-seconds <seconds>] [--node <node-id>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -5730,6 +5951,25 @@ mod tests {
         path
     }
 
+    fn mailbox_retention_policy_contents(settings: &str) -> String {
+        format!(
+            "version = \"1\"\n{settings}payload_displayed = false\ntoken_displayed = false\ntoken_hash_displayed = false\nkey_material_displayed = false\nsession_id_displayed = false\nciphertext_displayed = false\ncontents_displayed = false\n"
+        )
+    }
+
+    fn write_mailbox_retention_policy_file(contents: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_nanos();
+        let path = env::temp_dir().join(format!(
+            "conu-relay-mailbox-retention-policy-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        fs::write(&path, contents).expect("write mailbox retention policy file");
+        path
+    }
+
     #[test]
     fn tenant_node_upsert_parser_defaults_permissions_to_false() {
         let parsed = parse_tenant_node_upsert_args(vec![
@@ -6109,6 +6349,52 @@ mod tests {
     }
 
     #[test]
+    fn mailbox_retention_policy_file_parser_is_metadata_only() {
+        let policy =
+            mailbox_retention_policy_contents("ttl_seconds = 3600\nnode_id = \"node.hosted\"\n");
+        let parsed = parse_mailbox_retention_policy_file(&policy).expect("retention policy parses");
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert_eq!(parsed.ttl, Some(Duration::from_secs(3600)));
+
+        let displayed_policy = policy.replace(
+            "ciphertext_displayed = false",
+            "ciphertext_displayed = true",
+        );
+        assert!(
+            parse_mailbox_retention_policy_file(&displayed_policy)
+                .expect_err("displayed guard true should fail")
+                .contains("ciphertext_displayed must be false")
+        );
+        assert!(
+            parse_mailbox_retention_policy_file("version = \"1\"\nttl_seconds = 3600\n")
+                .expect_err("missing display guards should fail")
+                .contains("payload_displayed = false")
+        );
+        assert!(
+            parse_mailbox_retention_policy_file(&mailbox_retention_policy_contents(
+                "unexpected_key = 1\n"
+            ))
+            .expect_err("unknown key should fail")
+            .contains("unsupported key unexpected_key")
+        );
+
+        let secret_value = "relay-secret-token";
+        let invalid_ttl = parse_mailbox_retention_policy_file(&mailbox_retention_policy_contents(
+            &format!("ttl_seconds = \"{secret_value}\"\n"),
+        ))
+        .expect_err("invalid ttl should fail");
+        assert!(invalid_ttl.contains("unsigned integer"));
+        assert!(!invalid_ttl.contains(secret_value));
+
+        let invalid_node = parse_mailbox_retention_policy_file(&mailbox_retention_policy_contents(
+            &format!("node_id = \"bad {secret_value}\"\n"),
+        ))
+        .expect_err("invalid node id should fail");
+        assert!(invalid_node.contains("node id"));
+        assert!(!invalid_node.contains(secret_value));
+    }
+
+    #[test]
     fn mailbox_audit_parser_and_renderers_are_metadata_only() {
         let parsed = parse_mailbox_audit_args(vec![
             "--mailbox-dir".to_string(),
@@ -6124,6 +6410,36 @@ mod tests {
         assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
         assert_eq!(parsed.ttl, Some(Duration::from_secs(3600)));
         assert!(parsed.json);
+
+        let policy =
+            mailbox_retention_policy_contents("ttl_seconds = 7200\nnode_id = \"node.from-file\"\n");
+        let policy_path = write_mailbox_retention_policy_file(&policy);
+        let policy_arg = policy_path.to_string_lossy().to_string();
+        let parsed_from_file = parse_mailbox_audit_args(vec![
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--retention-policy-file".to_string(),
+            policy_arg,
+            "--ttl-seconds".to_string(),
+            "60".to_string(),
+        ])
+        .expect("mailbox audit policy args parse");
+        assert_eq!(
+            parsed_from_file.retention_policy_file.as_deref(),
+            Some(policy_path.as_path())
+        );
+        assert_eq!(parsed_from_file.node_id.as_deref(), Some("node.from-file"));
+        assert_eq!(parsed_from_file.ttl, Some(Duration::from_secs(60)));
+        let _ = fs::remove_file(&policy_path);
+        assert!(
+            parse_mailbox_audit_args(vec![
+                "--mailbox-dir".to_string(),
+                "mailbox".to_string(),
+                "--retention-policy-file".to_string(),
+                "".to_string(),
+            ])
+            .is_err()
+        );
 
         let invalid_filter = parse_mailbox_audit_args(vec![
             "--mailbox-dir".to_string(),
@@ -6202,6 +6518,36 @@ mod tests {
         assert_eq!(parsed.ttl, Duration::from_secs(3600));
         assert!(parsed.dry_run);
         assert!(parsed.json);
+
+        let policy =
+            mailbox_retention_policy_contents("ttl_seconds = 7200\nnode_id = \"node.from-file\"\n");
+        let policy_path = write_mailbox_retention_policy_file(&policy);
+        let policy_arg = policy_path.to_string_lossy().to_string();
+        let parsed_from_file = parse_mailbox_purge_args(vec![
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--retention-policy-file".to_string(),
+            policy_arg,
+            "--dry-run".to_string(),
+        ])
+        .expect("mailbox purge policy args parse");
+        assert_eq!(
+            parsed_from_file.retention_policy_file.as_deref(),
+            Some(policy_path.as_path())
+        );
+        assert_eq!(parsed_from_file.node_id.as_deref(), Some("node.from-file"));
+        assert_eq!(parsed_from_file.ttl, Duration::from_secs(7200));
+        let _ = fs::remove_file(&policy_path);
+        assert!(
+            parse_mailbox_purge_args(vec![
+                "--mailbox-dir".to_string(),
+                "mailbox".to_string(),
+                "--retention-policy-file".to_string(),
+                "".to_string(),
+                "--dry-run".to_string(),
+            ])
+            .is_err()
+        );
 
         let invalid_filter = parse_mailbox_purge_args(vec![
             "--mailbox-dir".to_string(),
@@ -6729,6 +7075,39 @@ mod tests {
         assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
         assert_eq!(parsed.ttl, Some(Duration::from_secs(3600)));
         assert!(parsed.json);
+
+        let policy =
+            mailbox_retention_policy_contents("ttl_seconds = 7200\nnode_id = \"node.from-file\"\n");
+        let policy_path = write_mailbox_retention_policy_file(&policy);
+        let policy_arg = policy_path.to_string_lossy().to_string();
+        let parsed_from_file = parse_admin_mailbox_audit_args(vec![
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--retention-policy-file".to_string(),
+            policy_arg,
+            "--node".to_string(),
+            "node.cli".to_string(),
+        ])
+        .expect("admin mailbox audit policy args parse");
+        assert_eq!(
+            parsed_from_file.retention_policy_file.as_deref(),
+            Some(policy_path.as_path())
+        );
+        assert_eq!(parsed_from_file.node_id.as_deref(), Some("node.cli"));
+        assert_eq!(parsed_from_file.ttl, Some(Duration::from_secs(7200)));
+        let _ = fs::remove_file(&policy_path);
+        assert!(
+            parse_admin_mailbox_audit_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--admin-token-stdin".to_string(),
+                "--retention-policy-file".to_string(),
+                "".to_string(),
+            ])
+            .is_err()
+        );
+
         assert!(parse_admin_mailbox_audit_args(Vec::new()).is_err());
         assert!(
             parse_admin_mailbox_audit_args(vec![
@@ -6805,6 +7184,39 @@ mod tests {
         assert_eq!(parsed.ttl, Duration::from_secs(3600));
         assert!(parsed.dry_run);
         assert!(parsed.json);
+
+        let policy =
+            mailbox_retention_policy_contents("ttl_seconds = 7200\nnode_id = \"node.from-file\"\n");
+        let policy_path = write_mailbox_retention_policy_file(&policy);
+        let policy_arg = policy_path.to_string_lossy().to_string();
+        let parsed_from_file = parse_admin_mailbox_purge_args(vec![
+            "--relay".to_string(),
+            "ws://127.0.0.1:8787".to_string(),
+            "--admin-token-stdin".to_string(),
+            "--retention-policy-file".to_string(),
+            policy_arg,
+            "--dry-run".to_string(),
+        ])
+        .expect("admin mailbox purge policy args parse");
+        assert_eq!(
+            parsed_from_file.retention_policy_file.as_deref(),
+            Some(policy_path.as_path())
+        );
+        assert_eq!(parsed_from_file.node_id.as_deref(), Some("node.from-file"));
+        assert_eq!(parsed_from_file.ttl, Duration::from_secs(7200));
+        let _ = fs::remove_file(&policy_path);
+        assert!(
+            parse_admin_mailbox_purge_args(vec![
+                "--relay".to_string(),
+                "ws://127.0.0.1:8787".to_string(),
+                "--admin-token-stdin".to_string(),
+                "--retention-policy-file".to_string(),
+                "".to_string(),
+                "--dry-run".to_string(),
+            ])
+            .is_err()
+        );
+
         assert!(parse_admin_mailbox_purge_args(Vec::new()).is_err());
         assert!(
             parse_admin_mailbox_purge_args(vec![
