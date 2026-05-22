@@ -276,6 +276,15 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--hosted-fleet-mailbox-purge") => {
+            match hosted_fleet_mailbox_purge_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("--hosted-fleet-dashboard") => {
             match hosted_fleet_dashboard_from_args(args.collect()) {
                 Ok(status) => status.exit_code(),
@@ -368,6 +377,7 @@ Usage:
   conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]
   conu-relay --mailbox-purge --mailbox-dir <path> [--ttl-seconds <seconds>] [--node <node-id>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]
+  conu-relay --hosted-fleet-mailbox-purge --fleet-file <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]
   conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold] [--fail-on-retention]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --check
@@ -430,9 +440,10 @@ and aggregate only credential, tenant, session-state, mailbox, accounting, and a
 can apply guarded --retention-policy-file mailbox TTL/node defaults and guarded --thresholds-file
 or --max-* abuse limits to aggregate fleet counters, preserving stdout and returning exit code 3
 only with --fail-on-retention or --fail-on-threshold. Per-relay mailbox_ttl_seconds entries remain
-source-specific retention overrides unless a CLI --ttl-seconds override is supplied. The manifest
-must include explicit false display guards and does not make conU a managed billing, distributed
-retention orchestration, or adaptive abuse service.
+source-specific retention overrides unless a CLI --ttl-seconds override is supplied. The same
+manifest can drive --hosted-fleet-mailbox-purge for dry-run or explicitly confirmed expired durable
+mailbox cleanup across configured local mailbox stores. The manifest must include explicit false
+display guards and does not make conU a managed billing, remote purge, or adaptive abuse service.
 Mailbox audit and purge commands accept reusable --retention-policy-file policy files with
 version set to 1, optional ttl_seconds and node_id keys, and explicit false display guards;
 CLI --ttl-seconds and --node values override file values. Purge commands still require a
@@ -5712,6 +5723,249 @@ fn mailbox_purge_usage() -> String {
 }
 
 #[derive(Debug, Clone)]
+struct HostedFleetMailboxPurgeArgs {
+    fleet_file: PathBuf,
+    retention_policy_file: Option<PathBuf>,
+    mailbox_retention_policy: MailboxRetentionPolicy,
+    mailbox_ttl: Option<Duration>,
+    dry_run: bool,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetMailboxPurgeRelayReport {
+    name: String,
+    mailbox_dir: PathBuf,
+    report: RelayMailboxPurgeReport,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostedFleetMailboxPurgeTotals {
+    relays: usize,
+    mailbox_sources: usize,
+    mailbox_nodes: usize,
+    mailbox_records: usize,
+    mailbox_invalid_records: usize,
+    mailbox_bytes: u64,
+    mailbox_expired_records: u64,
+    mailbox_expired_bytes: u64,
+    mailbox_purged_records: u64,
+    mailbox_purged_bytes: u64,
+    payload_displayed: bool,
+    token_displayed: bool,
+    token_hash_displayed: bool,
+    key_material_displayed: bool,
+    session_id_displayed: bool,
+    ciphertext_displayed: bool,
+    contents_displayed: bool,
+}
+
+impl HostedFleetMailboxPurgeTotals {
+    fn add(&mut self, relay: &HostedFleetMailboxPurgeRelayReport) {
+        let report = &relay.report;
+        self.mailbox_sources += 1;
+        self.mailbox_nodes += report.nodes;
+        self.mailbox_records += report.records;
+        self.mailbox_invalid_records += report.invalid_records;
+        self.mailbox_bytes = self.mailbox_bytes.saturating_add(report.bytes);
+        self.mailbox_expired_records = self
+            .mailbox_expired_records
+            .saturating_add(report.expired_records);
+        self.mailbox_expired_bytes = self
+            .mailbox_expired_bytes
+            .saturating_add(report.expired_bytes);
+        self.mailbox_purged_records = self
+            .mailbox_purged_records
+            .saturating_add(report.purged_records);
+        self.mailbox_purged_bytes = self
+            .mailbox_purged_bytes
+            .saturating_add(report.purged_bytes);
+        self.payload_displayed |= report.payload_displayed;
+        self.token_displayed |= report.token_displayed;
+        self.token_hash_displayed |= report.token_hash_displayed;
+        self.key_material_displayed |= report.key_material_displayed;
+        self.session_id_displayed |= report.session_id_displayed;
+        self.ciphertext_displayed |= report.ciphertext_displayed;
+        self.contents_displayed |= report.contents_displayed;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetMailboxPurgeReport {
+    fleet_file: PathBuf,
+    node_id: Option<String>,
+    retention_policy_file: Option<PathBuf>,
+    mailbox_ttl: Option<Duration>,
+    dry_run: bool,
+    relays: Vec<HostedFleetMailboxPurgeRelayReport>,
+    totals: HostedFleetMailboxPurgeTotals,
+}
+
+fn hosted_fleet_mailbox_purge_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_hosted_fleet_mailbox_purge_args(args)?;
+    let report = hosted_fleet_mailbox_purge_report(&parsed)?;
+    if parsed.json {
+        println!("{}", render_hosted_fleet_mailbox_purge_json(&report));
+    } else {
+        println!("{}", render_hosted_fleet_mailbox_purge_text(&report));
+    }
+    Ok(())
+}
+
+fn parse_hosted_fleet_mailbox_purge_args(
+    args: Vec<String>,
+) -> Result<HostedFleetMailboxPurgeArgs, String> {
+    let mut fleet_file = None::<PathBuf>;
+    let mut node_id = None::<String>;
+    let mut retention_policy_file = None::<PathBuf>;
+    let mut mailbox_ttl = None::<Duration>;
+    let mut dry_run = false;
+    let mut confirm = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--fleet-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_mailbox_purge_usage());
+                };
+                fleet_file = Some(PathBuf::from(value));
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_mailbox_purge_usage());
+                };
+                node_id = Some(validate_dashboard_filter_id(value.to_string(), "node id")?);
+            }
+            "--retention-policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_mailbox_purge_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(hosted_fleet_mailbox_purge_usage());
+                }
+                retention_policy_file = Some(PathBuf::from(value));
+            }
+            "--ttl-seconds" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_mailbox_purge_usage());
+                };
+                mailbox_ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
+            }
+            "--dry-run" => dry_run = true,
+            "--confirm" => confirm = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(hosted_fleet_mailbox_purge_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(hosted_fleet_mailbox_purge_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(fleet_file) = fleet_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(hosted_fleet_mailbox_purge_usage());
+    };
+    retention_policy_file = retention_policy_file.filter(|path| !path.as_os_str().is_empty());
+    let mailbox_retention_policy =
+        merged_mailbox_retention_policy(retention_policy_file.as_deref(), node_id, None)?;
+    match (dry_run, confirm) {
+        (true, false) | (false, true) => {}
+        _ => {
+            return Err(
+                "--hosted-fleet-mailbox-purge requires exactly one of --dry-run or --confirm"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(HostedFleetMailboxPurgeArgs {
+        fleet_file,
+        retention_policy_file,
+        mailbox_retention_policy,
+        mailbox_ttl,
+        dry_run,
+        json,
+    })
+}
+
+fn hosted_fleet_mailbox_purge_usage() -> String {
+    "usage: conu-relay --hosted-fleet-mailbox-purge --fleet-file <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]".to_string()
+}
+
+fn hosted_fleet_mailbox_purge_report(
+    args: &HostedFleetMailboxPurgeArgs,
+) -> Result<HostedFleetMailboxPurgeReport, String> {
+    let configs = parse_hosted_fleet_dashboard_file(&args.fleet_file)?;
+    let mut sources = Vec::<(String, PathBuf, Duration)>::new();
+    for config in &configs {
+        let Some(mailbox_dir) = config.mailbox_dir.clone() else {
+            continue;
+        };
+        let ttl = effective_fleet_mailbox_ttl(args, config).ok_or_else(|| {
+            format!(
+                "hosted fleet mailbox purge relay {} requires --ttl-seconds, retention policy ttl_seconds, or mailbox_ttl_seconds",
+                config.name
+            )
+        })?;
+        sources.push((config.name.clone(), mailbox_dir, ttl));
+    }
+    if sources.is_empty() {
+        return Err(
+            "--hosted-fleet-mailbox-purge requires at least one fleet relay mailbox_dir"
+                .to_string(),
+        );
+    }
+
+    // Validate every mailbox source before confirmed mode can delete from any source.
+    let mut totals = HostedFleetMailboxPurgeTotals {
+        relays: configs.len(),
+        ..HostedFleetMailboxPurgeTotals::default()
+    };
+    let mut relays = Vec::<HostedFleetMailboxPurgeRelayReport>::new();
+
+    for (name, mailbox_dir, ttl) in sources {
+        let report = purge_relay_mailbox_dir(
+            &mailbox_dir,
+            args.mailbox_retention_policy.node_id.as_deref(),
+            ttl,
+            args.dry_run,
+        )
+        .map_err(|error| error.to_string())?;
+        let relay = HostedFleetMailboxPurgeRelayReport {
+            name,
+            mailbox_dir,
+            report,
+        };
+        totals.add(&relay);
+        relays.push(relay);
+    }
+
+    Ok(HostedFleetMailboxPurgeReport {
+        fleet_file: args.fleet_file.clone(),
+        node_id: args.mailbox_retention_policy.node_id.clone(),
+        retention_policy_file: args.retention_policy_file.clone(),
+        mailbox_ttl: args.mailbox_ttl.or(args.mailbox_retention_policy.ttl),
+        dry_run: args.dry_run,
+        relays,
+        totals,
+    })
+}
+
+fn effective_fleet_mailbox_ttl(
+    args: &HostedFleetMailboxPurgeArgs,
+    config: &HostedFleetRelayConfig,
+) -> Option<Duration> {
+    args.mailbox_ttl
+        .or_else(|| config.mailbox_ttl_seconds.map(Duration::from_secs))
+        .or(args.mailbox_retention_policy.ttl)
+}
+
+#[derive(Debug, Clone)]
 struct HostedFleetDashboardArgs {
     fleet_file: PathBuf,
     account_id: Option<String>,
@@ -8344,6 +8598,211 @@ fn render_mailbox_purge_json(report: &RelayMailboxPurgeReport, mailbox_dir: &Pat
         bool_json(report.session_id_displayed),
         bool_json(report.ciphertext_displayed),
         bool_json(report.contents_displayed)
+    )
+}
+
+fn render_hosted_fleet_mailbox_purge_text(report: &HostedFleetMailboxPurgeReport) -> String {
+    let totals = &report.totals;
+    let mode = if report.dry_run {
+        "dry-run"
+    } else {
+        "confirmed"
+    };
+    let mut output = format!(
+        r"conU hosted relay fleet mailbox purge
+
+mode: {}
+fleet file: {}
+node: {}
+retention policy file: {}
+default mailbox ttl seconds: {}
+relays: {}
+mailbox sources: {}
+mailbox nodes: {}
+mailbox records: {}
+mailbox invalid records: {}
+mailbox bytes: {}
+mailbox expired records: {}
+mailbox expired bytes: {}
+mailbox purged records: {}
+mailbox purged bytes: {}
+
+relay mailbox sources:",
+        mode,
+        report.fleet_file.display(),
+        report.node_id.as_deref().unwrap_or("all"),
+        optional_path_text(report.retention_policy_file.as_deref()),
+        optional_u64_text(report.mailbox_ttl.map(|ttl| ttl.as_secs())),
+        totals.relays,
+        totals.mailbox_sources,
+        totals.mailbox_nodes,
+        totals.mailbox_records,
+        totals.mailbox_invalid_records,
+        totals.mailbox_bytes,
+        totals.mailbox_expired_records,
+        totals.mailbox_expired_bytes,
+        totals.mailbox_purged_records,
+        totals.mailbox_purged_bytes
+    );
+
+    for relay in &report.relays {
+        output.push_str(&format!(
+            "\n- {}: mailbox {} ttl {} records {} expired {} purged {} bytes purged {}",
+            relay.name,
+            relay.mailbox_dir.display(),
+            relay.report.retention_ttl_seconds,
+            relay.report.records,
+            relay.report.expired_records,
+            relay.report.purged_records,
+            relay.report.purged_bytes
+        ));
+    }
+
+    output.push_str(&format!(
+        r"
+
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        yes_no(totals.payload_displayed),
+        yes_no(totals.token_displayed),
+        yes_no(totals.token_hash_displayed),
+        yes_no(totals.key_material_displayed),
+        yes_no(totals.session_id_displayed),
+        yes_no(totals.ciphertext_displayed),
+        yes_no(totals.contents_displayed)
+    ));
+    output
+}
+
+fn render_hosted_fleet_mailbox_purge_json(report: &HostedFleetMailboxPurgeReport) -> String {
+    let status = if report.dry_run { "dry_run" } else { "purged" };
+    let relays = report
+        .relays
+        .iter()
+        .map(render_hosted_fleet_mailbox_purge_relay_json)
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    format!(
+        r#"{{
+  "status": "{}",
+  "mode": "{}",
+  "fleetFile": "{}",
+  "nodeId": {},
+  "retentionPolicyFile": {},
+  "defaultMailboxTtlSeconds": {},
+  "dryRun": {},
+  "confirmed": {},
+  "totals": {},
+  "relays": [
+{}
+  ],
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        status,
+        if report.dry_run {
+            "dry-run"
+        } else {
+            "confirmed"
+        },
+        json_escape(&report.fleet_file.display().to_string()),
+        optional_string_json(report.node_id.as_deref()),
+        optional_path_json(report.retention_policy_file.as_deref()),
+        optional_u64_json(report.mailbox_ttl.map(|ttl| ttl.as_secs())),
+        bool_json(report.dry_run),
+        bool_json(!report.dry_run),
+        render_hosted_fleet_mailbox_purge_totals_json(&report.totals),
+        relays,
+        bool_json(report.totals.payload_displayed),
+        bool_json(report.totals.token_displayed),
+        bool_json(report.totals.token_hash_displayed),
+        bool_json(report.totals.key_material_displayed),
+        bool_json(report.totals.session_id_displayed),
+        bool_json(report.totals.ciphertext_displayed),
+        bool_json(report.totals.contents_displayed)
+    )
+}
+
+fn render_hosted_fleet_mailbox_purge_totals_json(totals: &HostedFleetMailboxPurgeTotals) -> String {
+    format!(
+        r#"{{
+    "relays": {},
+    "mailboxSources": {},
+    "mailboxNodes": {},
+    "mailboxRecords": {},
+    "mailboxInvalidRecords": {},
+    "mailboxBytes": {},
+    "mailboxExpiredRecords": {},
+    "mailboxExpiredBytes": {},
+    "mailboxPurgedRecords": {},
+    "mailboxPurgedBytes": {}
+  }}"#,
+        totals.relays,
+        totals.mailbox_sources,
+        totals.mailbox_nodes,
+        totals.mailbox_records,
+        totals.mailbox_invalid_records,
+        totals.mailbox_bytes,
+        totals.mailbox_expired_records,
+        totals.mailbox_expired_bytes,
+        totals.mailbox_purged_records,
+        totals.mailbox_purged_bytes
+    )
+}
+
+fn render_hosted_fleet_mailbox_purge_relay_json(
+    relay: &HostedFleetMailboxPurgeRelayReport,
+) -> String {
+    format!(
+        r#"    {{
+      "name": "{}",
+      "mailboxDir": "{}",
+      "retentionTtlSeconds": {},
+      "nodes": {},
+      "records": {},
+      "invalidRecords": {},
+      "bytes": {},
+      "expiredRecords": {},
+      "expiredBytes": {},
+      "purgedRecords": {},
+      "purgedBytes": {},
+      "payloadDisplayed": {},
+      "tokenDisplayed": {},
+      "tokenHashDisplayed": {},
+      "keyMaterialDisplayed": {},
+      "sessionIdDisplayed": {},
+      "ciphertextDisplayed": {},
+      "contentsDisplayed": {}
+    }}"#,
+        json_escape(&relay.name),
+        json_escape(&relay.mailbox_dir.display().to_string()),
+        relay.report.retention_ttl_seconds,
+        relay.report.nodes,
+        relay.report.records,
+        relay.report.invalid_records,
+        relay.report.bytes,
+        relay.report.expired_records,
+        relay.report.expired_bytes,
+        relay.report.purged_records,
+        relay.report.purged_bytes,
+        bool_json(relay.report.payload_displayed),
+        bool_json(relay.report.token_displayed),
+        bool_json(relay.report.token_hash_displayed),
+        bool_json(relay.report.key_material_displayed),
+        bool_json(relay.report.session_id_displayed),
+        bool_json(relay.report.ciphertext_displayed),
+        bool_json(relay.report.contents_displayed)
     )
 }
 
@@ -11072,6 +11531,213 @@ mod tests {
             assert!(output.contains("mailbox"));
             assert!(output.contains("purge") || output.contains("purged"));
             assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+            assert!(!output.contains("ENVELOPE from=node.a"));
+        }
+    }
+
+    #[test]
+    fn hosted_fleet_mailbox_purge_parser_and_renderers_are_metadata_only() {
+        let retention_policy =
+            write_mailbox_retention_policy_file(&mailbox_retention_policy_contents(
+                "ttl_seconds = 7200\nnode_id = \"node.from-policy\"\n",
+            ));
+        let parsed = parse_hosted_fleet_mailbox_purge_args(vec![
+            "--fleet-file".to_string(),
+            "fleet.toml".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--retention-policy-file".to_string(),
+            retention_policy.display().to_string(),
+            "--json".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect("hosted fleet mailbox purge args parse");
+        assert_eq!(parsed.fleet_file.as_path(), Path::new("fleet.toml"));
+        assert_eq!(
+            parsed.retention_policy_file.as_deref(),
+            Some(retention_policy.as_path())
+        );
+        assert_eq!(
+            parsed.mailbox_retention_policy.node_id.as_deref(),
+            Some("node.hosted")
+        );
+        assert_eq!(
+            parsed.mailbox_retention_policy.ttl,
+            Some(Duration::from_secs(7200))
+        );
+        assert!(parsed.dry_run);
+        assert!(parsed.json);
+        assert!(parse_hosted_fleet_mailbox_purge_args(Vec::new()).is_err());
+        assert!(
+            parse_hosted_fleet_mailbox_purge_args(vec![
+                "--fleet-file".to_string(),
+                "fleet.toml".to_string(),
+                "--ttl-seconds".to_string(),
+                "3600".to_string(),
+            ])
+            .expect_err("mode is required")
+            .contains("exactly one")
+        );
+        let invalid_filter = parse_hosted_fleet_mailbox_purge_args(vec![
+            "--fleet-file".to_string(),
+            "fleet.toml".to_string(),
+            "--node".to_string(),
+            "bad secret value".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect_err("invalid node filter should fail closed");
+        assert!(!invalid_filter.contains("bad secret value"));
+
+        let no_mailbox_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                r#"
+[[relay]]
+name = "relay-east"
+abuse_dir = "abuse"
+"#,
+            ));
+        let no_mailbox_args = HostedFleetMailboxPurgeArgs {
+            fleet_file: no_mailbox_fleet,
+            retention_policy_file: None,
+            mailbox_retention_policy: MailboxRetentionPolicy {
+                node_id: None,
+                ttl: Some(Duration::from_secs(3600)),
+            },
+            mailbox_ttl: None,
+            dry_run: true,
+            json: false,
+        };
+        let no_mailbox_error = hosted_fleet_mailbox_purge_report(&no_mailbox_args)
+            .expect_err("purge should require a fleet mailbox source");
+        assert!(no_mailbox_error.contains("mailbox_dir"));
+
+        let no_ttl_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                r#"
+[[relay]]
+name = "relay-east"
+mailbox_dir = "mailbox"
+"#,
+            ));
+        let no_ttl_args = HostedFleetMailboxPurgeArgs {
+            fleet_file: no_ttl_fleet,
+            retention_policy_file: None,
+            mailbox_retention_policy: MailboxRetentionPolicy::default(),
+            mailbox_ttl: None,
+            dry_run: true,
+            json: false,
+        };
+        let no_ttl_error = hosted_fleet_mailbox_purge_report(&no_ttl_args)
+            .expect_err("purge should require a retention ttl");
+        assert!(no_ttl_error.contains("ttl_seconds"));
+
+        let mixed_ttl_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                r#"
+[[relay]]
+name = "relay-east"
+mailbox_dir = "missing-east"
+mailbox_ttl_seconds = 3600
+
+[[relay]]
+name = "relay-west"
+mailbox_dir = "missing-west"
+"#,
+            ));
+        let mixed_ttl_error = hosted_fleet_mailbox_purge_report(&HostedFleetMailboxPurgeArgs {
+            fleet_file: mixed_ttl_fleet,
+            retention_policy_file: None,
+            mailbox_retention_policy: MailboxRetentionPolicy::default(),
+            mailbox_ttl: None,
+            dry_run: false,
+            json: false,
+        })
+        .expect_err("purge should validate all TTLs before scanning mailbox dirs");
+        assert!(mixed_ttl_error.contains("relay-west"));
+        assert!(mixed_ttl_error.contains("ttl_seconds"));
+
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            r#"
+[[relay]]
+name = "relay-east"
+mailbox_dir = "mailbox"
+mailbox_ttl_seconds = 3600
+"#,
+        ));
+        let base_dir = fleet_file.parent().expect("fleet file parent");
+        fs::create_dir_all(base_dir.join("mailbox")).expect("create mailbox dir");
+        let report = hosted_fleet_mailbox_purge_report(&HostedFleetMailboxPurgeArgs {
+            fleet_file: fleet_file.clone(),
+            retention_policy_file: None,
+            mailbox_retention_policy: MailboxRetentionPolicy::default(),
+            mailbox_ttl: None,
+            dry_run: true,
+            json: false,
+        })
+        .expect("fleet mailbox purge report builds");
+        assert_eq!(report.totals.relays, 1);
+        assert_eq!(report.totals.mailbox_sources, 1);
+        assert!(report.dry_run);
+
+        let relay = HostedFleetMailboxPurgeRelayReport {
+            name: "relay-east".to_string(),
+            mailbox_dir: PathBuf::from("mailbox"),
+            report: RelayMailboxPurgeReport {
+                node_id: Some("node.hosted".to_string()),
+                retention_ttl_seconds: 3600,
+                dry_run: false,
+                confirmed: true,
+                nodes: 1,
+                records: 2,
+                invalid_records: 1,
+                bytes: 512,
+                expired_records: 1,
+                expired_bytes: 256,
+                purged_records: 1,
+                purged_bytes: 256,
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            },
+        };
+        let mut totals = HostedFleetMailboxPurgeTotals {
+            relays: 1,
+            ..HostedFleetMailboxPurgeTotals::default()
+        };
+        totals.add(&relay);
+        let render_report = HostedFleetMailboxPurgeReport {
+            fleet_file: PathBuf::from("fleet.toml"),
+            node_id: Some("node.hosted".to_string()),
+            retention_policy_file: Some(PathBuf::from("mailbox-retention.toml")),
+            mailbox_ttl: Some(Duration::from_secs(7200)),
+            dry_run: false,
+            relays: vec![relay],
+            totals,
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_hosted_fleet_mailbox_purge_text(&render_report),
+            render_hosted_fleet_mailbox_purge_json(&render_report),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("fleet"));
+            assert!(output.contains("mailbox"));
+            assert!(output.contains("purge") || output.contains("purged"));
+            assert!(output.contains("relay-east"));
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));
             assert!(!output.contains(session_id));
