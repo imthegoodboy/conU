@@ -4792,6 +4792,42 @@ Next recommendation:
 
 - Merge PR #123 without deleting local or remote work branches, then continue with tagged release signing/publication verification when release secrets are configured, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
+## Post Phase 15 Hosted Fleet Dashboard Snapshot (In Progress)
+
+Objective: give controlled multi-relay operators a payload-safe fleet-level dashboard snapshot without claiming hosted billing, distributed alerting, or adaptive abuse automation.
+
+Current status:
+
+- Created GitHub issue #124 for hosted fleet dashboard snapshots.
+- Created branch `hosted-fleet-dashboard` from `main` without a `codex/` prefix, per user preference.
+- Added `conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--json]`.
+- Added a versioned fleet manifest parser with required false display guards and `[[relay]]` entries for optional credential, tenant, session-state, mailbox, accounting, and abuse metadata stores.
+- The fleet command resolves relative source paths from the manifest directory, reuses the existing payload-safe audit functions, and returns only relay names, source paths, aggregate counters, filters, and display guards.
+- Updated README, architecture, relay hosting docs, release checklist, security docs, user guide, repo memory, and implementation guardrails to describe the fleet dashboard boundary.
+
+Validation so far:
+
+- `cargo fmt --all` passed after implementation.
+- `cargo +stable-x86_64-pc-windows-gnu check -p conu-relay --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy -p conu-relay --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `python -m py_compile scripts\verify-release-versions.py scripts\verify-release-artifacts.py` passed.
+- `python scripts\verify-release-versions.py` passed.
+- `cargo fmt --all -- --check` passed.
+- `git diff --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_dashboard_parser_and_renderers_are_metadata_only` was blocked locally because `dlltool.exe` is not installed.
+
+Known gaps:
+
+- This is a manifest-driven local/operator aggregate over available relay-local metadata stores. It is not hosted billing, distributed alerting, adaptive abuse response, distributed retention orchestration, a managed analytics service, or distributed session migration.
+
+Next recommendation:
+
+- Finish local validation, open a PR, run GitHub CI, merge without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.

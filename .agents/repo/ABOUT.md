@@ -71,6 +71,7 @@ Implemented so far:
 - metadata-only relay abuse/dashboard counters for denial and enforcement trends
 - local/admin-gated relay abuse threshold reports that compare aggregate counters against inline or reusable policy-file maximums, optionally exit 3 for script automation, and avoid adaptive enforcement
 - payload-safe local `conu-relay --hosted-dashboard` snapshots and admin-gated online `conu-relay --admin-hosted-dashboard` snapshots across credential, tenant, accounting, and abuse stores
+- manifest-driven payload-safe `conu-relay --hosted-fleet-dashboard` snapshots that aggregate multiple relay-local credential, tenant, session-state, mailbox, accounting, and abuse metadata stores without printing secrets or payloads
 - payload-safe local `conu-relay --hosted-readiness` preflights across credential, scoped admin-token, tenant, session-state, mailbox, accounting, abuse, and bind checks, with optional fail-on-warning exit code 3
 - admin-gated online `conu-relay --admin-mailbox-audit` snapshots and `conu-relay --admin-mailbox-purge` dry-run/confirm cleanup for running-relay durable mailbox retention metadata, including reusable metadata-only retention policy files for TTL/node settings
 - relay public-bind guard that keeps `local-dev-token` loopback-only
