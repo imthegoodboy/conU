@@ -4567,11 +4567,40 @@ Validation:
 
 Known gaps:
 
-- This update hardens release action runtime compatibility only. It does not smoke the full multi-platform release workflow locally, configure signing secrets, publish a release tag, or change the known hosted/distributed product gaps.
+- This update hardens release action runtime compatibility only. It does not configure signing secrets, publish a release tag, or change the known hosted/distributed product gaps.
 
 Next recommendation:
 
-- Open and merge a PR for issue #109 while preserving the local and remote feature branch. Then continue with release workflow smoke, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+- Issue #109 was closed by PR #110, and `codex/release-actions-node24` remains preserved locally and on origin. Continue with release workflow smoke validation, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
+## Post Phase 15 Release Workflow Smoke Validation (Completed)
+
+Objective: prove the Node 24 release action updates by running the multi-platform release workflow on `main` without publishing a GitHub Release or npm packages.
+
+Current status:
+
+- Created GitHub issue #111 for release workflow smoke validation.
+- Created branch `codex/release-workflow-smoke-record` from `main`.
+- Ran `gh workflow run release.yml --ref main`, which created workflow run `https://github.com/imthegoodboy/conU/actions/runs/26264867145`.
+- The `Release Artifacts` workflow completed successfully on `main` for the package checks plus `windows-x64`, `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64` build jobs.
+- The non-tag `workflow_dispatch` run skipped `Publish GitHub Release` and `Publish npm Packages` as expected, so no release or npm package was published.
+- Uploaded artifacts were present for `conu-windows-x64`, `conu-linux-x64`, `conu-linux-arm64`, `conu-macos-arm64`, and `conu-macos-x64`.
+- Updated the release checklist so future CI or release action-version changes require a `workflow_dispatch` smoke run before tagging.
+
+Validation:
+
+- Post-merge CI run `https://github.com/imthegoodboy/conU/actions/runs/26264717227` completed successfully on `main` after PR #110.
+- `gh run view 26264867145 --json status,conclusion,url,workflowName,displayTitle,headBranch,event,createdAt,updatedAt` reported `status=completed` and `conclusion=success`.
+- `gh api repos/imthegoodboy/conU/actions/runs/26264867145/artifacts` showed all five platform artifacts present and not expired.
+- Release workflow jobs passed for package checks, `windows-x64`, `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64`; release and npm publication jobs were skipped on the non-tag run.
+
+Known gaps:
+
+- This smoke validates manual multi-platform artifact builds, checksums, artifact attestations, and uploads after the Node 24 action updates. A real tagged release still needs configured Windows/macOS signing secrets, GitHub Release publication, npm provenance publication, and final tag-run verification. It does not change the known hosted/distributed product gaps.
+
+Next recommendation:
+
+- Merge the smoke-record PR for issue #111 while preserving the local and remote branch. Then continue with distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
 ## Phase Completion Log
 
@@ -4663,4 +4692,5 @@ Add entries here when a phase is completed.
 2026-05-22 - Post Phase 15 hosted relay readiness preflight completed. Added payload-safe local `conu-relay --hosted-readiness` to combine credential, admin-token, tenant, session-state, mailbox, accounting, abuse, and bind checks with JSON/text output, warning counts, display guards, and optional `--fail-on-warning` exit code 3 after preserving stdout. Updated docs/skills/plan and validated with GNU fmt/check/clippy/workspace tests, focused readiness test, Python compile, TypeScript/package checks, conu-relay build, local readiness/fail-on-warning smoke, and diff check. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 GitHub Actions Node 24 runtime hardening completed. Updated CI and release workflows to `actions/checkout@v6` and `actions/setup-node@v6`, confirmed both current action releases declare Node 24 runtimes, updated release checklist, and validated YAML parse, package checks, no stale v4/v5 action references, and diff check. Next: release workflow hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 release artifact action runtime hardening completed. Updated release artifact provenance/upload/download steps to `actions/attest@v4.1.0`, `actions/upload-artifact@v7.0.1`, and `actions/download-artifact@v8.0.1` after confirming those upstream action metadata files declare Node 24 runtimes. Updated release checklist with the self-hosted runner caveat and validated YAML parse, package checks, no stale artifact action references, and diff check. Next: release workflow smoke, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-22 - Post Phase 15 release workflow smoke validation completed. Ran `Release Artifacts` through `workflow_dispatch` on `main` after the Node 24 action updates; package checks and all five platform artifact builds passed, artifact uploads were present, GitHub Release/npm publication jobs skipped as expected on the non-tag run, and post-merge CI was green. Next: tagged release signing/publication verification when release secrets are configured, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
