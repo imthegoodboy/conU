@@ -291,6 +291,11 @@ conu-relay --hosted-fleet-account-suspend account.prod `
   --dry-run `
   --json
 
+conu-relay --hosted-fleet-credential-revoke account.prod node-a-id `
+  --fleet-file C:\conu-relay\fleet.toml `
+  --dry-run `
+  --json
+
 conu-relay --hosted-fleet-account-suspend account.prod `
   --fleet-file C:\conu-relay\fleet.toml `
   --node node-a-id `
@@ -298,9 +303,9 @@ conu-relay --hosted-fleet-account-suspend account.prod `
   --json
 ```
 
-Fleet account audit is read-only and reports credential/tenant source coverage plus consistency warning categories such as missing account records, active credentials without active tenant metadata, or active tenants without active credentials. Add `--node <node-id>` to narrow credential and tenant-node counts to one node and report node-scoped categories such as `node_missing_credentials`, `tenant_node_missing`, `active_node_credentials_without_active_tenant_node`, `active_tenant_node_without_active_credentials`, or `revoked_tenant_node_with_active_credentials`. With `--fail-on-warning`, it preserves stdout and returns exit code 3 only when one or more warning categories are present. Fleet account suspension requires each affected `[[relay]]` entry to contain both `credentials_file` and `tenants_file`. It rejects partial credential/tenant entries and preflights every complete local source before confirmed mutation. Without `--node`, confirmed suspension revokes tenant metadata before account credential records on each source; with `--node`, it revokes tenant-node metadata before matching node credential records only. Output is aggregate/per-relay metadata only, and neither fleet command contacts remote relays.
+Fleet account audit is read-only and reports credential/tenant source coverage plus consistency warning categories such as missing account records, active credentials without active tenant metadata, or active tenants without active credentials. Add `--node <node-id>` to narrow credential and tenant-node counts to one node and report node-scoped categories such as `node_missing_credentials`, `tenant_node_missing`, `active_node_credentials_without_active_tenant_node`, `active_tenant_node_without_active_credentials`, or `revoked_tenant_node_with_active_credentials`. With `--fail-on-warning`, it preserves stdout and returns exit code 3 only when one or more warning categories are present. Fleet credential revoke is credential-only; it requires exactly one of `--dry-run` or `--confirm`, preflights every configured local `credentials_file`, rejects node ownership collisions and duplicate node records, and reports only account/node ids, credential counts, paths, mode/status, and false display guards. Fleet account suspension requires each affected `[[relay]]` entry to contain both `credentials_file` and `tenants_file`. It rejects partial credential/tenant entries and preflights every complete local source before confirmed mutation. Without `--node`, confirmed suspension revokes tenant metadata before account credential records on each source; with `--node`, it revokes tenant-node metadata before matching node credential records only. Output is aggregate/per-relay metadata only, and none of these fleet commands contacts remote relays.
 
-These are file-backed operator workflows. The fleet command helps with guarded local multi-relay maintenance, but it is not a distributed account lifecycle service, transactional billing suspension, hosted identity/key suspension, remote relay revocation, or tenant-wide workflow automation service.
+These are file-backed operator workflows. The fleet commands help with guarded local multi-relay maintenance, but they are not a distributed account lifecycle service, transactional billing suspension, hosted identity/key suspension, remote relay revocation, or tenant-wide workflow automation service.
 
 ## Online Lifecycle
 
@@ -398,6 +403,7 @@ They never report raw node tokens, token hashes, admin tokens, payload plaintext
 - Online tenant revoke or tenant-node revoke for missing records returns `tenant_not_found` or `tenant_node_not_found`.
 - Account suspension with a missing tenant registry returns `tenant_unavailable`; with a missing tenant record it returns `tenant_not_found`; with a missing credential manifest it still returns a zero-credential metadata result after tenant revocation.
 - Rotate refuses to move an existing node credential to a different account.
+- Fleet credential revoke fails closed before mutation when any configured credential source is missing the account/node credential or the node belongs to a different account.
 - Revoked, expired, missing, malformed, public-bind-invalid, or tenant-revoked credentials fail closed for new `HELLO` sessions.
 
 ## Abuse Audit Foundation
@@ -442,7 +448,7 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --fail-on-threshold
 ```
 
-Threshold reports return `status` (`ok` or `threshold_exceeded`), count/max/exceeded metadata for every abuse metric, the number of checked and exceeded thresholds, the optional account/node filters, and false display guards. `--thresholds-file` supplies reusable metadata-only defaults; inline `--max-*` flags override those defaults for the current run. By default threshold reports exit successfully after rendering the report. With `--fail-on-threshold`, they still preserve stdout report output but return exit code 3 when one or more configured thresholds are exceeded. `conu-relay --hosted-fleet-abuse-response-plan --fleet-file <path>` reuses the guarded fleet manifest and threshold inputs to report static action categories for aggregate threshold breaches, preserving stdout and returning exit code 3 only with `--fail-on-action`. `conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--node <node-id>] [--fail-on-warning]` reuses the same guarded manifest for a read-only credential/tenant consistency check before account suspension, returning exit code 3 only when requested and warning categories are present. The admin form reads the token from stdin, uses the same dashboard admin scope as hosted dashboard snapshots, and never echoes the token, token hashes, session ids, payloads, ciphertext bodies, frame contents, or raw abuse records.
+Threshold reports return `status` (`ok` or `threshold_exceeded`), count/max/exceeded metadata for every abuse metric, the number of checked and exceeded thresholds, the optional account/node filters, and false display guards. `--thresholds-file` supplies reusable metadata-only defaults; inline `--max-*` flags override those defaults for the current run. By default threshold reports exit successfully after rendering the report. With `--fail-on-threshold`, they still preserve stdout report output but return exit code 3 when one or more configured thresholds are exceeded. `conu-relay --hosted-fleet-abuse-response-plan --fleet-file <path>` reuses the guarded fleet manifest and threshold inputs to report static action categories for aggregate threshold breaches, preserving stdout and returning exit code 3 only with `--fail-on-action`. `conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--node <node-id>] [--fail-on-warning]` reuses the same guarded manifest for a read-only credential/tenant consistency check before account suspension, returning exit code 3 only when requested and warning categories are present. `conu-relay --hosted-fleet-credential-revoke <account-id> <node-id> --fleet-file <path> (--dry-run|--confirm)` uses the guarded manifest for credential-only account/node revocation after credential-source preflight. The admin form reads the token from stdin, uses the same dashboard admin scope as hosted dashboard snapshots, and never echoes the token, token hashes, session ids, payloads, ciphertext bodies, frame contents, or raw abuse records.
 
 This is a single-relay file-backed/admin-gated foundation for operator visibility. It is not distributed alerting, adaptive throttling, tenant-wide workflow automation, or a hosted dashboard service yet.
 
