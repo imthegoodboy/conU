@@ -14,8 +14,52 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  release-preflight:
+    name: Release Tag Preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tagged release secrets
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}
+          CONU_WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PASSWORD }}
+          CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD }}
+          CONU_MACOS_CODESIGN_IDENTITY: ${{ secrets.CONU_MACOS_CODESIGN_IDENTITY }}
+          CONU_MACOS_NOTARY_APPLE_ID: ${{ secrets.CONU_MACOS_NOTARY_APPLE_ID }}
+          CONU_MACOS_NOTARY_TEAM_ID: ${{ secrets.CONU_MACOS_NOTARY_TEAM_ID }}
+          CONU_MACOS_NOTARY_PASSWORD: ${{ secrets.CONU_MACOS_NOTARY_PASSWORD }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -eu
+          missing=""
+          for name in \
+            CONU_WINDOWS_SIGN_CERT_PFX_BASE64 \
+            CONU_WINDOWS_SIGN_CERT_PASSWORD \
+            CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 \
+            CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD \
+            CONU_MACOS_CODESIGN_IDENTITY \
+            CONU_MACOS_NOTARY_APPLE_ID \
+            CONU_MACOS_NOTARY_TEAM_ID \
+            CONU_MACOS_NOTARY_PASSWORD \
+            NPM_TOKEN; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required tagged-release secret(s):$missing"
+            exit 1
+          fi
+          echo "Tagged release preflight passed."
+      - name: Note unsigned smoke mode
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: echo "Non-tag release workflow run; signing and npm publication secrets are not required."
+
   packages:
     name: Package Checks
+    needs: release-preflight
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -225,8 +269,8 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::warning::NPM_TOKEN is not configured; skipping @conu/cli publish."
-            exit 0
+            echo "::error::NPM_TOKEN is required for tagged @conu/cli publication."
+            exit 1
           fi
           npm publish --access public --provenance
       - name: Publish @conu/sdk
@@ -235,7 +279,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::warning::NPM_TOKEN is not configured; skipping @conu/sdk publish."
-            exit 0
+            echo "::error::NPM_TOKEN is required for tagged @conu/sdk publication."
+            exit 1
           fi
           npm publish --access public --provenance

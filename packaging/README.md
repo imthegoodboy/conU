@@ -46,7 +46,7 @@ conu-<version>-macos-x64.zip
 conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets: Windows binaries are Authenticode-signed before packaging, and macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives. Linux archives currently use SHA-256 files plus GitHub artifact attestations until distro/package-manager signing is introduced.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, and npm packages are published with provenance after GitHub Release assets exist. Linux archives currently use SHA-256 files plus GitHub artifact attestations until distro/package-manager signing is introduced.
 
 Validate generated archives before upload:
 
@@ -86,8 +86,9 @@ CONU_NPM_BINARY_DIR=/absolute/path/to/bin npm install -g ./packaging/npm/conu-cl
 ```
 
 See `docs/distribution-and-hosting.md` for the publish flow. Tagged releases
-publish GitHub Release assets automatically; npm publication is wired through
-the release workflow when the repository `NPM_TOKEN` secret is configured.
+publish GitHub Release assets automatically and require the repository
+`NPM_TOKEN` secret so npm publication cannot silently skip after a GitHub-only
+release.
 
 ## Relay Docker Template
 
