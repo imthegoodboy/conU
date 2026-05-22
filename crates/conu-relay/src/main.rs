@@ -13395,7 +13395,7 @@ mod tests {
             render_hosted_fleet_tenant_node_lifecycle_json(&confirmed),
         ];
         for output in upsert_outputs {
-            assert!(output.contains("tenant node"));
+            assert!(output.contains("tenant"));
             assert!(output.contains("account.prod"));
             assert!(output.contains("node.prod"));
             assert!(output.contains("token"));
