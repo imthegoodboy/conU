@@ -4922,13 +4922,14 @@ Next recommendation:
 
 - Merge PR #129 without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration beyond read-only fleet gates, or ICE/STUN/TURN managed traversal.
 
-## Post Phase 15 Hosted Fleet Mailbox Purge Orchestration (In Progress)
+## Post Phase 15 Hosted Fleet Mailbox Purge Orchestration (Completed)
 
 Objective: make expired durable mailbox cleanup scriptable across guarded local hosted-fleet manifests without contacting remote relays, introducing distributed locks, adding cross-region retention services, or exposing payload, mailbox, policy, or manifest contents.
 
 Current status:
 
 - Issue: https://github.com/imthegoodboy/conU/issues/130
+- PR: https://github.com/imthegoodboy/conU/pull/131
 - Branch: `fleet-mailbox-purge-orchestration` (plain branch name, no `codex/` prefix)
 - Added local `conu-relay --hosted-fleet-mailbox-purge --fleet-file <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]`.
 - Reuses the existing guarded hosted fleet manifest parser and existing mailbox purge core, so the command works over manifest-listed local `mailbox_dir` stores only.
@@ -4950,7 +4951,11 @@ Validation status:
 - `python -m py_compile scripts\verify-release-versions.py scripts\verify-release-artifacts.py` passed.
 - `python scripts\verify-release-versions.py` passed.
 - `git diff --check` passed.
+- GitHub PR CI passed for commit `7bde741d3b8fabcb42a1b44285f693d2a4b1ba87`: https://github.com/imthegoodboy/conU/actions/runs/26273372458
+- Branch Release Artifacts smoke passed for commit `7bde741d3b8fabcb42a1b44285f693d2a4b1ba87`: https://github.com/imthegoodboy/conU/actions/runs/26273385354
+- PR #131 status checks are clean, including CodeRabbit success.
 - Local `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_mailbox_purge_parser_and_renderers_are_metadata_only` and `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --help` were blocked because `dlltool.exe` is not installed; GitHub Windows CI should cover the targeted test/run path after PR push.
+- Security review retained payload-safe behavior. The command validates every manifest-listed mailbox source and effective TTL before confirmed deletion, deletes only expired valid `.mailbox` files through the existing purge path, does not contact remote relays, and does not print mailbox contents, manifest contents, policy contents, tokens, token hashes, session ids, payloads, ciphertext, or frame bodies.
 
 Known gaps:
 
@@ -4958,7 +4963,7 @@ Known gaps:
 
 Next recommendation:
 
-- Open and validate the pull request for issue #130, run branch Release Artifacts, merge without deleting branches when CI is green, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, remote/cross-region mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+- Merge PR #131 without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, remote/cross-region mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
 ## Phase Completion Log
 
