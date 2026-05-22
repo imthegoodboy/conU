@@ -146,11 +146,11 @@ jobs:
       - name: Verify release artifact
         run: python scripts/verify-release-artifacts.py dist
       - name: Attest release artifact provenance
-        uses: actions/attest@v4
+        uses: actions/attest@v4.1.0
         with:
           subject-path: ${{ matrix.artifact }}
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: conu-${{ matrix.name }}
           path: ${{ matrix.artifact }}
@@ -165,7 +165,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.1
         with:
           path: dist
           merge-multiple: true

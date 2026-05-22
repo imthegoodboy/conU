@@ -167,7 +167,7 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 ## GitHub
 
 - CI passed on pull request or equivalent local validation is recorded, including the Rust OS matrix and the package job for `sdk/typescript` plus `packaging/npm/conu-cli`.
-- CI and release workflows use GitHub JavaScript action versions that declare the Node 24 action runtime, avoiding Node 20 action-runtime deprecation warnings.
+- CI and release workflows use GitHub JavaScript action versions that declare the Node 24 action runtime, avoiding Node 20 action-runtime deprecation warnings. Self-hosted runners must be new enough for those actions before release workflows are moved off GitHub-hosted runners.
 - PR body lists validation commands.
 - The `Release Artifacts` workflow is green for the release tag.
 - GitHub Release has platform-named archives plus matching `.sha256` files before npm publishing.
