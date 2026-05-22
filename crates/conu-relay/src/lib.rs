@@ -9078,7 +9078,7 @@ contents_displayed = false\n",
         fs::create_dir_all(&node_dir).expect("mailbox node dir");
         let now = current_unix_millis();
         let expired_queued_at = now.saturating_sub(10_000);
-        let fresh_queued_at = now;
+        let fresh_queued_at = now.saturating_add(60_000);
 
         let expired = QueuedRelayEnvelope {
             queued_at_millis: expired_queued_at,
@@ -9178,7 +9178,7 @@ contents_displayed = false\n",
         fs::create_dir_all(&node_dir).expect("mailbox node dir");
         let now = current_unix_millis();
         let expired_queued_at = now.saturating_sub(10_000);
-        let fresh_queued_at = now;
+        let fresh_queued_at = now.saturating_add(60_000);
 
         let expired = QueuedRelayEnvelope {
             queued_at_millis: expired_queued_at,
@@ -10490,7 +10490,7 @@ token_displayed = true\n",
         fs::create_dir_all(&node_dir).expect("mailbox node dir");
         let now = current_unix_millis();
         let expired_queued_at = now.saturating_sub(10_000);
-        let fresh_queued_at = now;
+        let fresh_queued_at = now.saturating_add(60_000);
 
         let expired = QueuedRelayEnvelope {
             queued_at_millis: expired_queued_at,
@@ -10595,7 +10595,7 @@ token_displayed = true\n",
         fs::create_dir_all(&node_dir).expect("mailbox node dir");
         let now = current_unix_millis();
         let expired_queued_at = now.saturating_sub(120_000);
-        let fresh_queued_at = now;
+        let fresh_queued_at = now.saturating_add(60_000);
         let expired = QueuedRelayEnvelope {
             queued_at_millis: expired_queued_at,
             queued_at_nanos: expired_queued_at.saturating_mul(1_000_000),
