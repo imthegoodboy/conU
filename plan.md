@@ -4709,6 +4709,43 @@ Next recommendation:
 
 - Continue with distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal. Preserve local and remote work branches.
 
+## Post Phase 15 Tagged Release Preflight Hardening (In Progress)
+
+Objective: prevent `v*` tag releases from creating a partial GitHub-only release when required signing or npm publication secrets are incomplete.
+
+Current status:
+
+- Created GitHub issue #120 for fail-closed tagged release publish secrets.
+- Created branch `release-tag-preflight-hardening` from `main` without a `codex/` prefix, per user preference.
+- Added a `Release Tag Preflight` job to `.github/workflows/release.yml`.
+- The preflight requires Windows Authenticode secrets, macOS Developer ID/notarization secrets, and `NPM_TOKEN` before `v*` tag package checks or platform builds can start.
+- Kept manual `workflow_dispatch` release smoke runs available without signing or npm secrets on non-tag refs.
+- Changed tagged npm publish steps from warning-and-skip to fail-closed when `NPM_TOKEN` is missing.
+- Updated release, distribution, signing, packaging, and npm launcher docs to describe the strict tagged-release behavior.
+
+Validation so far:
+
+- `cargo fmt --all -- --check` passed.
+- Python YAML parse passed for `.github/workflows/release.yml` and `.github/workflows/ci.yml`.
+- Basic workflow text checks passed for tabs, `release-preflight`, and the package job dependency.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `git diff --check` passed.
+- Default MSVC `cargo check --workspace --all-targets` was blocked locally because `link.exe` is not installed.
+- GNU `cargo +stable-x86_64-pc-windows-gnu test --workspace` was blocked locally because `dlltool.exe` is not installed.
+
+Known gaps:
+
+- This hardening does not configure repository signing secrets or `NPM_TOKEN`; `gh secret list` showed no repository secrets configured in this environment.
+- This hardening does not publish a release tag, publish npm packages, add OS package-manager distribution, or change the known hosted/distributed product gaps.
+
+Next recommendation:
+
+- Open a PR, validate with GitHub CI, run a non-tag `Release Artifacts` workflow smoke on the branch or merged main, and preserve local and remote work branches.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.

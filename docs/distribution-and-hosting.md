@@ -55,7 +55,7 @@ Each archive must have:
 <asset>.sha256
 ```
 
-The release workflow builds platform-named artifacts and uploads matching checksum files. Tagged release builds require maintainer-owned signing secrets for Windows Authenticode and macOS Developer ID/notarization. Linux archives use SHA-256 files plus GitHub artifact attestations until native distro package signing is added.
+The release workflow builds platform-named artifacts and uploads matching checksum files. Tagged release builds run a fail-closed preflight before package checks and platform builds; that preflight requires maintainer-owned signing secrets for Windows Authenticode, macOS Developer ID/notarization, and the repository `NPM_TOKEN` used for npm provenance publication. Linux archives use SHA-256 files plus GitHub artifact attestations until native distro package signing is added.
 
 ## Publishing Flow
 
@@ -63,8 +63,8 @@ The release workflow builds platform-named artifacts and uploads matching checks
 2. Confirm `sdk/typescript/package.json` has the same version if publishing `@conu/sdk`.
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
-5. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, and run npm package dry-runs.
-6. Configure the repository `NPM_TOKEN` secret before tag builds that should publish npm packages. When that token is present, the release workflow publishes `@conu/cli` and `@conu/sdk` with npm provenance after GitHub Release assets are available.
+5. Configure the repository signing secrets and `NPM_TOKEN` before creating the tag; the tagged release workflow fails before package checks if any required release secret is missing.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run npm package dry-runs, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
 ```sh

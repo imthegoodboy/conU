@@ -41,16 +41,27 @@ CONU_MACOS_NOTARY_TEAM_ID
 CONU_MACOS_NOTARY_PASSWORD
 ```
 
+Publication:
+
+```txt
+NPM_TOKEN
+```
+
 `CONU_MACOS_NOTARY_PASSWORD` should be an Apple app-specific password or other
 Apple-supported notary credential material. Do not store raw certificate files
 or passwords in the repo.
 
 ## Workflow Behavior
 
-On tag builds matching `v*`, `CONU_SIGNING_REQUIRED=1` is set for the release
-matrix. Windows and macOS jobs fail closed when their required signing secrets
-are missing. Manual `workflow_dispatch` builds can still run unsigned when
-secrets are absent, which keeps smoke packaging available for maintainers.
+On tag builds matching `v*`, the release workflow runs a preflight before
+package checks and platform builds. The preflight fails closed unless all
+Windows signing, macOS signing/notarization, and `NPM_TOKEN` publication secrets
+are configured. `CONU_SIGNING_REQUIRED=1` is also set for the release matrix so
+the platform build scripts keep their local fail-closed signing checks.
+
+Manual `workflow_dispatch` builds can still run unsigned when secrets are
+absent, which keeps smoke packaging available for maintainers. Those non-tag
+runs do not publish GitHub Releases or npm packages.
 
 The build scripts write signing status into `manifest.toml`:
 
