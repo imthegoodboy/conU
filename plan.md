@@ -4751,6 +4751,47 @@ Next recommendation:
 
 - Configure release signing secrets plus `NPM_TOKEN` before the next real `v*` tag, then continue with distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal. Preserve local and remote work branches.
 
+## Post Phase 15 Release Version Consistency Gate (Completed)
+
+Objective: prevent a release tag, native archive, or npm package publication from using inconsistent Cargo/npm package versions.
+
+Current status:
+
+- Created GitHub issue #122 for release tag and package version consistency.
+- Created branch `release-version-consistency-gate` from `main` without a `codex/` prefix, per user preference.
+- Added `scripts/verify-release-versions.py` to validate all conU Cargo crate versions, `@conu/cli`, and `@conu/sdk` share one semver-like version.
+- The verifier also compares `v*` tag names against the package version when `GITHUB_REF_TYPE=tag`/`GITHUB_REF_NAME` or `CONU_RELEASE_TAG` is present.
+- Wired the verifier into the CI package job and the `Release Artifacts` package gate before npm checks/dry-runs.
+- Updated README, distribution, production-readiness, release checklist, and packaging docs with the automated version gate.
+- Opened PR #123 for the gate and linked it to issue #122.
+
+Validation:
+
+- `python scripts\verify-release-versions.py` passed.
+- `GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0 python scripts\verify-release-versions.py` passed.
+- `GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 python scripts\verify-release-versions.py` failed as expected with a tag/package mismatch.
+- `CONU_RELEASE_TAG=0.1.0 python scripts\verify-release-versions.py` failed as expected with a clean non-`v` tag error.
+- `python -m py_compile scripts\verify-release-versions.py scripts\verify-release-artifacts.py sdk\python\conu_sdk\__init__.py examples\python\local_agent_pair.py` passed.
+- Python YAML parse passed for `.github/workflows/release.yml` and `.github/workflows/ci.yml`.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `git diff --check` passed.
+- PR #123 CI passed across Packages plus Rust on Ubuntu, Windows, and macOS: https://github.com/imthegoodboy/conU/actions/runs/26268247436
+- Branch `Release Artifacts` smoke passed across release preflight, package checks, attestations/uploads, and five platform builds: https://github.com/imthegoodboy/conU/actions/runs/26268351380
+- Default MSVC `cargo check --workspace --all-targets` was blocked locally because `link.exe` is not installed.
+- GNU `cargo +stable-x86_64-pc-windows-gnu test --workspace` was blocked locally because `dlltool.exe` is not installed.
+
+Known gaps:
+
+- This version gate does not publish a release tag, publish npm packages, configure signing/npm secrets, or change the known hosted/distributed product gaps.
+
+Next recommendation:
+
+- Merge PR #123 without deleting local or remote work branches, then continue with tagged release signing/publication verification when release secrets are configured, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -4846,4 +4887,5 @@ Add entries here when a phase is completed.
 2026-05-22 - Post Phase 15 Node LTS package hardening completed. Moved CI/release npm package jobs to Node 24, restricted `@conu/sdk` and `@conu/cli` package engines to Node 22 or Node 24 LTS, documented the supported LTS policy, validated local package checks/dry-runs, passed PR CI, passed a branch `Release Artifacts` smoke run across all five platform builds, merged PR #116, closed issue #115, and preserved local/remote branches. Next: revisit the Node engine range when the next Node LTS line is promoted, tagged release signing/publication verification when release secrets are configured, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 hosted readiness policy files completed. Added `--retention-policy-file`, `--thresholds-file`, and inline `--max-*` support to payload-safe local `conu-relay --hosted-readiness`, reused existing metadata-only retention/threshold policy parsers and CLI override semantics, added threshold checks/exceeded counts to text/JSON output, made exceeded thresholds contribute to warnings and `--fail-on-warning`, updated docs/plan, validated local fmt/diff/Python/package checks, passed PR #118 CI across Packages plus Rust on Ubuntu/Windows/macOS, merged PR #118, closed issue #117, and preserved local/remote branches. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 tagged release preflight hardening completed. Added a fail-closed `Release Tag Preflight` for `v*` releases requiring Windows signing, macOS signing/notarization, and `NPM_TOKEN` before package checks/builds, changed tagged npm publish steps from warning-and-skip to errors, preserved unsigned non-tag workflow_dispatch smoke builds, updated release docs/plan, passed local workflow/package/Rust GNU checks with documented local linker blockers, passed PR #121 CI, and passed a branch `Release Artifacts` smoke run across preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
+2026-05-22 - Post Phase 15 release version consistency gate completed. Added `scripts/verify-release-versions.py` for shared Cargo/npm package version checks and `v*` tag-to-package-version enforcement, wired it into CI and Release Artifacts package gates before npm checks/dry-runs, updated release/package docs, validated local good and fail-closed tag paths, passed PR #123 CI, and passed a branch `Release Artifacts` smoke across release preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
 ```

@@ -48,6 +48,14 @@ conu-<version>-macos-arm64.zip
 
 Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, and npm packages are published with provenance after GitHub Release assets exist. Linux archives currently use SHA-256 files plus GitHub artifact attestations until distro/package-manager signing is introduced.
 
+Before tagging, run:
+
+```sh
+python scripts/verify-release-versions.py
+```
+
+The CI and release package jobs run the same check before package validation. Branch and PR runs verify that every Cargo/npm manifest uses the same version; `v*` tag runs also require the tag version to match.
+
 Validate generated archives before upload:
 
 ```sh

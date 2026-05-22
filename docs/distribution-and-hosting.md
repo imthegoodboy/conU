@@ -59,8 +59,8 @@ The release workflow builds platform-named artifacts and uploads matching checks
 
 ## Publishing Flow
 
-1. Update all Cargo package versions and `packaging/npm/conu-cli/package.json` to the same version.
-2. Confirm `sdk/typescript/package.json` has the same version if publishing `@conu/sdk`.
+1. Update all Cargo package versions, `packaging/npm/conu-cli/package.json`, and `sdk/typescript/package.json` to the same version.
+2. Run `python scripts/verify-release-versions.py` locally; on `v*` tag builds the release workflow runs the same verifier and fails before packaging if the tag version does not match.
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
 5. Configure the repository signing secrets and `NPM_TOKEN` before creating the tag; the tagged release workflow fails before package checks if any required release secret is missing.

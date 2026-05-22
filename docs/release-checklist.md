@@ -7,6 +7,7 @@ Use this checklist before publishing any conU build.
 - Confirm the release version in all Cargo packages.
 - Confirm `packaging/npm/conu-cli/package.json` has the same version.
 - Confirm `sdk/typescript/package.json` has the same version if publishing the TypeScript/JavaScript SDK package.
+- Run `python scripts/verify-release-versions.py`; on `v*` tag builds the CI/release package gates also compare the tag version to the Cargo/npm package version.
 - Confirm `plan.md` reflects the completed phase and known gaps.
 - Confirm Phase 14 room claims stay scoped to implemented local metadata/fanout, relay-backed room-event fanout, and local room topic policy behavior. Do not claim hosted multi-tenant room permission administration.
 - Confirm relay hosting docs mention `CONU_RELAY_MAX_CONNECTIONS`, `CONU_RELAY_MAX_CONNECTIONS_PER_IP`, `CONU_RELAY_MAX_FRAMES_PER_MINUTE`, `CONU_RELAY_IDLE_TIMEOUT_SECONDS`, `CONU_RELAY_SESSION_TTL_SECONDS`, optional `CONU_RELAY_SESSION_STATE_DIR`, `conu-relay --session-audit`, `conu-relay --admin-session-audit`, `CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE`, `CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS`, optional `CONU_RELAY_MAILBOX_DIR`, `conu-relay --mailbox-audit`, `conu-relay --admin-mailbox-audit`, `conu-relay --admin-mailbox-purge`, optional mailbox `--retention-policy-file` policy files, optional `CONU_RELAY_ACCOUNTING_DIR`, `CONU_RELAY_ACCOUNTING_WINDOW_SECONDS`, `CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE`, `CONU_RELAY_MAX_BYTES_SENT_PER_NODE`, optional `CONU_RELAY_ABUSE_DIR`, `CONU_RELAY_ABUSE_WINDOW_SECONDS`, `conu-relay --abuse-threshold-report`, `conu-relay --admin-abuse-threshold-report`, optional threshold `--thresholds-file` policy files, optional threshold `--fail-on-threshold` exit code behavior, optional full-admin `CONU_RELAY_ADMIN_TOKEN`, optional scoped `CONU_RELAY_ADMIN_TOKENS_FILE`, `conu-relay --admin-token-audit` for payload-safe scoped admin-token manifest checks, `conu-relay --hosted-readiness` for payload-safe local startup/release preflights with reusable retention/threshold policy files and `--fail-on-warning`, account/action-scoped online credential lifecycle, online tenant lifecycle, hosted account suspension, session-state audits, dashboard snapshots/threshold reports, and online mailbox audit/purge, and optional `CONU_RELAY_TENANTS_FILE` for metadata-only hosted tenant checks.
@@ -32,6 +33,7 @@ Windows:
 
 ```powershell
 cargo fmt --all -- --check
+python scripts\verify-release-versions.py
 cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
 cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
@@ -46,6 +48,7 @@ macOS/Linux:
 
 ```sh
 cargo fmt --all -- --check
+python scripts/verify-release-versions.py
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -169,6 +172,7 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 ## GitHub
 
 - CI passed on pull request or equivalent local validation is recorded, including the Rust OS matrix and the package job for `sdk/typescript` plus `packaging/npm/conu-cli`.
+- CI and release package jobs run `scripts/verify-release-versions.py` before npm package checks, so package versions must match each other and `v*` tag names before release assets can be built or published.
 - npm package checks, dry-runs, and publication jobs run on Node 24 LTS, and package `engines` accept supported Node LTS lines only. Revisit the range when the next Node LTS line is promoted.
 - CI and release workflows use GitHub JavaScript action versions that declare the Node 24 action runtime, avoiding older action-runtime deprecation warnings. Self-hosted runners must be new enough for those actions before release workflows are moved off GitHub-hosted runners.
 - Migration-sensitive GitHub-hosted runner labels are explicit: Windows release/CI jobs run on `windows-2025-vs2026` while the Visual Studio 2026 migration is active, macOS arm64 jobs run on `macos-15`, and macOS x64 release jobs run on `macos-15-intel`. Revisit the Windows label after GitHub completes the June 2026 migration.
