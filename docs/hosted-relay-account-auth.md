@@ -216,6 +216,39 @@ Get-Content -Raw C:\secure\relay-admin.token |
     --json
 ```
 
+When several relay tenant registries are available through a guarded local fleet manifest, operators can dry-run or confirm tenant-node metadata changes across those local files without contacting the running relays:
+
+```powershell
+conu-relay --hosted-fleet-tenant-node-upsert account.prod node-a-id `
+  --fleet-file C:\conu-relay\fleet.toml `
+  --messages true `
+  --streams true `
+  --rooms true `
+  --files false `
+  --mailbox true `
+  --signing-key-id signing.key.2026-05 `
+  --exchange-key-id exchange.key.2026-05 `
+  --dry-run `
+  --json
+
+conu-relay --hosted-fleet-tenant-node-upsert account.prod node-a-id `
+  --fleet-file C:\conu-relay\fleet.toml `
+  --messages true `
+  --streams true `
+  --rooms true `
+  --files false `
+  --mailbox true `
+  --confirm `
+  --json
+
+conu-relay --hosted-fleet-tenant-node-revoke account.prod node-a-id `
+  --fleet-file C:\conu-relay\fleet.toml `
+  --dry-run `
+  --json
+```
+
+Fleet tenant-node lifecycle reuses only manifest entries with `tenants_file`, requires explicit `--dry-run` or `--confirm`, validates every configured tenant registry before confirmed mutation, requires the account to exist and be active for upsert, rejects node ownership collisions, and reports only relay names, tenant file paths, account/node ids, requested permission booleans, key-id presence booleans, counts, mode/status, and false display guards. It does not print public key-id values, raw tokens, token hashes, admin tokens, private keys, payloads, ciphertext bodies, frame contents, or the fleet manifest contents.
+
 When `CONU_RELAY_TENANTS_FILE` is configured, online issue and rotate require an active tenant account and active hosted node. New `HELLO` sessions also fail closed when the tenant account or hosted node is missing or revoked. Credential revoke remains available so operators can clean up credential metadata even after tenant or node revocation.
 
 ## Account Suspension
@@ -518,4 +551,4 @@ This is still single-relay and file-backed/admin-gated, even with scoped admin t
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token manifest audit, policy-aware hosted relay readiness preflight, hosted account-suspension, guarded local fleet account/node audit and suspension, abuse-audit, local/admin-gated session-state audit, local/admin-gated abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, guarded local fleet mailbox purge orchestration, local dashboard-snapshot, guarded fleet dashboard snapshots with aggregate reusable mailbox retention checks plus aggregate reusable abuse threshold checks, guarded fleet abuse response plans, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs remote/distributed tenant lifecycle workflow automation beyond guarded local fleet account/node audit and suspension plus single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse automation beyond guarded response plans, distributed multi-instance session migration beyond single-relay session-state audits, distributed accounting, remote relay/cross-region hosted mailbox retention orchestration beyond guarded local fleet purge, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token manifest audit, policy-aware hosted relay readiness preflight, hosted account-suspension, guarded local fleet account/node audit, tenant-node lifecycle, account/node suspension, abuse-audit, local/admin-gated session-state audit, local/admin-gated abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, guarded local fleet mailbox purge orchestration, local dashboard-snapshot, guarded fleet dashboard snapshots with aggregate reusable mailbox retention checks plus aggregate reusable abuse threshold checks, guarded fleet abuse response plans, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs remote/distributed tenant lifecycle workflow automation beyond guarded local fleet account/node audit, tenant-node lifecycle, account/node suspension plus single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse automation beyond guarded response plans, distributed multi-instance session migration beyond single-relay session-state audits, distributed accounting, remote relay/cross-region hosted mailbox retention orchestration beyond guarded local fleet purge, full hosted identity/key administration, and managed direct NAT traversal.

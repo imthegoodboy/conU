@@ -259,6 +259,24 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--hosted-fleet-tenant-node-upsert") => {
+            match hosted_fleet_tenant_node_upsert_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Some("--hosted-fleet-tenant-node-revoke") => {
+            match hosted_fleet_tenant_node_revoke_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("--session-audit") => match session_audit_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -403,6 +421,8 @@ Usage:
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
   conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--node <node-id>] [--json] [--fail-on-warning]
   conu-relay --hosted-fleet-account-suspend <account-id> --fleet-file <path> [--node <node-id>] (--dry-run|--confirm) [--json]
+  conu-relay --hosted-fleet-tenant-node-upsert <account-id> <node-id> --fleet-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] (--dry-run|--confirm) [--json]
+  conu-relay --hosted-fleet-tenant-node-revoke <account-id> <node-id> --fleet-file <path> (--dry-run|--confirm) [--json]
   conu-relay --session-audit --session-state-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
@@ -476,7 +496,9 @@ source-specific retention overrides unless a CLI --ttl-seconds override is suppl
 manifest can drive --hosted-fleet-abuse-response-plan for deterministic operator action categories
 over aggregate abuse thresholds, --hosted-fleet-account-audit for read-only account or account/node
 credential/tenant consistency warnings, --hosted-fleet-account-suspend for dry-run or explicitly confirmed
-tenant-first account or account/node suspension across complete local credential/tenant source pairs, and
+tenant-first account or account/node suspension across complete local credential/tenant source pairs,
+--hosted-fleet-tenant-node-upsert or --hosted-fleet-tenant-node-revoke for guarded dry-run or
+confirmed tenant-node metadata workflows across configured local tenant registries, and
 --hosted-fleet-mailbox-purge for dry-run or explicitly confirmed expired durable mailbox cleanup
 across configured local mailbox stores. The manifest must include explicit false display guards and
 does not make conU a managed billing, remote purge, remote tenant control, or adaptive abuse service.
@@ -5413,6 +5435,441 @@ fn hosted_fleet_account_suspension_relay_from_node_suspension(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostedFleetTenantNodeLifecycleMode {
+    Upsert,
+    Revoke,
+}
+
+impl HostedFleetTenantNodeLifecycleMode {
+    fn action(self) -> &'static str {
+        match self {
+            Self::Upsert => "upsert",
+            Self::Revoke => "revoke",
+        }
+    }
+
+    fn command(self) -> &'static str {
+        match self {
+            Self::Upsert => "--hosted-fleet-tenant-node-upsert",
+            Self::Revoke => "--hosted-fleet-tenant-node-revoke",
+        }
+    }
+
+    fn status(self, dry_run: bool) -> &'static str {
+        match (self, dry_run) {
+            (Self::Upsert, true) => "would_upsert",
+            (Self::Upsert, false) => "upserted",
+            (Self::Revoke, true) => "would_revoke",
+            (Self::Revoke, false) => "revoked",
+        }
+    }
+
+    fn usage(self) -> String {
+        match self {
+            Self::Upsert => "usage: conu-relay --hosted-fleet-tenant-node-upsert <account-id> <node-id> --fleet-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] (--dry-run|--confirm) [--json]".to_string(),
+            Self::Revoke => "usage: conu-relay --hosted-fleet-tenant-node-revoke <account-id> <node-id> --fleet-file <path> (--dry-run|--confirm) [--json]".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetTenantNodeLifecycleArgs {
+    account_id: String,
+    node_id: String,
+    fleet_file: PathBuf,
+    permissions: HostedTenantPermissions,
+    signing_key_id: Option<String>,
+    exchange_key_id: Option<String>,
+    dry_run: bool,
+    json: bool,
+    mode: HostedFleetTenantNodeLifecycleMode,
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetTenantNodeLifecycleSource {
+    name: String,
+    tenants_file: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetTenantNodeLifecycleRelayReport {
+    name: String,
+    tenants_file: PathBuf,
+    tenants: usize,
+    active_tenants: usize,
+    revoked_tenants: usize,
+    nodes: usize,
+    active_nodes: usize,
+    revoked_nodes: usize,
+    tenant_policies: usize,
+    token_displayed: bool,
+    key_material_displayed: bool,
+    contents_displayed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostedFleetTenantNodeLifecycleTotals {
+    relays: usize,
+    tenant_sources: usize,
+    tenants: usize,
+    active_tenants: usize,
+    revoked_tenants: usize,
+    nodes: usize,
+    active_nodes: usize,
+    revoked_nodes: usize,
+    tenant_policies: usize,
+    token_displayed: bool,
+    key_material_displayed: bool,
+    contents_displayed: bool,
+}
+
+impl HostedFleetTenantNodeLifecycleTotals {
+    fn add(&mut self, relay: &HostedFleetTenantNodeLifecycleRelayReport) {
+        self.tenant_sources += 1;
+        self.tenants += relay.tenants;
+        self.active_tenants += relay.active_tenants;
+        self.revoked_tenants += relay.revoked_tenants;
+        self.nodes += relay.nodes;
+        self.active_nodes += relay.active_nodes;
+        self.revoked_nodes += relay.revoked_nodes;
+        self.tenant_policies += relay.tenant_policies;
+        self.token_displayed |= relay.token_displayed;
+        self.key_material_displayed |= relay.key_material_displayed;
+        self.contents_displayed |= relay.contents_displayed;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetTenantNodeLifecycleReport {
+    account_id: String,
+    node_id: String,
+    fleet_file: PathBuf,
+    dry_run: bool,
+    mode: HostedFleetTenantNodeLifecycleMode,
+    permissions: HostedTenantPermissions,
+    signing_key_id_provided: bool,
+    exchange_key_id_provided: bool,
+    relays: Vec<HostedFleetTenantNodeLifecycleRelayReport>,
+    totals: HostedFleetTenantNodeLifecycleTotals,
+}
+
+fn hosted_fleet_tenant_node_upsert_from_args(args: Vec<String>) -> Result<(), String> {
+    hosted_fleet_tenant_node_lifecycle_from_args(args, HostedFleetTenantNodeLifecycleMode::Upsert)
+}
+
+fn hosted_fleet_tenant_node_revoke_from_args(args: Vec<String>) -> Result<(), String> {
+    hosted_fleet_tenant_node_lifecycle_from_args(args, HostedFleetTenantNodeLifecycleMode::Revoke)
+}
+
+fn hosted_fleet_tenant_node_lifecycle_from_args(
+    args: Vec<String>,
+    mode: HostedFleetTenantNodeLifecycleMode,
+) -> Result<(), String> {
+    let parsed = parse_hosted_fleet_tenant_node_lifecycle_args(args, mode)?;
+    let report = hosted_fleet_tenant_node_lifecycle_report(&parsed)?;
+    if parsed.json {
+        println!(
+            "{}",
+            render_hosted_fleet_tenant_node_lifecycle_json(&report)
+        );
+    } else {
+        println!(
+            "{}",
+            render_hosted_fleet_tenant_node_lifecycle_text(&report)
+        );
+    }
+    Ok(())
+}
+
+fn parse_hosted_fleet_tenant_node_lifecycle_args(
+    args: Vec<String>,
+    mode: HostedFleetTenantNodeLifecycleMode,
+) -> Result<HostedFleetTenantNodeLifecycleArgs, String> {
+    let mut positional = Vec::new();
+    let mut fleet_file = None::<PathBuf>;
+    let mut permissions = HostedTenantPermissions::default();
+    let mut signing_key_id = None::<String>;
+    let mut exchange_key_id = None::<String>;
+    let mut dry_run = false;
+    let mut confirm = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--fleet-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                fleet_file = Some(PathBuf::from(value));
+            }
+            "--messages" if mode == HostedFleetTenantNodeLifecycleMode::Upsert => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                permissions.messages = parse_cli_bool(value, "--messages")?;
+            }
+            "--streams" if mode == HostedFleetTenantNodeLifecycleMode::Upsert => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                permissions.streams = parse_cli_bool(value, "--streams")?;
+            }
+            "--rooms" if mode == HostedFleetTenantNodeLifecycleMode::Upsert => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                permissions.rooms = parse_cli_bool(value, "--rooms")?;
+            }
+            "--files" if mode == HostedFleetTenantNodeLifecycleMode::Upsert => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                permissions.files = parse_cli_bool(value, "--files")?;
+            }
+            "--mailbox" if mode == HostedFleetTenantNodeLifecycleMode::Upsert => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                permissions.mailbox = parse_cli_bool(value, "--mailbox")?;
+            }
+            "--signing-key-id" if mode == HostedFleetTenantNodeLifecycleMode::Upsert => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                signing_key_id = Some(validate_dashboard_filter_id(
+                    value.to_string(),
+                    "signing key id",
+                )?);
+            }
+            "--exchange-key-id" if mode == HostedFleetTenantNodeLifecycleMode::Upsert => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(mode.usage());
+                };
+                exchange_key_id = Some(validate_dashboard_filter_id(
+                    value.to_string(),
+                    "exchange key id",
+                )?);
+            }
+            "--dry-run" => dry_run = true,
+            "--confirm" => confirm = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(mode.usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(mode.usage());
+    }
+    let account_id = validate_dashboard_filter_id(positional.remove(0), "account id")?;
+    let node_id = validate_dashboard_filter_id(positional.remove(0), "node id")?;
+    let Some(fleet_file) = fleet_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(mode.usage());
+    };
+    match (dry_run, confirm) {
+        (true, false) | (false, true) => {}
+        _ => {
+            return Err(format!(
+                "{} requires exactly one of --dry-run or --confirm",
+                mode.command()
+            ));
+        }
+    }
+
+    Ok(HostedFleetTenantNodeLifecycleArgs {
+        account_id,
+        node_id,
+        fleet_file,
+        permissions,
+        signing_key_id,
+        exchange_key_id,
+        dry_run,
+        json,
+        mode,
+    })
+}
+
+fn hosted_fleet_tenant_node_lifecycle_report(
+    args: &HostedFleetTenantNodeLifecycleArgs,
+) -> Result<HostedFleetTenantNodeLifecycleReport, String> {
+    let configs = parse_hosted_fleet_dashboard_file(&args.fleet_file)?;
+    let sources = hosted_fleet_tenant_node_lifecycle_sources(&configs, args.mode)?;
+
+    // Preflight every tenant registry before confirmed mode mutates any
+    // source. This keeps avoidable partial fleet updates out of operator flows.
+    for source in &sources {
+        hosted_fleet_tenant_node_lifecycle_preflight(source, args)?;
+    }
+
+    let mut totals = HostedFleetTenantNodeLifecycleTotals {
+        relays: configs.len(),
+        ..HostedFleetTenantNodeLifecycleTotals::default()
+    };
+    let mut relays = Vec::<HostedFleetTenantNodeLifecycleRelayReport>::new();
+
+    for source in sources {
+        let relay = if args.dry_run {
+            hosted_fleet_tenant_node_lifecycle_snapshot(&source, args)?
+        } else {
+            hosted_fleet_tenant_node_lifecycle_confirm(&source, args)?
+        };
+        totals.add(&relay);
+        relays.push(relay);
+    }
+
+    Ok(HostedFleetTenantNodeLifecycleReport {
+        account_id: args.account_id.clone(),
+        node_id: args.node_id.clone(),
+        fleet_file: args.fleet_file.clone(),
+        dry_run: args.dry_run,
+        mode: args.mode,
+        permissions: args.permissions,
+        signing_key_id_provided: args.signing_key_id.is_some(),
+        exchange_key_id_provided: args.exchange_key_id.is_some(),
+        relays,
+        totals,
+    })
+}
+
+fn hosted_fleet_tenant_node_lifecycle_sources(
+    configs: &[HostedFleetRelayConfig],
+    mode: HostedFleetTenantNodeLifecycleMode,
+) -> Result<Vec<HostedFleetTenantNodeLifecycleSource>, String> {
+    let mut sources = Vec::new();
+    for config in configs {
+        if let Some(tenants_file) = &config.tenants_file {
+            sources.push(HostedFleetTenantNodeLifecycleSource {
+                name: config.name.clone(),
+                tenants_file: tenants_file.clone(),
+            });
+        }
+    }
+    if sources.is_empty() {
+        return Err(format!(
+            "{} requires at least one fleet relay with tenants_file",
+            mode.command()
+        ));
+    }
+    Ok(sources)
+}
+
+fn hosted_fleet_tenant_node_lifecycle_preflight(
+    source: &HostedFleetTenantNodeLifecycleSource,
+    args: &HostedFleetTenantNodeLifecycleArgs,
+) -> Result<(), String> {
+    let account =
+        audit_hosted_tenants_file_with_node(&source.tenants_file, Some(&args.account_id), None)
+            .map_err(|error| error.to_string())?;
+    if account.tenants == 0 {
+        return Err(format!(
+            "{} relay {} account was not found in tenants file",
+            args.mode.command(),
+            source.name
+        ));
+    }
+    if args.mode == HostedFleetTenantNodeLifecycleMode::Upsert && account.active_tenants == 0 {
+        return Err(format!(
+            "{} relay {} account is not active in tenants file",
+            args.mode.command(),
+            source.name
+        ));
+    }
+
+    let account_node = audit_hosted_tenants_file_with_node(
+        &source.tenants_file,
+        Some(&args.account_id),
+        Some(&args.node_id),
+    )
+    .map_err(|error| error.to_string())?;
+    if args.mode == HostedFleetTenantNodeLifecycleMode::Revoke && account_node.nodes == 0 {
+        return Err(format!(
+            "{} relay {} account node was not found in tenants file",
+            args.mode.command(),
+            source.name
+        ));
+    }
+    if args.mode == HostedFleetTenantNodeLifecycleMode::Upsert {
+        let any_node =
+            audit_hosted_tenants_file_with_node(&source.tenants_file, None, Some(&args.node_id))
+                .map_err(|error| error.to_string())?;
+        if any_node.nodes > 0 && account_node.nodes == 0 {
+            return Err(format!(
+                "{} relay {} node belongs to a different account",
+                args.mode.command(),
+                source.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn hosted_fleet_tenant_node_lifecycle_confirm(
+    source: &HostedFleetTenantNodeLifecycleSource,
+    args: &HostedFleetTenantNodeLifecycleArgs,
+) -> Result<HostedFleetTenantNodeLifecycleRelayReport, String> {
+    match args.mode {
+        HostedFleetTenantNodeLifecycleMode::Upsert => {
+            upsert_hosted_tenant_node_in_file(
+                &source.tenants_file,
+                args.account_id.clone(),
+                args.node_id.clone(),
+                args.permissions,
+                args.signing_key_id.clone(),
+                args.exchange_key_id.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        HostedFleetTenantNodeLifecycleMode::Revoke => {
+            revoke_hosted_tenant_node_in_file(
+                &source.tenants_file,
+                args.account_id.clone(),
+                args.node_id.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    hosted_fleet_tenant_node_lifecycle_snapshot(source, args)
+}
+
+fn hosted_fleet_tenant_node_lifecycle_snapshot(
+    source: &HostedFleetTenantNodeLifecycleSource,
+    args: &HostedFleetTenantNodeLifecycleArgs,
+) -> Result<HostedFleetTenantNodeLifecycleRelayReport, String> {
+    let audit = audit_hosted_tenants_file_with_node(
+        &source.tenants_file,
+        Some(&args.account_id),
+        Some(&args.node_id),
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(HostedFleetTenantNodeLifecycleRelayReport {
+        name: source.name.clone(),
+        tenants_file: source.tenants_file.clone(),
+        tenants: audit.tenants,
+        active_tenants: audit.active_tenants,
+        revoked_tenants: audit.revoked_tenants,
+        nodes: audit.nodes,
+        active_nodes: audit.active_nodes,
+        revoked_nodes: audit.revoked_nodes,
+        tenant_policies: audit.policies,
+        token_displayed: audit.token_displayed,
+        key_material_displayed: audit.key_material_displayed,
+        contents_displayed: audit.contents_displayed,
+    })
+}
+
 #[derive(Debug, Clone)]
 struct SessionAuditArgs {
     session_state_dir: PathBuf,
@@ -9780,6 +10237,250 @@ fn render_hosted_fleet_account_suspend_relay_json(
     )
 }
 
+fn render_hosted_fleet_tenant_node_lifecycle_text(
+    report: &HostedFleetTenantNodeLifecycleReport,
+) -> String {
+    let mode = if report.dry_run {
+        "dry-run"
+    } else {
+        "confirmed"
+    };
+    let totals = &report.totals;
+    let mut output = format!(
+        r"conU hosted relay fleet tenant node lifecycle
+
+status: {}
+action: {}
+mode: {}
+account: {}
+node: {}
+fleet file: {}
+relays: {}
+tenant sources: {}
+requested permissions: {}
+signing key id provided: {}
+exchange key id provided: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+nodes: {}
+active nodes: {}
+revoked nodes: {}
+tenant policies: {}
+
+relay tenant sources:",
+        report.mode.status(report.dry_run),
+        report.mode.action(),
+        mode,
+        report.account_id,
+        report.node_id,
+        report.fleet_file.display(),
+        totals.relays,
+        totals.tenant_sources,
+        render_hosted_tenant_permissions_text(report.mode, report.permissions),
+        yes_no(report.signing_key_id_provided),
+        yes_no(report.exchange_key_id_provided),
+        totals.tenants,
+        totals.active_tenants,
+        totals.revoked_tenants,
+        totals.nodes,
+        totals.active_nodes,
+        totals.revoked_nodes,
+        totals.tenant_policies
+    );
+
+    for relay in &report.relays {
+        output.push_str(&format!(
+            "\n- {}: tenants {} active tenants {} node records {} active nodes {} revoked nodes {} policies {}",
+            relay.name,
+            relay.tenants_file.display(),
+            relay.active_tenants,
+            relay.nodes,
+            relay.active_nodes,
+            relay.revoked_nodes,
+            relay.tenant_policies
+        ));
+    }
+
+    output.push_str(&format!(
+        r"
+
+payload displayed: no
+token displayed: {}
+token hash displayed: no
+key material displayed: {}
+session id displayed: no
+ciphertext displayed: no
+contents displayed: {}",
+        yes_no(totals.token_displayed),
+        yes_no(totals.key_material_displayed),
+        yes_no(totals.contents_displayed)
+    ));
+    output
+}
+
+fn render_hosted_fleet_tenant_node_lifecycle_json(
+    report: &HostedFleetTenantNodeLifecycleReport,
+) -> String {
+    let relays = report
+        .relays
+        .iter()
+        .map(render_hosted_fleet_tenant_node_lifecycle_relay_json)
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    format!(
+        r#"{{
+  "status": "{}",
+  "action": "{}",
+  "mode": "{}",
+  "accountId": "{}",
+  "nodeId": "{}",
+  "fleetFile": "{}",
+  "dryRun": {},
+  "confirmed": {},
+  "requestedPermissions": {},
+  "signingKeyIdProvided": {},
+  "exchangeKeyIdProvided": {},
+  "totals": {},
+  "relays": [
+{}
+  ],
+  "payloadDisplayed": false,
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": false,
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": false,
+  "ciphertextDisplayed": false,
+  "contentsDisplayed": {}
+}}"#,
+        report.mode.status(report.dry_run),
+        report.mode.action(),
+        if report.dry_run {
+            "dry-run"
+        } else {
+            "confirmed"
+        },
+        json_escape(&report.account_id),
+        json_escape(&report.node_id),
+        json_escape(&report.fleet_file.display().to_string()),
+        bool_json(report.dry_run),
+        bool_json(!report.dry_run),
+        render_hosted_tenant_permissions_json(report.mode, report.permissions),
+        bool_json(report.signing_key_id_provided),
+        bool_json(report.exchange_key_id_provided),
+        render_hosted_fleet_tenant_node_lifecycle_totals_json(&report.totals),
+        relays,
+        bool_json(report.totals.token_displayed),
+        bool_json(report.totals.key_material_displayed),
+        bool_json(report.totals.contents_displayed)
+    )
+}
+
+fn render_hosted_fleet_tenant_node_lifecycle_totals_json(
+    totals: &HostedFleetTenantNodeLifecycleTotals,
+) -> String {
+    format!(
+        r#"{{
+    "relays": {},
+    "tenantSources": {},
+    "tenants": {},
+    "activeTenants": {},
+    "revokedTenants": {},
+    "nodes": {},
+    "activeNodes": {},
+    "revokedNodes": {},
+    "tenantPolicies": {}
+  }}"#,
+        totals.relays,
+        totals.tenant_sources,
+        totals.tenants,
+        totals.active_tenants,
+        totals.revoked_tenants,
+        totals.nodes,
+        totals.active_nodes,
+        totals.revoked_nodes,
+        totals.tenant_policies
+    )
+}
+
+fn render_hosted_fleet_tenant_node_lifecycle_relay_json(
+    relay: &HostedFleetTenantNodeLifecycleRelayReport,
+) -> String {
+    format!(
+        r#"    {{
+      "name": "{}",
+      "tenantsFile": "{}",
+      "tenants": {},
+      "activeTenants": {},
+      "revokedTenants": {},
+      "nodes": {},
+      "activeNodes": {},
+      "revokedNodes": {},
+      "tenantPolicies": {},
+      "payloadDisplayed": false,
+      "tokenDisplayed": {},
+      "tokenHashDisplayed": false,
+      "keyMaterialDisplayed": {},
+      "sessionIdDisplayed": false,
+      "ciphertextDisplayed": false,
+      "contentsDisplayed": {}
+    }}"#,
+        json_escape(&relay.name),
+        json_escape(&relay.tenants_file.display().to_string()),
+        relay.tenants,
+        relay.active_tenants,
+        relay.revoked_tenants,
+        relay.nodes,
+        relay.active_nodes,
+        relay.revoked_nodes,
+        relay.tenant_policies,
+        bool_json(relay.token_displayed),
+        bool_json(relay.key_material_displayed),
+        bool_json(relay.contents_displayed)
+    )
+}
+
+fn render_hosted_tenant_permissions_text(
+    mode: HostedFleetTenantNodeLifecycleMode,
+    permissions: HostedTenantPermissions,
+) -> String {
+    if mode == HostedFleetTenantNodeLifecycleMode::Revoke {
+        return "none".to_string();
+    }
+    format!(
+        "messages={} streams={} rooms={} files={} mailbox={}",
+        permissions.messages,
+        permissions.streams,
+        permissions.rooms,
+        permissions.files,
+        permissions.mailbox
+    )
+}
+
+fn render_hosted_tenant_permissions_json(
+    mode: HostedFleetTenantNodeLifecycleMode,
+    permissions: HostedTenantPermissions,
+) -> String {
+    if mode == HostedFleetTenantNodeLifecycleMode::Revoke {
+        return "null".to_string();
+    }
+    format!(
+        r#"{{
+    "messages": {},
+    "streams": {},
+    "rooms": {},
+    "files": {},
+    "mailbox": {}
+  }}"#,
+        bool_json(permissions.messages),
+        bool_json(permissions.streams),
+        bool_json(permissions.rooms),
+        bool_json(permissions.files),
+        bool_json(permissions.mailbox)
+    )
+}
+
 fn render_admin_account_suspend_text(result: &RelayAdminResult, relay: &str) -> String {
     format!(
         r"conU hosted relay admin account suspension
@@ -12588,6 +13289,220 @@ mod tests {
             })
             .expect_err("partial account source should fail closed");
         assert!(partial_error.contains("requires tenants_file"));
+    }
+
+    #[test]
+    fn hosted_fleet_tenant_node_lifecycle_parser_report_and_renderers_are_metadata_only() {
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.a\"\ntenants_file = \"tenants.toml\"\n\n[[relay]]\nname = \"relay.metrics\"\nabuse_dir = \"abuse\"\n",
+        ));
+        let base_dir = fleet_file.parent().expect("fleet file parent");
+        let tenants_file = base_dir.join("tenants.toml");
+        let secret_token = "raw-hosted-tenant-node-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let signing_key_id = "signing.secret";
+        let exchange_key_id = "exchange.secret";
+
+        upsert_hosted_tenant_in_file(&tenants_file, "account.prod").expect("hosted tenant upserts");
+
+        let parsed = parse_hosted_fleet_tenant_node_lifecycle_args(
+            vec![
+                "account.prod".to_string(),
+                "node.prod".to_string(),
+                "--fleet-file".to_string(),
+                fleet_file.display().to_string(),
+                "--messages".to_string(),
+                "true".to_string(),
+                "--streams".to_string(),
+                "true".to_string(),
+                "--mailbox".to_string(),
+                "true".to_string(),
+                "--signing-key-id".to_string(),
+                signing_key_id.to_string(),
+                "--exchange-key-id".to_string(),
+                exchange_key_id.to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+            HostedFleetTenantNodeLifecycleMode::Upsert,
+        )
+        .expect("hosted fleet tenant node upsert args parse");
+        assert_eq!(parsed.account_id, "account.prod");
+        assert_eq!(parsed.node_id, "node.prod");
+        assert_eq!(parsed.fleet_file, fleet_file);
+        assert!(parsed.permissions.messages);
+        assert!(parsed.permissions.streams);
+        assert!(!parsed.permissions.rooms);
+        assert!(!parsed.permissions.files);
+        assert!(parsed.permissions.mailbox);
+        assert!(parsed.signing_key_id.is_some());
+        assert!(parsed.exchange_key_id.is_some());
+        assert!(parsed.dry_run);
+        assert!(parsed.json);
+        assert!(
+            parse_hosted_fleet_tenant_node_lifecycle_args(
+                Vec::new(),
+                HostedFleetTenantNodeLifecycleMode::Upsert,
+            )
+            .is_err()
+        );
+        let invalid_account = parse_hosted_fleet_tenant_node_lifecycle_args(
+            vec![
+                "bad secret value".to_string(),
+                "node.prod".to_string(),
+                "--fleet-file".to_string(),
+                parsed.fleet_file.display().to_string(),
+                "--dry-run".to_string(),
+            ],
+            HostedFleetTenantNodeLifecycleMode::Upsert,
+        )
+        .expect_err("invalid account should fail closed");
+        assert!(!invalid_account.contains("bad secret value"));
+
+        let dry_report = hosted_fleet_tenant_node_lifecycle_report(&parsed)
+            .expect("hosted fleet tenant node upsert dry-run report");
+        assert!(dry_report.dry_run);
+        assert_eq!(dry_report.totals.relays, 2);
+        assert_eq!(dry_report.totals.tenant_sources, 1);
+        assert_eq!(dry_report.totals.active_tenants, 1);
+        assert_eq!(dry_report.totals.nodes, 0);
+        let dry_node_audit = audit_hosted_tenants_file_with_node(
+            &tenants_file,
+            Some("account.prod"),
+            Some("node.prod"),
+        )
+        .expect("tenant node audit after dry-run");
+        assert_eq!(dry_node_audit.nodes, 0);
+
+        let confirmed =
+            hosted_fleet_tenant_node_lifecycle_report(&HostedFleetTenantNodeLifecycleArgs {
+                dry_run: false,
+                json: true,
+                ..parsed.clone()
+            })
+            .expect("hosted fleet tenant node upsert confirmed report");
+        assert!(!confirmed.dry_run);
+        assert_eq!(confirmed.totals.tenant_sources, 1);
+        assert_eq!(confirmed.totals.active_tenants, 1);
+        assert_eq!(confirmed.totals.nodes, 1);
+        assert_eq!(confirmed.totals.active_nodes, 1);
+        assert_eq!(confirmed.totals.tenant_policies, 1);
+
+        let upsert_outputs = [
+            render_hosted_fleet_tenant_node_lifecycle_text(&dry_report),
+            render_hosted_fleet_tenant_node_lifecycle_json(&dry_report),
+            render_hosted_fleet_tenant_node_lifecycle_text(&confirmed),
+            render_hosted_fleet_tenant_node_lifecycle_json(&confirmed),
+        ];
+        for output in upsert_outputs {
+            assert!(output.contains("tenant node"));
+            assert!(output.contains("account.prod"));
+            assert!(output.contains("node.prod"));
+            assert!(output.contains("token"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(signing_key_id));
+            assert!(!output.contains(exchange_key_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+
+        let revoke_parsed = parse_hosted_fleet_tenant_node_lifecycle_args(
+            vec![
+                "account.prod".to_string(),
+                "node.prod".to_string(),
+                "--fleet-file".to_string(),
+                fleet_file.display().to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+            HostedFleetTenantNodeLifecycleMode::Revoke,
+        )
+        .expect("hosted fleet tenant node revoke args parse");
+        assert_eq!(
+            revoke_parsed.mode,
+            HostedFleetTenantNodeLifecycleMode::Revoke
+        );
+        let revoke_dry = hosted_fleet_tenant_node_lifecycle_report(&revoke_parsed)
+            .expect("hosted fleet tenant node revoke dry-run report");
+        assert!(revoke_dry.dry_run);
+        assert_eq!(revoke_dry.totals.active_nodes, 1);
+
+        let revoke_confirmed =
+            hosted_fleet_tenant_node_lifecycle_report(&HostedFleetTenantNodeLifecycleArgs {
+                dry_run: false,
+                json: true,
+                ..revoke_parsed.clone()
+            })
+            .expect("hosted fleet tenant node revoke confirmed report");
+        assert_eq!(revoke_confirmed.totals.active_nodes, 0);
+        assert_eq!(revoke_confirmed.totals.revoked_nodes, 1);
+
+        let revoke_outputs = [
+            render_hosted_fleet_tenant_node_lifecycle_text(&revoke_dry),
+            render_hosted_fleet_tenant_node_lifecycle_json(&revoke_dry),
+            render_hosted_fleet_tenant_node_lifecycle_text(&revoke_confirmed),
+            render_hosted_fleet_tenant_node_lifecycle_json(&revoke_confirmed),
+        ];
+        for output in revoke_outputs {
+            assert!(output.contains("revoke"));
+            assert!(output.contains("node.prod"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(signing_key_id));
+            assert!(!output.contains(exchange_key_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+
+        let no_tenants_fleet = write_hosted_fleet_dashboard_file(
+            &hosted_fleet_dashboard_file_contents(
+                "[[relay]]\nname = \"relay.credentials\"\ncredentials_file = \"credentials.toml\"\n",
+            ),
+        );
+        let no_tenants_error =
+            hosted_fleet_tenant_node_lifecycle_report(&HostedFleetTenantNodeLifecycleArgs {
+                account_id: "account.prod".to_string(),
+                node_id: "node.prod".to_string(),
+                fleet_file: no_tenants_fleet,
+                permissions: HostedTenantPermissions::default(),
+                signing_key_id: None,
+                exchange_key_id: None,
+                dry_run: true,
+                json: false,
+                mode: HostedFleetTenantNodeLifecycleMode::Upsert,
+            })
+            .expect_err("tenant node lifecycle should require tenant sources");
+        assert!(no_tenants_error.contains("tenants_file"));
+
+        upsert_hosted_tenant_in_file(&tenants_file, "account.other")
+            .expect("other hosted tenant upserts");
+        upsert_hosted_tenant_node_in_file(
+            &tenants_file,
+            "account.other",
+            "node.shared",
+            HostedTenantPermissions::default(),
+            None,
+            None,
+        )
+        .expect("other hosted tenant node upserts");
+        let collision_error =
+            hosted_fleet_tenant_node_lifecycle_report(&HostedFleetTenantNodeLifecycleArgs {
+                account_id: "account.prod".to_string(),
+                node_id: "node.shared".to_string(),
+                fleet_file: parsed.fleet_file.clone(),
+                permissions: HostedTenantPermissions::default(),
+                signing_key_id: None,
+                exchange_key_id: None,
+                dry_run: true,
+                json: false,
+                mode: HostedFleetTenantNodeLifecycleMode::Upsert,
+            })
+            .expect_err("node owned by a different account should fail preflight");
+        assert!(collision_error.contains("different account"));
     }
 
     #[test]
