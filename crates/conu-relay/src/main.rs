@@ -20,7 +20,8 @@ use conu_relay::{
     audit_hosted_tenants_file, audit_hosted_tenants_file_with_node, audit_relay_abuse_dir,
     audit_relay_accounting_dir, audit_relay_mailbox_dir, audit_relay_session_state_dir,
     issue_relay_credential, purge_relay_mailbox_dir, relay_credential_manifest_contains_node,
-    relay_token_sha256_hex, revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
+    relay_token_sha256_hex, revoke_hosted_relay_credentials_for_account_node_in_file,
+    revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
     revoke_relay_credential_in_file, suspend_hosted_account_in_files,
     suspend_hosted_account_node_in_files, upsert_hosted_tenant_in_file,
     upsert_hosted_tenant_node_in_file, upsert_issued_relay_credential_in_file,
@@ -259,6 +260,15 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--hosted-fleet-credential-revoke") => {
+            match hosted_fleet_credential_revoke_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("--hosted-fleet-tenant-node-upsert") => {
             match hosted_fleet_tenant_node_upsert_from_args(args.collect()) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -421,6 +431,7 @@ Usage:
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
   conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--node <node-id>] [--json] [--fail-on-warning]
   conu-relay --hosted-fleet-account-suspend <account-id> --fleet-file <path> [--node <node-id>] (--dry-run|--confirm) [--json]
+  conu-relay --hosted-fleet-credential-revoke <account-id> <node-id> --fleet-file <path> (--dry-run|--confirm) [--json]
   conu-relay --hosted-fleet-tenant-node-upsert <account-id> <node-id> --fleet-file <path> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--signing-key-id <id>] [--exchange-key-id <id>] (--dry-run|--confirm) [--json]
   conu-relay --hosted-fleet-tenant-node-revoke <account-id> <node-id> --fleet-file <path> (--dry-run|--confirm) [--json]
   conu-relay --session-audit --session-state-dir <path> [--node <node-id>] [--json]
@@ -497,6 +508,8 @@ manifest can drive --hosted-fleet-abuse-response-plan for deterministic operator
 over aggregate abuse thresholds, --hosted-fleet-account-audit for read-only account or account/node
 credential/tenant consistency warnings, --hosted-fleet-account-suspend for dry-run or explicitly confirmed
 tenant-first account or account/node suspension across complete local credential/tenant source pairs,
+--hosted-fleet-credential-revoke for guarded dry-run or confirmed account/node credential revocation
+across configured local credential manifests,
 --hosted-fleet-tenant-node-upsert or --hosted-fleet-tenant-node-revoke for guarded dry-run or
 confirmed tenant-node metadata workflows across configured local tenant registries, and
 --hosted-fleet-mailbox-purge for dry-run or explicitly confirmed expired durable mailbox cleanup
@@ -5435,6 +5448,280 @@ fn hosted_fleet_account_suspension_relay_from_node_suspension(
     }
 }
 
+#[derive(Debug, Clone)]
+struct HostedFleetCredentialRevokeArgs {
+    account_id: String,
+    node_id: String,
+    fleet_file: PathBuf,
+    dry_run: bool,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetCredentialRevokeSource {
+    name: String,
+    credentials_file: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetCredentialRevokeRelayReport {
+    name: String,
+    credentials_file: PathBuf,
+    credentials: usize,
+    active: usize,
+    revoked: usize,
+    expired: usize,
+    accounts: usize,
+    token_displayed: bool,
+    contents_displayed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostedFleetCredentialRevokeTotals {
+    relays: usize,
+    credential_sources: usize,
+    credentials: usize,
+    active: usize,
+    revoked: usize,
+    expired: usize,
+    accounts: usize,
+    token_displayed: bool,
+    contents_displayed: bool,
+}
+
+impl HostedFleetCredentialRevokeTotals {
+    fn add(&mut self, relay: &HostedFleetCredentialRevokeRelayReport) {
+        self.credential_sources += 1;
+        self.credentials += relay.credentials;
+        self.active += relay.active;
+        self.revoked += relay.revoked;
+        self.expired += relay.expired;
+        self.accounts += relay.accounts;
+        self.token_displayed |= relay.token_displayed;
+        self.contents_displayed |= relay.contents_displayed;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetCredentialRevokeReport {
+    account_id: String,
+    node_id: String,
+    fleet_file: PathBuf,
+    dry_run: bool,
+    relays: Vec<HostedFleetCredentialRevokeRelayReport>,
+    totals: HostedFleetCredentialRevokeTotals,
+}
+
+fn hosted_fleet_credential_revoke_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_hosted_fleet_credential_revoke_args(args)?;
+    let report = hosted_fleet_credential_revoke_report(&parsed)?;
+    if parsed.json {
+        println!("{}", render_hosted_fleet_credential_revoke_json(&report));
+    } else {
+        println!("{}", render_hosted_fleet_credential_revoke_text(&report));
+    }
+    Ok(())
+}
+
+fn parse_hosted_fleet_credential_revoke_args(
+    args: Vec<String>,
+) -> Result<HostedFleetCredentialRevokeArgs, String> {
+    let mut positional = Vec::new();
+    let mut fleet_file = None::<PathBuf>;
+    let mut dry_run = false;
+    let mut confirm = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--fleet-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_credential_revoke_usage());
+                };
+                fleet_file = Some(PathBuf::from(value));
+            }
+            "--dry-run" => dry_run = true,
+            "--confirm" => confirm = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(hosted_fleet_credential_revoke_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(hosted_fleet_credential_revoke_usage());
+    }
+    let account_id = validate_dashboard_filter_id(positional.remove(0), "account id")?;
+    let node_id = validate_dashboard_filter_id(positional.remove(0), "node id")?;
+    let Some(fleet_file) = fleet_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(hosted_fleet_credential_revoke_usage());
+    };
+    match (dry_run, confirm) {
+        (true, false) | (false, true) => {}
+        _ => {
+            return Err(
+                "--hosted-fleet-credential-revoke requires exactly one of --dry-run or --confirm"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(HostedFleetCredentialRevokeArgs {
+        account_id,
+        node_id,
+        fleet_file,
+        dry_run,
+        json,
+    })
+}
+
+fn hosted_fleet_credential_revoke_usage() -> String {
+    "usage: conu-relay --hosted-fleet-credential-revoke <account-id> <node-id> --fleet-file <path> (--dry-run|--confirm) [--json]".to_string()
+}
+
+fn hosted_fleet_credential_revoke_report(
+    args: &HostedFleetCredentialRevokeArgs,
+) -> Result<HostedFleetCredentialRevokeReport, String> {
+    let configs = parse_hosted_fleet_dashboard_file(&args.fleet_file)?;
+    let sources = hosted_fleet_credential_revoke_sources(&configs)?;
+
+    // Preflight every credential manifest before confirmed mode mutates any
+    // source. This keeps avoidable partial fleet updates out of revoke flows.
+    for source in &sources {
+        hosted_fleet_credential_revoke_preflight(source, args)?;
+    }
+
+    let mut totals = HostedFleetCredentialRevokeTotals {
+        relays: configs.len(),
+        ..HostedFleetCredentialRevokeTotals::default()
+    };
+    let mut relays = Vec::<HostedFleetCredentialRevokeRelayReport>::new();
+
+    for source in sources {
+        let relay = if args.dry_run {
+            hosted_fleet_credential_revoke_snapshot(&source, args)?
+        } else {
+            hosted_fleet_credential_revoke_confirm(&source, args)?
+        };
+        totals.add(&relay);
+        relays.push(relay);
+    }
+
+    Ok(HostedFleetCredentialRevokeReport {
+        account_id: args.account_id.clone(),
+        node_id: args.node_id.clone(),
+        fleet_file: args.fleet_file.clone(),
+        dry_run: args.dry_run,
+        relays,
+        totals,
+    })
+}
+
+fn hosted_fleet_credential_revoke_sources(
+    configs: &[HostedFleetRelayConfig],
+) -> Result<Vec<HostedFleetCredentialRevokeSource>, String> {
+    let mut sources = Vec::new();
+    for config in configs {
+        if let Some(credentials_file) = &config.credentials_file {
+            sources.push(HostedFleetCredentialRevokeSource {
+                name: config.name.clone(),
+                credentials_file: credentials_file.clone(),
+            });
+        }
+    }
+    if sources.is_empty() {
+        return Err(
+            "--hosted-fleet-credential-revoke requires at least one fleet relay with credentials_file"
+                .to_string(),
+        );
+    }
+    Ok(sources)
+}
+
+fn hosted_fleet_credential_revoke_preflight(
+    source: &HostedFleetCredentialRevokeSource,
+    args: &HostedFleetCredentialRevokeArgs,
+) -> Result<(), String> {
+    let target = audit_hosted_relay_credentials_file_with_node(
+        &source.credentials_file,
+        Some(&args.account_id),
+        Some(&args.node_id),
+    )
+    .map_err(|error| error.to_string())?;
+    let any_node = audit_hosted_relay_credentials_file_with_node(
+        &source.credentials_file,
+        None,
+        Some(&args.node_id),
+    )
+    .map_err(|error| error.to_string())?;
+    if target.credentials == 0 {
+        if any_node.credentials > 0 {
+            return Err(format!(
+                "--hosted-fleet-credential-revoke relay {} credential node belongs to a different account",
+                source.name
+            ));
+        }
+        return Err(format!(
+            "--hosted-fleet-credential-revoke relay {} account node credential was not found",
+            source.name
+        ));
+    }
+    if any_node.credentials > target.credentials || any_node.accounts > 1 {
+        return Err(format!(
+            "--hosted-fleet-credential-revoke relay {} credential node belongs to a different account",
+            source.name
+        ));
+    }
+    if target.credentials != 1 || any_node.credentials != 1 {
+        return Err(format!(
+            "--hosted-fleet-credential-revoke relay {} credential node has duplicate records",
+            source.name
+        ));
+    }
+    Ok(())
+}
+
+fn hosted_fleet_credential_revoke_confirm(
+    source: &HostedFleetCredentialRevokeSource,
+    args: &HostedFleetCredentialRevokeArgs,
+) -> Result<HostedFleetCredentialRevokeRelayReport, String> {
+    revoke_hosted_relay_credentials_for_account_node_in_file(
+        &source.credentials_file,
+        args.account_id.clone(),
+        args.node_id.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    hosted_fleet_credential_revoke_snapshot(source, args)
+}
+
+fn hosted_fleet_credential_revoke_snapshot(
+    source: &HostedFleetCredentialRevokeSource,
+    args: &HostedFleetCredentialRevokeArgs,
+) -> Result<HostedFleetCredentialRevokeRelayReport, String> {
+    let audit = audit_hosted_relay_credentials_file_with_node(
+        &source.credentials_file,
+        Some(&args.account_id),
+        Some(&args.node_id),
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(HostedFleetCredentialRevokeRelayReport {
+        name: source.name.clone(),
+        credentials_file: source.credentials_file.clone(),
+        credentials: audit.credentials,
+        active: audit.active,
+        revoked: audit.revoked,
+        expired: audit.expired,
+        accounts: audit.accounts,
+        token_displayed: audit.token_displayed,
+        contents_displayed: audit.contents_displayed,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostedFleetTenantNodeLifecycleMode {
     Upsert,
@@ -10237,6 +10524,190 @@ fn render_hosted_fleet_account_suspend_relay_json(
     )
 }
 
+fn render_hosted_fleet_credential_revoke_text(
+    report: &HostedFleetCredentialRevokeReport,
+) -> String {
+    let status = if report.dry_run {
+        "would_revoke"
+    } else {
+        "revoked"
+    };
+    let mode = if report.dry_run {
+        "dry-run"
+    } else {
+        "confirmed"
+    };
+    let totals = &report.totals;
+    let mut output = format!(
+        r"conU hosted relay fleet credential revoke
+
+status: {}
+action: revoke
+mode: {}
+account: {}
+node: {}
+fleet file: {}
+relays: {}
+credential sources: {}
+credentials: {}
+active credentials: {}
+revoked credentials: {}
+expired credentials: {}
+accounts: {}
+
+relay credential sources:",
+        status,
+        mode,
+        report.account_id,
+        report.node_id,
+        report.fleet_file.display(),
+        totals.relays,
+        totals.credential_sources,
+        totals.credentials,
+        totals.active,
+        totals.revoked,
+        totals.expired,
+        totals.accounts
+    );
+
+    for relay in &report.relays {
+        output.push_str(&format!(
+            "\n- {}: credentials {} active credentials {} revoked credentials {} expired credentials {} accounts {}",
+            relay.name,
+            relay.credentials_file.display(),
+            relay.active,
+            relay.revoked,
+            relay.expired,
+            relay.accounts
+        ));
+    }
+
+    output.push_str(&format!(
+        r"
+
+payload displayed: no
+token displayed: {}
+token hash displayed: no
+key material displayed: no
+session id displayed: no
+ciphertext displayed: no
+contents displayed: {}",
+        yes_no(totals.token_displayed),
+        yes_no(totals.contents_displayed)
+    ));
+    output
+}
+
+fn render_hosted_fleet_credential_revoke_json(
+    report: &HostedFleetCredentialRevokeReport,
+) -> String {
+    let status = if report.dry_run {
+        "would_revoke"
+    } else {
+        "revoked"
+    };
+    let relays = report
+        .relays
+        .iter()
+        .map(render_hosted_fleet_credential_revoke_relay_json)
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    format!(
+        r#"{{
+  "status": "{}",
+  "action": "revoke",
+  "mode": "{}",
+  "accountId": "{}",
+  "nodeId": "{}",
+  "fleetFile": "{}",
+  "dryRun": {},
+  "confirmed": {},
+  "totals": {},
+  "relays": [
+{}
+  ],
+  "payloadDisplayed": false,
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": false,
+  "keyMaterialDisplayed": false,
+  "sessionIdDisplayed": false,
+  "ciphertextDisplayed": false,
+  "contentsDisplayed": {}
+}}"#,
+        status,
+        if report.dry_run {
+            "dry-run"
+        } else {
+            "confirmed"
+        },
+        json_escape(&report.account_id),
+        json_escape(&report.node_id),
+        json_escape(&report.fleet_file.display().to_string()),
+        bool_json(report.dry_run),
+        bool_json(!report.dry_run),
+        render_hosted_fleet_credential_revoke_totals_json(&report.totals),
+        relays,
+        bool_json(report.totals.token_displayed),
+        bool_json(report.totals.contents_displayed)
+    )
+}
+
+fn render_hosted_fleet_credential_revoke_totals_json(
+    totals: &HostedFleetCredentialRevokeTotals,
+) -> String {
+    format!(
+        r#"{{
+    "relays": {},
+    "credentialSources": {},
+    "credentials": {},
+    "activeCredentials": {},
+    "revokedCredentials": {},
+    "expiredCredentials": {},
+    "accounts": {}
+  }}"#,
+        totals.relays,
+        totals.credential_sources,
+        totals.credentials,
+        totals.active,
+        totals.revoked,
+        totals.expired,
+        totals.accounts
+    )
+}
+
+fn render_hosted_fleet_credential_revoke_relay_json(
+    relay: &HostedFleetCredentialRevokeRelayReport,
+) -> String {
+    format!(
+        r#"    {{
+      "name": "{}",
+      "credentialsFile": "{}",
+      "credentials": {},
+      "activeCredentials": {},
+      "revokedCredentials": {},
+      "expiredCredentials": {},
+      "accounts": {},
+      "payloadDisplayed": false,
+      "tokenDisplayed": {},
+      "tokenHashDisplayed": false,
+      "keyMaterialDisplayed": false,
+      "sessionIdDisplayed": false,
+      "ciphertextDisplayed": false,
+      "contentsDisplayed": {}
+    }}"#,
+        json_escape(&relay.name),
+        json_escape(&relay.credentials_file.display().to_string()),
+        relay.credentials,
+        relay.active,
+        relay.revoked,
+        relay.expired,
+        relay.accounts,
+        bool_json(relay.token_displayed),
+        bool_json(relay.contents_displayed)
+    )
+}
+
 fn render_hosted_fleet_tenant_node_lifecycle_text(
     report: &HostedFleetTenantNodeLifecycleReport,
 ) -> String {
@@ -13289,6 +13760,265 @@ mod tests {
             })
             .expect_err("partial account source should fail closed");
         assert!(partial_error.contains("requires tenants_file"));
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_parser_report_and_renderers_are_metadata_only() {
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.a\"\ncredentials_file = \"credentials.toml\"\n\n[[relay]]\nname = \"relay.metrics\"\nabuse_dir = \"abuse\"\n",
+        ));
+        let base_dir = fleet_file.parent().expect("fleet file parent");
+        let credentials_file = base_dir.join("credentials.toml");
+        let secret_token = "raw-hosted-fleet-credential-revoke-token-123456";
+        let secret_hash = relay_token_sha256_hex(secret_token).expect("secret hash");
+
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &credentials_file,
+            "account.prod",
+            "node.prod",
+            secret_hash.clone(),
+            secret_token.len(),
+            None,
+            false,
+        )
+        .expect("hosted credential hash upsert");
+
+        let parsed = parse_hosted_fleet_credential_revoke_args(vec![
+            "account.prod".to_string(),
+            "node.prod".to_string(),
+            "--fleet-file".to_string(),
+            fleet_file.display().to_string(),
+            "--dry-run".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("hosted fleet credential revoke args parse");
+        assert_eq!(parsed.account_id, "account.prod");
+        assert_eq!(parsed.node_id, "node.prod");
+        assert_eq!(parsed.fleet_file, fleet_file);
+        assert!(parsed.dry_run);
+        assert!(parsed.json);
+        assert!(parse_hosted_fleet_credential_revoke_args(Vec::new()).is_err());
+        assert!(
+            parse_hosted_fleet_credential_revoke_args(vec![
+                "account.prod".to_string(),
+                "node.prod".to_string(),
+                "--fleet-file".to_string(),
+                parsed.fleet_file.display().to_string(),
+            ])
+            .is_err()
+        );
+        let invalid_account = parse_hosted_fleet_credential_revoke_args(vec![
+            "bad secret value".to_string(),
+            "node.prod".to_string(),
+            "--fleet-file".to_string(),
+            parsed.fleet_file.display().to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect_err("invalid account should fail closed");
+        assert!(!invalid_account.contains("bad secret value"));
+        let invalid_node = parse_hosted_fleet_credential_revoke_args(vec![
+            "account.prod".to_string(),
+            "bad secret value".to_string(),
+            "--fleet-file".to_string(),
+            parsed.fleet_file.display().to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect_err("invalid node should fail closed");
+        assert!(!invalid_node.contains("bad secret value"));
+
+        let dry_report = hosted_fleet_credential_revoke_report(&parsed)
+            .expect("hosted fleet credential revoke dry-run report");
+        assert!(dry_report.dry_run);
+        assert_eq!(dry_report.totals.relays, 2);
+        assert_eq!(dry_report.totals.credential_sources, 1);
+        assert_eq!(dry_report.totals.credentials, 1);
+        assert_eq!(dry_report.totals.active, 1);
+        assert_eq!(dry_report.totals.revoked, 0);
+        let dry_audit = audit_hosted_relay_credentials_file_with_node(
+            &credentials_file,
+            Some("account.prod"),
+            Some("node.prod"),
+        )
+        .expect("credential audit after dry-run");
+        assert_eq!(dry_audit.active, 1);
+
+        let confirmed = hosted_fleet_credential_revoke_report(&HostedFleetCredentialRevokeArgs {
+            dry_run: false,
+            json: true,
+            ..parsed.clone()
+        })
+        .expect("hosted fleet credential revoke confirmed report");
+        assert!(!confirmed.dry_run);
+        assert_eq!(confirmed.totals.credential_sources, 1);
+        assert_eq!(confirmed.totals.credentials, 1);
+        assert_eq!(confirmed.totals.active, 0);
+        assert_eq!(confirmed.totals.revoked, 1);
+        let confirmed_audit = audit_hosted_relay_credentials_file_with_node(
+            &credentials_file,
+            Some("account.prod"),
+            Some("node.prod"),
+        )
+        .expect("credential audit after confirm");
+        assert_eq!(confirmed_audit.revoked, 1);
+
+        let outputs = [
+            render_hosted_fleet_credential_revoke_text(&dry_report),
+            render_hosted_fleet_credential_revoke_json(&dry_report),
+            render_hosted_fleet_credential_revoke_text(&confirmed),
+            render_hosted_fleet_credential_revoke_json(&confirmed),
+        ];
+        for output in outputs {
+            assert!(output.contains("credential"));
+            assert!(output.contains("revoke"));
+            assert!(output.contains("account.prod"));
+            assert!(output.contains("node.prod"));
+            assert!(output.contains("token"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(&secret_hash));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+
+        let no_credentials_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                "[[relay]]\nname = \"relay.tenants\"\ntenants_file = \"tenants.toml\"\n",
+            ));
+        let no_credentials_error =
+            hosted_fleet_credential_revoke_report(&HostedFleetCredentialRevokeArgs {
+                account_id: "account.prod".to_string(),
+                node_id: "node.prod".to_string(),
+                fleet_file: no_credentials_fleet,
+                dry_run: true,
+                json: false,
+            })
+            .expect_err("credential revoke should require credential sources");
+        assert!(no_credentials_error.contains("credentials_file"));
+
+        let collision_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                "[[relay]]\nname = \"relay.collision\"\ncredentials_file = \"credentials.toml\"\n",
+            ));
+        let collision_credentials = collision_fleet
+            .parent()
+            .expect("collision fleet parent")
+            .join("credentials.toml");
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &collision_credentials,
+            "account.other",
+            "node.prod",
+            secret_hash.clone(),
+            secret_token.len(),
+            None,
+            false,
+        )
+        .expect("collision credential hash upsert");
+        let collision_error =
+            hosted_fleet_credential_revoke_report(&HostedFleetCredentialRevokeArgs {
+                account_id: "account.prod".to_string(),
+                node_id: "node.prod".to_string(),
+                fleet_file: collision_fleet,
+                dry_run: true,
+                json: false,
+            })
+            .expect_err("credential revoke should reject account collision");
+        assert!(collision_error.contains("different account"));
+        assert!(!collision_error.contains(secret_token));
+        assert!(!collision_error.contains(&secret_hash));
+
+        let duplicate_collision_fleet = write_hosted_fleet_dashboard_file(
+            &hosted_fleet_dashboard_file_contents(
+                "[[relay]]\nname = \"relay.duplicate-collision\"\ncredentials_file = \"credentials.toml\"\n",
+            ),
+        );
+        let duplicate_collision_credentials = duplicate_collision_fleet
+            .parent()
+            .expect("duplicate collision fleet parent")
+            .join("credentials.toml");
+        fs::write(
+            &duplicate_collision_credentials,
+            format!(
+                "version = \"1\"\n\n\
+[[credential]]\n\
+account_id = \"account.prod\"\n\
+node_id = \"node.prod\"\n\
+token_sha256_hex = \"{secret_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+payload_displayed = false\n\
+token_displayed = false\n\n\
+[[credential]]\n\
+account_id = \"account.other\"\n\
+node_id = \"node.prod\"\n\
+token_sha256_hex = \"{secret_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+payload_displayed = false\n\
+token_displayed = false\n",
+                secret_token.len(),
+                secret_token.len()
+            ),
+        )
+        .expect("duplicate collision credentials write");
+        let duplicate_collision_error =
+            hosted_fleet_credential_revoke_report(&HostedFleetCredentialRevokeArgs {
+                account_id: "account.prod".to_string(),
+                node_id: "node.prod".to_string(),
+                fleet_file: duplicate_collision_fleet,
+                dry_run: true,
+                json: false,
+            })
+            .expect_err("credential revoke should reject duplicate account collision");
+        assert!(duplicate_collision_error.contains("different account"));
+        assert!(!duplicate_collision_error.contains(secret_token));
+        assert!(!duplicate_collision_error.contains(&secret_hash));
+
+        let duplicate_same_account_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                "[[relay]]\nname = \"relay.duplicate\"\ncredentials_file = \"credentials.toml\"\n",
+            ));
+        let duplicate_same_account_credentials = duplicate_same_account_fleet
+            .parent()
+            .expect("duplicate same-account fleet parent")
+            .join("credentials.toml");
+        fs::write(
+            &duplicate_same_account_credentials,
+            format!(
+                "version = \"1\"\n\n\
+[[credential]]\n\
+account_id = \"account.prod\"\n\
+node_id = \"node.prod\"\n\
+token_sha256_hex = \"{secret_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+payload_displayed = false\n\
+token_displayed = false\n\n\
+[[credential]]\n\
+account_id = \"account.prod\"\n\
+node_id = \"node.prod\"\n\
+token_sha256_hex = \"{secret_hash}\"\n\
+token_length = {}\n\
+status = \"active\"\n\
+payload_displayed = false\n\
+token_displayed = false\n",
+                secret_token.len(),
+                secret_token.len()
+            ),
+        )
+        .expect("duplicate same-account credentials write");
+        let duplicate_same_account_error =
+            hosted_fleet_credential_revoke_report(&HostedFleetCredentialRevokeArgs {
+                account_id: "account.prod".to_string(),
+                node_id: "node.prod".to_string(),
+                fleet_file: duplicate_same_account_fleet,
+                dry_run: true,
+                json: false,
+            })
+            .expect_err("credential revoke should reject duplicate node records");
+        assert!(duplicate_same_account_error.contains("duplicate records"));
+        assert!(!duplicate_same_account_error.contains(secret_token));
+        assert!(!duplicate_same_account_error.contains(&secret_hash));
     }
 
     #[test]
