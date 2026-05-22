@@ -14022,9 +14022,528 @@ token_displayed = false\n",
     }
 
     #[test]
+    fn hosted_fleet_credential_revoke_confirm_flag_parses() {
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.confirm\"\ncredentials_file = \"credentials.toml\"\n",
+        ));
+        let parsed = parse_hosted_fleet_credential_revoke_args(vec![
+            "account.a".to_string(),
+            "node.a".to_string(),
+            "--fleet-file".to_string(),
+            fleet_file.display().to_string(),
+            "--confirm".to_string(),
+        ])
+        .expect("confirm flag should parse");
+        assert!(!parsed.dry_run);
+        assert_eq!(parsed.account_id, "account.a");
+        assert_eq!(parsed.node_id, "node.a");
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_both_dry_run_and_confirm_fails() {
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.both\"\ncredentials_file = \"credentials.toml\"\n",
+        ));
+        let both_error = parse_hosted_fleet_credential_revoke_args(vec![
+            "account.a".to_string(),
+            "node.a".to_string(),
+            "--fleet-file".to_string(),
+            fleet_file.display().to_string(),
+            "--dry-run".to_string(),
+            "--confirm".to_string(),
+        ])
+        .expect_err("both --dry-run and --confirm should fail");
+        assert!(both_error.contains("--dry-run") || both_error.contains("--confirm"));
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_neither_flag_fails() {
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.neither\"\ncredentials_file = \"credentials.toml\"\n",
+        ));
+        let neither_error = parse_hosted_fleet_credential_revoke_args(vec![
+            "account.a".to_string(),
+            "node.a".to_string(),
+            "--fleet-file".to_string(),
+            fleet_file.display().to_string(),
+        ])
+        .expect_err("missing --dry-run or --confirm should fail");
+        assert!(neither_error.contains("--dry-run") || neither_error.contains("--confirm"));
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_unknown_option_fails() {
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.unknown\"\ncredentials_file = \"credentials.toml\"\n",
+        ));
+        let error = parse_hosted_fleet_credential_revoke_args(vec![
+            "account.a".to_string(),
+            "node.a".to_string(),
+            "--fleet-file".to_string(),
+            fleet_file.display().to_string(),
+            "--dry-run".to_string(),
+            "--unknown-option".to_string(),
+        ])
+        .expect_err("unknown option should fail");
+        assert!(error.contains("unknown option"));
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_help_flag_returns_usage() {
+        let usage_h = parse_hosted_fleet_credential_revoke_args(vec!["--help".to_string()])
+            .expect_err("--help should return usage");
+        assert!(
+            usage_h.contains("hosted-fleet-credential-revoke"),
+            "usage should mention command name"
+        );
+        let usage_short = parse_hosted_fleet_credential_revoke_args(vec!["-h".to_string()])
+            .expect_err("-h should return usage");
+        assert!(usage_short.contains("hosted-fleet-credential-revoke"));
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_missing_node_credential_fails() {
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.missing\"\ncredentials_file = \"credentials.toml\"\n",
+        ));
+        let base_dir = fleet_file.parent().expect("fleet file parent");
+        let credentials_file = base_dir.join("credentials.toml");
+        let secret_token = "raw-missing-node-token-abcdef";
+        let secret_hash = relay_token_sha256_hex(secret_token).expect("secret hash");
+
+        // Upsert credential for a different node
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &credentials_file,
+            "account.prod",
+            "node.other",
+            secret_hash.clone(),
+            secret_token.len(),
+            None,
+            false,
+        )
+        .expect("upsert other node credential");
+
+        // Try to revoke a node that has no credential
+        let error = hosted_fleet_credential_revoke_report(&HostedFleetCredentialRevokeArgs {
+            account_id: "account.prod".to_string(),
+            node_id: "node.missing".to_string(),
+            fleet_file: fleet_file.clone(),
+            dry_run: true,
+            json: false,
+        })
+        .expect_err("missing node credential should fail closed");
+        assert!(
+            error.contains("not found") || error.contains("credential"),
+            "error should mention missing credential: {error}"
+        );
+        assert!(
+            !error.contains(secret_token),
+            "error must not echo token material"
+        );
+        assert!(
+            !error.contains(&secret_hash),
+            "error must not echo token hash"
+        );
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_totals_add_accumulates_correctly() {
+        let relay_a = HostedFleetCredentialRevokeRelayReport {
+            name: "relay.a".to_string(),
+            credentials_file: PathBuf::from("creds_a.toml"),
+            credentials: 3,
+            active: 2,
+            revoked: 1,
+            expired: 0,
+            accounts: 2,
+            token_displayed: false,
+            contents_displayed: false,
+        };
+        let relay_b = HostedFleetCredentialRevokeRelayReport {
+            name: "relay.b".to_string(),
+            credentials_file: PathBuf::from("creds_b.toml"),
+            credentials: 5,
+            active: 3,
+            revoked: 1,
+            expired: 1,
+            accounts: 3,
+            token_displayed: false,
+            contents_displayed: false,
+        };
+
+        let mut totals = HostedFleetCredentialRevokeTotals::default();
+        totals.add(&relay_a);
+        assert_eq!(totals.credential_sources, 1);
+        assert_eq!(totals.credentials, 3);
+        assert_eq!(totals.active, 2);
+        assert_eq!(totals.revoked, 1);
+        assert_eq!(totals.expired, 0);
+        assert_eq!(totals.accounts, 2);
+        assert!(!totals.token_displayed);
+        assert!(!totals.contents_displayed);
+
+        totals.add(&relay_b);
+        assert_eq!(totals.credential_sources, 2);
+        assert_eq!(totals.credentials, 8);
+        assert_eq!(totals.active, 5);
+        assert_eq!(totals.revoked, 2);
+        assert_eq!(totals.expired, 1);
+        assert_eq!(totals.accounts, 5);
+        assert!(!totals.token_displayed);
+        assert!(!totals.contents_displayed);
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_totals_add_propagates_display_flags() {
+        let relay_with_flags = HostedFleetCredentialRevokeRelayReport {
+            name: "relay.flagged".to_string(),
+            credentials_file: PathBuf::from("creds.toml"),
+            credentials: 1,
+            active: 1,
+            revoked: 0,
+            expired: 0,
+            accounts: 1,
+            token_displayed: true,
+            contents_displayed: true,
+        };
+        let mut totals = HostedFleetCredentialRevokeTotals::default();
+        assert!(!totals.token_displayed);
+        assert!(!totals.contents_displayed);
+        totals.add(&relay_with_flags);
+        assert!(
+            totals.token_displayed,
+            "token_displayed should OR into totals"
+        );
+        assert!(
+            totals.contents_displayed,
+            "contents_displayed should OR into totals"
+        );
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_multi_relay_report_accumulates_totals() {
+        // Build a fleet file referencing two relay credential sources in the same dir
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.x\"\ncredentials_file = \"creds_x.toml\"\n\n[[relay]]\nname = \"relay.y\"\ncredentials_file = \"creds_y.toml\"\n",
+        ));
+        let base_dir = fleet_file.parent().expect("fleet file parent");
+        let creds_x = base_dir.join("creds_x.toml");
+        let creds_y = base_dir.join("creds_y.toml");
+        let secret_token = "raw-multi-relay-token-abcdef12345";
+        let secret_hash = relay_token_sha256_hex(secret_token).expect("secret hash");
+
+        // Upsert the same account/node credential in both relays
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &creds_x,
+            "account.multi",
+            "node.multi",
+            secret_hash.clone(),
+            secret_token.len(),
+            None,
+            false,
+        )
+        .expect("upsert credential in relay x");
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &creds_y,
+            "account.multi",
+            "node.multi",
+            secret_hash.clone(),
+            secret_token.len(),
+            None,
+            false,
+        )
+        .expect("upsert credential in relay y");
+
+        let report = hosted_fleet_credential_revoke_report(&HostedFleetCredentialRevokeArgs {
+            account_id: "account.multi".to_string(),
+            node_id: "node.multi".to_string(),
+            fleet_file: fleet_file.clone(),
+            dry_run: true,
+            json: false,
+        })
+        .expect("multi-relay dry-run report");
+
+        assert_eq!(report.totals.relays, 2);
+        assert_eq!(report.totals.credential_sources, 2);
+        assert_eq!(report.totals.credentials, 2);
+        assert_eq!(report.totals.active, 2);
+        assert_eq!(report.totals.revoked, 0);
+        assert_eq!(report.relays.len(), 2);
+        assert!(report.dry_run);
+        // Dry-run must not mutate credentials
+        let audit_x = audit_hosted_relay_credentials_file_with_node(
+            &creds_x,
+            Some("account.multi"),
+            Some("node.multi"),
+        )
+        .expect("audit after dry-run x");
+        assert_eq!(audit_x.active, 1, "dry-run must not revoke credential in x");
+        let audit_y = audit_hosted_relay_credentials_file_with_node(
+            &creds_y,
+            Some("account.multi"),
+            Some("node.multi"),
+        )
+        .expect("audit after dry-run y");
+        assert_eq!(audit_y.active, 1, "dry-run must not revoke credential in y");
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_text_output_contains_expected_fields() {
+        let report = HostedFleetCredentialRevokeReport {
+            account_id: "account.text-test".to_string(),
+            node_id: "node.text-test".to_string(),
+            fleet_file: PathBuf::from("/tmp/fleet.toml"),
+            dry_run: true,
+            relays: vec![HostedFleetCredentialRevokeRelayReport {
+                name: "relay.text".to_string(),
+                credentials_file: PathBuf::from("/tmp/creds.toml"),
+                credentials: 1,
+                active: 1,
+                revoked: 0,
+                expired: 0,
+                accounts: 1,
+                token_displayed: false,
+                contents_displayed: false,
+            }],
+            totals: {
+                let mut t = HostedFleetCredentialRevokeTotals {
+                    relays: 1,
+                    ..HostedFleetCredentialRevokeTotals::default()
+                };
+                t.add(&HostedFleetCredentialRevokeRelayReport {
+                    name: "relay.text".to_string(),
+                    credentials_file: PathBuf::from("/tmp/creds.toml"),
+                    credentials: 1,
+                    active: 1,
+                    revoked: 0,
+                    expired: 0,
+                    accounts: 1,
+                    token_displayed: false,
+                    contents_displayed: false,
+                });
+                t
+            },
+        };
+
+        let text = render_hosted_fleet_credential_revoke_text(&report);
+        assert!(text.contains("credential"), "text output should mention credential");
+        assert!(text.contains("revoke"), "text output should mention revoke");
+        assert!(text.contains("account.text-test"), "text output should include account id");
+        assert!(text.contains("node.text-test"), "text output should include node id");
+        assert!(text.contains("would_revoke"), "dry-run should show would_revoke status");
+        assert!(text.contains("dry-run"), "text output should show dry-run mode");
+        assert!(text.contains("token displayed"), "text output must include token_displayed guard");
+        assert!(text.contains("contents displayed"), "text output must include contents_displayed guard");
+        assert!(!text.contains("BEGIN PRIVATE KEY"), "text must not contain key material");
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_text_output_confirmed_shows_revoked_status() {
+        let relay = HostedFleetCredentialRevokeRelayReport {
+            name: "relay.confirmed".to_string(),
+            credentials_file: PathBuf::from("/tmp/creds_c.toml"),
+            credentials: 1,
+            active: 0,
+            revoked: 1,
+            expired: 0,
+            accounts: 1,
+            token_displayed: false,
+            contents_displayed: false,
+        };
+        let mut totals = HostedFleetCredentialRevokeTotals {
+            relays: 1,
+            ..HostedFleetCredentialRevokeTotals::default()
+        };
+        totals.add(&relay);
+        let report = HostedFleetCredentialRevokeReport {
+            account_id: "account.confirmed".to_string(),
+            node_id: "node.confirmed".to_string(),
+            fleet_file: PathBuf::from("/tmp/fleet_c.toml"),
+            dry_run: false,
+            relays: vec![relay],
+            totals,
+        };
+
+        let text = render_hosted_fleet_credential_revoke_text(&report);
+        assert!(text.contains("revoked"), "confirmed output should show revoked status");
+        assert!(text.contains("confirmed"), "confirmed output should show confirmed mode");
+        assert!(!text.contains("would_revoke"), "confirmed output should not show would_revoke");
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_json_output_contains_expected_keys() {
+        let relay = HostedFleetCredentialRevokeRelayReport {
+            name: "relay.json".to_string(),
+            credentials_file: PathBuf::from("/tmp/creds_j.toml"),
+            credentials: 2,
+            active: 1,
+            revoked: 1,
+            expired: 0,
+            accounts: 1,
+            token_displayed: false,
+            contents_displayed: false,
+        };
+        let mut totals = HostedFleetCredentialRevokeTotals {
+            relays: 1,
+            ..HostedFleetCredentialRevokeTotals::default()
+        };
+        totals.add(&relay);
+        let dry_report = HostedFleetCredentialRevokeReport {
+            account_id: "account.json".to_string(),
+            node_id: "node.json".to_string(),
+            fleet_file: PathBuf::from("/tmp/fleet_j.toml"),
+            dry_run: true,
+            relays: vec![relay.clone()],
+            totals: totals.clone(),
+        };
+        let confirmed_report = HostedFleetCredentialRevokeReport {
+            account_id: "account.json".to_string(),
+            node_id: "node.json".to_string(),
+            fleet_file: PathBuf::from("/tmp/fleet_j.toml"),
+            dry_run: false,
+            relays: vec![relay],
+            totals,
+        };
+
+        let dry_json = render_hosted_fleet_credential_revoke_json(&dry_report);
+        assert!(dry_json.contains("\"payloadDisplayed\": false"), "JSON must include payloadDisplayed false");
+        assert!(dry_json.contains("\"tokenHashDisplayed\": false"), "JSON must include tokenHashDisplayed false");
+        assert!(dry_json.contains("\"keyMaterialDisplayed\": false"), "JSON must include keyMaterialDisplayed false");
+        assert!(dry_json.contains("\"sessionIdDisplayed\": false"), "JSON must include sessionIdDisplayed false");
+        assert!(dry_json.contains("\"ciphertextDisplayed\": false"), "JSON must include ciphertextDisplayed false");
+        assert!(dry_json.contains("\"action\": \"revoke\""), "JSON must include action revoke");
+        assert!(dry_json.contains("\"dryRun\": true"), "dry-run JSON must set dryRun true");
+        assert!(dry_json.contains("\"confirmed\": false"), "dry-run JSON must set confirmed false");
+        assert!(dry_json.contains("\"status\": \"would_revoke\""), "dry-run JSON status should be would_revoke");
+        assert!(dry_json.contains("account.json"), "JSON must include account id");
+        assert!(dry_json.contains("node.json"), "JSON must include node id");
+
+        let confirmed_json = render_hosted_fleet_credential_revoke_json(&confirmed_report);
+        assert!(confirmed_json.contains("\"dryRun\": false"), "confirmed JSON must set dryRun false");
+        assert!(confirmed_json.contains("\"confirmed\": true"), "confirmed JSON must set confirmed true");
+        assert!(confirmed_json.contains("\"status\": \"revoked\""), "confirmed JSON status should be revoked");
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_json_totals_format() {
+        let totals = HostedFleetCredentialRevokeTotals {
+            relays: 3,
+            credential_sources: 2,
+            credentials: 5,
+            active: 3,
+            revoked: 1,
+            expired: 1,
+            accounts: 2,
+            token_displayed: false,
+            contents_displayed: false,
+        };
+        let json = render_hosted_fleet_credential_revoke_totals_json(&totals);
+        assert!(json.contains("\"relays\": 3"), "totals JSON must include relays count");
+        assert!(json.contains("\"credentialSources\": 2"), "totals JSON must include credentialSources");
+        assert!(json.contains("\"credentials\": 5"), "totals JSON must include credentials total");
+        assert!(json.contains("\"activeCredentials\": 3"), "totals JSON must include activeCredentials");
+        assert!(json.contains("\"revokedCredentials\": 1"), "totals JSON must include revokedCredentials");
+        assert!(json.contains("\"expiredCredentials\": 1"), "totals JSON must include expiredCredentials");
+        assert!(json.contains("\"accounts\": 2"), "totals JSON must include accounts");
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_preflight_fail_fast_prevents_mutation() {
+        // Set up two credential sources; the second relay has a collision.
+        // The preflight should fail before mutating the first source.
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.ok\"\ncredentials_file = \"creds_ok.toml\"\n\n[[relay]]\nname = \"relay.bad\"\ncredentials_file = \"creds_bad.toml\"\n",
+        ));
+        let base_dir = fleet_file.parent().expect("fleet file parent");
+        let creds_ok = base_dir.join("creds_ok.toml");
+        let creds_bad = base_dir.join("creds_bad.toml");
+        let secret_token = "raw-preflight-fail-fast-token-xyz";
+        let secret_hash = relay_token_sha256_hex(secret_token).expect("secret hash");
+
+        // Upsert account.target / node.target in the good relay
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &creds_ok,
+            "account.target",
+            "node.target",
+            secret_hash.clone(),
+            secret_token.len(),
+            None,
+            false,
+        )
+        .expect("upsert ok credential");
+
+        // Upsert node.target under a DIFFERENT account in the bad relay (collision)
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &creds_bad,
+            "account.other",
+            "node.target",
+            secret_hash.clone(),
+            secret_token.len(),
+            None,
+            false,
+        )
+        .expect("upsert bad credential (different account)");
+
+        // Confirm mode: should fail during preflight, not mutate creds_ok
+        let error = hosted_fleet_credential_revoke_report(&HostedFleetCredentialRevokeArgs {
+            account_id: "account.target".to_string(),
+            node_id: "node.target".to_string(),
+            fleet_file,
+            dry_run: false,
+            json: false,
+        })
+        .expect_err("preflight collision should prevent any mutation");
+        assert!(
+            error.contains("different account") || error.contains("not found"),
+            "error should describe collision: {error}"
+        );
+
+        // The good source must remain unmutated
+        let audit_ok = audit_hosted_relay_credentials_file_with_node(
+            &creds_ok,
+            Some("account.target"),
+            Some("node.target"),
+        )
+        .expect("audit ok relay after failed preflight");
+        assert_eq!(
+            audit_ok.active, 1,
+            "preflight fail-fast must not mutate the first relay's credential"
+        );
+        assert!(!error.contains(secret_token), "error must not echo token");
+        assert!(!error.contains(&secret_hash), "error must not echo hash");
+    }
+
+    #[test]
+    fn hosted_fleet_credential_revoke_relay_json_contains_expected_keys() {
+        let relay = HostedFleetCredentialRevokeRelayReport {
+            name: "relay.relay-json".to_string(),
+            credentials_file: PathBuf::from("/tmp/creds_relay.toml"),
+            credentials: 4,
+            active: 2,
+            revoked: 1,
+            expired: 1,
+            accounts: 2,
+            token_displayed: false,
+            contents_displayed: false,
+        };
+        let json = render_hosted_fleet_credential_revoke_relay_json(&relay);
+        assert!(json.contains("\"name\": \"relay.relay-json\""), "relay JSON must include name");
+        assert!(json.contains("\"credentials\": 4"), "relay JSON must include credentials count");
+        assert!(json.contains("\"activeCredentials\": 2"), "relay JSON must include activeCredentials");
+        assert!(json.contains("\"revokedCredentials\": 1"), "relay JSON must include revokedCredentials");
+        assert!(json.contains("\"expiredCredentials\": 1"), "relay JSON must include expiredCredentials");
+        assert!(json.contains("\"accounts\": 2"), "relay JSON must include accounts");
+        assert!(json.contains("\"payloadDisplayed\": false"), "relay JSON must include payloadDisplayed false");
+        assert!(json.contains("\"tokenHashDisplayed\": false"), "relay JSON must include tokenHashDisplayed false");
+        assert!(json.contains("\"keyMaterialDisplayed\": false"), "relay JSON must include keyMaterialDisplayed false");
+        assert!(json.contains("\"sessionIdDisplayed\": false"), "relay JSON must include sessionIdDisplayed false");
+        assert!(json.contains("\"ciphertextDisplayed\": false"), "relay JSON must include ciphertextDisplayed false");
+    }
+
+    #[test]
     fn hosted_fleet_tenant_node_lifecycle_parser_report_and_renderers_are_metadata_only() {
         let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
-            "[[relay]]\nname = \"relay.a\"\ntenants_file = \"tenants.toml\"\n\n[[relay]]\nname = \"relay.metrics\"\nabuse_dir = \"abuse\"\n",
+
         ));
         let base_dir = fleet_file.parent().expect("fleet file parent");
         let tenants_file = base_dir.join("tenants.toml");
