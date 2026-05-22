@@ -11,6 +11,9 @@ The package does not reimplement conU in JavaScript. On install, it downloads th
 
 ## Install
 
+Use a supported Node.js LTS line. This package currently accepts Node 22 LTS or
+Node 24 LTS and intentionally rejects EOL Node lines.
+
 ```sh
 npm install -g @conu/cli
 conu doctor

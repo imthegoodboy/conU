@@ -117,7 +117,7 @@ Room helpers are available as `create_room()`, `join_room()`, `publish_room_even
 
 ## TypeScript SDK
 
-The TypeScript/JavaScript wrapper lives in `sdk/typescript`. It is dependency-free, runs on Node 18+, and wraps installed `conu`, `conud`, and `conu-mcp` binaries. It is not browser-native protocol support; browser-conditioned imports fail closed through a safe stub that reports `browserSupport.supported = false` and never accepts private keys, relay tokens, endpoint secrets, or payload bytes.
+The TypeScript/JavaScript wrapper lives in `sdk/typescript`. It is dependency-free, runs on supported Node.js LTS lines accepted by the package `engines` range, and wraps installed `conu`, `conud`, and `conu-mcp` binaries. It is not browser-native protocol support; browser-conditioned imports fail closed through a safe stub that reports `browserSupport.supported = false` and never accepts private keys, relay tokens, endpoint secrets, or payload bytes.
 
 ```javascript
 import { ConuClient } from "@conu/sdk";

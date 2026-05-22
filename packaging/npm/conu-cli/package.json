@@ -35,7 +35,7 @@
     "check": "node scripts/install.js --check-only"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=22 <23 || >=24 <25"
   },
   "publishConfig": {
     "access": "public"
