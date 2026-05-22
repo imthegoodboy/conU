@@ -4512,6 +4512,7 @@ Current status:
 
 - Created GitHub issue #107 for GitHub Actions Node 24 runtime hardening.
 - Created branch `codex/actions-node24-runtime` from `main`.
+- Merged PR #108 and preserved the local and remote feature branch.
 - Confirmed `actions/checkout` latest release `v6.0.2` declares `using: node24` in `action.yml`.
 - Confirmed `actions/setup-node` latest release `v6.4.0` declares `using: node24` in `action.yml`.
 - Updated `.github/workflows/ci.yml` from `actions/checkout@v4` and `actions/setup-node@v4` to v6.
@@ -4536,7 +4537,41 @@ Known gaps:
 
 Next recommendation:
 
-- Open and merge a PR for issue #107 while preserving the local and remote feature branch. Then continue with release workflow hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+- Continue with release workflow hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
+## Post Phase 15 Release Artifact Action Runtime Hardening (Completed)
+
+Objective: keep release artifact upload/download/provenance steps on GitHub JavaScript action versions that declare the Node 24 action runtime and preserve release artifact integrity checks.
+
+Current status:
+
+- Created GitHub issue #109 for release artifact action runtime hardening.
+- Created branch `codex/release-actions-node24` from `main`.
+- Confirmed `actions/upload-artifact` latest release `v7.0.1` declares `using: 'node24'` in `action.yml`.
+- Confirmed `actions/download-artifact` latest release `v8.0.1` declares `using: 'node24'` in `action.yml`.
+- Confirmed `actions/attest` latest release `v4.1.0` declares `using: node24` in `action.yml`.
+- Updated `.github/workflows/release.yml` artifact provenance/upload/download steps to `actions/attest@v4.1.0`, `actions/upload-artifact@v7.0.1`, and `actions/download-artifact@v8.0.1`.
+- Updated the release checklist with the self-hosted runner caveat for Node 24-runtime GitHub actions.
+
+Validation:
+
+- `gh api repos/actions/upload-artifact/releases/latest --jq '.tag_name'` returned `v7.0.1`.
+- `gh api repos/actions/download-artifact/releases/latest --jq '.tag_name'` returned `v8.0.1`.
+- `gh api repos/actions/attest/releases/latest --jq '.tag_name'` returned `v4.1.0`.
+- Decoded upstream `action.yml` files for all three action versions declare Node 24 runtimes.
+- Python YAML parse passed for `.github/workflows/ci.yml` and `.github/workflows/release.yml`.
+- `rg -n "actions/(upload-artifact|download-artifact)@v4|actions/attest@v4$" .github/workflows` returned no matches.
+- `npm run check --prefix sdk\typescript` passed.
+- `npm run check --prefix packaging\npm\conu-cli` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This update hardens release action runtime compatibility only. It does not smoke the full multi-platform release workflow locally, configure signing secrets, publish a release tag, or change the known hosted/distributed product gaps.
+
+Next recommendation:
+
+- Open and merge a PR for issue #109 while preserving the local and remote feature branch. Then continue with release workflow smoke, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
 ## Phase Completion Log
 
@@ -4627,4 +4662,5 @@ Add entries here when a phase is completed.
 2026-05-22 - Post Phase 15 hosted admin-token manifest audit completed. Added payload-safe local `conu-relay --admin-token-audit --admin-tokens-file <path> [--bind-addr <addr>] [--account <id>] [--json]`, metadata-only admin-token audit structs/counts, host:port-only bind parser hardening, stricter false display guard support for key material/session id/ciphertext markers, docs/skills/plan updates, full GNU workspace validation, Python/package checks, conu-relay build, CLI help smoke, local admin-token audit smoke, and diff check. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 hosted relay readiness preflight completed. Added payload-safe local `conu-relay --hosted-readiness` to combine credential, admin-token, tenant, session-state, mailbox, accounting, abuse, and bind checks with JSON/text output, warning counts, display guards, and optional `--fail-on-warning` exit code 3 after preserving stdout. Updated docs/skills/plan and validated with GNU fmt/check/clippy/workspace tests, focused readiness test, Python compile, TypeScript/package checks, conu-relay build, local readiness/fail-on-warning smoke, and diff check. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 GitHub Actions Node 24 runtime hardening completed. Updated CI and release workflows to `actions/checkout@v6` and `actions/setup-node@v6`, confirmed both current action releases declare Node 24 runtimes, updated release checklist, and validated YAML parse, package checks, no stale v4/v5 action references, and diff check. Next: release workflow hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-22 - Post Phase 15 release artifact action runtime hardening completed. Updated release artifact provenance/upload/download steps to `actions/attest@v4.1.0`, `actions/upload-artifact@v7.0.1`, and `actions/download-artifact@v8.0.1` after confirming those upstream action metadata files declare Node 24 runtimes. Updated release checklist with the self-hosted runner caveat and validated YAML parse, package checks, no stale artifact action references, and diff check. Next: release workflow smoke, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
