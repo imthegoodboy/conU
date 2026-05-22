@@ -4,6 +4,8 @@ This dependency-free package lets TypeScript and JavaScript agents call an
 installed `conu` and `conud` binary without parsing terminal UI by hand.
 
 This package is a Node.js wrapper. It is not a browser-native protocol SDK.
+Use a supported Node.js LTS line. The package `engines` currently accept Node
+22 LTS or Node 24 LTS and intentionally reject EOL Node lines.
 Browser bundlers receive a small safe stub that reports
 `browserSupport.supported === false` and throws `BrowserUnsupportedError` if
 `ConuClient` is constructed. The browser stub does not accept private keys,
