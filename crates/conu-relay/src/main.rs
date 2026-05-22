@@ -16,7 +16,8 @@ use conu_relay::{
     RelayCredential, RelayMailboxAudit, RelayMailboxMaintenancePolicy, RelayMailboxPolicy,
     RelayMailboxPurgeReport, RelayMailboxStorage, RelaySessionAudit, RelaySessionPolicy,
     RelaySessionStorage, audit_hosted_admin_tokens_file, audit_hosted_relay_credentials_file,
-    audit_hosted_tenants_file, audit_relay_abuse_dir, audit_relay_accounting_dir,
+    audit_hosted_relay_credentials_file_with_node, audit_hosted_tenants_file,
+    audit_hosted_tenants_file_with_node, audit_relay_abuse_dir, audit_relay_accounting_dir,
     audit_relay_mailbox_dir, audit_relay_session_state_dir, issue_relay_credential,
     purge_relay_mailbox_dir, relay_credential_manifest_contains_node, relay_token_sha256_hex,
     revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
@@ -399,7 +400,7 @@ Usage:
   conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
-  conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--json] [--fail-on-warning]
+  conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--node <node-id>] [--json] [--fail-on-warning]
   conu-relay --hosted-fleet-account-suspend <account-id> --fleet-file <path> (--dry-run|--confirm) [--json]
   conu-relay --session-audit --session-state-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
@@ -472,8 +473,8 @@ or --max-* abuse limits to aggregate fleet counters, preserving stdout and retur
 only with --fail-on-retention or --fail-on-threshold. Per-relay mailbox_ttl_seconds entries remain
 source-specific retention overrides unless a CLI --ttl-seconds override is supplied. The same
 manifest can drive --hosted-fleet-abuse-response-plan for deterministic operator action categories
-over aggregate abuse thresholds, --hosted-fleet-account-audit for read-only credential/tenant
-consistency warnings, --hosted-fleet-account-suspend for dry-run or explicitly confirmed
+over aggregate abuse thresholds, --hosted-fleet-account-audit for read-only account or account/node
+credential/tenant consistency warnings, --hosted-fleet-account-suspend for dry-run or explicitly confirmed
 tenant-first account suspension across complete local credential/tenant source pairs, and
 --hosted-fleet-mailbox-purge for dry-run or explicitly confirmed expired durable mailbox cleanup
 across configured local mailbox stores. The manifest must include explicit false display guards and
@@ -4676,6 +4677,7 @@ fn hosted_account_suspend_usage() -> String {
 #[derive(Debug, Clone)]
 struct HostedFleetAccountAuditArgs {
     account_id: String,
+    node_id: Option<String>,
     fleet_file: PathBuf,
     json: bool,
     fail_on_warning: bool,
@@ -4759,6 +4761,7 @@ impl HostedFleetAccountAuditTotals {
 #[derive(Debug, Clone)]
 struct HostedFleetAccountAuditReport {
     account_id: String,
+    node_id: Option<String>,
     fleet_file: PathBuf,
     relays: Vec<HostedFleetAccountAuditRelayReport>,
     totals: HostedFleetAccountAuditTotals,
@@ -4800,6 +4803,7 @@ fn parse_hosted_fleet_account_audit_args(
 ) -> Result<HostedFleetAccountAuditArgs, String> {
     let mut positional = Vec::new();
     let mut fleet_file = None::<PathBuf>;
+    let mut node_id = None::<String>;
     let mut json = false;
     let mut fail_on_warning = false;
     let mut index = 0;
@@ -4812,6 +4816,13 @@ fn parse_hosted_fleet_account_audit_args(
                     return Err(hosted_fleet_account_audit_usage());
                 };
                 fleet_file = Some(PathBuf::from(value));
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_account_audit_usage());
+                };
+                node_id = Some(value.to_string());
             }
             "--json" => json = true,
             "--fail-on-warning" => fail_on_warning = true,
@@ -4829,9 +4840,13 @@ fn parse_hosted_fleet_account_audit_args(
     let Some(fleet_file) = fleet_file.filter(|path| !path.as_os_str().is_empty()) else {
         return Err(hosted_fleet_account_audit_usage());
     };
+    let node_id = node_id
+        .map(|value| validate_dashboard_filter_id(value, "node id"))
+        .transpose()?;
 
     Ok(HostedFleetAccountAuditArgs {
         account_id,
+        node_id,
         fleet_file,
         json,
         fail_on_warning,
@@ -4839,7 +4854,7 @@ fn parse_hosted_fleet_account_audit_args(
 }
 
 fn hosted_fleet_account_audit_usage() -> String {
-    "usage: conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--json] [--fail-on-warning]".to_string()
+    "usage: conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--node <node-id>] [--json] [--fail-on-warning]".to_string()
 }
 
 fn hosted_fleet_account_audit_report(
@@ -4856,7 +4871,8 @@ fn hosted_fleet_account_audit_report(
         if config.credentials_file.is_none() && config.tenants_file.is_none() {
             continue;
         }
-        let relay = hosted_fleet_account_audit_relay(config, &args.account_id)?;
+        let relay =
+            hosted_fleet_account_audit_relay(config, &args.account_id, args.node_id.as_deref())?;
         totals.add(&relay);
         relays.push(relay);
     }
@@ -4869,6 +4885,7 @@ fn hosted_fleet_account_audit_report(
 
     Ok(HostedFleetAccountAuditReport {
         account_id: args.account_id.clone(),
+        node_id: args.node_id.clone(),
         fleet_file: args.fleet_file.clone(),
         relays,
         totals,
@@ -4878,17 +4895,18 @@ fn hosted_fleet_account_audit_report(
 fn hosted_fleet_account_audit_relay(
     config: HostedFleetRelayConfig,
     account_id: &str,
+    node_id: Option<&str>,
 ) -> Result<HostedFleetAccountAuditRelayReport, String> {
     let credentials = config
         .credentials_file
         .as_ref()
-        .map(|path| audit_hosted_relay_credentials_file(path, Some(account_id)))
+        .map(|path| audit_hosted_relay_credentials_file_with_node(path, Some(account_id), node_id))
         .transpose()
         .map_err(|error| error.to_string())?;
     let tenants = config
         .tenants_file
         .as_ref()
-        .map(|path| audit_hosted_tenants_file(path, Some(account_id)))
+        .map(|path| audit_hosted_tenants_file_with_node(path, Some(account_id), node_id))
         .transpose()
         .map_err(|error| error.to_string())?;
 
@@ -4919,27 +4937,57 @@ fn hosted_fleet_account_audit_relay(
         .map(|audit| audit.active_nodes)
         .unwrap_or(0);
 
-    if credentials.is_some() && credentials_count == 0 {
-        warnings.push("account_missing_credentials");
-    }
-    if tenants.is_some() && tenants_count == 0 {
-        warnings.push("account_missing_tenant");
+    let nodes_count = tenants.as_ref().map(|audit| audit.nodes).unwrap_or(0);
+    let revoked_nodes = tenants
+        .as_ref()
+        .map(|audit| audit.revoked_nodes)
+        .unwrap_or(0);
+
+    if node_id.is_some() {
+        if credentials.is_some() && credentials_count == 0 {
+            warnings.push("node_missing_credentials");
+        }
+        if tenants.is_some() && tenants_count == 0 {
+            warnings.push("account_missing_tenant");
+        }
+        if tenants.is_some() && nodes_count == 0 {
+            warnings.push("tenant_node_missing");
+        }
+    } else {
+        if credentials.is_some() && credentials_count == 0 {
+            warnings.push("account_missing_credentials");
+        }
+        if tenants.is_some() && tenants_count == 0 {
+            warnings.push("account_missing_tenant");
+        }
     }
     if credentials.is_some() && tenants.is_some() {
         if active_credentials > 0 && active_tenants == 0 {
             warnings.push("active_credentials_without_active_tenant");
         }
-        if active_credentials > 0 && active_nodes == 0 {
-            warnings.push("active_credentials_without_active_tenant_node");
-        }
-        if active_tenants > 0 && active_credentials == 0 {
-            warnings.push("active_tenant_without_active_credentials");
-        }
-        if active_tenants > 0 && active_nodes == 0 {
-            warnings.push("active_tenant_without_active_node");
-        }
-        if active_nodes > 0 && active_tenants == 0 {
-            warnings.push("active_nodes_without_active_tenant");
+        if node_id.is_some() {
+            if active_credentials > 0 && active_nodes == 0 {
+                warnings.push("active_node_credentials_without_active_tenant_node");
+            }
+            if active_nodes > 0 && active_credentials == 0 {
+                warnings.push("active_tenant_node_without_active_credentials");
+            }
+            if revoked_nodes > 0 && active_credentials > 0 {
+                warnings.push("revoked_tenant_node_with_active_credentials");
+            }
+        } else {
+            if active_credentials > 0 && active_nodes == 0 {
+                warnings.push("active_credentials_without_active_tenant_node");
+            }
+            if active_tenants > 0 && active_credentials == 0 {
+                warnings.push("active_tenant_without_active_credentials");
+            }
+            if active_tenants > 0 && active_nodes == 0 {
+                warnings.push("active_tenant_without_active_node");
+            }
+            if active_nodes > 0 && active_tenants == 0 {
+                warnings.push("active_nodes_without_active_tenant");
+            }
         }
         if revoked_tenants > 0 && active_credentials > 0 {
             warnings.push("revoked_tenant_with_active_credentials");
@@ -4961,12 +5009,9 @@ fn hosted_fleet_account_audit_relay(
         tenants: tenants_count,
         active_tenants,
         revoked_tenants,
-        nodes: tenants.as_ref().map(|audit| audit.nodes).unwrap_or(0),
+        nodes: nodes_count,
         active_nodes,
-        revoked_nodes: tenants
-            .as_ref()
-            .map(|audit| audit.revoked_nodes)
-            .unwrap_or(0),
+        revoked_nodes,
         tenant_policies: tenants.as_ref().map(|audit| audit.policies).unwrap_or(0),
         warnings,
         token_displayed: credentials
@@ -9209,6 +9254,7 @@ fn render_hosted_fleet_account_audit_text(report: &HostedFleetAccountAuditReport
 
 status: {}
 account: {}
+node: {}
 fleet file: {}
 relays: {}
 account sources: {}
@@ -9231,6 +9277,7 @@ tenant policies: {}
 relay account sources:",
         hosted_fleet_account_audit_status(report),
         report.account_id,
+        report.node_id.as_deref().unwrap_or("all"),
         report.fleet_file.display(),
         totals.relays,
         totals.account_sources,
@@ -9306,6 +9353,7 @@ fn render_hosted_fleet_account_audit_json(report: &HostedFleetAccountAuditReport
         r#"{{
   "status": "{}",
   "accountId": "{}",
+  "nodeId": {},
   "fleetFile": "{}",
   "totals": {},
   "relays": [
@@ -9321,6 +9369,7 @@ fn render_hosted_fleet_account_audit_json(report: &HostedFleetAccountAuditReport
 }}"#,
         hosted_fleet_account_audit_status(report),
         json_escape(&report.account_id),
+        optional_string_json(report.node_id.as_deref()),
         json_escape(&report.fleet_file.display().to_string()),
         render_hosted_fleet_account_audit_totals_json(&report.totals),
         relays,
@@ -12097,6 +12146,7 @@ mod tests {
         ])
         .expect("hosted fleet account audit args parse");
         assert_eq!(parsed.account_id, "account.prod");
+        assert_eq!(parsed.node_id, None);
         assert_eq!(parsed.fleet_file, fleet_file);
         assert!(parsed.json);
         assert!(parsed.fail_on_warning);
@@ -12108,6 +12158,15 @@ mod tests {
         ])
         .expect_err("invalid account should fail closed");
         assert!(!invalid_account.contains("bad secret value"));
+        let invalid_node = parse_hosted_fleet_account_audit_args(vec![
+            "account.prod".to_string(),
+            "--fleet-file".to_string(),
+            parsed.fleet_file.display().to_string(),
+            "--node".to_string(),
+            "bad secret value".to_string(),
+        ])
+        .expect_err("invalid node should fail closed");
+        assert!(!invalid_node.contains("bad secret value"));
 
         let report =
             hosted_fleet_account_audit_report(&parsed).expect("hosted fleet account audit report");
@@ -12146,12 +12205,49 @@ mod tests {
             assert!(!output.contains("ciphertext_body"));
         }
 
+        let node_parsed = parse_hosted_fleet_account_audit_args(vec![
+            "account.prod".to_string(),
+            "--fleet-file".to_string(),
+            fleet_file.display().to_string(),
+            "--node".to_string(),
+            "node.prod".to_string(),
+            "--json".to_string(),
+            "--fail-on-warning".to_string(),
+        ])
+        .expect("hosted fleet account node audit args parse");
+        assert_eq!(node_parsed.node_id.as_deref(), Some("node.prod"));
+        let node_report = hosted_fleet_account_audit_report(&node_parsed)
+            .expect("hosted fleet account node audit report");
+        assert_eq!(node_report.node_id.as_deref(), Some("node.prod"));
+        assert_eq!(node_report.totals.account_sources, 3);
+        assert_eq!(node_report.totals.active, 1);
+        assert_eq!(node_report.totals.accounts, 1);
+        assert_eq!(node_report.totals.active_tenants, 1);
+        assert_eq!(node_report.totals.active_nodes, 1);
+        assert_eq!(node_report.totals.warnings, 4);
+        let node_outputs = [
+            render_hosted_fleet_account_audit_text(&node_report),
+            render_hosted_fleet_account_audit_json(&node_report),
+        ];
+        for output in node_outputs {
+            assert!(output.contains("node.prod"));
+            assert!(output.contains("node_missing_credentials"));
+            assert!(output.contains("tenant_node_missing"));
+            assert!(output.contains("missing_tenants_source"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+
         let no_account_fleet =
             write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
                 "[[relay]]\nname = \"relay.abuse\"\nabuse_dir = \"abuse\"\n",
             ));
         let no_account_error = hosted_fleet_account_audit_report(&HostedFleetAccountAuditArgs {
             account_id: "account.prod".to_string(),
+            node_id: None,
             fleet_file: no_account_fleet,
             json: false,
             fail_on_warning: false,
