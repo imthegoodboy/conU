@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-22
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/session/mailbox actions, payload-safe local scoped admin-token manifest audit, payload-safe hosted relay readiness preflight, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, payload-safe hosted relay readiness preflights, relay session state storage, payload-safe local/admin-gated relay session-state audit, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, reusable durable mailbox retention policy files, confirm-gated local and admin-gated online durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, platform signing/notarization workflow hardening, tagged release preflight hardening, and Node LTS package hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse workflows beyond local/admin-gated single-relay snapshots, threshold reports, and readiness preflights, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and distributed hosted mailbox retention orchestration beyond single-relay purge gaps.
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/session/mailbox actions, payload-safe local scoped admin-token manifest audit, payload-safe hosted relay readiness preflight, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, payload-safe hosted relay readiness preflights, guarded hosted fleet dashboard snapshots with aggregate threshold checks, relay session state storage, payload-safe local/admin-gated relay session-state audit, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, reusable durable mailbox retention policy files, confirm-gated local and admin-gated online durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, platform signing/notarization workflow hardening, tagged release preflight hardening, and Node LTS package hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse workflows beyond local/admin-gated single-relay snapshots, guarded fleet snapshots, threshold reports, and readiness preflights, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and distributed hosted mailbox retention orchestration beyond single-relay purge gaps.
 ```
 
 ## Phase 0 - Project Memory
@@ -4804,7 +4804,7 @@ Current status:
 - Added a versioned fleet manifest parser with required false display guards and `[[relay]]` entries for optional credential, tenant, session-state, mailbox, accounting, and abuse metadata stores.
 - The fleet command resolves relative source paths from the manifest directory, reuses the existing payload-safe audit functions, and returns only relay names, source paths, aggregate counters, filters, and display guards.
 - Updated README, architecture, relay hosting docs, release checklist, security docs, user guide, repo memory, and implementation guardrails to describe the fleet dashboard boundary.
-- Opened PR #125 to close issue #124.
+- Merged PR #125 and closed issue #124 while preserving the `hosted-fleet-dashboard` branch.
 
 Validation:
 
@@ -4819,8 +4819,10 @@ Validation:
 - `python scripts\verify-release-versions.py` passed.
 - `cargo fmt --all -- --check` passed.
 - `git diff --check` passed.
-- PR #125 CI passed across Packages plus Rust on Ubuntu, Windows, and macOS: https://github.com/imthegoodboy/conU/actions/runs/26269251690
+- PR #125 CI passed across Packages plus Rust on Ubuntu, Windows, and macOS: https://github.com/imthegoodboy/conU/actions/runs/26269521890
 - Branch `Release Artifacts` smoke passed across release preflight, package checks, attestations/uploads, and five platform builds: https://github.com/imthegoodboy/conU/actions/runs/26269402546
+- Post-merge main CI passed: https://github.com/imthegoodboy/conU/actions/runs/26269603066
+- Post-merge main `Release Artifacts` smoke passed: https://github.com/imthegoodboy/conU/actions/runs/26269682067
 - `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_dashboard_parser_and_renderers_are_metadata_only` was blocked locally because `dlltool.exe` is not installed.
 
 Known gaps:
@@ -4829,7 +4831,49 @@ Known gaps:
 
 Next recommendation:
 
-- Merge PR #125 without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+- Continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
+## Post Phase 15 Hosted Fleet Dashboard Threshold Policy (Completed)
+
+Objective: make controlled multi-relay fleet snapshots scriptable by applying the existing guarded abuse threshold policy format to aggregate fleet abuse counters without creating adaptive enforcement or exposing relay contents.
+
+Current status:
+
+- Created GitHub issue #126 for hosted fleet dashboard abuse threshold policy.
+- Created branch `fleet-dashboard-threshold-policy` from `main` without a `codex/` prefix, per user preference.
+- Extended `conu-relay --hosted-fleet-dashboard --fleet-file <path>` with `--thresholds-file <path>`, inline `--max-*` overrides, and `--fail-on-threshold`.
+- The fleet command now evaluates thresholds only against aggregate abuse counters from configured fleet `abuse_dir` stores, preserves stdout, and returns exit code 3 only when `--fail-on-threshold` is set and at least one configured limit is exceeded.
+- Threshold policy files reuse the existing metadata-only `version = "1"` format and required false display guards; CLI overrides still win for one-off runs.
+- The command fails closed when threshold evaluation is requested but no fleet relay supplies an `abuse_dir`.
+- Output remains limited to relay names, source paths, filters, aggregate counters, threshold check/exceeded metadata, and false display guards.
+- Updated README, architecture, relay hosting docs, production/security/release docs, user guide, repo memory, and implementation guardrails to describe the new fleet threshold boundary.
+- Opened PR #127 to close issue #126.
+
+Validation:
+
+- `cargo fmt --all` passed after implementation.
+- `cargo +stable-x86_64-pc-windows-gnu check -p conu-relay --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy -p conu-relay --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `python -m py_compile scripts\verify-release-versions.py scripts\verify-release-artifacts.py` passed.
+- `python scripts\verify-release-versions.py` passed.
+- `git diff --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_dashboard_parser_and_renderers_are_metadata_only` was blocked locally because `dlltool.exe` is not installed.
+- `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --help` was blocked locally by the same missing `dlltool.exe` linker dependency.
+- PR #127 CI passed across Packages plus Rust on Ubuntu, Windows, and macOS: https://github.com/imthegoodboy/conU/actions/runs/26270473795
+- Branch `Release Artifacts` smoke passed across release preflight, package checks, attestations/uploads, and five platform builds at the current PR head: https://github.com/imthegoodboy/conU/actions/runs/26270567039
+
+Known gaps:
+
+- This is a fleet-level aggregate threshold gate over relay-local metadata stores. It is not distributed alert routing, adaptive abuse response, hosted billing, distributed retention orchestration, distributed session migration, or tenant-wide workflow automation.
+- Full local runtime/test proof for this Windows workstation still depends on installing `dlltool.exe`; GitHub CI covered the test path.
+
+Next recommendation:
+
+- Merge PR #127 without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
 ## Phase Completion Log
 
@@ -4928,4 +4972,5 @@ Add entries here when a phase is completed.
 2026-05-22 - Post Phase 15 tagged release preflight hardening completed. Added a fail-closed `Release Tag Preflight` for `v*` releases requiring Windows signing, macOS signing/notarization, and `NPM_TOKEN` before package checks/builds, changed tagged npm publish steps from warning-and-skip to errors, preserved unsigned non-tag workflow_dispatch smoke builds, updated release docs/plan, passed local workflow/package/Rust GNU checks with documented local linker blockers, passed PR #121 CI, and passed a branch `Release Artifacts` smoke run across preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
 2026-05-22 - Post Phase 15 release version consistency gate completed. Added `scripts/verify-release-versions.py` for shared Cargo/npm package version checks and `v*` tag-to-package-version enforcement, wired it into CI and Release Artifacts package gates before npm checks/dry-runs, updated release/package docs, validated local good and fail-closed tag paths, passed PR #123 CI, and passed a branch `Release Artifacts` smoke across release preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
 2026-05-22 - Post Phase 15 hosted fleet dashboard snapshot completed. Added `conu-relay --hosted-fleet-dashboard --fleet-file <path>` for guarded multi-relay metadata aggregation across credential, tenant, session-state, mailbox, accounting, and abuse stores; required versioned manifest false display guards; kept output to relay names, source paths, filters, aggregate counters, and display guards; updated docs/skills/plan; passed local GNU workspace check/clippy, package/Python checks, PR #125 CI, and a branch `Release Artifacts` smoke across all five platform builds. Next: adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-22 - Post Phase 15 hosted fleet dashboard threshold policy completed. Added reusable `--thresholds-file`, inline `--max-*`, and `--fail-on-threshold` support to `conu-relay --hosted-fleet-dashboard`, evaluating only aggregate fleet abuse counters and returning exit code 3 only when requested and exceeded; preserved stdout and payload-safe output boundaries, updated docs/skills/plan, and passed local GNU check/clippy, workspace check/clippy, package/Python checks, version gate, diff check, PR #127 CI, and a branch `Release Artifacts` smoke across all five platform builds. Local targeted test/run smoke remained blocked by missing `dlltool.exe`; GitHub Windows CI covered the test path. Next: merge PR #127 without deleting branches, then adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```

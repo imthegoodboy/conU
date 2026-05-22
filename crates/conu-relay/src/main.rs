@@ -278,7 +278,7 @@ fn main() -> ExitCode {
         },
         Some("--hosted-fleet-dashboard") => {
             match hosted_fleet_dashboard_from_args(args.collect()) {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(status) => status.exit_code(),
                 Err(error) => {
                     eprintln!("conU relay failed: {error}");
                     ExitCode::from(2)
@@ -368,7 +368,7 @@ Usage:
   conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]
   conu-relay --mailbox-purge --mailbox-dir <path> [--ttl-seconds <seconds>] [--node <node-id>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]
-  conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--json]
+  conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --check
   conu-relay --help
@@ -426,8 +426,10 @@ CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted das
 snapshots combine configured credential, tenant, accounting, and abuse summaries without displaying
 tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids.
 Hosted fleet dashboard snapshots read a versioned manifest of multiple relay-local metadata stores
-and aggregate only credential, tenant, session-state, mailbox, accounting, and abuse counters; the
-manifest must include explicit false display guards and does not make conU a managed billing service.
+and aggregate only credential, tenant, session-state, mailbox, accounting, and abuse counters. They
+can apply guarded --thresholds-file and --max-* abuse limits to aggregate fleet counters, preserving
+stdout and returning exit code 3 only with --fail-on-threshold. The manifest must include explicit
+false display guards and does not make conU a managed billing service or adaptive abuse service.
 Mailbox audit and purge commands accept reusable --retention-policy-file policy files with
 version set to 1, optional ttl_seconds and node_id keys, and explicit false display guards;
 CLI --ttl-seconds and --node values override file values. Purge commands still require a
@@ -5711,7 +5713,10 @@ struct HostedFleetDashboardArgs {
     fleet_file: PathBuf,
     account_id: Option<String>,
     node_id: Option<String>,
+    thresholds_file: Option<PathBuf>,
+    abuse_thresholds: AbuseThresholds,
     json: bool,
+    fail_on_threshold: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -6085,11 +6090,44 @@ struct HostedFleetDashboardSnapshot {
     fleet_file: PathBuf,
     account_id: Option<String>,
     node_id: Option<String>,
+    thresholds_file: Option<PathBuf>,
     relays: Vec<HostedFleetRelaySnapshot>,
     totals: HostedFleetDashboardTotals,
+    abuse_threshold_report: Option<AbuseThresholdReport>,
 }
 
-fn hosted_fleet_dashboard_from_args(args: Vec<String>) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostedFleetDashboardExit {
+    Success,
+    ThresholdExceeded,
+}
+
+impl HostedFleetDashboardExit {
+    fn exit_code(self) -> ExitCode {
+        match self {
+            Self::Success => ExitCode::SUCCESS,
+            Self::ThresholdExceeded => ExitCode::from(3),
+        }
+    }
+}
+
+fn hosted_fleet_dashboard_exit(
+    snapshot: &HostedFleetDashboardSnapshot,
+    fail_on_threshold: bool,
+) -> HostedFleetDashboardExit {
+    if fail_on_threshold
+        && snapshot
+            .abuse_threshold_report
+            .as_ref()
+            .is_some_and(|report| report.threshold_exceeded > 0)
+    {
+        HostedFleetDashboardExit::ThresholdExceeded
+    } else {
+        HostedFleetDashboardExit::Success
+    }
+}
+
+fn hosted_fleet_dashboard_from_args(args: Vec<String>) -> Result<HostedFleetDashboardExit, String> {
     let parsed = parse_hosted_fleet_dashboard_args(args)?;
     let snapshot = hosted_fleet_dashboard_snapshot(&parsed)?;
     if parsed.json {
@@ -6097,7 +6135,10 @@ fn hosted_fleet_dashboard_from_args(args: Vec<String>) -> Result<(), String> {
     } else {
         println!("{}", render_hosted_fleet_dashboard_text(&snapshot));
     }
-    Ok(())
+    Ok(hosted_fleet_dashboard_exit(
+        &snapshot,
+        parsed.fail_on_threshold,
+    ))
 }
 
 fn parse_hosted_fleet_dashboard_args(
@@ -6106,7 +6147,10 @@ fn parse_hosted_fleet_dashboard_args(
     let mut fleet_file = None::<PathBuf>;
     let mut account_id = None::<String>;
     let mut node_id = None::<String>;
+    let mut thresholds_file = None::<PathBuf>;
+    let mut cli_thresholds = AbuseThresholds::default();
     let mut json = false;
+    let mut fail_on_threshold = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -6132,8 +6176,26 @@ fn parse_hosted_fleet_dashboard_args(
                 };
                 node_id = Some(value.to_string());
             }
+            "--thresholds-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_dashboard_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(hosted_fleet_dashboard_usage());
+                }
+                thresholds_file = Some(PathBuf::from(value));
+            }
             "--json" => json = true,
+            "--fail-on-threshold" => fail_on_threshold = true,
             "--help" | "-h" => return Err(hosted_fleet_dashboard_usage()),
+            value if value.starts_with("--max-") => {
+                index += 1;
+                let Some(limit) = args.get(index) else {
+                    return Err(hosted_fleet_dashboard_usage());
+                };
+                parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
+            }
             value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
             _ => return Err(hosted_fleet_dashboard_usage()),
         }
@@ -6149,23 +6211,40 @@ fn parse_hosted_fleet_dashboard_args(
     let node_id = node_id
         .map(|value| validate_dashboard_filter_id(value, "node id"))
         .transpose()?;
+    thresholds_file = thresholds_file.filter(|path| !path.as_os_str().is_empty());
+    let threshold_source_configured = thresholds_file.is_some() || cli_thresholds.has_any();
+    if fail_on_threshold && !threshold_source_configured {
+        return Err("--fail-on-threshold requires --thresholds-file or --max-*".to_string());
+    }
+    let abuse_thresholds = merged_abuse_thresholds(thresholds_file.as_deref(), cli_thresholds)?;
+    if threshold_source_configured && !abuse_thresholds.has_any() {
+        return Err(hosted_fleet_dashboard_usage());
+    }
 
     Ok(HostedFleetDashboardArgs {
         fleet_file,
         account_id,
         node_id,
+        thresholds_file,
+        abuse_thresholds,
         json,
+        fail_on_threshold,
     })
 }
 
 fn hosted_fleet_dashboard_usage() -> String {
-    "usage: conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--json]".to_string()
+    "usage: conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]".to_string()
 }
 
 fn hosted_fleet_dashboard_snapshot(
     args: &HostedFleetDashboardArgs,
 ) -> Result<HostedFleetDashboardSnapshot, String> {
     let configs = parse_hosted_fleet_dashboard_file(&args.fleet_file)?;
+    if args.abuse_thresholds.has_any() && !configs.iter().any(|config| config.abuse_dir.is_some()) {
+        return Err(
+            "--thresholds-file and --max-* require at least one fleet relay abuse_dir".to_string(),
+        );
+    }
     let mut relays = Vec::with_capacity(configs.len());
     let mut totals = HostedFleetDashboardTotals::default();
 
@@ -6223,13 +6302,62 @@ fn hosted_fleet_dashboard_snapshot(
         relays.push(relay);
     }
 
+    let abuse_threshold_report = if args.abuse_thresholds.has_any() {
+        Some(abuse_threshold_report_from_fleet_totals(
+            &totals,
+            args.abuse_thresholds,
+            args.account_id.clone(),
+            args.node_id.clone(),
+        ))
+    } else {
+        None
+    };
+
     Ok(HostedFleetDashboardSnapshot {
         fleet_file: args.fleet_file.clone(),
         account_id: args.account_id.clone(),
         node_id: args.node_id.clone(),
+        thresholds_file: args.thresholds_file.clone(),
         relays,
         totals,
+        abuse_threshold_report,
     })
+}
+
+fn abuse_threshold_report_from_fleet_totals(
+    totals: &HostedFleetDashboardTotals,
+    thresholds: AbuseThresholds,
+    account_id: Option<String>,
+    node_id: Option<String>,
+) -> AbuseThresholdReport {
+    build_abuse_threshold_report(
+        "fleet",
+        None,
+        None,
+        account_id,
+        node_id,
+        totals.abuse_records,
+        None,
+        thresholds,
+        totals.admin_unauthorized,
+        totals.admin_failed,
+        totals.unauthorized_sessions,
+        totals.credential_denied_sessions,
+        totals.tenant_denied_sessions,
+        totals.rate_limited_sessions,
+        totals.session_expired,
+        totals.quota_denied_forwards,
+        totals.undelivered_forwards,
+        totals.mailbox_rejected_forwards,
+        totals.malformed_client_frames,
+        totals.payload_displayed,
+        totals.token_displayed,
+        totals.token_hash_displayed,
+        totals.key_material_displayed,
+        totals.session_id_displayed,
+        totals.ciphertext_displayed,
+        totals.contents_displayed,
+    )
 }
 
 fn parse_hosted_fleet_dashboard_file(path: &Path) -> Result<Vec<HostedFleetRelayConfig>, String> {
@@ -6544,6 +6672,7 @@ fn render_hosted_fleet_dashboard_text(snapshot: &HostedFleetDashboardSnapshot) -
 fleet file: {}
 account: {}
 node: {}
+thresholds file: {}
 relays: {}
 credential sources: {}
 credentials: {}
@@ -6594,11 +6723,15 @@ quota denied forwards: {}
 undelivered forwards: {}
 mailbox rejected forwards: {}
 malformed client frames: {}
+abuse threshold status: {}
+abuse threshold checks: {}
+abuse threshold exceeded: {}
 
 relay sources:",
         snapshot.fleet_file.display(),
         snapshot.account_id.as_deref().unwrap_or("all"),
         snapshot.node_id.as_deref().unwrap_or("all"),
+        optional_path_text(snapshot.thresholds_file.as_deref()),
         totals.relays,
         totals.credential_sources,
         totals.credentials,
@@ -6648,7 +6781,22 @@ relay sources:",
         totals.quota_denied_forwards,
         totals.undelivered_forwards,
         totals.mailbox_rejected_forwards,
-        totals.malformed_client_frames
+        totals.malformed_client_frames,
+        snapshot
+            .abuse_threshold_report
+            .as_ref()
+            .map(abuse_threshold_status)
+            .unwrap_or("not_configured"),
+        snapshot
+            .abuse_threshold_report
+            .as_ref()
+            .map(|report| report.threshold_checks)
+            .unwrap_or(0),
+        snapshot
+            .abuse_threshold_report
+            .as_ref()
+            .map(|report| report.threshold_exceeded)
+            .unwrap_or(0)
     );
 
     for relay in &snapshot.relays {
@@ -6662,6 +6810,76 @@ relay sources:",
             yes_no(relay.accounting.is_some()),
             yes_no(relay.abuse.is_some())
         ));
+    }
+
+    if let Some(report) = &snapshot.abuse_threshold_report {
+        output.push_str("\n\nfleet abuse thresholds:");
+        append_threshold_metric(
+            &mut output,
+            "admin unauthorized",
+            report.admin_unauthorized,
+            report.thresholds.admin_unauthorized,
+        );
+        append_threshold_metric(
+            &mut output,
+            "admin failed",
+            report.admin_failed,
+            report.thresholds.admin_failed,
+        );
+        append_threshold_metric(
+            &mut output,
+            "unauthorized sessions",
+            report.unauthorized_sessions,
+            report.thresholds.unauthorized_sessions,
+        );
+        append_threshold_metric(
+            &mut output,
+            "credential denied sessions",
+            report.credential_denied_sessions,
+            report.thresholds.credential_denied_sessions,
+        );
+        append_threshold_metric(
+            &mut output,
+            "tenant denied sessions",
+            report.tenant_denied_sessions,
+            report.thresholds.tenant_denied_sessions,
+        );
+        append_threshold_metric(
+            &mut output,
+            "rate limited sessions",
+            report.rate_limited_sessions,
+            report.thresholds.rate_limited_sessions,
+        );
+        append_threshold_metric(
+            &mut output,
+            "session expired",
+            report.session_expired,
+            report.thresholds.session_expired,
+        );
+        append_threshold_metric(
+            &mut output,
+            "quota denied forwards",
+            report.quota_denied_forwards,
+            report.thresholds.quota_denied_forwards,
+        );
+        append_threshold_metric(
+            &mut output,
+            "undelivered forwards",
+            report.undelivered_forwards,
+            report.thresholds.undelivered_forwards,
+        );
+        append_threshold_metric(
+            &mut output,
+            "mailbox rejected forwards",
+            report.mailbox_rejected_forwards,
+            report.thresholds.mailbox_rejected_forwards,
+        );
+        append_threshold_metric(
+            &mut output,
+            "malformed client frames",
+            report.malformed_client_frames,
+            report.thresholds.malformed_client_frames,
+        );
     }
 
     output.push_str(&format!(
@@ -6699,7 +6917,9 @@ fn render_hosted_fleet_dashboard_json(snapshot: &HostedFleetDashboardSnapshot) -
   "fleetFile": "{}",
   "accountId": {},
   "nodeId": {},
+  "thresholdsFile": {},
   "totals": {},
+  "abuseThresholdReport": {},
   "relays": [
 {}
   ],
@@ -6714,7 +6934,13 @@ fn render_hosted_fleet_dashboard_json(snapshot: &HostedFleetDashboardSnapshot) -
         json_escape(&snapshot.fleet_file.display().to_string()),
         optional_string_json(snapshot.account_id.as_deref()),
         optional_string_json(snapshot.node_id.as_deref()),
+        optional_path_json(snapshot.thresholds_file.as_deref()),
         render_hosted_fleet_totals_json(&snapshot.totals),
+        snapshot
+            .abuse_threshold_report
+            .as_ref()
+            .map(render_abuse_threshold_report_json)
+            .unwrap_or_else(|| "null".to_string()),
         relays,
         bool_json(snapshot.totals.payload_displayed),
         bool_json(snapshot.totals.token_displayed),
@@ -10743,6 +10969,9 @@ mod tests {
 
     #[test]
     fn hosted_fleet_dashboard_parser_and_renderers_are_metadata_only() {
+        let threshold_policy = write_abuse_threshold_policy_file(&abuse_threshold_policy_contents(
+            "max_admin_failed = 0\nmax_rate_limited_sessions = 0\n",
+        ));
         let parsed = parse_hosted_fleet_dashboard_args(vec![
             "--fleet-file".to_string(),
             "fleet.toml".to_string(),
@@ -10750,13 +10979,26 @@ mod tests {
             "account.prod".to_string(),
             "--node".to_string(),
             "node.hosted".to_string(),
+            "--thresholds-file".to_string(),
+            threshold_policy.display().to_string(),
+            "--max-mailbox-rejected-forwards".to_string(),
+            "0".to_string(),
             "--json".to_string(),
+            "--fail-on-threshold".to_string(),
         ])
         .expect("hosted fleet dashboard args parse");
         assert_eq!(parsed.fleet_file.as_path(), Path::new("fleet.toml"));
         assert_eq!(parsed.account_id.as_deref(), Some("account.prod"));
         assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert_eq!(
+            parsed.thresholds_file.as_deref(),
+            Some(threshold_policy.as_path())
+        );
+        assert_eq!(parsed.abuse_thresholds.admin_failed, Some(0));
+        assert_eq!(parsed.abuse_thresholds.rate_limited_sessions, Some(0));
+        assert_eq!(parsed.abuse_thresholds.mailbox_rejected_forwards, Some(0));
         assert!(parsed.json);
+        assert!(parsed.fail_on_threshold);
         assert!(parse_hosted_fleet_dashboard_args(Vec::new()).is_err());
         let invalid_filter = parse_hosted_fleet_dashboard_args(vec![
             "--fleet-file".to_string(),
@@ -10791,6 +11033,29 @@ abuse_dir = "abuse"
             Some(expected_credentials.as_path())
         );
         assert_eq!(configs[0].mailbox_ttl_seconds, Some(3600));
+        let no_abuse_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                r#"
+[[relay]]
+name = "relay-east"
+credentials_file = "credentials.toml"
+"#,
+            ));
+        let no_abuse_args = HostedFleetDashboardArgs {
+            fleet_file: no_abuse_fleet,
+            account_id: None,
+            node_id: None,
+            thresholds_file: Some(threshold_policy.clone()),
+            abuse_thresholds: AbuseThresholds {
+                admin_failed: Some(0),
+                ..AbuseThresholds::default()
+            },
+            json: false,
+            fail_on_threshold: false,
+        };
+        let no_abuse_error = hosted_fleet_dashboard_snapshot(&no_abuse_args)
+            .expect_err("thresholds should require a fleet abuse source");
+        assert!(no_abuse_error.contains("abuse_dir"));
 
         let missing_guard = write_hosted_fleet_dashboard_file(
             "version = \"1\"\npayload_displayed = false\n[[relay]]\nname = \"relay-east\"\nabuse_dir = \"abuse\"\n",
@@ -10916,13 +11181,36 @@ abuse_dir = "abuse"
         };
         let mut totals = HostedFleetDashboardTotals::default();
         totals.add(&relay);
+        let threshold_report = abuse_threshold_report_from_fleet_totals(
+            &totals,
+            AbuseThresholds {
+                admin_failed: Some(0),
+                rate_limited_sessions: Some(0),
+                mailbox_rejected_forwards: Some(0),
+                ..AbuseThresholds::default()
+            },
+            Some("account.prod".to_string()),
+            Some("node.hosted".to_string()),
+        );
+        assert_eq!(threshold_report.threshold_checks, 3);
+        assert_eq!(threshold_report.threshold_exceeded, 3);
         let snapshot = HostedFleetDashboardSnapshot {
             fleet_file: PathBuf::from("fleet.toml"),
             account_id: Some("account.prod".to_string()),
             node_id: Some("node.hosted".to_string()),
+            thresholds_file: Some(PathBuf::from("thresholds.toml")),
             relays: vec![relay],
             totals,
+            abuse_threshold_report: Some(threshold_report),
         };
+        assert_eq!(
+            hosted_fleet_dashboard_exit(&snapshot, true),
+            HostedFleetDashboardExit::ThresholdExceeded
+        );
+        assert_eq!(
+            hosted_fleet_dashboard_exit(&snapshot, false),
+            HostedFleetDashboardExit::Success
+        );
         let secret_token = "relay-secret-token";
         let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let session_id = "relay_node.hosted_123456789";
@@ -10937,6 +11225,8 @@ abuse_dir = "abuse"
             assert!(output.contains("relay-east"));
             assert!(output.contains("credentials"));
             assert!(output.contains("session"));
+            assert!(output.contains("threshold"));
+            assert!(output.contains("threshold_exceeded"));
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));
             assert!(!output.contains(session_id));
