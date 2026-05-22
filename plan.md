@@ -4875,7 +4875,7 @@ Next recommendation:
 
 - Merge PR #127 without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
-## Post Phase 15 Hosted Fleet Dashboard Mailbox Retention Policy (In Progress)
+## Post Phase 15 Hosted Fleet Dashboard Mailbox Retention Policy (Completed)
 
 Objective: make controlled multi-relay fleet snapshots scriptable for durable mailbox retention pressure by reusing the existing guarded mailbox retention policy format without adding remote purge, adaptive cleanup, distributed retention orchestration, or payload exposure.
 
@@ -4883,6 +4883,7 @@ Current status:
 
 - Created GitHub issue #128 for fleet mailbox retention policy gates.
 - Created branch `fleet-mailbox-retention-policy` from `main` without a `codex/` prefix, per user preference.
+- Opened PR #129 to close issue #128 without deleting local or remote branches.
 - Extended `conu-relay --hosted-fleet-dashboard --fleet-file <path>` with `--retention-policy-file <path>`, `--ttl-seconds <seconds>`, and `--fail-on-retention`.
 - Fleet retention policy files reuse the existing metadata-only `version = "1"` mailbox retention policy format with optional `ttl_seconds`, optional `node_id`, and required false display guards.
 - Hosted fleet dashboards now apply a mailbox retention node filter only to mailbox metadata scans. CLI `--node` still remains the global source filter and overrides policy-file mailbox node defaults.
@@ -4892,7 +4893,7 @@ Current status:
 - The command fails closed when retention evaluation is requested but the fleet manifest has no mailbox source, or when `--fail-on-retention` is requested without any effective TTL.
 - Updated README, architecture, relay hosting docs, production/security/release docs, SDK/MCP boundaries, user guide, repo memory, and implementation/security guardrails.
 
-Validation so far:
+Validation:
 
 - `cargo fmt --all` passed after implementation.
 - `cargo fmt --all -- --check` passed.
@@ -4905,17 +4906,21 @@ Validation so far:
 - `python -m py_compile scripts\verify-release-versions.py scripts\verify-release-artifacts.py` passed.
 - `python scripts\verify-release-versions.py` passed.
 - `git diff --check` passed.
+- GitHub PR CI passed for commit `3e039743b2b6261fe660dd5c4bea1e235b334541`: https://github.com/imthegoodboy/conU/actions/runs/26271673595
+- Branch Release Artifacts smoke passed for commit `3e039743b2b6261fe660dd5c4bea1e235b334541`: https://github.com/imthegoodboy/conU/actions/runs/26271801283
+- PR #129 status checks are clean, including CodeRabbit `Review skipped` success.
+- Security review retained payload-safe behavior. The new gate reads configured local mailbox metadata only, reports counts/bytes/TTL/status/filter metadata, does not purge files, does not call remote relays, and does not print mailbox contents, manifest contents, policy contents, tokens, token hashes, session ids, payloads, ciphertext, or frame bodies.
 - `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_dashboard_parser_and_renderers_are_metadata_only` was blocked locally because `dlltool.exe` is not installed.
 - `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --help` was blocked locally by the same missing `dlltool.exe` linker dependency.
 
 Known gaps:
 
 - This is a read-only fleet-level retention gate over relay-local durable mailbox metadata stores. It is not remote purge, distributed lock coordination, hosted billing, adaptive cleanup, managed alerting, tenant-wide retention orchestration, or distributed retention automation.
-- Full local runtime/test proof for this Windows workstation still depends on installing `dlltool.exe`; GitHub CI must cover the test path.
+- Full local runtime/test proof for this Windows workstation still depends on installing `dlltool.exe`; GitHub CI covered the test path.
 
 Next recommendation:
 
-- Open and validate PR for issue #128, then merge without deleting local or remote work branches if CI is green. After that, continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration beyond read-only fleet gates, or ICE/STUN/TURN managed traversal.
+- Merge PR #129 without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration beyond read-only fleet gates, or ICE/STUN/TURN managed traversal.
 
 ## Phase Completion Log
 
@@ -5015,4 +5020,5 @@ Add entries here when a phase is completed.
 2026-05-22 - Post Phase 15 release version consistency gate completed. Added `scripts/verify-release-versions.py` for shared Cargo/npm package version checks and `v*` tag-to-package-version enforcement, wired it into CI and Release Artifacts package gates before npm checks/dry-runs, updated release/package docs, validated local good and fail-closed tag paths, passed PR #123 CI, and passed a branch `Release Artifacts` smoke across release preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
 2026-05-22 - Post Phase 15 hosted fleet dashboard snapshot completed. Added `conu-relay --hosted-fleet-dashboard --fleet-file <path>` for guarded multi-relay metadata aggregation across credential, tenant, session-state, mailbox, accounting, and abuse stores; required versioned manifest false display guards; kept output to relay names, source paths, filters, aggregate counters, and display guards; updated docs/skills/plan; passed local GNU workspace check/clippy, package/Python checks, PR #125 CI, and a branch `Release Artifacts` smoke across all five platform builds. Next: adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 hosted fleet dashboard threshold policy completed. Added reusable `--thresholds-file`, inline `--max-*`, and `--fail-on-threshold` support to `conu-relay --hosted-fleet-dashboard`, evaluating only aggregate fleet abuse counters and returning exit code 3 only when requested and exceeded; preserved stdout and payload-safe output boundaries, updated docs/skills/plan, and passed local GNU check/clippy, workspace check/clippy, package/Python checks, version gate, diff check, PR #127 CI, and a branch `Release Artifacts` smoke across all five platform builds. Local targeted test/run smoke remained blocked by missing `dlltool.exe`; GitHub Windows CI covered the test path. Next: merge PR #127 without deleting branches, then adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-22 - Post Phase 15 hosted fleet dashboard mailbox retention policy completed. Added reusable `--retention-policy-file`, `--ttl-seconds`, and `--fail-on-retention` support to `conu-relay --hosted-fleet-dashboard`, reused metadata-only durable mailbox retention policy files with required false display guards, preserved CLI `--node` as the global source filter, added aggregate retention status/count/byte reporting, failed closed for missing mailbox sources or missing effective TTL under fail-on-retention, updated docs/skills/plan, and kept output payload-safe. GitHub PR CI and branch Release Artifacts smoke passed; local Rust runtime/test execution remains blocked on this Windows workstation until `dlltool.exe` is installed. Next: merge PR #129 without deleting branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration beyond read-only fleet gates, or ICE/STUN/TURN managed traversal.
 ```
