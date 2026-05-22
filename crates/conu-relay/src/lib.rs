@@ -1935,9 +1935,22 @@ pub fn audit_hosted_relay_credentials_file(
     path: impl AsRef<Path>,
     account_id: Option<&str>,
 ) -> Result<HostedCredentialAudit, RelayError> {
+    audit_hosted_relay_credentials_file_with_node(path, account_id, None)
+}
+
+/// Summarize hosted relay credentials for an optional account/node filter
+/// without exposing token hashes or contents.
+pub fn audit_hosted_relay_credentials_file_with_node(
+    path: impl AsRef<Path>,
+    account_id: Option<&str>,
+    node_id: Option<&str>,
+) -> Result<HostedCredentialAudit, RelayError> {
     let path = path.as_ref();
     let account_id = account_id
         .map(|value| validate_account_id(value.to_string()))
+        .transpose()?;
+    let node_id = node_id
+        .map(|value| validate_node_id(value.to_string()))
         .transpose()?;
     let records = match fs::read_to_string(path) {
         Ok(contents) => parse_credential_file_records(&contents)?,
@@ -1953,13 +1966,24 @@ pub fn audit_hosted_relay_credentials_file(
 
     for record in records {
         let record_account = record.account_id()?;
-        if let Some(account) = record_account {
-            accounts.insert(account.to_string());
-        }
-        if account_id
+        let record_node = record.node_id()?;
+        let account_mismatch = account_id
             .as_deref()
-            .is_some_and(|target| record_account != Some(target))
-        {
+            .is_some_and(|target| record_account != Some(target));
+        let node_mismatch = node_id
+            .as_deref()
+            .is_some_and(|target| record_node != target);
+        if node_id.is_none() {
+            if let Some(account) = record_account {
+                accounts.insert(account.to_string());
+            }
+        }
+        if node_id.is_some() && !account_mismatch && !node_mismatch {
+            if let Some(account) = record_account {
+                accounts.insert(account.to_string());
+            }
+        }
+        if account_mismatch || node_mismatch {
             continue;
         }
         let status = record.status.unwrap_or(RelayCredentialStatus::Active);
@@ -2285,9 +2309,23 @@ pub fn audit_hosted_tenants_file(
     path: impl AsRef<Path>,
     account_id: Option<&str>,
 ) -> Result<HostedTenantAudit, RelayError> {
+    audit_hosted_tenants_file_with_node(path, account_id, None)
+}
+
+/// Summarize hosted tenant metadata for an optional account/node filter without
+/// exposing payloads, tokens, hashes, private keys, ciphertext bodies, or
+/// manifest contents.
+pub fn audit_hosted_tenants_file_with_node(
+    path: impl AsRef<Path>,
+    account_id: Option<&str>,
+    node_id: Option<&str>,
+) -> Result<HostedTenantAudit, RelayError> {
     let path = path.as_ref();
     let account_id = account_id
         .map(|value| validate_account_id(value.to_string()))
+        .transpose()?;
+    let node_id = node_id
+        .map(|value| validate_node_id(value.to_string()))
         .transpose()?;
     let manifest = match fs::read_to_string(path) {
         Ok(contents) => parse_hosted_tenant_manifest(&contents)?,
@@ -2319,6 +2357,9 @@ pub fn audit_hosted_tenants_file(
         if account_id
             .as_deref()
             .is_some_and(|target| target != node.account_id)
+            || node_id
+                .as_deref()
+                .is_some_and(|target| target != node.node_id)
         {
             continue;
         }
