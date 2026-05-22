@@ -243,7 +243,23 @@ Get-Content -Raw C:\secure\relay-admin.token |
 
 The admin form requires `CONU_RELAY_CREDENTIALS_FILE`, `CONU_RELAY_TENANTS_FILE`, and hosted admin configuration through `CONU_RELAY_ADMIN_TOKEN` or `CONU_RELAY_ADMIN_TOKENS_FILE`. A full-admin token can suspend any account. A scoped admin-token record must have both credential and tenant scopes and, when it carries an `account_id`, can suspend only that account. Output is metadata-only: action/status, account id, credential counts, tenant/node counts, hosted policy counts, relay endpoint, and false display guards.
 
-This is a single-relay file-backed operator workflow. It is not a distributed account lifecycle service, transactional billing suspension, hosted identity/key suspension, cross-relay revocation, or tenant-wide workflow automation.
+For several local relay metadata stores listed in the guarded fleet manifest, use the fleet form:
+
+```powershell
+conu-relay --hosted-fleet-account-suspend account.prod `
+  --fleet-file C:\conu-relay\fleet.toml `
+  --dry-run `
+  --json
+
+conu-relay --hosted-fleet-account-suspend account.prod `
+  --fleet-file C:\conu-relay\fleet.toml `
+  --confirm `
+  --json
+```
+
+Fleet account suspension requires each affected `[[relay]]` entry to contain both `credentials_file` and `tenants_file`. It rejects partial credential/tenant entries, preflights every complete local source before confirmed mutation, then applies the same tenant-first and credential-second suspension to each source. Output is aggregate/per-relay metadata only, and the command never contacts remote relays.
+
+These are file-backed operator workflows. The fleet command helps with guarded local multi-relay maintenance, but it is not a distributed account lifecycle service, transactional billing suspension, hosted identity/key suspension, remote relay revocation, or tenant-wide workflow automation service.
 
 ## Online Lifecycle
 
@@ -494,4 +510,4 @@ This is still single-relay and file-backed/admin-gated, even with scoped admin t
 
 ## Remaining Hosted Work
 
-This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token manifest audit, policy-aware hosted relay readiness preflight, hosted account-suspension, abuse-audit, local/admin-gated session-state audit, local/admin-gated abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, guarded local fleet mailbox purge orchestration, local dashboard-snapshot, guarded fleet dashboard snapshots with aggregate reusable mailbox retention checks plus aggregate reusable abuse threshold checks, guarded fleet abuse response plans, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs distributed tenant lifecycle/workflow automation beyond single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse automation beyond guarded response plans, distributed multi-instance session migration beyond single-relay session-state audits, distributed accounting, remote relay/cross-region hosted mailbox retention orchestration beyond guarded local fleet purge, full hosted identity/key administration, and managed direct NAT traversal.
+This closes the online credential lifecycle gap and adds single-writer hosted tenant, scoped admin-token manifest audit, policy-aware hosted relay readiness preflight, hosted account-suspension, guarded local fleet account suspension, abuse-audit, local/admin-gated session-state audit, local/admin-gated abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, local and admin-gated online mailbox-audit, local and admin-gated online mailbox-purge, relay-local scheduled mailbox purge, guarded local fleet mailbox purge orchestration, local dashboard-snapshot, guarded fleet dashboard snapshots with aggregate reusable mailbox retention checks plus aggregate reusable abuse threshold checks, guarded fleet abuse response plans, and admin-gated online dashboard-snapshot foundations. Public managed hosting still needs remote/distributed tenant lifecycle workflow automation beyond guarded local fleet account suspension plus single-relay account suspension/scoped admin tokens, distributed hosted dashboards and adaptive abuse automation beyond guarded response plans, distributed multi-instance session migration beyond single-relay session-state audits, distributed accounting, remote relay/cross-region hosted mailbox retention orchestration beyond guarded local fleet purge, full hosted identity/key administration, and managed direct NAT traversal.
