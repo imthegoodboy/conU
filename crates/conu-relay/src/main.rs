@@ -239,6 +239,15 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--hosted-fleet-account-audit") => {
+            match hosted_fleet_account_audit_from_args(args.collect()) {
+                Ok(status) => status.exit_code(),
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("--hosted-fleet-account-suspend") => {
             match hosted_fleet_account_suspend_from_args(args.collect()) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -390,6 +399,7 @@ Usage:
   conu-relay --tenant-node-revoke <account-id> <node-id> --tenants-file <path> [--json]
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
+  conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--json] [--fail-on-warning]
   conu-relay --hosted-fleet-account-suspend <account-id> --fleet-file <path> (--dry-run|--confirm) [--json]
   conu-relay --session-audit --session-state-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
@@ -462,7 +472,8 @@ or --max-* abuse limits to aggregate fleet counters, preserving stdout and retur
 only with --fail-on-retention or --fail-on-threshold. Per-relay mailbox_ttl_seconds entries remain
 source-specific retention overrides unless a CLI --ttl-seconds override is supplied. The same
 manifest can drive --hosted-fleet-abuse-response-plan for deterministic operator action categories
-over aggregate abuse thresholds, --hosted-fleet-account-suspend for dry-run or explicitly confirmed
+over aggregate abuse thresholds, --hosted-fleet-account-audit for read-only credential/tenant
+consistency warnings, --hosted-fleet-account-suspend for dry-run or explicitly confirmed
 tenant-first account suspension across complete local credential/tenant source pairs, and
 --hosted-fleet-mailbox-purge for dry-run or explicitly confirmed expired durable mailbox cleanup
 across configured local mailbox stores. The manifest must include explicit false display guards and
@@ -4660,6 +4671,329 @@ fn parse_hosted_account_suspend_args(
 
 fn hosted_account_suspend_usage() -> String {
     "usage: conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]".to_string()
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetAccountAuditArgs {
+    account_id: String,
+    fleet_file: PathBuf,
+    json: bool,
+    fail_on_warning: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetAccountAuditRelayReport {
+    name: String,
+    credentials_file: Option<PathBuf>,
+    tenants_file: Option<PathBuf>,
+    credentials: usize,
+    active: usize,
+    revoked: usize,
+    expired: usize,
+    accounts: usize,
+    tenants: usize,
+    active_tenants: usize,
+    revoked_tenants: usize,
+    nodes: usize,
+    active_nodes: usize,
+    revoked_nodes: usize,
+    tenant_policies: usize,
+    warnings: Vec<&'static str>,
+    token_displayed: bool,
+    key_material_displayed: bool,
+    contents_displayed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostedFleetAccountAuditTotals {
+    relays: usize,
+    account_sources: usize,
+    credential_sources: usize,
+    tenant_sources: usize,
+    credentials: usize,
+    active: usize,
+    revoked: usize,
+    expired: usize,
+    accounts: usize,
+    tenants: usize,
+    active_tenants: usize,
+    revoked_tenants: usize,
+    nodes: usize,
+    active_nodes: usize,
+    revoked_nodes: usize,
+    tenant_policies: usize,
+    warnings: usize,
+    token_displayed: bool,
+    key_material_displayed: bool,
+    contents_displayed: bool,
+}
+
+impl HostedFleetAccountAuditTotals {
+    fn add(&mut self, relay: &HostedFleetAccountAuditRelayReport) {
+        self.account_sources += 1;
+        if relay.credentials_file.is_some() {
+            self.credential_sources += 1;
+        }
+        if relay.tenants_file.is_some() {
+            self.tenant_sources += 1;
+        }
+        self.credentials += relay.credentials;
+        self.active += relay.active;
+        self.revoked += relay.revoked;
+        self.expired += relay.expired;
+        self.accounts += relay.accounts;
+        self.tenants += relay.tenants;
+        self.active_tenants += relay.active_tenants;
+        self.revoked_tenants += relay.revoked_tenants;
+        self.nodes += relay.nodes;
+        self.active_nodes += relay.active_nodes;
+        self.revoked_nodes += relay.revoked_nodes;
+        self.tenant_policies += relay.tenant_policies;
+        self.warnings += relay.warnings.len();
+        self.token_displayed |= relay.token_displayed;
+        self.key_material_displayed |= relay.key_material_displayed;
+        self.contents_displayed |= relay.contents_displayed;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetAccountAuditReport {
+    account_id: String,
+    fleet_file: PathBuf,
+    relays: Vec<HostedFleetAccountAuditRelayReport>,
+    totals: HostedFleetAccountAuditTotals,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostedFleetAccountAuditExit {
+    Success,
+    Warning,
+}
+
+impl HostedFleetAccountAuditExit {
+    fn exit_code(self) -> ExitCode {
+        match self {
+            Self::Success => ExitCode::SUCCESS,
+            Self::Warning => ExitCode::from(3),
+        }
+    }
+}
+
+fn hosted_fleet_account_audit_from_args(
+    args: Vec<String>,
+) -> Result<HostedFleetAccountAuditExit, String> {
+    let parsed = parse_hosted_fleet_account_audit_args(args)?;
+    let report = hosted_fleet_account_audit_report(&parsed)?;
+    if parsed.json {
+        println!("{}", render_hosted_fleet_account_audit_json(&report));
+    } else {
+        println!("{}", render_hosted_fleet_account_audit_text(&report));
+    }
+    Ok(hosted_fleet_account_audit_exit(
+        &report,
+        parsed.fail_on_warning,
+    ))
+}
+
+fn parse_hosted_fleet_account_audit_args(
+    args: Vec<String>,
+) -> Result<HostedFleetAccountAuditArgs, String> {
+    let mut positional = Vec::new();
+    let mut fleet_file = None::<PathBuf>;
+    let mut json = false;
+    let mut fail_on_warning = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--fleet-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_account_audit_usage());
+                };
+                fleet_file = Some(PathBuf::from(value));
+            }
+            "--json" => json = true,
+            "--fail-on-warning" => fail_on_warning = true,
+            "--help" | "-h" => return Err(hosted_fleet_account_audit_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 1 {
+        return Err(hosted_fleet_account_audit_usage());
+    }
+    let account_id = validate_dashboard_filter_id(positional.remove(0), "account id")?;
+    let Some(fleet_file) = fleet_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(hosted_fleet_account_audit_usage());
+    };
+
+    Ok(HostedFleetAccountAuditArgs {
+        account_id,
+        fleet_file,
+        json,
+        fail_on_warning,
+    })
+}
+
+fn hosted_fleet_account_audit_usage() -> String {
+    "usage: conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--json] [--fail-on-warning]".to_string()
+}
+
+fn hosted_fleet_account_audit_report(
+    args: &HostedFleetAccountAuditArgs,
+) -> Result<HostedFleetAccountAuditReport, String> {
+    let configs = parse_hosted_fleet_dashboard_file(&args.fleet_file)?;
+    let mut totals = HostedFleetAccountAuditTotals {
+        relays: configs.len(),
+        ..HostedFleetAccountAuditTotals::default()
+    };
+    let mut relays = Vec::<HostedFleetAccountAuditRelayReport>::new();
+
+    for config in configs {
+        if config.credentials_file.is_none() && config.tenants_file.is_none() {
+            continue;
+        }
+        let relay = hosted_fleet_account_audit_relay(config, &args.account_id)?;
+        totals.add(&relay);
+        relays.push(relay);
+    }
+
+    if relays.is_empty() {
+        return Err(
+            "--hosted-fleet-account-audit requires at least one fleet relay credentials_file or tenants_file".to_string(),
+        );
+    }
+
+    Ok(HostedFleetAccountAuditReport {
+        account_id: args.account_id.clone(),
+        fleet_file: args.fleet_file.clone(),
+        relays,
+        totals,
+    })
+}
+
+fn hosted_fleet_account_audit_relay(
+    config: HostedFleetRelayConfig,
+    account_id: &str,
+) -> Result<HostedFleetAccountAuditRelayReport, String> {
+    let credentials = config
+        .credentials_file
+        .as_ref()
+        .map(|path| audit_hosted_relay_credentials_file(path, Some(account_id)))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let tenants = config
+        .tenants_file
+        .as_ref()
+        .map(|path| audit_hosted_tenants_file(path, Some(account_id)))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+
+    let mut warnings = Vec::<&'static str>::new();
+    if credentials.is_none() {
+        warnings.push("missing_credentials_source");
+    }
+    if tenants.is_none() {
+        warnings.push("missing_tenants_source");
+    }
+
+    let credentials_count = credentials
+        .as_ref()
+        .map(|audit| audit.credentials)
+        .unwrap_or(0);
+    let active_credentials = credentials.as_ref().map(|audit| audit.active).unwrap_or(0);
+    let tenants_count = tenants.as_ref().map(|audit| audit.tenants).unwrap_or(0);
+    let active_tenants = tenants
+        .as_ref()
+        .map(|audit| audit.active_tenants)
+        .unwrap_or(0);
+    let revoked_tenants = tenants
+        .as_ref()
+        .map(|audit| audit.revoked_tenants)
+        .unwrap_or(0);
+    let active_nodes = tenants
+        .as_ref()
+        .map(|audit| audit.active_nodes)
+        .unwrap_or(0);
+
+    if credentials.is_some() && credentials_count == 0 {
+        warnings.push("account_missing_credentials");
+    }
+    if tenants.is_some() && tenants_count == 0 {
+        warnings.push("account_missing_tenant");
+    }
+    if credentials.is_some() && tenants.is_some() {
+        if active_credentials > 0 && active_tenants == 0 {
+            warnings.push("active_credentials_without_active_tenant");
+        }
+        if active_credentials > 0 && active_nodes == 0 {
+            warnings.push("active_credentials_without_active_tenant_node");
+        }
+        if active_tenants > 0 && active_credentials == 0 {
+            warnings.push("active_tenant_without_active_credentials");
+        }
+        if active_tenants > 0 && active_nodes == 0 {
+            warnings.push("active_tenant_without_active_node");
+        }
+        if active_nodes > 0 && active_tenants == 0 {
+            warnings.push("active_nodes_without_active_tenant");
+        }
+        if revoked_tenants > 0 && active_credentials > 0 {
+            warnings.push("revoked_tenant_with_active_credentials");
+        }
+    }
+
+    Ok(HostedFleetAccountAuditRelayReport {
+        name: config.name,
+        credentials_file: config.credentials_file,
+        tenants_file: config.tenants_file,
+        credentials: credentials_count,
+        active: active_credentials,
+        revoked: credentials.as_ref().map(|audit| audit.revoked).unwrap_or(0),
+        expired: credentials.as_ref().map(|audit| audit.expired).unwrap_or(0),
+        accounts: credentials
+            .as_ref()
+            .map(|audit| audit.accounts)
+            .unwrap_or(0),
+        tenants: tenants_count,
+        active_tenants,
+        revoked_tenants,
+        nodes: tenants.as_ref().map(|audit| audit.nodes).unwrap_or(0),
+        active_nodes,
+        revoked_nodes: tenants
+            .as_ref()
+            .map(|audit| audit.revoked_nodes)
+            .unwrap_or(0),
+        tenant_policies: tenants.as_ref().map(|audit| audit.policies).unwrap_or(0),
+        warnings,
+        token_displayed: credentials
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+            || tenants.as_ref().is_some_and(|audit| audit.token_displayed),
+        key_material_displayed: tenants
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed),
+        contents_displayed: credentials
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+            || tenants
+                .as_ref()
+                .is_some_and(|audit| audit.contents_displayed),
+    })
+}
+
+fn hosted_fleet_account_audit_exit(
+    report: &HostedFleetAccountAuditReport,
+    fail_on_warning: bool,
+) -> HostedFleetAccountAuditExit {
+    if fail_on_warning && report.totals.warnings > 0 {
+        HostedFleetAccountAuditExit::Warning
+    } else {
+        HostedFleetAccountAuditExit::Success
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -8868,6 +9202,237 @@ fn render_hosted_account_suspend_json(suspension: &HostedAccountSuspension) -> S
     )
 }
 
+fn render_hosted_fleet_account_audit_text(report: &HostedFleetAccountAuditReport) -> String {
+    let totals = &report.totals;
+    let mut output = format!(
+        r"conU hosted relay fleet account audit
+
+status: {}
+account: {}
+fleet file: {}
+relays: {}
+account sources: {}
+credential sources: {}
+tenant sources: {}
+warnings: {}
+credentials: {}
+active credentials: {}
+revoked credentials: {}
+expired credentials: {}
+accounts: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+nodes: {}
+active nodes: {}
+revoked nodes: {}
+tenant policies: {}
+
+relay account sources:",
+        hosted_fleet_account_audit_status(report),
+        report.account_id,
+        report.fleet_file.display(),
+        totals.relays,
+        totals.account_sources,
+        totals.credential_sources,
+        totals.tenant_sources,
+        totals.warnings,
+        totals.credentials,
+        totals.active,
+        totals.revoked,
+        totals.expired,
+        totals.accounts,
+        totals.tenants,
+        totals.active_tenants,
+        totals.revoked_tenants,
+        totals.nodes,
+        totals.active_nodes,
+        totals.revoked_nodes,
+        totals.tenant_policies
+    );
+
+    for relay in &report.relays {
+        let warnings = if relay.warnings.is_empty() {
+            "none".to_string()
+        } else {
+            relay.warnings.join(",")
+        };
+        output.push_str(&format!(
+            "\n- {}: credentials {} tenants {} active credentials {} active tenants {} active nodes {} warnings {}",
+            relay.name,
+            optional_path_text(relay.credentials_file.as_deref()),
+            optional_path_text(relay.tenants_file.as_deref()),
+            relay.active,
+            relay.active_tenants,
+            relay.active_nodes,
+            warnings
+        ));
+    }
+
+    output.push_str(&format!(
+        r"
+
+payload displayed: no
+token displayed: {}
+token hash displayed: no
+key material displayed: {}
+session id displayed: no
+ciphertext displayed: no
+contents displayed: {}",
+        yes_no(totals.token_displayed),
+        yes_no(totals.key_material_displayed),
+        yes_no(totals.contents_displayed)
+    ));
+    output
+}
+
+fn hosted_fleet_account_audit_status(report: &HostedFleetAccountAuditReport) -> &'static str {
+    if report.totals.warnings == 0 {
+        "ok"
+    } else {
+        "warning"
+    }
+}
+
+fn render_hosted_fleet_account_audit_json(report: &HostedFleetAccountAuditReport) -> String {
+    let relays = report
+        .relays
+        .iter()
+        .map(render_hosted_fleet_account_audit_relay_json)
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    format!(
+        r#"{{
+  "status": "{}",
+  "accountId": "{}",
+  "fleetFile": "{}",
+  "totals": {},
+  "relays": [
+{}
+  ],
+  "payloadDisplayed": false,
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": false,
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": false,
+  "ciphertextDisplayed": false,
+  "contentsDisplayed": {}
+}}"#,
+        hosted_fleet_account_audit_status(report),
+        json_escape(&report.account_id),
+        json_escape(&report.fleet_file.display().to_string()),
+        render_hosted_fleet_account_audit_totals_json(&report.totals),
+        relays,
+        bool_json(report.totals.token_displayed),
+        bool_json(report.totals.key_material_displayed),
+        bool_json(report.totals.contents_displayed)
+    )
+}
+
+fn render_hosted_fleet_account_audit_totals_json(totals: &HostedFleetAccountAuditTotals) -> String {
+    format!(
+        r#"{{
+    "relays": {},
+    "accountSources": {},
+    "credentialSources": {},
+    "tenantSources": {},
+    "warnings": {},
+    "credentials": {},
+    "activeCredentials": {},
+    "revokedCredentials": {},
+    "expiredCredentials": {},
+    "accounts": {},
+    "tenants": {},
+    "activeTenants": {},
+    "revokedTenants": {},
+    "nodes": {},
+    "activeNodes": {},
+    "revokedNodes": {},
+    "tenantPolicies": {}
+  }}"#,
+        totals.relays,
+        totals.account_sources,
+        totals.credential_sources,
+        totals.tenant_sources,
+        totals.warnings,
+        totals.credentials,
+        totals.active,
+        totals.revoked,
+        totals.expired,
+        totals.accounts,
+        totals.tenants,
+        totals.active_tenants,
+        totals.revoked_tenants,
+        totals.nodes,
+        totals.active_nodes,
+        totals.revoked_nodes,
+        totals.tenant_policies
+    )
+}
+
+fn render_hosted_fleet_account_audit_relay_json(
+    relay: &HostedFleetAccountAuditRelayReport,
+) -> String {
+    format!(
+        r#"    {{
+      "name": "{}",
+      "credentialsFile": {},
+      "tenantsFile": {},
+      "warnings": {},
+      "credentials": {},
+      "activeCredentials": {},
+      "revokedCredentials": {},
+      "expiredCredentials": {},
+      "accounts": {},
+      "tenants": {},
+      "activeTenants": {},
+      "revokedTenants": {},
+      "nodes": {},
+      "activeNodes": {},
+      "revokedNodes": {},
+      "tenantPolicies": {},
+      "payloadDisplayed": false,
+      "tokenDisplayed": {},
+      "tokenHashDisplayed": false,
+      "keyMaterialDisplayed": {},
+      "sessionIdDisplayed": false,
+      "ciphertextDisplayed": false,
+      "contentsDisplayed": {}
+    }}"#,
+        json_escape(&relay.name),
+        optional_path_json(relay.credentials_file.as_deref()),
+        optional_path_json(relay.tenants_file.as_deref()),
+        render_warning_array_json(&relay.warnings),
+        relay.credentials,
+        relay.active,
+        relay.revoked,
+        relay.expired,
+        relay.accounts,
+        relay.tenants,
+        relay.active_tenants,
+        relay.revoked_tenants,
+        relay.nodes,
+        relay.active_nodes,
+        relay.revoked_nodes,
+        relay.tenant_policies,
+        bool_json(relay.token_displayed),
+        bool_json(relay.key_material_displayed),
+        bool_json(relay.contents_displayed)
+    )
+}
+
+fn render_warning_array_json(warnings: &[&'static str]) -> String {
+    format!(
+        "[{}]",
+        warnings
+            .iter()
+            .map(|warning| format!(r#""{}""#, json_escape(warning)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn render_hosted_fleet_account_suspend_text(report: &HostedFleetAccountSuspensionReport) -> String {
     let status = if report.dry_run {
         "would_suspend"
@@ -11456,6 +12021,143 @@ mod tests {
             assert!(!output.contains("payload-body"));
             assert!(!output.contains("ciphertext_body"));
         }
+    }
+
+    #[test]
+    fn hosted_fleet_account_audit_parser_report_and_renderers_are_metadata_only() {
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            "[[relay]]\nname = \"relay.ok\"\ncredentials_file = \"ok-credentials.toml\"\ntenants_file = \"ok-tenants.toml\"\n\n[[relay]]\nname = \"relay.partial\"\ncredentials_file = \"partial-credentials.toml\"\n\n[[relay]]\nname = \"relay.mismatch\"\ncredentials_file = \"mismatch-credentials.toml\"\ntenants_file = \"mismatch-tenants.toml\"\n",
+        ));
+        let base_dir = fleet_file.parent().expect("fleet file parent");
+        let ok_credentials = base_dir.join("ok-credentials.toml");
+        let ok_tenants = base_dir.join("ok-tenants.toml");
+        let partial_credentials = base_dir.join("partial-credentials.toml");
+        let mismatch_credentials = base_dir.join("mismatch-credentials.toml");
+        let mismatch_tenants = base_dir.join("mismatch-tenants.toml");
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let secret_token = "raw-hosted-account-audit-token";
+
+        upsert_hosted_tenant_in_file(&ok_tenants, "account.prod").expect("ok tenant upsert");
+        upsert_hosted_tenant_node_in_file(
+            &ok_tenants,
+            "account.prod",
+            "node.prod",
+            HostedTenantPermissions {
+                messages: true,
+                streams: true,
+                rooms: true,
+                files: false,
+                mailbox: true,
+            },
+            Some("signing.key".to_string()),
+            Some("exchange.key".to_string()),
+        )
+        .expect("ok tenant node upsert");
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &ok_credentials,
+            "account.prod",
+            "node.prod",
+            secret_hash,
+            64,
+            None,
+            false,
+        )
+        .expect("ok credential hash upsert");
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &partial_credentials,
+            "account.prod",
+            "node.partial",
+            secret_hash,
+            64,
+            None,
+            false,
+        )
+        .expect("partial credential hash upsert");
+        upsert_hosted_tenant_in_file(&mismatch_tenants, "account.prod")
+            .expect("mismatch tenant upsert");
+        revoke_hosted_tenant_in_file(&mismatch_tenants, "account.prod")
+            .expect("mismatch tenant revoke");
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &mismatch_credentials,
+            "account.prod",
+            "node.mismatch",
+            secret_hash,
+            64,
+            None,
+            false,
+        )
+        .expect("mismatch credential hash upsert");
+
+        let parsed = parse_hosted_fleet_account_audit_args(vec![
+            "account.prod".to_string(),
+            "--fleet-file".to_string(),
+            fleet_file.display().to_string(),
+            "--json".to_string(),
+            "--fail-on-warning".to_string(),
+        ])
+        .expect("hosted fleet account audit args parse");
+        assert_eq!(parsed.account_id, "account.prod");
+        assert_eq!(parsed.fleet_file, fleet_file);
+        assert!(parsed.json);
+        assert!(parsed.fail_on_warning);
+        assert!(parse_hosted_fleet_account_audit_args(Vec::new()).is_err());
+        let invalid_account = parse_hosted_fleet_account_audit_args(vec![
+            "bad secret value".to_string(),
+            "--fleet-file".to_string(),
+            parsed.fleet_file.display().to_string(),
+        ])
+        .expect_err("invalid account should fail closed");
+        assert!(!invalid_account.contains("bad secret value"));
+
+        let report =
+            hosted_fleet_account_audit_report(&parsed).expect("hosted fleet account audit report");
+        assert_eq!(report.totals.relays, 3);
+        assert_eq!(report.totals.account_sources, 3);
+        assert_eq!(report.totals.credential_sources, 3);
+        assert_eq!(report.totals.tenant_sources, 2);
+        assert_eq!(report.totals.active, 3);
+        assert_eq!(report.totals.active_tenants, 1);
+        assert_eq!(report.totals.revoked_tenants, 1);
+        assert_eq!(report.totals.warnings, 4);
+        assert_eq!(
+            hosted_fleet_account_audit_exit(&report, true),
+            HostedFleetAccountAuditExit::Warning
+        );
+        assert_eq!(
+            hosted_fleet_account_audit_exit(&report, false),
+            HostedFleetAccountAuditExit::Success
+        );
+
+        let outputs = [
+            render_hosted_fleet_account_audit_text(&report),
+            render_hosted_fleet_account_audit_json(&report),
+        ];
+        for output in outputs {
+            assert!(output.contains("fleet"));
+            assert!(output.contains("warning"));
+            assert!(output.contains("missing_tenants_source"));
+            assert!(output.contains("active_credentials_without_active_tenant"));
+            assert!(output.contains("token"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+
+        let no_account_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                "[[relay]]\nname = \"relay.abuse\"\nabuse_dir = \"abuse\"\n",
+            ));
+        let no_account_error = hosted_fleet_account_audit_report(&HostedFleetAccountAuditArgs {
+            account_id: "account.prod".to_string(),
+            fleet_file: no_account_fleet,
+            json: false,
+            fail_on_warning: false,
+        })
+        .expect_err("account audit should require an account source");
+        assert!(no_account_error.contains("credentials_file or tenants_file"));
     }
 
     #[test]
