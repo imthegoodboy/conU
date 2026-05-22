@@ -329,7 +329,7 @@ Usage:
   conu-relay --serve [addr]
   conu-relay --hash-token
   conu-relay --admin-token-audit --admin-tokens-file <path> [--bind-addr <addr>] [--account <account-id>] [--json]
-  conu-relay --hosted-readiness [--bind-addr <addr>] [--credentials-file <path>] [--tenants-file <path>] [--admin-tokens-file <path>] [--session-state-dir <path>] [--mailbox-dir <path>] [--ttl-seconds <seconds>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json] [--fail-on-warning]
+  conu-relay --hosted-readiness [--bind-addr <addr>] [--credentials-file <path>] [--tenants-file <path>] [--admin-tokens-file <path>] [--session-state-dir <path>] [--mailbox-dir <path>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--thresholds-file <path>] [--max-<metric> <count>...] [--account <account-id>] [--node <node-id>] [--json] [--fail-on-warning]
   conu-relay --issue-credential <node-id> --token-out <path> [--credentials-file <path>] [--replace] [--expires-at-unix <seconds>] [--json]
   conu-relay --revoke-credential <node-id> --credentials-file <path> [--json]
   conu-relay --admin-issue-credential <account-id> <node-id> --relay <ws://host:port/path> --admin-token-stdin --token-out <path> [--expires-at-unix <seconds>] [--json]
@@ -425,8 +425,9 @@ report output and return exit code 3 only when --fail-on-threshold is set and on
 thresholds are exceeded. Use --admin-token-audit to inspect scoped admin-token manifest counts,
 account boundaries, expiry metadata, and granted scopes without printing raw admin tokens or hashes.
 Use --hosted-readiness before startup or release smoke to combine the same local credential,
-tenant, admin-token, session-state, mailbox, accounting, and abuse checks into one metadata-only
-preflight; --fail-on-warning preserves stdout and returns exit code 3 when attention is needed."
+tenant, admin-token, session-state, mailbox, accounting, abuse, retention-policy, and threshold
+checks into one metadata-only preflight; --fail-on-warning preserves stdout and returns exit code 3
+when attention is needed."
     );
 }
 
@@ -699,9 +700,13 @@ struct HostedReadinessArgs {
     admin_tokens_file: Option<PathBuf>,
     session_state_dir: Option<PathBuf>,
     mailbox_dir: Option<PathBuf>,
+    retention_policy_file: Option<PathBuf>,
+    mailbox_node_id: Option<String>,
     mailbox_ttl: Option<Duration>,
     accounting_dir: Option<PathBuf>,
     abuse_dir: Option<PathBuf>,
+    thresholds_file: Option<PathBuf>,
+    abuse_thresholds: AbuseThresholds,
     account_id: Option<String>,
     node_id: Option<String>,
     json: bool,
@@ -717,9 +722,11 @@ struct HostedReadinessReport {
     admin_tokens_file: Option<PathBuf>,
     session_state_dir: Option<PathBuf>,
     mailbox_dir: Option<PathBuf>,
+    retention_policy_file: Option<PathBuf>,
     mailbox_ttl: Option<Duration>,
     accounting_dir: Option<PathBuf>,
     abuse_dir: Option<PathBuf>,
+    thresholds_file: Option<PathBuf>,
     account_id: Option<String>,
     node_id: Option<String>,
     credentials: Option<HostedCredentialAudit>,
@@ -729,6 +736,7 @@ struct HostedReadinessReport {
     mailbox: Option<RelayMailboxAudit>,
     accounting: Option<RelayAccountingAudit>,
     abuse: Option<RelayAbuseAudit>,
+    abuse_threshold_report: Option<AbuseThresholdReport>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -769,9 +777,12 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
     let mut admin_tokens_file = None::<PathBuf>;
     let mut session_state_dir = None::<PathBuf>;
     let mut mailbox_dir = None::<PathBuf>;
+    let mut retention_policy_file = None::<PathBuf>;
     let mut mailbox_ttl = None::<Duration>;
     let mut accounting_dir = None::<PathBuf>;
     let mut abuse_dir = None::<PathBuf>;
+    let mut thresholds_file = None::<PathBuf>;
+    let mut cli_thresholds = AbuseThresholds::default();
     let mut account_id = None::<String>;
     let mut node_id = None::<String>;
     let mut json = false;
@@ -822,6 +833,16 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
                 };
                 mailbox_dir = Some(PathBuf::from(value));
             }
+            "--retention-policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(hosted_readiness_usage());
+                }
+                retention_policy_file = Some(PathBuf::from(value));
+            }
             "--ttl-seconds" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -843,6 +864,16 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
                 };
                 abuse_dir = Some(PathBuf::from(value));
             }
+            "--thresholds-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(hosted_readiness_usage());
+                }
+                thresholds_file = Some(PathBuf::from(value));
+            }
             "--account" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -860,6 +891,13 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
             "--json" => json = true,
             "--fail-on-warning" => fail_on_warning = true,
             "--help" | "-h" => return Err(hosted_readiness_usage()),
+            value if value.starts_with("--max-") => {
+                index += 1;
+                let Some(limit) = args.get(index) else {
+                    return Err(hosted_readiness_usage());
+                };
+                parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
+            }
             value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
             _ => return Err(hosted_readiness_usage()),
         }
@@ -872,14 +910,29 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
     admin_tokens_file = admin_tokens_file.filter(|path| !path.as_os_str().is_empty());
     session_state_dir = session_state_dir.filter(|path| !path.as_os_str().is_empty());
     mailbox_dir = mailbox_dir.filter(|path| !path.as_os_str().is_empty());
+    retention_policy_file = retention_policy_file.filter(|path| !path.as_os_str().is_empty());
     accounting_dir = accounting_dir.filter(|path| !path.as_os_str().is_empty());
     abuse_dir = abuse_dir.filter(|path| !path.as_os_str().is_empty());
+    thresholds_file = thresholds_file.filter(|path| !path.as_os_str().is_empty());
     let account_id = account_id
         .map(|value| validate_dashboard_filter_id(value, "account id"))
         .transpose()?;
     let node_id = node_id
         .map(|value| validate_dashboard_filter_id(value, "node id"))
         .transpose()?;
+    let threshold_source_configured = thresholds_file.is_some() || cli_thresholds.has_any();
+    if retention_policy_file.is_some() && mailbox_dir.is_none() {
+        return Err("--retention-policy-file requires --mailbox-dir".to_string());
+    }
+    if threshold_source_configured && abuse_dir.is_none() {
+        return Err("--thresholds-file and --max-* require --abuse-dir".to_string());
+    }
+    let mailbox_retention = merged_mailbox_retention_policy(
+        retention_policy_file.as_deref(),
+        node_id.clone(),
+        mailbox_ttl,
+    )?;
+    let abuse_thresholds = merged_abuse_thresholds(thresholds_file.as_deref(), cli_thresholds)?;
 
     if credentials_file.is_none()
         && tenants_file.is_none()
@@ -891,6 +944,9 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
     {
         return Err(hosted_readiness_usage());
     }
+    if threshold_source_configured && !abuse_thresholds.has_any() {
+        return Err(hosted_readiness_usage());
+    }
 
     Ok(HostedReadinessArgs {
         bind_addr,
@@ -899,9 +955,13 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
         admin_tokens_file,
         session_state_dir,
         mailbox_dir,
-        mailbox_ttl,
+        retention_policy_file,
+        mailbox_node_id: mailbox_retention.node_id,
+        mailbox_ttl: mailbox_retention.ttl,
         accounting_dir,
         abuse_dir,
+        thresholds_file,
+        abuse_thresholds,
         account_id,
         node_id,
         json,
@@ -910,7 +970,7 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
 }
 
 fn hosted_readiness_usage() -> String {
-    "usage: conu-relay --hosted-readiness [--bind-addr <addr>] [--credentials-file <path>] [--tenants-file <path>] [--admin-tokens-file <path>] [--session-state-dir <path>] [--mailbox-dir <path>] [--ttl-seconds <seconds>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json] [--fail-on-warning]".to_string()
+    "usage: conu-relay --hosted-readiness [--bind-addr <addr>] [--credentials-file <path>] [--tenants-file <path>] [--admin-tokens-file <path>] [--session-state-dir <path>] [--mailbox-dir <path>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--thresholds-file <path>] [--max-<metric> <count>...] [--account <account-id>] [--node <node-id>] [--json] [--fail-on-warning]".to_string()
 }
 
 fn hosted_readiness_report(args: &HostedReadinessArgs) -> Result<HostedReadinessReport, String> {
@@ -943,7 +1003,9 @@ fn hosted_readiness_report(args: &HostedReadinessArgs) -> Result<HostedReadiness
     let mailbox = args
         .mailbox_dir
         .as_ref()
-        .map(|path| audit_relay_mailbox_dir(path, args.node_id.as_deref(), args.mailbox_ttl))
+        .map(|path| {
+            audit_relay_mailbox_dir(path, args.mailbox_node_id.as_deref(), args.mailbox_ttl)
+        })
         .transpose()
         .map_err(|error| error.to_string())?;
     let accounting = args
@@ -958,6 +1020,12 @@ fn hosted_readiness_report(args: &HostedReadinessArgs) -> Result<HostedReadiness
         .map(|path| audit_relay_abuse_dir(path, args.node_id.as_deref()))
         .transpose()
         .map_err(|error| error.to_string())?;
+    let abuse_threshold_report = match (&abuse, args.abuse_thresholds.has_any()) {
+        (Some(audit), true) => args.abuse_dir.as_ref().map(|path| {
+            abuse_threshold_report_from_audit(audit, args.abuse_thresholds, path.clone())
+        }),
+        _ => None,
+    };
 
     Ok(HostedReadinessReport {
         bind_addr: args.bind_addr.clone(),
@@ -967,9 +1035,11 @@ fn hosted_readiness_report(args: &HostedReadinessArgs) -> Result<HostedReadiness
         admin_tokens_file: args.admin_tokens_file.clone(),
         session_state_dir: args.session_state_dir.clone(),
         mailbox_dir: args.mailbox_dir.clone(),
+        retention_policy_file: args.retention_policy_file.clone(),
         mailbox_ttl: args.mailbox_ttl,
         accounting_dir: args.accounting_dir.clone(),
         abuse_dir: args.abuse_dir.clone(),
+        thresholds_file: args.thresholds_file.clone(),
         account_id: args.account_id.clone(),
         node_id: args.node_id.clone(),
         credentials,
@@ -979,6 +1049,7 @@ fn hosted_readiness_report(args: &HostedReadinessArgs) -> Result<HostedReadiness
         mailbox,
         accounting,
         abuse,
+        abuse_threshold_report,
     })
 }
 
@@ -1028,6 +1099,9 @@ impl HostedReadinessReport {
                 .is_some_and(|audit| audit.invalid_records > 0),
             self.accounting.is_none(),
             self.abuse.is_none(),
+            self.abuse_threshold_report
+                .as_ref()
+                .is_some_and(|report| report.threshold_exceeded > 0),
             !self.display_guards_clean(),
         ]
         .into_iter()
@@ -1100,12 +1174,17 @@ tenant active nodes: {}
 session state dir: {}
 session invalid records: {}
 mailbox dir: {}
+retention policy file: {}
+mailbox node: {}
 mailbox ttl seconds: {}
 mailbox invalid records: {}
 accounting dir: {}
 accounting records: {}
 abuse dir: {}
 abuse records: {}
+thresholds file: {}
+abuse threshold checks: {}
+abuse threshold exceeded: {}
 display guards clean: {}
 payload displayed: {}
 token displayed: {}
@@ -1147,6 +1226,12 @@ contents displayed: {}",
             .map(|audit| audit.invalid_records)
             .unwrap_or(0),
         optional_path_text(report.mailbox_dir.as_deref()),
+        optional_path_text(report.retention_policy_file.as_deref()),
+        report
+            .mailbox
+            .as_ref()
+            .and_then(|audit| audit.node_id.as_deref())
+            .unwrap_or("all"),
         optional_u64_text(report.mailbox_ttl.map(|ttl| ttl.as_secs())),
         report
             .mailbox
@@ -1164,6 +1249,17 @@ contents displayed: {}",
             .abuse
             .as_ref()
             .map(|audit| audit.records)
+            .unwrap_or(0),
+        optional_path_text(report.thresholds_file.as_deref()),
+        report
+            .abuse_threshold_report
+            .as_ref()
+            .map(|threshold_report| threshold_report.threshold_checks)
+            .unwrap_or(0),
+        report
+            .abuse_threshold_report
+            .as_ref()
+            .map(|threshold_report| threshold_report.threshold_exceeded)
             .unwrap_or(0),
         yes_no(report.display_guards_clean()),
         yes_no(readiness_payload_displayed(report)),
@@ -1192,8 +1288,10 @@ fn render_hosted_readiness_json(report: &HostedReadinessReport) -> String {
     "adminTokensFile": {},
     "sessionStateDir": {},
     "mailboxDir": {},
+    "retentionPolicyFile": {},
     "accountingDir": {},
-    "abuseDir": {}
+    "abuseDir": {},
+    "thresholdsFile": {}
   }},
   "checks": {{
     "publicBindHasCredentialManifest": {},
@@ -1204,6 +1302,8 @@ fn render_hosted_readiness_json(report: &HostedReadinessReport) -> String {
     "mailboxConfigured": {},
     "accountingConfigured": {},
     "abuseConfigured": {},
+    "abuseThresholdsConfigured": {},
+    "abuseThresholdsExceeded": {},
     "displayGuardsClean": {}
   }},
   "credentials": {},
@@ -1213,6 +1313,7 @@ fn render_hosted_readiness_json(report: &HostedReadinessReport) -> String {
   "mailbox": {},
   "accounting": {},
   "abuse": {},
+  "abuseThresholds": {},
   "payloadDisplayed": {},
   "tokenDisplayed": {},
   "tokenHashDisplayed": {},
@@ -1233,8 +1334,10 @@ fn render_hosted_readiness_json(report: &HostedReadinessReport) -> String {
         optional_path_json(report.admin_tokens_file.as_deref()),
         optional_path_json(report.session_state_dir.as_deref()),
         optional_path_json(report.mailbox_dir.as_deref()),
+        optional_path_json(report.retention_policy_file.as_deref()),
         optional_path_json(report.accounting_dir.as_deref()),
         optional_path_json(report.abuse_dir.as_deref()),
+        optional_path_json(report.thresholds_file.as_deref()),
         bool_json(report.public_bind_has_credentials()),
         bool_json(report.credentials.is_some()),
         bool_json(report.admin_tokens.is_some()),
@@ -1243,6 +1346,13 @@ fn render_hosted_readiness_json(report: &HostedReadinessReport) -> String {
         bool_json(report.mailbox.is_some()),
         bool_json(report.accounting.is_some()),
         bool_json(report.abuse.is_some()),
+        bool_json(report.abuse_threshold_report.is_some()),
+        bool_json(
+            report
+                .abuse_threshold_report
+                .as_ref()
+                .is_some_and(|threshold_report| threshold_report.threshold_exceeded > 0)
+        ),
         bool_json(report.display_guards_clean()),
         render_dashboard_credentials_json(report.credentials.as_ref()),
         render_readiness_admin_tokens_json(report.admin_tokens.as_ref()),
@@ -1251,6 +1361,7 @@ fn render_hosted_readiness_json(report: &HostedReadinessReport) -> String {
         render_readiness_mailbox_json(report.mailbox.as_ref()),
         render_dashboard_accounting_json(report.accounting.as_ref()),
         render_dashboard_abuse_json(report.abuse.as_ref()),
+        render_readiness_abuse_thresholds_json(report.abuse_threshold_report.as_ref()),
         bool_json(readiness_payload_displayed(report)),
         bool_json(readiness_token_displayed(report)),
         bool_json(readiness_token_hash_displayed(report)),
@@ -1362,6 +1473,7 @@ fn render_readiness_mailbox_json(audit: Option<&RelayMailboxAudit>) -> String {
         Some(audit) => format!(
             r#"{{
     "configured": true,
+    "nodeId": {},
     "retentionTtlSeconds": {},
     "nodes": {},
     "records": {},
@@ -1379,6 +1491,7 @@ fn render_readiness_mailbox_json(audit: Option<&RelayMailboxAudit>) -> String {
     "ciphertextDisplayed": {},
     "contentsDisplayed": {}
   }}"#,
+            optional_string_json(audit.node_id.as_deref()),
             optional_u64_json(audit.retention_ttl_seconds),
             audit.nodes,
             audit.records,
@@ -1395,6 +1508,63 @@ fn render_readiness_mailbox_json(audit: Option<&RelayMailboxAudit>) -> String {
             bool_json(audit.session_id_displayed),
             bool_json(audit.ciphertext_displayed),
             bool_json(audit.contents_displayed)
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn render_readiness_abuse_thresholds_json(report: Option<&AbuseThresholdReport>) -> String {
+    match report {
+        Some(report) => format!(
+            r#"{{
+    "configured": true,
+    "source": "{}",
+    "thresholdChecks": {},
+    "thresholdExceeded": {},
+    "records": {},
+    "windowStartedUnix": {},
+    "adminUnauthorized": {},
+    "adminFailed": {},
+    "unauthorizedSessions": {},
+    "credentialDeniedSessions": {},
+    "tenantDeniedSessions": {},
+    "rateLimitedSessions": {},
+    "sessionExpired": {},
+    "quotaDeniedForwards": {},
+    "undeliveredForwards": {},
+    "mailboxRejectedForwards": {},
+    "malformedClientFrames": {},
+    "payloadDisplayed": {},
+    "tokenDisplayed": {},
+    "tokenHashDisplayed": {},
+    "keyMaterialDisplayed": {},
+    "sessionIdDisplayed": {},
+    "ciphertextDisplayed": {},
+    "contentsDisplayed": {}
+  }}"#,
+            report.source,
+            report.threshold_checks,
+            report.threshold_exceeded,
+            report.records,
+            optional_u64_json(report.window_started_unix),
+            report.admin_unauthorized,
+            report.admin_failed,
+            report.unauthorized_sessions,
+            report.credential_denied_sessions,
+            report.tenant_denied_sessions,
+            report.rate_limited_sessions,
+            report.session_expired,
+            report.quota_denied_forwards,
+            report.undelivered_forwards,
+            report.mailbox_rejected_forwards,
+            report.malformed_client_frames,
+            bool_json(report.payload_displayed),
+            bool_json(report.token_displayed),
+            bool_json(report.token_hash_displayed),
+            bool_json(report.key_material_displayed),
+            bool_json(report.session_id_displayed),
+            bool_json(report.ciphertext_displayed),
+            bool_json(report.contents_displayed)
         ),
         None => "null".to_string(),
     }
@@ -1419,6 +1589,10 @@ fn readiness_payload_displayed(report: &HostedReadinessReport) -> bool {
             .is_some_and(|audit| audit.payload_displayed)
         || report
             .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+        || report
+            .abuse_threshold_report
             .as_ref()
             .is_some_and(|audit| audit.payload_displayed)
 }
@@ -1452,6 +1626,10 @@ fn readiness_token_displayed(report: &HostedReadinessReport) -> bool {
             .abuse
             .as_ref()
             .is_some_and(|audit| audit.token_displayed)
+        || report
+            .abuse_threshold_report
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
 }
 
 fn readiness_token_hash_displayed(report: &HostedReadinessReport) -> bool {
@@ -1473,6 +1651,10 @@ fn readiness_token_hash_displayed(report: &HostedReadinessReport) -> bool {
             .is_some_and(|audit| audit.token_hash_displayed)
         || report
             .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+        || report
+            .abuse_threshold_report
             .as_ref()
             .is_some_and(|audit| audit.token_hash_displayed)
 }
@@ -1502,6 +1684,10 @@ fn readiness_key_material_displayed(report: &HostedReadinessReport) -> bool {
             .abuse
             .as_ref()
             .is_some_and(|audit| audit.key_material_displayed)
+        || report
+            .abuse_threshold_report
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
 }
 
 fn readiness_session_id_displayed(report: &HostedReadinessReport) -> bool {
@@ -1525,6 +1711,10 @@ fn readiness_session_id_displayed(report: &HostedReadinessReport) -> bool {
             .abuse
             .as_ref()
             .is_some_and(|audit| audit.session_id_displayed)
+        || report
+            .abuse_threshold_report
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
 }
 
 fn readiness_ciphertext_displayed(report: &HostedReadinessReport) -> bool {
@@ -1546,6 +1736,10 @@ fn readiness_ciphertext_displayed(report: &HostedReadinessReport) -> bool {
             .is_some_and(|audit| audit.ciphertext_displayed)
         || report
             .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+        || report
+            .abuse_threshold_report
             .as_ref()
             .is_some_and(|audit| audit.ciphertext_displayed)
 }
@@ -1577,6 +1771,10 @@ fn readiness_contents_displayed(report: &HostedReadinessReport) -> bool {
             .is_some_and(|audit| audit.contents_displayed)
         || report
             .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || report
+            .abuse_threshold_report
             .as_ref()
             .is_some_and(|audit| audit.contents_displayed)
 }
@@ -7577,6 +7775,13 @@ mod tests {
 
     #[test]
     fn hosted_readiness_parser_and_renderers_are_metadata_only() {
+        let retention_policy =
+            write_mailbox_retention_policy_file(&mailbox_retention_policy_contents(
+                "ttl_seconds = 7200\nnode_id = \"node.from-policy\"\n",
+            ));
+        let threshold_policy = write_abuse_threshold_policy_file(&abuse_threshold_policy_contents(
+            "max_rate_limited_sessions = 0\n",
+        ));
         let parsed = parse_hosted_readiness_args(vec![
             "--bind-addr".to_string(),
             "0.0.0.0:8787".to_string(),
@@ -7590,12 +7795,18 @@ mod tests {
             "sessions".to_string(),
             "--mailbox-dir".to_string(),
             "mailbox".to_string(),
+            "--retention-policy-file".to_string(),
+            retention_policy.display().to_string(),
             "--ttl-seconds".to_string(),
             "3600".to_string(),
             "--accounting-dir".to_string(),
             "accounting".to_string(),
             "--abuse-dir".to_string(),
             "abuse".to_string(),
+            "--thresholds-file".to_string(),
+            threshold_policy.display().to_string(),
+            "--max-admin-failed".to_string(),
+            "1".to_string(),
             "--account".to_string(),
             "account.prod".to_string(),
             "--node".to_string(),
@@ -7613,7 +7824,18 @@ mod tests {
             parsed.admin_tokens_file.as_deref(),
             Some(Path::new("admin-tokens.toml"))
         );
+        assert_eq!(
+            parsed.retention_policy_file.as_deref(),
+            Some(retention_policy.as_path())
+        );
+        assert_eq!(parsed.mailbox_node_id.as_deref(), Some("node.hosted"));
         assert_eq!(parsed.mailbox_ttl, Some(Duration::from_secs(3600)));
+        assert_eq!(
+            parsed.thresholds_file.as_deref(),
+            Some(threshold_policy.as_path())
+        );
+        assert_eq!(parsed.abuse_thresholds.rate_limited_sessions, Some(0));
+        assert_eq!(parsed.abuse_thresholds.admin_failed, Some(1));
         assert_eq!(parsed.account_id.as_deref(), Some("account.prod"));
         assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
         assert!(parsed.json);
@@ -7635,6 +7857,30 @@ mod tests {
         ])
         .expect_err("invalid bind addr should fail closed");
         assert!(!invalid_bind.contains("0.0.0.0:8787/secret"));
+        let missing_mailbox_dependency = parse_hosted_readiness_args(vec![
+            "--credentials-file".to_string(),
+            "credentials.toml".to_string(),
+            "--retention-policy-file".to_string(),
+            "missing-retention-policy.toml".to_string(),
+        ])
+        .expect_err("retention policy should require mailbox dir before reading file");
+        assert!(missing_mailbox_dependency.contains("requires --mailbox-dir"));
+        let missing_abuse_dependency = parse_hosted_readiness_args(vec![
+            "--credentials-file".to_string(),
+            "credentials.toml".to_string(),
+            "--thresholds-file".to_string(),
+            "missing-thresholds-policy.toml".to_string(),
+        ])
+        .expect_err("threshold policy should require abuse dir before reading file");
+        assert!(missing_abuse_dependency.contains("require --abuse-dir"));
+        let missing_abuse_cli_dependency = parse_hosted_readiness_args(vec![
+            "--credentials-file".to_string(),
+            "credentials.toml".to_string(),
+            "--max-rate-limited-sessions".to_string(),
+            "0".to_string(),
+        ])
+        .expect_err("inline threshold should require abuse dir");
+        assert!(missing_abuse_cli_dependency.contains("require --abuse-dir"));
 
         let report = HostedReadinessReport {
             bind_addr: "0.0.0.0:8787".to_string(),
@@ -7644,9 +7890,11 @@ mod tests {
             admin_tokens_file: Some(PathBuf::from("admin-tokens.toml")),
             session_state_dir: Some(PathBuf::from("sessions")),
             mailbox_dir: Some(PathBuf::from("mailbox")),
+            retention_policy_file: Some(PathBuf::from("mailbox-retention.toml")),
             mailbox_ttl: Some(Duration::from_secs(3600)),
             accounting_dir: Some(PathBuf::from("accounting")),
             abuse_dir: Some(PathBuf::from("abuse")),
+            thresholds_file: Some(PathBuf::from("abuse-thresholds.toml")),
             account_id: Some("account.prod".to_string()),
             node_id: Some("node.hosted".to_string()),
             credentials: Some(HostedCredentialAudit {
@@ -7777,6 +8025,38 @@ mod tests {
                 ciphertext_displayed: false,
                 contents_displayed: false,
             }),
+            abuse_threshold_report: Some(build_abuse_threshold_report(
+                "local",
+                None,
+                Some(PathBuf::from("abuse")),
+                None,
+                Some("node.hosted".to_string()),
+                1,
+                Some(1_763_596_000),
+                AbuseThresholds {
+                    rate_limited_sessions: Some(0),
+                    admin_failed: Some(1),
+                    ..AbuseThresholds::default()
+                },
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            )),
         };
         assert_eq!(report.status(), "ready");
         assert_eq!(report.warning_count(), 0);
@@ -7806,8 +8086,39 @@ mod tests {
 
         let mut warning_report = report;
         warning_report.credentials = None;
+        warning_report.abuse_threshold_report = Some(build_abuse_threshold_report(
+            "local",
+            None,
+            Some(PathBuf::from("abuse")),
+            None,
+            Some("node.hosted".to_string()),
+            1,
+            Some(1_763_596_000),
+            AbuseThresholds {
+                rate_limited_sessions: Some(0),
+                ..AbuseThresholds::default()
+            },
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        ));
         assert_eq!(warning_report.status(), "needs_attention");
-        assert!(warning_report.warning_count() >= 1);
+        assert!(warning_report.warning_count() >= 2);
     }
 
     #[test]
