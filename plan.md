@@ -4600,7 +4600,39 @@ Known gaps:
 
 Next recommendation:
 
-- Merge the smoke-record PR for issue #111 while preserving the local and remote branch. Then continue with distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+- Issue #111 was closed by PR #112, and `codex/release-workflow-smoke-record` remains preserved locally and on origin. Continue with GitHub Actions runner-image migration hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
+## Post Phase 15 GitHub Actions Runner Image Pinning (In Progress)
+
+Objective: remove GitHub-hosted runner image migration warnings and make CI/release platform labels explicit before the June 2026 Windows/macOS hosted-runner migrations.
+
+Current status:
+
+- Created GitHub issue #113 for runner-image pinning.
+- Created branch `codex/pin-actions-runner-images` from `main`.
+- Observed post-merge CI run `https://github.com/imthegoodboy/conU/actions/runs/26265143809` reporting the GitHub notice that `windows-latest` requests are being redirected to `windows-2025-vs2026` by June 15, 2026.
+- Verified the May 14, 2026 GitHub Actions changelog: `windows-latest`/`windows-2025` migrate to Visual Studio 2026 by June 15, 2026, and `macos-latest` begins migrating to macOS 26 on June 15, 2026.
+- Verified the `actions/runner-images` label table includes `windows-2025-vs2026`, `macos-15`, and `macos-15-intel`.
+- Updated `.github/workflows/ci.yml` to run Rust CI on `ubuntu-latest`, `windows-2025-vs2026`, and `macos-15`.
+- Updated `.github/workflows/release.yml` so `windows-x64` uses `windows-2025-vs2026` and `macos-arm64` uses `macos-15`; `macos-x64` already used `macos-15-intel`.
+- Updated the release checklist with the explicit runner labels and the reminder to revisit the Windows label after the June 2026 migration completes.
+
+Validation:
+
+- Python YAML parse passed for `.github/workflows/ci.yml` and `.github/workflows/release.yml`.
+- `rg -n "windows-latest|macos-latest" .github/workflows` returned no matches.
+- `npm run check --prefix sdk\typescript` passed.
+- `npm run check --prefix packaging\npm\conu-cli` passed.
+- `git diff --check` passed.
+- Pending PR CI and a branch `Release Artifacts` workflow_dispatch smoke run.
+
+Known gaps:
+
+- This runner-image update does not configure release signing secrets, publish a release tag, publish npm packages, or change the known hosted/distributed product gaps.
+
+Next recommendation:
+
+- Validate the runner-label branch through PR CI and a release workflow smoke run. If both pass, merge while preserving the local and remote branch.
 
 ## Phase Completion Log
 

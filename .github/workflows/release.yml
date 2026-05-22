@@ -47,7 +47,7 @@ jobs:
       matrix:
         include:
           - name: windows-x64
-            os: windows-latest
+            os: windows-2025-vs2026
             script: powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -PackageSuffix windows-x64
             artifact: |
               dist/*.zip
@@ -65,7 +65,7 @@ jobs:
               dist/*.tar.gz
               dist/*.tar.gz.sha256
           - name: macos-arm64
-            os: macos-latest
+            os: macos-15
             script: PACKAGE_SUFFIX=macos-arm64 sh scripts/build-release.sh
             artifact: |
               dist/*.zip
