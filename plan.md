@@ -4863,8 +4863,8 @@ Validation:
 - `git diff --check` passed.
 - `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_dashboard_parser_and_renderers_are_metadata_only` was blocked locally because `dlltool.exe` is not installed.
 - `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --help` was blocked locally by the same missing `dlltool.exe` linker dependency.
-- PR #127 CI passed across Packages plus Rust on Ubuntu, Windows, and macOS: https://github.com/imthegoodboy/conU/actions/runs/26270249242
-- Branch `Release Artifacts` smoke passed across release preflight, package checks, attestations/uploads, and five platform builds: https://github.com/imthegoodboy/conU/actions/runs/26270352424
+- PR #127 CI passed across Packages plus Rust on Ubuntu, Windows, and macOS: https://github.com/imthegoodboy/conU/actions/runs/26270473795
+- Branch `Release Artifacts` smoke passed across release preflight, package checks, attestations/uploads, and five platform builds at the current PR head: https://github.com/imthegoodboy/conU/actions/runs/26270567039
 
 Known gaps:
 
