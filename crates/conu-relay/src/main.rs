@@ -9,19 +9,20 @@ use conu_core::relay::{
     RelayAdminRequest, RelayAdminResult, RelayClientFrame, RelayServerFrame, RelayWebSocketClient,
 };
 use conu_relay::{
-    CredentialManifestUpdate, HostedAccountSuspension, HostedAdminTokenAudit,
-    HostedCredentialAudit, HostedTenantAudit, HostedTenantManifestUpdate, HostedTenantPermissions,
-    IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy, RelayAbuseStorage,
-    RelayAccountingAudit, RelayAccountingPolicy, RelayAccountingStorage, RelayConfig,
-    RelayCredential, RelayMailboxAudit, RelayMailboxMaintenancePolicy, RelayMailboxPolicy,
-    RelayMailboxPurgeReport, RelayMailboxStorage, RelaySessionAudit, RelaySessionPolicy,
-    RelaySessionStorage, audit_hosted_admin_tokens_file, audit_hosted_relay_credentials_file,
-    audit_hosted_relay_credentials_file_with_node, audit_hosted_tenants_file,
-    audit_hosted_tenants_file_with_node, audit_relay_abuse_dir, audit_relay_accounting_dir,
-    audit_relay_mailbox_dir, audit_relay_session_state_dir, issue_relay_credential,
-    purge_relay_mailbox_dir, relay_credential_manifest_contains_node, relay_token_sha256_hex,
-    revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
-    revoke_relay_credential_in_file, suspend_hosted_account_in_files, upsert_hosted_tenant_in_file,
+    CredentialManifestUpdate, HostedAccountNodeSuspension, HostedAccountSuspension,
+    HostedAdminTokenAudit, HostedCredentialAudit, HostedTenantAudit, HostedTenantManifestUpdate,
+    HostedTenantPermissions, IssuedRelayCredential, RelayAbuseAudit, RelayAbusePolicy,
+    RelayAbuseStorage, RelayAccountingAudit, RelayAccountingPolicy, RelayAccountingStorage,
+    RelayConfig, RelayCredential, RelayMailboxAudit, RelayMailboxMaintenancePolicy,
+    RelayMailboxPolicy, RelayMailboxPurgeReport, RelayMailboxStorage, RelaySessionAudit,
+    RelaySessionPolicy, RelaySessionStorage, audit_hosted_admin_tokens_file,
+    audit_hosted_relay_credentials_file, audit_hosted_relay_credentials_file_with_node,
+    audit_hosted_tenants_file, audit_hosted_tenants_file_with_node, audit_relay_abuse_dir,
+    audit_relay_accounting_dir, audit_relay_mailbox_dir, audit_relay_session_state_dir,
+    issue_relay_credential, purge_relay_mailbox_dir, relay_credential_manifest_contains_node,
+    relay_token_sha256_hex, revoke_hosted_tenant_in_file, revoke_hosted_tenant_node_in_file,
+    revoke_relay_credential_in_file, suspend_hosted_account_in_files,
+    suspend_hosted_account_node_in_files, upsert_hosted_tenant_in_file,
     upsert_hosted_tenant_node_in_file, upsert_issued_relay_credential_in_file,
     write_issued_relay_token_file,
 };
@@ -401,7 +402,7 @@ Usage:
   conu-relay --tenant-audit --tenants-file <path> [--account <account-id>] [--json]
   conu-relay --hosted-account-suspend <account-id> --credentials-file <path> --tenants-file <path> [--json]
   conu-relay --hosted-fleet-account-audit <account-id> --fleet-file <path> [--node <node-id>] [--json] [--fail-on-warning]
-  conu-relay --hosted-fleet-account-suspend <account-id> --fleet-file <path> (--dry-run|--confirm) [--json]
+  conu-relay --hosted-fleet-account-suspend <account-id> --fleet-file <path> [--node <node-id>] (--dry-run|--confirm) [--json]
   conu-relay --session-audit --session-state-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-audit --abuse-dir <path> [--node <node-id>] [--json]
   conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
@@ -475,7 +476,7 @@ source-specific retention overrides unless a CLI --ttl-seconds override is suppl
 manifest can drive --hosted-fleet-abuse-response-plan for deterministic operator action categories
 over aggregate abuse thresholds, --hosted-fleet-account-audit for read-only account or account/node
 credential/tenant consistency warnings, --hosted-fleet-account-suspend for dry-run or explicitly confirmed
-tenant-first account suspension across complete local credential/tenant source pairs, and
+tenant-first account or account/node suspension across complete local credential/tenant source pairs, and
 --hosted-fleet-mailbox-purge for dry-run or explicitly confirmed expired durable mailbox cleanup
 across configured local mailbox stores. The manifest must include explicit false display guards and
 does not make conU a managed billing, remote purge, remote tenant control, or adaptive abuse service.
@@ -5044,6 +5045,7 @@ fn hosted_fleet_account_audit_exit(
 #[derive(Debug, Clone)]
 struct HostedFleetAccountSuspendArgs {
     account_id: String,
+    node_id: Option<String>,
     fleet_file: PathBuf,
     dry_run: bool,
     json: bool,
@@ -5123,6 +5125,7 @@ impl HostedFleetAccountSuspensionTotals {
 #[derive(Debug, Clone)]
 struct HostedFleetAccountSuspensionReport {
     account_id: String,
+    node_id: Option<String>,
     fleet_file: PathBuf,
     dry_run: bool,
     relays: Vec<HostedFleetAccountSuspensionRelayReport>,
@@ -5145,6 +5148,7 @@ fn parse_hosted_fleet_account_suspend_args(
 ) -> Result<HostedFleetAccountSuspendArgs, String> {
     let mut positional = Vec::new();
     let mut fleet_file = None::<PathBuf>;
+    let mut node_id = None::<String>;
     let mut dry_run = false;
     let mut confirm = false;
     let mut json = false;
@@ -5158,6 +5162,13 @@ fn parse_hosted_fleet_account_suspend_args(
                     return Err(hosted_fleet_account_suspend_usage());
                 };
                 fleet_file = Some(PathBuf::from(value));
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_account_suspend_usage());
+                };
+                node_id = Some(value.to_string());
             }
             "--dry-run" => dry_run = true,
             "--confirm" => confirm = true,
@@ -5176,6 +5187,9 @@ fn parse_hosted_fleet_account_suspend_args(
     let Some(fleet_file) = fleet_file.filter(|path| !path.as_os_str().is_empty()) else {
         return Err(hosted_fleet_account_suspend_usage());
     };
+    let node_id = node_id
+        .map(|value| validate_dashboard_filter_id(value, "node id"))
+        .transpose()?;
     match (dry_run, confirm) {
         (true, false) | (false, true) => {}
         _ => {
@@ -5188,6 +5202,7 @@ fn parse_hosted_fleet_account_suspend_args(
 
     Ok(HostedFleetAccountSuspendArgs {
         account_id,
+        node_id,
         fleet_file,
         dry_run,
         json,
@@ -5195,7 +5210,7 @@ fn parse_hosted_fleet_account_suspend_args(
 }
 
 fn hosted_fleet_account_suspend_usage() -> String {
-    "usage: conu-relay --hosted-fleet-account-suspend <account-id> --fleet-file <path> (--dry-run|--confirm) [--json]".to_string()
+    "usage: conu-relay --hosted-fleet-account-suspend <account-id> --fleet-file <path> [--node <node-id>] (--dry-run|--confirm) [--json]".to_string()
 }
 
 fn hosted_fleet_account_suspension_report(
@@ -5207,7 +5222,11 @@ fn hosted_fleet_account_suspension_report(
     // Preflight every source before confirmed mode mutates any tenant or
     // credential manifest. This avoids avoidable partial fleet updates.
     for source in &sources {
-        hosted_fleet_account_suspension_preflight(source, &args.account_id)?;
+        hosted_fleet_account_suspension_preflight(
+            source,
+            &args.account_id,
+            args.node_id.as_deref(),
+        )?;
     }
 
     let mut totals = HostedFleetAccountSuspensionTotals {
@@ -5218,15 +5237,30 @@ fn hosted_fleet_account_suspension_report(
 
     for source in sources {
         let relay = if args.dry_run {
-            hosted_fleet_account_suspension_preflight(&source, &args.account_id)?
+            hosted_fleet_account_suspension_preflight(
+                &source,
+                &args.account_id,
+                args.node_id.as_deref(),
+            )?
         } else {
-            let suspension = suspend_hosted_account_in_files(
-                &source.credentials_file,
-                &source.tenants_file,
-                args.account_id.clone(),
-            )
-            .map_err(|error| error.to_string())?;
-            hosted_fleet_account_suspension_relay_from_suspension(source.name, suspension)
+            if let Some(node_id) = args.node_id.as_deref() {
+                let suspension = suspend_hosted_account_node_in_files(
+                    &source.credentials_file,
+                    &source.tenants_file,
+                    args.account_id.clone(),
+                    node_id,
+                )
+                .map_err(|error| error.to_string())?;
+                hosted_fleet_account_suspension_relay_from_node_suspension(source.name, suspension)
+            } else {
+                let suspension = suspend_hosted_account_in_files(
+                    &source.credentials_file,
+                    &source.tenants_file,
+                    args.account_id.clone(),
+                )
+                .map_err(|error| error.to_string())?;
+                hosted_fleet_account_suspension_relay_from_suspension(source.name, suspension)
+            }
         };
         totals.add(&relay);
         relays.push(relay);
@@ -5234,6 +5268,7 @@ fn hosted_fleet_account_suspension_report(
 
     Ok(HostedFleetAccountSuspensionReport {
         account_id: args.account_id.clone(),
+        node_id: args.node_id.clone(),
         fleet_file: args.fleet_file.clone(),
         dry_run: args.dry_run,
         relays,
@@ -5280,15 +5315,26 @@ fn hosted_fleet_account_suspension_sources(
 fn hosted_fleet_account_suspension_preflight(
     source: &HostedFleetAccountSuspensionSource,
     account_id: &str,
+    node_id: Option<&str>,
 ) -> Result<HostedFleetAccountSuspensionRelayReport, String> {
-    let credentials =
-        audit_hosted_relay_credentials_file(&source.credentials_file, Some(account_id))
+    let credentials = audit_hosted_relay_credentials_file_with_node(
+        &source.credentials_file,
+        Some(account_id),
+        node_id,
+    )
+    .map_err(|error| error.to_string())?;
+    let tenants =
+        audit_hosted_tenants_file_with_node(&source.tenants_file, Some(account_id), node_id)
             .map_err(|error| error.to_string())?;
-    let tenants = audit_hosted_tenants_file(&source.tenants_file, Some(account_id))
-        .map_err(|error| error.to_string())?;
     if tenants.tenants == 0 {
         return Err(format!(
             "--hosted-fleet-account-suspend relay {} account was not found in tenants file",
+            source.name
+        ));
+    }
+    if node_id.is_some() && tenants.nodes == 0 {
+        return Err(format!(
+            "--hosted-fleet-account-suspend relay {} account node was not found in tenants file",
             source.name
         ));
     }
@@ -5318,6 +5364,32 @@ fn hosted_fleet_account_suspension_preflight(
 fn hosted_fleet_account_suspension_relay_from_suspension(
     name: String,
     suspension: HostedAccountSuspension,
+) -> HostedFleetAccountSuspensionRelayReport {
+    HostedFleetAccountSuspensionRelayReport {
+        name,
+        credentials_file: suspension.credentials_file,
+        tenants_file: suspension.tenants_file,
+        credentials: suspension.credentials,
+        active: suspension.active,
+        revoked: suspension.revoked,
+        expired: suspension.expired,
+        accounts: suspension.accounts,
+        tenants: suspension.tenants,
+        active_tenants: suspension.active_tenants,
+        revoked_tenants: suspension.revoked_tenants,
+        nodes: suspension.nodes,
+        active_nodes: suspension.active_nodes,
+        revoked_nodes: suspension.revoked_nodes,
+        tenant_policies: suspension.tenant_policies,
+        token_displayed: suspension.token_displayed,
+        key_material_displayed: suspension.key_material_displayed,
+        contents_displayed: suspension.contents_displayed,
+    }
+}
+
+fn hosted_fleet_account_suspension_relay_from_node_suspension(
+    name: String,
+    suspension: HostedAccountNodeSuspension,
 ) -> HostedFleetAccountSuspensionRelayReport {
     HostedFleetAccountSuspensionRelayReport {
         name,
@@ -9500,6 +9572,7 @@ fn render_hosted_fleet_account_suspend_text(report: &HostedFleetAccountSuspensio
 status: {}
 mode: {}
 account: {}
+node: {}
 fleet file: {}
 relays: {}
 account sources: {}
@@ -9520,6 +9593,7 @@ relay account sources:",
         status,
         mode,
         report.account_id,
+        report.node_id.as_deref().unwrap_or("all"),
         report.fleet_file.display(),
         totals.relays,
         totals.account_sources,
@@ -9585,6 +9659,7 @@ fn render_hosted_fleet_account_suspend_json(report: &HostedFleetAccountSuspensio
   "status": "{}",
   "mode": "{}",
   "accountId": "{}",
+  "nodeId": {},
   "fleetFile": "{}",
   "dryRun": {},
   "confirmed": {},
@@ -9607,6 +9682,7 @@ fn render_hosted_fleet_account_suspend_json(report: &HostedFleetAccountSuspensio
             "confirmed"
         },
         json_escape(&report.account_id),
+        optional_string_json(report.node_id.as_deref()),
         json_escape(&report.fleet_file.display().to_string()),
         bool_json(report.dry_run),
         bool_json(!report.dry_run),
@@ -12293,6 +12369,16 @@ mod tests {
             false,
         )
         .expect("hosted credential hash upsert");
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &credentials_file,
+            "account.other",
+            "node.other",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            64,
+            None,
+            false,
+        )
+        .expect("other account credential hash upsert");
 
         let parsed = parse_hosted_fleet_account_suspend_args(vec![
             "account.prod".to_string(),
@@ -12303,6 +12389,7 @@ mod tests {
         ])
         .expect("hosted fleet account suspend args parse");
         assert_eq!(parsed.account_id, "account.prod");
+        assert_eq!(parsed.node_id, None);
         assert_eq!(parsed.fleet_file, fleet_file);
         assert!(parsed.dry_run);
         assert!(parsed.json);
@@ -12323,11 +12410,23 @@ mod tests {
         ])
         .expect_err("invalid account should fail closed");
         assert!(!invalid_account.contains("bad secret value"));
+        let invalid_node = parse_hosted_fleet_account_suspend_args(vec![
+            "account.prod".to_string(),
+            "--fleet-file".to_string(),
+            parsed.fleet_file.display().to_string(),
+            "--node".to_string(),
+            "bad secret value".to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect_err("invalid node should fail closed");
+        assert!(!invalid_node.contains("bad secret value"));
 
         let dry_report = hosted_fleet_account_suspension_report(&parsed)
             .expect("hosted fleet account dry-run report");
         assert!(dry_report.dry_run);
         assert_eq!(dry_report.totals.account_sources, 1);
+        assert_eq!(dry_report.totals.accounts, 2);
+        assert_eq!(dry_report.totals.credentials, 1);
         assert_eq!(dry_report.totals.active, 1);
         assert_eq!(dry_report.totals.revoked, 0);
         assert_eq!(dry_report.totals.active_tenants, 1);
@@ -12338,6 +12437,7 @@ mod tests {
 
         let confirmed = hosted_fleet_account_suspension_report(&HostedFleetAccountSuspendArgs {
             account_id: "account.prod".to_string(),
+            node_id: None,
             fleet_file: parsed.fleet_file.clone(),
             dry_run: false,
             json: true,
@@ -12345,6 +12445,7 @@ mod tests {
         .expect("hosted fleet account confirmed report");
         assert!(!confirmed.dry_run);
         assert_eq!(confirmed.totals.account_sources, 1);
+        assert_eq!(confirmed.totals.accounts, 2);
         assert_eq!(confirmed.totals.active, 0);
         assert_eq!(confirmed.totals.revoked, 1);
         assert_eq!(confirmed.totals.active_tenants, 0);
@@ -12367,6 +12468,112 @@ mod tests {
             assert!(!output.contains("ciphertext_body"));
         }
 
+        let node_fleet_file = write_hosted_fleet_dashboard_file(
+            &hosted_fleet_dashboard_file_contents(
+                "[[relay]]\nname = \"relay.node\"\ncredentials_file = \"node-credentials.toml\"\ntenants_file = \"node-tenants.toml\"\n",
+            ),
+        );
+        let node_base_dir = node_fleet_file.parent().expect("node fleet file parent");
+        let node_credentials_file = node_base_dir.join("node-credentials.toml");
+        let node_tenants_file = node_base_dir.join("node-tenants.toml");
+        let node_secret_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        upsert_hosted_tenant_in_file(&node_tenants_file, "account.prod")
+            .expect("node hosted tenant upsert");
+        upsert_hosted_tenant_node_in_file(
+            &node_tenants_file,
+            "account.prod",
+            "node.prod",
+            HostedTenantPermissions {
+                messages: true,
+                streams: false,
+                rooms: false,
+                files: false,
+                mailbox: true,
+            },
+            Some("signing.node".to_string()),
+            Some("exchange.node".to_string()),
+        )
+        .expect("node hosted tenant node upsert");
+        conu_relay::upsert_hosted_relay_credential_hash_in_file(
+            &node_credentials_file,
+            "account.prod",
+            "node.prod",
+            node_secret_hash,
+            64,
+            None,
+            false,
+        )
+        .expect("node hosted credential hash upsert");
+
+        let node_parsed = parse_hosted_fleet_account_suspend_args(vec![
+            "account.prod".to_string(),
+            "--fleet-file".to_string(),
+            node_fleet_file.display().to_string(),
+            "--node".to_string(),
+            "node.prod".to_string(),
+            "--dry-run".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("hosted fleet account node suspend args parse");
+        assert_eq!(node_parsed.node_id.as_deref(), Some("node.prod"));
+        let node_dry_report = hosted_fleet_account_suspension_report(&node_parsed)
+            .expect("hosted fleet account node dry-run report");
+        assert_eq!(node_dry_report.node_id.as_deref(), Some("node.prod"));
+        assert!(node_dry_report.dry_run);
+        assert_eq!(node_dry_report.totals.account_sources, 1);
+        assert_eq!(node_dry_report.totals.active, 1);
+        assert_eq!(node_dry_report.totals.active_tenants, 1);
+        assert_eq!(node_dry_report.totals.active_nodes, 1);
+        let node_tenant_after_dry_run = audit_hosted_tenants_file_with_node(
+            &node_tenants_file,
+            Some("account.prod"),
+            Some("node.prod"),
+        )
+        .expect("tenant node audit after dry-run");
+        assert_eq!(node_tenant_after_dry_run.active_nodes, 1);
+
+        let node_confirmed =
+            hosted_fleet_account_suspension_report(&HostedFleetAccountSuspendArgs {
+                account_id: "account.prod".to_string(),
+                node_id: Some("node.prod".to_string()),
+                fleet_file: node_parsed.fleet_file.clone(),
+                dry_run: false,
+                json: true,
+            })
+            .expect("hosted fleet account node confirmed report");
+        assert!(!node_confirmed.dry_run);
+        assert_eq!(node_confirmed.totals.account_sources, 1);
+        assert_eq!(node_confirmed.totals.active, 0);
+        assert_eq!(node_confirmed.totals.revoked, 1);
+        assert_eq!(node_confirmed.totals.active_tenants, 1);
+        assert_eq!(node_confirmed.totals.active_nodes, 0);
+        assert_eq!(node_confirmed.totals.revoked_nodes, 1);
+        let node_credentials_after_confirm = audit_hosted_relay_credentials_file_with_node(
+            &node_credentials_file,
+            Some("account.prod"),
+            Some("node.prod"),
+        )
+        .expect("credential node audit after confirm");
+        assert_eq!(node_credentials_after_confirm.revoked, 1);
+
+        let node_outputs = [
+            render_hosted_fleet_account_suspend_text(&node_dry_report),
+            render_hosted_fleet_account_suspend_json(&node_dry_report),
+            render_hosted_fleet_account_suspend_text(&node_confirmed),
+            render_hosted_fleet_account_suspend_json(&node_confirmed),
+        ];
+        for output in node_outputs {
+            assert!(output.contains("node.prod"));
+            assert!(output.contains("token"));
+            assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(node_secret_hash));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+        }
+
         let partial_fleet =
             write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
                 "[[relay]]\nname = \"relay.partial\"\ncredentials_file = \"credentials.toml\"\n",
@@ -12374,6 +12581,7 @@ mod tests {
         let partial_error =
             hosted_fleet_account_suspension_report(&HostedFleetAccountSuspendArgs {
                 account_id: "account.prod".to_string(),
+                node_id: None,
                 fleet_file: partial_fleet,
                 dry_run: true,
                 json: false,

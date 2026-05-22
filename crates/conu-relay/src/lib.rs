@@ -652,6 +652,30 @@ pub struct HostedAccountSuspension {
     pub contents_displayed: bool,
 }
 
+/// Metadata-only result of suspending one hosted account node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedAccountNodeSuspension {
+    pub account_id: String,
+    pub node_id: String,
+    pub credentials_file: PathBuf,
+    pub tenants_file: PathBuf,
+    pub credentials: usize,
+    pub active: usize,
+    pub revoked: usize,
+    pub expired: usize,
+    pub accounts: usize,
+    pub tenants: usize,
+    pub active_tenants: usize,
+    pub revoked_tenants: usize,
+    pub nodes: usize,
+    pub active_nodes: usize,
+    pub revoked_nodes: usize,
+    pub tenant_policies: usize,
+    pub token_displayed: bool,
+    pub key_material_displayed: bool,
+    pub contents_displayed: bool,
+}
+
 impl IssuedRelayCredential {
     pub fn account_id(&self) -> Option<&str> {
         self.account_id.as_deref()
@@ -1866,6 +1890,49 @@ pub fn revoke_hosted_relay_credentials_for_account_in_file(
     audit_hosted_relay_credentials_file(path, Some(&account_id))
 }
 
+/// Revoke every credential for one hosted account node without exposing hashes.
+pub fn revoke_hosted_relay_credentials_for_account_node_in_file(
+    path: impl AsRef<Path>,
+    account_id: impl Into<String>,
+    node_id: impl Into<String>,
+) -> Result<HostedCredentialAudit, RelayError> {
+    let path = path.as_ref();
+    let account_id = validate_account_id(account_id.into())?;
+    let node_id = validate_node_id(node_id.into())?;
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return audit_hosted_relay_credentials_file_with_node(
+                path,
+                Some(&account_id),
+                Some(&node_id),
+            );
+        }
+        Err(error) => return Err(RelayError::io("read relay credential file", error)),
+    };
+    let mut records = parse_credential_file_records(&contents)?;
+    let updated_at_unix = current_unix_seconds();
+    let mut changed = false;
+
+    for record in &mut records {
+        if record.account_id()? == Some(account_id.as_str())
+            && record.node_id()? == node_id.as_str()
+            && record.status.unwrap_or(RelayCredentialStatus::Active)
+                != RelayCredentialStatus::Revoked
+        {
+            *record = record
+                .clone()
+                .with_status(RelayCredentialStatus::Revoked, updated_at_unix);
+            changed = true;
+        }
+    }
+
+    if changed {
+        write_credential_manifest_records(path, &records)?;
+    }
+    audit_hosted_relay_credentials_file_with_node(path, Some(&account_id), Some(&node_id))
+}
+
 /// Suspend one hosted account by revoking tenant access and account credentials.
 ///
 /// The tenant registry is revoked first so new sessions fail closed even if a
@@ -1885,6 +1952,59 @@ pub fn suspend_hosted_account_in_files(
 
     Ok(HostedAccountSuspension {
         account_id,
+        credentials_file: credentials_file.to_path_buf(),
+        tenants_file: tenants_file.to_path_buf(),
+        credentials: credentials.credentials,
+        active: credentials.active,
+        revoked: credentials.revoked,
+        expired: credentials.expired,
+        accounts: credentials.accounts,
+        tenants: tenants.tenants,
+        active_tenants: tenants.active_tenants,
+        revoked_tenants: tenants.revoked_tenants,
+        nodes: tenants.nodes,
+        active_nodes: tenants.active_nodes,
+        revoked_nodes: tenants.revoked_nodes,
+        tenant_policies: tenants.policies,
+        token_displayed: credentials.token_displayed
+            || tenants.token_displayed
+            || tenant_update.token_displayed,
+        key_material_displayed: tenants.key_material_displayed
+            || tenant_update.key_material_displayed,
+        contents_displayed: credentials.contents_displayed
+            || tenants.contents_displayed
+            || tenant_update.contents_displayed,
+    })
+}
+
+/// Suspend one hosted account node by revoking tenant-node access and node
+/// credentials.
+///
+/// The tenant-node registry is revoked first so new sessions fail closed even
+/// if a later credential-file update fails.
+pub fn suspend_hosted_account_node_in_files(
+    credentials_file: impl AsRef<Path>,
+    tenants_file: impl AsRef<Path>,
+    account_id: impl Into<String>,
+    node_id: impl Into<String>,
+) -> Result<HostedAccountNodeSuspension, RelayError> {
+    let credentials_file = credentials_file.as_ref();
+    let tenants_file = tenants_file.as_ref();
+    let account_id = validate_account_id(account_id.into())?;
+    let node_id = validate_node_id(node_id.into())?;
+    let tenant_update =
+        revoke_hosted_tenant_node_in_file(tenants_file, account_id.clone(), node_id.clone())?;
+    let credentials = revoke_hosted_relay_credentials_for_account_node_in_file(
+        credentials_file,
+        account_id.clone(),
+        node_id.clone(),
+    )?;
+    let tenants =
+        audit_hosted_tenants_file_with_node(tenants_file, Some(&account_id), Some(&node_id))?;
+
+    Ok(HostedAccountNodeSuspension {
+        account_id,
+        node_id,
         credentials_file: credentials_file.to_path_buf(),
         tenants_file: tenants_file.to_path_buf(),
         credentials: credentials.credentials,
