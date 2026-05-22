@@ -368,7 +368,7 @@ Usage:
   conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]
   conu-relay --mailbox-purge --mailbox-dir <path> [--ttl-seconds <seconds>] [--node <node-id>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]
-  conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
+  conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold] [--fail-on-retention]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --check
   conu-relay --help
@@ -427,9 +427,12 @@ snapshots combine configured credential, tenant, accounting, and abuse summaries
 tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids.
 Hosted fleet dashboard snapshots read a versioned manifest of multiple relay-local metadata stores
 and aggregate only credential, tenant, session-state, mailbox, accounting, and abuse counters. They
-can apply guarded --thresholds-file and --max-* abuse limits to aggregate fleet counters, preserving
-stdout and returning exit code 3 only with --fail-on-threshold. The manifest must include explicit
-false display guards and does not make conU a managed billing service or adaptive abuse service.
+can apply guarded --retention-policy-file mailbox TTL/node defaults and guarded --thresholds-file
+or --max-* abuse limits to aggregate fleet counters, preserving stdout and returning exit code 3
+only with --fail-on-retention or --fail-on-threshold. Per-relay mailbox_ttl_seconds entries remain
+source-specific retention overrides unless a CLI --ttl-seconds override is supplied. The manifest
+must include explicit false display guards and does not make conU a managed billing, distributed
+retention orchestration, or adaptive abuse service.
 Mailbox audit and purge commands accept reusable --retention-policy-file policy files with
 version set to 1, optional ttl_seconds and node_id keys, and explicit false display guards;
 CLI --ttl-seconds and --node values override file values. Purge commands still require a
@@ -5713,10 +5716,14 @@ struct HostedFleetDashboardArgs {
     fleet_file: PathBuf,
     account_id: Option<String>,
     node_id: Option<String>,
+    retention_policy_file: Option<PathBuf>,
+    mailbox_retention_policy: MailboxRetentionPolicy,
+    mailbox_ttl: Option<Duration>,
     thresholds_file: Option<PathBuf>,
     abuse_thresholds: AbuseThresholds,
     json: bool,
     fail_on_threshold: bool,
+    fail_on_retention: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -5925,6 +5932,8 @@ struct HostedFleetDashboardTotals {
     mailbox_bytes: u64,
     mailbox_expired_records: u64,
     mailbox_expired_bytes: u64,
+    mailbox_retention_checks: usize,
+    mailbox_retention_exceeded: usize,
     accounting_sources: usize,
     accounting_records: usize,
     sessions_authenticated: u64,
@@ -6009,6 +6018,12 @@ impl HostedFleetDashboardTotals {
             self.mailbox_expired_bytes = self
                 .mailbox_expired_bytes
                 .saturating_add(audit.expired_bytes.unwrap_or(0));
+            if audit.expired_records.is_some() {
+                self.mailbox_retention_checks += 1;
+                if audit.expired_records.unwrap_or(0) > 0 {
+                    self.mailbox_retention_exceeded += 1;
+                }
+            }
             self.payload_displayed |= audit.payload_displayed;
             self.token_displayed |= audit.token_displayed;
             self.token_hash_displayed |= audit.token_hash_displayed;
@@ -6090,6 +6105,9 @@ struct HostedFleetDashboardSnapshot {
     fleet_file: PathBuf,
     account_id: Option<String>,
     node_id: Option<String>,
+    mailbox_node_id: Option<String>,
+    retention_policy_file: Option<PathBuf>,
+    mailbox_ttl: Option<Duration>,
     thresholds_file: Option<PathBuf>,
     relays: Vec<HostedFleetRelaySnapshot>,
     totals: HostedFleetDashboardTotals,
@@ -6099,14 +6117,14 @@ struct HostedFleetDashboardSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostedFleetDashboardExit {
     Success,
-    ThresholdExceeded,
+    PolicyExceeded,
 }
 
 impl HostedFleetDashboardExit {
     fn exit_code(self) -> ExitCode {
         match self {
             Self::Success => ExitCode::SUCCESS,
-            Self::ThresholdExceeded => ExitCode::from(3),
+            Self::PolicyExceeded => ExitCode::from(3),
         }
     }
 }
@@ -6114,14 +6132,16 @@ impl HostedFleetDashboardExit {
 fn hosted_fleet_dashboard_exit(
     snapshot: &HostedFleetDashboardSnapshot,
     fail_on_threshold: bool,
+    fail_on_retention: bool,
 ) -> HostedFleetDashboardExit {
-    if fail_on_threshold
+    let abuse_exceeded = fail_on_threshold
         && snapshot
             .abuse_threshold_report
             .as_ref()
-            .is_some_and(|report| report.threshold_exceeded > 0)
-    {
-        HostedFleetDashboardExit::ThresholdExceeded
+            .is_some_and(|report| report.threshold_exceeded > 0);
+    let retention_exceeded = fail_on_retention && snapshot.totals.mailbox_retention_exceeded > 0;
+    if abuse_exceeded || retention_exceeded {
+        HostedFleetDashboardExit::PolicyExceeded
     } else {
         HostedFleetDashboardExit::Success
     }
@@ -6138,6 +6158,7 @@ fn hosted_fleet_dashboard_from_args(args: Vec<String>) -> Result<HostedFleetDash
     Ok(hosted_fleet_dashboard_exit(
         &snapshot,
         parsed.fail_on_threshold,
+        parsed.fail_on_retention,
     ))
 }
 
@@ -6147,10 +6168,13 @@ fn parse_hosted_fleet_dashboard_args(
     let mut fleet_file = None::<PathBuf>;
     let mut account_id = None::<String>;
     let mut node_id = None::<String>;
+    let mut retention_policy_file = None::<PathBuf>;
+    let mut mailbox_ttl = None::<Duration>;
     let mut thresholds_file = None::<PathBuf>;
     let mut cli_thresholds = AbuseThresholds::default();
     let mut json = false;
     let mut fail_on_threshold = false;
+    let mut fail_on_retention = false;
     let mut index = 0;
 
     while index < args.len() {
@@ -6176,6 +6200,23 @@ fn parse_hosted_fleet_dashboard_args(
                 };
                 node_id = Some(value.to_string());
             }
+            "--retention-policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_dashboard_usage());
+                };
+                if value.trim().is_empty() {
+                    return Err(hosted_fleet_dashboard_usage());
+                }
+                retention_policy_file = Some(PathBuf::from(value));
+            }
+            "--ttl-seconds" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_dashboard_usage());
+                };
+                mailbox_ttl = Some(parse_positive_cli_duration(value, "--ttl-seconds")?);
+            }
             "--thresholds-file" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -6188,6 +6229,7 @@ fn parse_hosted_fleet_dashboard_args(
             }
             "--json" => json = true,
             "--fail-on-threshold" => fail_on_threshold = true,
+            "--fail-on-retention" => fail_on_retention = true,
             "--help" | "-h" => return Err(hosted_fleet_dashboard_usage()),
             value if value.starts_with("--max-") => {
                 index += 1;
@@ -6211,6 +6253,9 @@ fn parse_hosted_fleet_dashboard_args(
     let node_id = node_id
         .map(|value| validate_dashboard_filter_id(value, "node id"))
         .transpose()?;
+    retention_policy_file = retention_policy_file.filter(|path| !path.as_os_str().is_empty());
+    let mailbox_retention_policy =
+        merged_mailbox_retention_policy(retention_policy_file.as_deref(), None, None)?;
     thresholds_file = thresholds_file.filter(|path| !path.as_os_str().is_empty());
     let threshold_source_configured = thresholds_file.is_some() || cli_thresholds.has_any();
     if fail_on_threshold && !threshold_source_configured {
@@ -6225,15 +6270,19 @@ fn parse_hosted_fleet_dashboard_args(
         fleet_file,
         account_id,
         node_id,
+        retention_policy_file,
+        mailbox_retention_policy,
+        mailbox_ttl,
         thresholds_file,
         abuse_thresholds,
         json,
         fail_on_threshold,
+        fail_on_retention,
     })
 }
 
 fn hosted_fleet_dashboard_usage() -> String {
-    "usage: conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]".to_string()
+    "usage: conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold] [--fail-on-retention]".to_string()
 }
 
 fn hosted_fleet_dashboard_snapshot(
@@ -6244,6 +6293,32 @@ fn hosted_fleet_dashboard_snapshot(
         return Err(
             "--thresholds-file and --max-* require at least one fleet relay abuse_dir".to_string(),
         );
+    }
+    let mailbox_source_configured = configs.iter().any(|config| config.mailbox_dir.is_some());
+    let retention_source_configured =
+        args.retention_policy_file.is_some() || args.mailbox_ttl.is_some();
+    if retention_source_configured && !mailbox_source_configured {
+        return Err(
+            "--retention-policy-file and --ttl-seconds require at least one fleet relay mailbox_dir"
+                .to_string(),
+        );
+    }
+    if args.fail_on_retention && !mailbox_source_configured {
+        return Err(
+            "--fail-on-retention requires at least one fleet relay mailbox_dir".to_string(),
+        );
+    }
+    let mailbox_node_id = args
+        .node_id
+        .clone()
+        .or_else(|| args.mailbox_retention_policy.node_id.clone());
+    let ttl_configured = args.mailbox_ttl.is_some()
+        || args.mailbox_retention_policy.ttl.is_some()
+        || configs
+            .iter()
+            .any(|config| config.mailbox_ttl_seconds.is_some());
+    if args.fail_on_retention && !ttl_configured {
+        return Err("--fail-on-retention requires --ttl-seconds, a retention policy ttl_seconds, or per-relay mailbox_ttl_seconds".to_string());
     }
     let mut relays = Vec::with_capacity(configs.len());
     let mut totals = HostedFleetDashboardTotals::default();
@@ -6271,8 +6346,11 @@ fn hosted_fleet_dashboard_snapshot(
             .mailbox_dir
             .as_ref()
             .map(|path| {
-                let ttl = config.mailbox_ttl_seconds.map(Duration::from_secs);
-                audit_relay_mailbox_dir(path, args.node_id.as_deref(), ttl)
+                let ttl = args
+                    .mailbox_ttl
+                    .or_else(|| config.mailbox_ttl_seconds.map(Duration::from_secs))
+                    .or(args.mailbox_retention_policy.ttl);
+                audit_relay_mailbox_dir(path, mailbox_node_id.as_deref(), ttl)
             })
             .transpose()
             .map_err(|error| error.to_string())?;
@@ -6317,6 +6395,9 @@ fn hosted_fleet_dashboard_snapshot(
         fleet_file: args.fleet_file.clone(),
         account_id: args.account_id.clone(),
         node_id: args.node_id.clone(),
+        mailbox_node_id,
+        retention_policy_file: args.retention_policy_file.clone(),
+        mailbox_ttl: args.mailbox_ttl.or(args.mailbox_retention_policy.ttl),
         thresholds_file: args.thresholds_file.clone(),
         relays,
         totals,
@@ -6664,6 +6745,16 @@ fn parse_cli_bool(value: &str, flag: &str) -> Result<bool, String> {
     }
 }
 
+fn mailbox_retention_status(totals: &HostedFleetDashboardTotals) -> &'static str {
+    if totals.mailbox_retention_checks == 0 {
+        "not_configured"
+    } else if totals.mailbox_retention_exceeded > 0 {
+        "exceeded"
+    } else {
+        "ok"
+    }
+}
+
 fn render_hosted_fleet_dashboard_text(snapshot: &HostedFleetDashboardSnapshot) -> String {
     let totals = &snapshot.totals;
     let mut output = format!(
@@ -6672,6 +6763,9 @@ fn render_hosted_fleet_dashboard_text(snapshot: &HostedFleetDashboardSnapshot) -
 fleet file: {}
 account: {}
 node: {}
+mailbox retention node: {}
+retention policy file: {}
+mailbox ttl seconds: {}
 thresholds file: {}
 relays: {}
 credential sources: {}
@@ -6700,6 +6794,9 @@ mailbox invalid records: {}
 mailbox bytes: {}
 mailbox expired records: {}
 mailbox expired bytes: {}
+mailbox retention status: {}
+mailbox retention checks: {}
+mailbox retention exceeded: {}
 accounting sources: {}
 accounting records: {}
 sessions authenticated: {}
@@ -6731,6 +6828,9 @@ relay sources:",
         snapshot.fleet_file.display(),
         snapshot.account_id.as_deref().unwrap_or("all"),
         snapshot.node_id.as_deref().unwrap_or("all"),
+        snapshot.mailbox_node_id.as_deref().unwrap_or("all"),
+        optional_path_text(snapshot.retention_policy_file.as_deref()),
+        optional_u64_text(snapshot.mailbox_ttl.map(|ttl| ttl.as_secs())),
         optional_path_text(snapshot.thresholds_file.as_deref()),
         totals.relays,
         totals.credential_sources,
@@ -6759,6 +6859,9 @@ relay sources:",
         totals.mailbox_bytes,
         totals.mailbox_expired_records,
         totals.mailbox_expired_bytes,
+        mailbox_retention_status(totals),
+        totals.mailbox_retention_checks,
+        totals.mailbox_retention_exceeded,
         totals.accounting_sources,
         totals.accounting_records,
         totals.sessions_authenticated,
@@ -6917,6 +7020,9 @@ fn render_hosted_fleet_dashboard_json(snapshot: &HostedFleetDashboardSnapshot) -
   "fleetFile": "{}",
   "accountId": {},
   "nodeId": {},
+  "mailboxNodeId": {},
+  "retentionPolicyFile": {},
+  "mailboxTtlSeconds": {},
   "thresholdsFile": {},
   "totals": {},
   "abuseThresholdReport": {},
@@ -6934,6 +7040,9 @@ fn render_hosted_fleet_dashboard_json(snapshot: &HostedFleetDashboardSnapshot) -
         json_escape(&snapshot.fleet_file.display().to_string()),
         optional_string_json(snapshot.account_id.as_deref()),
         optional_string_json(snapshot.node_id.as_deref()),
+        optional_string_json(snapshot.mailbox_node_id.as_deref()),
+        optional_path_json(snapshot.retention_policy_file.as_deref()),
+        optional_u64_json(snapshot.mailbox_ttl.map(|ttl| ttl.as_secs())),
         optional_path_json(snapshot.thresholds_file.as_deref()),
         render_hosted_fleet_totals_json(&snapshot.totals),
         snapshot
@@ -6982,6 +7091,9 @@ fn render_hosted_fleet_totals_json(totals: &HostedFleetDashboardTotals) -> Strin
     "mailboxBytes": {},
     "mailboxExpiredRecords": {},
     "mailboxExpiredBytes": {},
+    "mailboxRetentionStatus": "{}",
+    "mailboxRetentionChecks": {},
+    "mailboxRetentionExceeded": {},
     "accountingSources": {},
     "accountingRecords": {},
     "sessionsAuthenticated": {},
@@ -7033,6 +7145,9 @@ fn render_hosted_fleet_totals_json(totals: &HostedFleetDashboardTotals) -> Strin
         totals.mailbox_bytes,
         totals.mailbox_expired_records,
         totals.mailbox_expired_bytes,
+        mailbox_retention_status(totals),
+        totals.mailbox_retention_checks,
+        totals.mailbox_retention_exceeded,
         totals.accounting_sources,
         totals.accounting_records,
         totals.sessions_authenticated,
@@ -10969,6 +11084,10 @@ mod tests {
 
     #[test]
     fn hosted_fleet_dashboard_parser_and_renderers_are_metadata_only() {
+        let retention_policy =
+            write_mailbox_retention_policy_file(&mailbox_retention_policy_contents(
+                "ttl_seconds = 7200\nnode_id = \"node.from-policy\"\n",
+            ));
         let threshold_policy = write_abuse_threshold_policy_file(&abuse_threshold_policy_contents(
             "max_admin_failed = 0\nmax_rate_limited_sessions = 0\n",
         ));
@@ -10979,17 +11098,32 @@ mod tests {
             "account.prod".to_string(),
             "--node".to_string(),
             "node.hosted".to_string(),
+            "--retention-policy-file".to_string(),
+            retention_policy.display().to_string(),
             "--thresholds-file".to_string(),
             threshold_policy.display().to_string(),
             "--max-mailbox-rejected-forwards".to_string(),
             "0".to_string(),
             "--json".to_string(),
             "--fail-on-threshold".to_string(),
+            "--fail-on-retention".to_string(),
         ])
         .expect("hosted fleet dashboard args parse");
         assert_eq!(parsed.fleet_file.as_path(), Path::new("fleet.toml"));
         assert_eq!(parsed.account_id.as_deref(), Some("account.prod"));
         assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert_eq!(
+            parsed.retention_policy_file.as_deref(),
+            Some(retention_policy.as_path())
+        );
+        assert_eq!(
+            parsed.mailbox_retention_policy.node_id.as_deref(),
+            Some("node.from-policy")
+        );
+        assert_eq!(
+            parsed.mailbox_retention_policy.ttl,
+            Some(Duration::from_secs(7200))
+        );
         assert_eq!(
             parsed.thresholds_file.as_deref(),
             Some(threshold_policy.as_path())
@@ -10999,6 +11133,7 @@ mod tests {
         assert_eq!(parsed.abuse_thresholds.mailbox_rejected_forwards, Some(0));
         assert!(parsed.json);
         assert!(parsed.fail_on_threshold);
+        assert!(parsed.fail_on_retention);
         assert!(parse_hosted_fleet_dashboard_args(Vec::new()).is_err());
         let invalid_filter = parse_hosted_fleet_dashboard_args(vec![
             "--fleet-file".to_string(),
@@ -11045,6 +11180,9 @@ credentials_file = "credentials.toml"
             fleet_file: no_abuse_fleet,
             account_id: None,
             node_id: None,
+            retention_policy_file: None,
+            mailbox_retention_policy: MailboxRetentionPolicy::default(),
+            mailbox_ttl: None,
             thresholds_file: Some(threshold_policy.clone()),
             abuse_thresholds: AbuseThresholds {
                 admin_failed: Some(0),
@@ -11052,10 +11190,39 @@ credentials_file = "credentials.toml"
             },
             json: false,
             fail_on_threshold: false,
+            fail_on_retention: false,
         };
         let no_abuse_error = hosted_fleet_dashboard_snapshot(&no_abuse_args)
             .expect_err("thresholds should require a fleet abuse source");
         assert!(no_abuse_error.contains("abuse_dir"));
+
+        let no_mailbox_fleet =
+            write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+                r#"
+[[relay]]
+name = "relay-east"
+abuse_dir = "abuse"
+"#,
+            ));
+        let no_mailbox_args = HostedFleetDashboardArgs {
+            fleet_file: no_mailbox_fleet,
+            account_id: None,
+            node_id: None,
+            retention_policy_file: Some(retention_policy.clone()),
+            mailbox_retention_policy: MailboxRetentionPolicy {
+                node_id: None,
+                ttl: Some(Duration::from_secs(3600)),
+            },
+            mailbox_ttl: None,
+            thresholds_file: None,
+            abuse_thresholds: AbuseThresholds::default(),
+            json: false,
+            fail_on_threshold: false,
+            fail_on_retention: true,
+        };
+        let no_mailbox_error = hosted_fleet_dashboard_snapshot(&no_mailbox_args)
+            .expect_err("retention policy should require a fleet mailbox source");
+        assert!(no_mailbox_error.contains("mailbox_dir"));
 
         let missing_guard = write_hosted_fleet_dashboard_file(
             "version = \"1\"\npayload_displayed = false\n[[relay]]\nname = \"relay-east\"\nabuse_dir = \"abuse\"\n",
@@ -11181,6 +11348,8 @@ credentials_file = "credentials.toml"
         };
         let mut totals = HostedFleetDashboardTotals::default();
         totals.add(&relay);
+        assert_eq!(totals.mailbox_retention_checks, 1);
+        assert_eq!(totals.mailbox_retention_exceeded, 1);
         let threshold_report = abuse_threshold_report_from_fleet_totals(
             &totals,
             AbuseThresholds {
@@ -11198,17 +11367,24 @@ credentials_file = "credentials.toml"
             fleet_file: PathBuf::from("fleet.toml"),
             account_id: Some("account.prod".to_string()),
             node_id: Some("node.hosted".to_string()),
+            mailbox_node_id: Some("node.hosted".to_string()),
+            retention_policy_file: Some(PathBuf::from("mailbox-retention.toml")),
+            mailbox_ttl: Some(Duration::from_secs(7200)),
             thresholds_file: Some(PathBuf::from("thresholds.toml")),
             relays: vec![relay],
             totals,
             abuse_threshold_report: Some(threshold_report),
         };
         assert_eq!(
-            hosted_fleet_dashboard_exit(&snapshot, true),
-            HostedFleetDashboardExit::ThresholdExceeded
+            hosted_fleet_dashboard_exit(&snapshot, true, false),
+            HostedFleetDashboardExit::PolicyExceeded
         );
         assert_eq!(
-            hosted_fleet_dashboard_exit(&snapshot, false),
+            hosted_fleet_dashboard_exit(&snapshot, false, true),
+            HostedFleetDashboardExit::PolicyExceeded
+        );
+        assert_eq!(
+            hosted_fleet_dashboard_exit(&snapshot, false, false),
             HostedFleetDashboardExit::Success
         );
         let secret_token = "relay-secret-token";
@@ -11226,6 +11402,7 @@ credentials_file = "credentials.toml"
             assert!(output.contains("credentials"));
             assert!(output.contains("session"));
             assert!(output.contains("threshold"));
+            assert!(output.contains("retention"));
             assert!(output.contains("threshold_exceeded"));
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));
