@@ -4649,7 +4649,7 @@ Current status:
 - Updated CI and release package jobs to use Node 24.
 - Updated `@conu/sdk` and `@conu/cli` package `engines` to accept Node 22 LTS or Node 24 LTS and reject EOL Node lines.
 - Updated npm package docs, SDK/MCP docs, and the release checklist with the supported Node LTS requirement.
-- Opened PR #116 to close issue #115.
+- Opened and merged PR #116 to close issue #115.
 
 Validation:
 
@@ -4665,6 +4665,7 @@ Validation:
 - PR #116 CI run `https://github.com/imthegoodboy/conU/actions/runs/26266048350` completed successfully: Packages, Rust on `ubuntu-latest`, Rust on `windows-2025-vs2026`, and Rust on `macos-15`.
 - Branch `Release Artifacts` workflow_dispatch run `https://github.com/imthegoodboy/conU/actions/runs/26266054245` completed successfully.
 - The branch release smoke passed package checks plus `windows-x64`, `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64` builds with artifact attestations/uploads; `Publish GitHub Release` and `Publish npm Packages` skipped on the non-tag branch run.
+- PR #116 was merged into `main` on 2026-05-22, issue #115 was closed, local and remote `node-lts-package-hardening` branches were preserved, and post-merge CI run `https://github.com/imthegoodboy/conU/actions/runs/26266342419` completed successfully.
 
 Known gaps:
 
@@ -4672,7 +4673,39 @@ Known gaps:
 
 Next recommendation:
 
-- Merge PR #116 without deleting branches, then verify issue closure and local/remote branch preservation.
+- Revisit the Node engine range when the next Node LTS line is promoted, and continue with distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal. Preserve local and remote work branches.
+
+## Post Phase 15 Hosted Readiness Policy Files (In Progress)
+
+Objective: make `conu-relay --hosted-readiness` reuse the same metadata-only mailbox retention and abuse threshold policy files already supported by the dedicated relay audit/report commands.
+
+Current status:
+
+- Created GitHub issue #117 for hosted readiness policy-file reuse.
+- Created branch `hosted-readiness-policy-files` from `main` without a `codex/` prefix, per user preference.
+- Added `--retention-policy-file <path>` to hosted readiness when `--mailbox-dir` is configured.
+- Reused mailbox retention policy merge semantics so policy `ttl_seconds` and `node_id` apply to the readiness mailbox audit, with CLI `--ttl-seconds` and `--node` overrides.
+- Added `--thresholds-file <path>` and inline `--max-* <count>` threshold options to hosted readiness when `--abuse-dir` is configured.
+- Reused abuse threshold policy merge semantics so CLI `--max-*` values override policy-file defaults.
+- Added threshold checks/exceeded counts to hosted readiness text/JSON output, kept display guard aggregation payload-safe, and made exceeded thresholds contribute to warning status and `--fail-on-warning`.
+- Updated README, hosted relay docs, distribution/hosting docs, production readiness docs, release checklist, SDK/MCP docs, Docker/package docs, and user install docs.
+
+Validation so far:
+
+- `cargo fmt --all -- --check` passed.
+- `git diff --check` passed.
+- `python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- Local Rust compile/test is currently blocked on this Windows environment because the default MSVC target cannot find `link.exe` and the GNU toolchain cannot find `dlltool.exe`; GitHub CI will be the compile/test authority for this branch unless a native linker becomes available locally.
+
+Known gaps:
+
+- This readiness-policy update does not add distributed hosted dashboards/adaptive abuse workflows, distributed mailbox retention orchestration, distributed tenant workflow services, distributed multi-instance session migration, managed hosted identity/key administration, release signing secrets, release tags, or npm publication.
+
+Next recommendation:
+
+- Push `hosted-readiness-policy-files`, open a PR that closes issue #117, let CI validate Rust/package surfaces, then merge without deleting local or remote branches if CI is green.
 
 ## Phase Completion Log
 
