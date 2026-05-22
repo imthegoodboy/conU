@@ -4602,7 +4602,7 @@ Next recommendation:
 
 - Issue #111 was closed by PR #112, and `codex/release-workflow-smoke-record` remains preserved locally and on origin. Continue with GitHub Actions runner-image migration hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
-## Post Phase 15 GitHub Actions Runner Image Pinning (In Progress)
+## Post Phase 15 GitHub Actions Runner Image Pinning (Completed)
 
 Objective: remove GitHub-hosted runner image migration warnings and make CI/release platform labels explicit before the June 2026 Windows/macOS hosted-runner migrations.
 
@@ -4616,6 +4616,7 @@ Current status:
 - Updated `.github/workflows/ci.yml` to run Rust CI on `ubuntu-latest`, `windows-2025-vs2026`, and `macos-15`.
 - Updated `.github/workflows/release.yml` so `windows-x64` uses `windows-2025-vs2026` and `macos-arm64` uses `macos-15`; `macos-x64` already used `macos-15-intel`.
 - Updated the release checklist with the explicit runner labels and the reminder to revisit the Windows label after the June 2026 migration completes.
+- User preference captured for future work: create new branches without the `codex/` prefix. Existing preserved `codex/*` branches are not deleted.
 
 Validation:
 
@@ -4624,7 +4625,9 @@ Validation:
 - `npm run check --prefix sdk\typescript` passed.
 - `npm run check --prefix packaging\npm\conu-cli` passed.
 - `git diff --check` passed.
-- Pending PR CI and a branch `Release Artifacts` workflow_dispatch smoke run.
+- PR #114 CI passed: Packages, CodeRabbit, Rust on `ubuntu-latest`, Rust on `windows-2025-vs2026`, and Rust on `macos-15`.
+- Branch `Release Artifacts` workflow_dispatch run `https://github.com/imthegoodboy/conU/actions/runs/26265326440` completed successfully.
+- The branch release smoke passed package checks plus `windows-x64`, `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64` builds; `Publish GitHub Release` and `Publish npm Packages` skipped on the non-tag branch run.
 
 Known gaps:
 
@@ -4632,7 +4635,7 @@ Known gaps:
 
 Next recommendation:
 
-- Validate the runner-label branch through PR CI and a release workflow smoke run. If both pass, merge while preserving the local and remote branch.
+- Merge PR #114 for issue #113 while preserving the local and remote branch. Then continue with distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
 ## Phase Completion Log
 
@@ -4725,4 +4728,5 @@ Add entries here when a phase is completed.
 2026-05-22 - Post Phase 15 GitHub Actions Node 24 runtime hardening completed. Updated CI and release workflows to `actions/checkout@v6` and `actions/setup-node@v6`, confirmed both current action releases declare Node 24 runtimes, updated release checklist, and validated YAML parse, package checks, no stale v4/v5 action references, and diff check. Next: release workflow hardening, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 release artifact action runtime hardening completed. Updated release artifact provenance/upload/download steps to `actions/attest@v4.1.0`, `actions/upload-artifact@v7.0.1`, and `actions/download-artifact@v8.0.1` after confirming those upstream action metadata files declare Node 24 runtimes. Updated release checklist with the self-hosted runner caveat and validated YAML parse, package checks, no stale artifact action references, and diff check. Next: release workflow smoke, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 release workflow smoke validation completed. Ran `Release Artifacts` through `workflow_dispatch` on `main` after the Node 24 action updates; package checks and all five platform artifact builds passed, artifact uploads were present, GitHub Release/npm publication jobs skipped as expected on the non-tag run, and post-merge CI was green. Next: tagged release signing/publication verification when release secrets are configured, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-22 - Post Phase 15 GitHub Actions runner image pinning completed. Pinned CI/release Windows jobs to `windows-2025-vs2026`, pinned macOS arm64 jobs to `macos-15`, kept macOS x64 release on `macos-15-intel`, removed floating Windows/macOS workflow labels, updated release checklist, validated local workflow/package checks, passed PR CI on the explicit labels, and passed a branch `Release Artifacts` smoke run across all five platform builds. Next: revisit the Windows label after GitHub completes the June 2026 migration, tagged release signing/publication verification when release secrets are configured, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
