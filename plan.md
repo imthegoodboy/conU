@@ -4847,6 +4847,7 @@ Current status:
 - The command fails closed when threshold evaluation is requested but no fleet relay supplies an `abuse_dir`.
 - Output remains limited to relay names, source paths, filters, aggregate counters, threshold check/exceeded metadata, and false display guards.
 - Updated README, architecture, relay hosting docs, production/security/release docs, user guide, repo memory, and implementation guardrails to describe the new fleet threshold boundary.
+- Opened PR #127 to close issue #126.
 
 Validation:
 
@@ -4862,15 +4863,17 @@ Validation:
 - `git diff --check` passed.
 - `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_dashboard_parser_and_renderers_are_metadata_only` was blocked locally because `dlltool.exe` is not installed.
 - `cargo +stable-x86_64-pc-windows-gnu run -p conu-relay -- --help` was blocked locally by the same missing `dlltool.exe` linker dependency.
+- PR #127 CI passed across Packages plus Rust on Ubuntu, Windows, and macOS: https://github.com/imthegoodboy/conU/actions/runs/26270249242
+- Branch `Release Artifacts` smoke passed across release preflight, package checks, attestations/uploads, and five platform builds: https://github.com/imthegoodboy/conU/actions/runs/26270352424
 
 Known gaps:
 
 - This is a fleet-level aggregate threshold gate over relay-local metadata stores. It is not distributed alert routing, adaptive abuse response, hosted billing, distributed retention orchestration, distributed session migration, or tenant-wide workflow automation.
-- Full runtime/test proof for this Windows workstation still depends on GitHub CI because local GNU test/run linking requires `dlltool.exe`.
+- Full local runtime/test proof for this Windows workstation still depends on installing `dlltool.exe`; GitHub CI covered the test path.
 
 Next recommendation:
 
-- Open PR for issue #126 without deleting local or remote work branches, wait for GitHub CI, and run a branch Release Artifacts smoke if CI passes because this changes the relay binary surface.
+- Merge PR #127 without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
 ## Phase Completion Log
 
@@ -4969,5 +4972,5 @@ Add entries here when a phase is completed.
 2026-05-22 - Post Phase 15 tagged release preflight hardening completed. Added a fail-closed `Release Tag Preflight` for `v*` releases requiring Windows signing, macOS signing/notarization, and `NPM_TOKEN` before package checks/builds, changed tagged npm publish steps from warning-and-skip to errors, preserved unsigned non-tag workflow_dispatch smoke builds, updated release docs/plan, passed local workflow/package/Rust GNU checks with documented local linker blockers, passed PR #121 CI, and passed a branch `Release Artifacts` smoke run across preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
 2026-05-22 - Post Phase 15 release version consistency gate completed. Added `scripts/verify-release-versions.py` for shared Cargo/npm package version checks and `v*` tag-to-package-version enforcement, wired it into CI and Release Artifacts package gates before npm checks/dry-runs, updated release/package docs, validated local good and fail-closed tag paths, passed PR #123 CI, and passed a branch `Release Artifacts` smoke across release preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
 2026-05-22 - Post Phase 15 hosted fleet dashboard snapshot completed. Added `conu-relay --hosted-fleet-dashboard --fleet-file <path>` for guarded multi-relay metadata aggregation across credential, tenant, session-state, mailbox, accounting, and abuse stores; required versioned manifest false display guards; kept output to relay names, source paths, filters, aggregate counters, and display guards; updated docs/skills/plan; passed local GNU workspace check/clippy, package/Python checks, PR #125 CI, and a branch `Release Artifacts` smoke across all five platform builds. Next: adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
-2026-05-22 - Post Phase 15 hosted fleet dashboard threshold policy completed. Added reusable `--thresholds-file`, inline `--max-*`, and `--fail-on-threshold` support to `conu-relay --hosted-fleet-dashboard`, evaluating only aggregate fleet abuse counters and returning exit code 3 only when requested and exceeded; preserved stdout and payload-safe output boundaries, updated docs/skills/plan, and passed local GNU check/clippy, workspace check/clippy, package/Python checks, version gate, and diff check. Local targeted test/run smoke remained blocked by missing `dlltool.exe`; GitHub CI is required for full test/run proof on Windows. Next: PR CI, branch Release Artifacts smoke, then adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-22 - Post Phase 15 hosted fleet dashboard threshold policy completed. Added reusable `--thresholds-file`, inline `--max-*`, and `--fail-on-threshold` support to `conu-relay --hosted-fleet-dashboard`, evaluating only aggregate fleet abuse counters and returning exit code 3 only when requested and exceeded; preserved stdout and payload-safe output boundaries, updated docs/skills/plan, and passed local GNU check/clippy, workspace check/clippy, package/Python checks, version gate, diff check, PR #127 CI, and a branch `Release Artifacts` smoke across all five platform builds. Local targeted test/run smoke remained blocked by missing `dlltool.exe`; GitHub Windows CI covered the test path. Next: merge PR #127 without deleting branches, then adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
