@@ -27,6 +27,7 @@ use conu_relay::{
 
 const ABUSE_THRESHOLD_POLICY_FILE_VERSION: &str = "1";
 const MAILBOX_RETENTION_POLICY_FILE_VERSION: &str = "1";
+const HOSTED_FLEET_DASHBOARD_FILE_VERSION: &str = "1";
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -275,6 +276,15 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("--hosted-fleet-dashboard") => {
+            match hosted_fleet_dashboard_from_args(args.collect()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("conU relay failed: {error}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Some("--hosted-dashboard") => match hosted_dashboard_from_args(args.collect()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -358,6 +368,7 @@ Usage:
   conu-relay --abuse-threshold-report --abuse-dir <path> [--node <node-id>] [--thresholds-file <path>] [--max-<metric> <count>...] [--json] [--fail-on-threshold]
   conu-relay --mailbox-audit --mailbox-dir <path> [--node <node-id>] [--ttl-seconds <seconds>] [--retention-policy-file <path>] [--json]
   conu-relay --mailbox-purge --mailbox-dir <path> [--ttl-seconds <seconds>] [--node <node-id>] [--retention-policy-file <path>] (--dry-run|--confirm) [--json]
+  conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --hosted-dashboard [--credentials-file <path>] [--tenants-file <path>] [--accounting-dir <path>] [--abuse-dir <path>] [--account <account-id>] [--node <node-id>] [--json]
   conu-relay --check
   conu-relay --help
@@ -414,6 +425,9 @@ dry-run or explicit confirmation, and scheduled mailbox purge requires an explic
 CONU_RELAY_MAILBOX_DIR before deleting expired durable mailbox files. Hosted dashboard
 snapshots combine configured credential, tenant, accounting, and abuse summaries without displaying
 tokens, token hashes, payloads, ciphertext bodies, frame contents, private keys, or relay session ids.
+Hosted fleet dashboard snapshots read a versioned manifest of multiple relay-local metadata stores
+and aggregate only credential, tenant, session-state, mailbox, accounting, and abuse counters; the
+manifest must include explicit false display guards and does not make conU a managed billing service.
 Mailbox audit and purge commands accept reusable --retention-policy-file policy files with
 version set to 1, optional ttl_seconds and node_id keys, and explicit false display guards;
 CLI --ttl-seconds and --node values override file values. Purge commands still require a
@@ -5693,6 +5707,635 @@ fn mailbox_purge_usage() -> String {
 }
 
 #[derive(Debug, Clone)]
+struct HostedFleetDashboardArgs {
+    fleet_file: PathBuf,
+    account_id: Option<String>,
+    node_id: Option<String>,
+    json: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetRelayConfig {
+    name: String,
+    credentials_file: Option<PathBuf>,
+    tenants_file: Option<PathBuf>,
+    session_state_dir: Option<PathBuf>,
+    mailbox_dir: Option<PathBuf>,
+    mailbox_ttl_seconds: Option<u64>,
+    accounting_dir: Option<PathBuf>,
+    abuse_dir: Option<PathBuf>,
+}
+
+impl HostedFleetRelayConfig {
+    fn has_source(&self) -> bool {
+        self.credentials_file.is_some()
+            || self.tenants_file.is_some()
+            || self.session_state_dir.is_some()
+            || self.mailbox_dir.is_some()
+            || self.accounting_dir.is_some()
+            || self.abuse_dir.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostedFleetRelayConfigBuilder {
+    name: Option<String>,
+    credentials_file: Option<PathBuf>,
+    tenants_file: Option<PathBuf>,
+    session_state_dir: Option<PathBuf>,
+    mailbox_dir: Option<PathBuf>,
+    mailbox_ttl_seconds: Option<u64>,
+    accounting_dir: Option<PathBuf>,
+    abuse_dir: Option<PathBuf>,
+}
+
+impl HostedFleetRelayConfigBuilder {
+    fn set(&mut self, base_dir: &Path, key: &str, value: &str, line: usize) -> Result<(), String> {
+        match key {
+            "name" => {
+                self.name = Some(validate_dashboard_filter_id(
+                    value.to_string(),
+                    "relay name",
+                )?);
+            }
+            "credentials_file" => {
+                self.credentials_file = Some(resolve_fleet_path(base_dir, value, key, line)?);
+            }
+            "tenants_file" => {
+                self.tenants_file = Some(resolve_fleet_path(base_dir, value, key, line)?);
+            }
+            "session_state_dir" => {
+                self.session_state_dir = Some(resolve_fleet_path(base_dir, value, key, line)?);
+            }
+            "mailbox_dir" => {
+                self.mailbox_dir = Some(resolve_fleet_path(base_dir, value, key, line)?);
+            }
+            "mailbox_ttl_seconds" => {
+                let ttl = value.parse::<u64>().map_err(|_| {
+                    format!(
+                        "hosted fleet dashboard file line {line} mailbox_ttl_seconds must be an unsigned integer"
+                    )
+                })?;
+                if ttl == 0 {
+                    return Err(format!(
+                        "hosted fleet dashboard file line {line} mailbox_ttl_seconds must be greater than zero"
+                    ));
+                }
+                self.mailbox_ttl_seconds = Some(ttl);
+            }
+            "accounting_dir" => {
+                self.accounting_dir = Some(resolve_fleet_path(base_dir, value, key, line)?);
+            }
+            "abuse_dir" => {
+                self.abuse_dir = Some(resolve_fleet_path(base_dir, value, key, line)?);
+            }
+            _ => {
+                return Err(format!(
+                    "hosted fleet dashboard file line {line} uses unsupported relay key {key}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<HostedFleetRelayConfig, String> {
+        let name = self
+            .name
+            .ok_or_else(|| "hosted fleet dashboard relay entry is missing name".to_string())?;
+        let relay = HostedFleetRelayConfig {
+            name,
+            credentials_file: self.credentials_file,
+            tenants_file: self.tenants_file,
+            session_state_dir: self.session_state_dir,
+            mailbox_dir: self.mailbox_dir,
+            mailbox_ttl_seconds: self.mailbox_ttl_seconds,
+            accounting_dir: self.accounting_dir,
+            abuse_dir: self.abuse_dir,
+        };
+        if !relay.has_source() {
+            return Err(format!(
+                "hosted fleet dashboard relay {} has no configured metadata source",
+                relay.name
+            ));
+        }
+        if relay.mailbox_ttl_seconds.is_some() && relay.mailbox_dir.is_none() {
+            return Err(format!(
+                "hosted fleet dashboard relay {} sets mailbox_ttl_seconds without mailbox_dir",
+                relay.name
+            ));
+        }
+        Ok(relay)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostedFleetDashboardFileGuards {
+    payload_displayed: bool,
+    token_displayed: bool,
+    token_hash_displayed: bool,
+    key_material_displayed: bool,
+    session_id_displayed: bool,
+    ciphertext_displayed: bool,
+    contents_displayed: bool,
+}
+
+impl HostedFleetDashboardFileGuards {
+    fn record_false(&mut self, key: &str, value: &str, line: usize) -> Result<bool, String> {
+        let guard = match key {
+            "payload_displayed" => &mut self.payload_displayed,
+            "token_displayed" => &mut self.token_displayed,
+            "token_hash_displayed" => &mut self.token_hash_displayed,
+            "key_material_displayed" => &mut self.key_material_displayed,
+            "session_id_displayed" => &mut self.session_id_displayed,
+            "ciphertext_displayed" => &mut self.ciphertext_displayed,
+            "contents_displayed" => &mut self.contents_displayed,
+            _ => return Ok(false),
+        };
+        if value != "false" {
+            return Err(format!(
+                "hosted fleet dashboard file line {line} {key} must be false"
+            ));
+        }
+        *guard = true;
+        Ok(true)
+    }
+
+    fn validate(self) -> Result<(), String> {
+        for (key, present) in [
+            ("payload_displayed", self.payload_displayed),
+            ("token_displayed", self.token_displayed),
+            ("token_hash_displayed", self.token_hash_displayed),
+            ("key_material_displayed", self.key_material_displayed),
+            ("session_id_displayed", self.session_id_displayed),
+            ("ciphertext_displayed", self.ciphertext_displayed),
+            ("contents_displayed", self.contents_displayed),
+        ] {
+            if !present {
+                return Err(format!(
+                    "hosted fleet dashboard file requires {key} = false"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetRelaySnapshot {
+    config: HostedFleetRelayConfig,
+    credentials: Option<HostedCredentialAudit>,
+    tenants: Option<HostedTenantAudit>,
+    session_state: Option<RelaySessionAudit>,
+    mailbox: Option<RelayMailboxAudit>,
+    accounting: Option<RelayAccountingAudit>,
+    abuse: Option<RelayAbuseAudit>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct HostedFleetDashboardTotals {
+    relays: usize,
+    credential_sources: usize,
+    credentials: usize,
+    active_credentials: usize,
+    revoked_credentials: usize,
+    expired_credentials: usize,
+    credential_account_entries: usize,
+    tenant_sources: usize,
+    tenants: usize,
+    active_tenants: usize,
+    revoked_tenants: usize,
+    tenant_nodes: usize,
+    active_tenant_nodes: usize,
+    revoked_tenant_nodes: usize,
+    tenant_policies: usize,
+    session_state_sources: usize,
+    session_records: usize,
+    active_session_records: usize,
+    expired_session_records: usize,
+    invalid_session_records: usize,
+    mailbox_sources: usize,
+    mailbox_nodes: usize,
+    mailbox_records: usize,
+    mailbox_invalid_records: usize,
+    mailbox_bytes: u64,
+    mailbox_expired_records: u64,
+    mailbox_expired_bytes: u64,
+    accounting_sources: usize,
+    accounting_records: usize,
+    sessions_authenticated: u64,
+    sessions_resumed: u64,
+    envelopes_sent: u64,
+    bytes_sent: u64,
+    envelopes_received: u64,
+    bytes_received: u64,
+    envelopes_mailboxed: u64,
+    bytes_mailboxed: u64,
+    abuse_sources: usize,
+    abuse_records: usize,
+    admin_unauthorized: u64,
+    admin_failed: u64,
+    unauthorized_sessions: u64,
+    credential_denied_sessions: u64,
+    tenant_denied_sessions: u64,
+    rate_limited_sessions: u64,
+    session_expired: u64,
+    quota_denied_forwards: u64,
+    undelivered_forwards: u64,
+    mailbox_rejected_forwards: u64,
+    malformed_client_frames: u64,
+    payload_displayed: bool,
+    token_displayed: bool,
+    token_hash_displayed: bool,
+    key_material_displayed: bool,
+    session_id_displayed: bool,
+    ciphertext_displayed: bool,
+    contents_displayed: bool,
+}
+
+impl HostedFleetDashboardTotals {
+    fn add(&mut self, relay: &HostedFleetRelaySnapshot) {
+        self.relays += 1;
+        if let Some(audit) = &relay.credentials {
+            self.credential_sources += 1;
+            self.credentials += audit.credentials;
+            self.active_credentials += audit.active;
+            self.revoked_credentials += audit.revoked;
+            self.expired_credentials += audit.expired;
+            self.credential_account_entries += audit.accounts;
+            self.token_displayed |= audit.token_displayed;
+            self.contents_displayed |= audit.contents_displayed;
+        }
+        if let Some(audit) = &relay.tenants {
+            self.tenant_sources += 1;
+            self.tenants += audit.tenants;
+            self.active_tenants += audit.active_tenants;
+            self.revoked_tenants += audit.revoked_tenants;
+            self.tenant_nodes += audit.nodes;
+            self.active_tenant_nodes += audit.active_nodes;
+            self.revoked_tenant_nodes += audit.revoked_nodes;
+            self.tenant_policies += audit.policies;
+            self.token_displayed |= audit.token_displayed;
+            self.key_material_displayed |= audit.key_material_displayed;
+            self.contents_displayed |= audit.contents_displayed;
+        }
+        if let Some(audit) = &relay.session_state {
+            self.session_state_sources += 1;
+            self.session_records += audit.records;
+            self.active_session_records += audit.active_records;
+            self.expired_session_records += audit.expired_records;
+            self.invalid_session_records += audit.invalid_records;
+            self.payload_displayed |= audit.payload_displayed;
+            self.token_displayed |= audit.token_displayed;
+            self.token_hash_displayed |= audit.token_hash_displayed;
+            self.key_material_displayed |= audit.key_material_displayed;
+            self.session_id_displayed |= audit.session_id_displayed;
+            self.ciphertext_displayed |= audit.ciphertext_displayed;
+            self.contents_displayed |= audit.contents_displayed;
+        }
+        if let Some(audit) = &relay.mailbox {
+            self.mailbox_sources += 1;
+            self.mailbox_nodes += audit.nodes;
+            self.mailbox_records += audit.records;
+            self.mailbox_invalid_records += audit.invalid_records;
+            self.mailbox_bytes = self.mailbox_bytes.saturating_add(audit.bytes);
+            self.mailbox_expired_records = self
+                .mailbox_expired_records
+                .saturating_add(audit.expired_records.unwrap_or(0));
+            self.mailbox_expired_bytes = self
+                .mailbox_expired_bytes
+                .saturating_add(audit.expired_bytes.unwrap_or(0));
+            self.payload_displayed |= audit.payload_displayed;
+            self.token_displayed |= audit.token_displayed;
+            self.token_hash_displayed |= audit.token_hash_displayed;
+            self.key_material_displayed |= audit.key_material_displayed;
+            self.session_id_displayed |= audit.session_id_displayed;
+            self.ciphertext_displayed |= audit.ciphertext_displayed;
+            self.contents_displayed |= audit.contents_displayed;
+        }
+        if let Some(audit) = &relay.accounting {
+            self.accounting_sources += 1;
+            self.accounting_records += audit.records;
+            self.sessions_authenticated = self
+                .sessions_authenticated
+                .saturating_add(audit.sessions_authenticated);
+            self.sessions_resumed = self.sessions_resumed.saturating_add(audit.sessions_resumed);
+            self.envelopes_sent = self.envelopes_sent.saturating_add(audit.envelopes_sent);
+            self.bytes_sent = self.bytes_sent.saturating_add(audit.bytes_sent);
+            self.envelopes_received = self
+                .envelopes_received
+                .saturating_add(audit.envelopes_received);
+            self.bytes_received = self.bytes_received.saturating_add(audit.bytes_received);
+            self.envelopes_mailboxed = self
+                .envelopes_mailboxed
+                .saturating_add(audit.envelopes_mailboxed);
+            self.bytes_mailboxed = self.bytes_mailboxed.saturating_add(audit.bytes_mailboxed);
+            self.payload_displayed |= audit.payload_displayed;
+            self.token_displayed |= audit.token_displayed;
+            self.token_hash_displayed |= audit.token_hash_displayed;
+            self.key_material_displayed |= audit.key_material_displayed;
+            self.session_id_displayed |= audit.session_id_displayed;
+            self.ciphertext_displayed |= audit.ciphertext_displayed;
+            self.contents_displayed |= audit.contents_displayed;
+        }
+        if let Some(audit) = &relay.abuse {
+            self.abuse_sources += 1;
+            self.abuse_records += audit.records;
+            self.admin_unauthorized = self
+                .admin_unauthorized
+                .saturating_add(audit.admin_unauthorized);
+            self.admin_failed = self.admin_failed.saturating_add(audit.admin_failed);
+            self.unauthorized_sessions = self
+                .unauthorized_sessions
+                .saturating_add(audit.unauthorized_sessions);
+            self.credential_denied_sessions = self
+                .credential_denied_sessions
+                .saturating_add(audit.credential_denied_sessions);
+            self.tenant_denied_sessions = self
+                .tenant_denied_sessions
+                .saturating_add(audit.tenant_denied_sessions);
+            self.rate_limited_sessions = self
+                .rate_limited_sessions
+                .saturating_add(audit.rate_limited_sessions);
+            self.session_expired = self.session_expired.saturating_add(audit.session_expired);
+            self.quota_denied_forwards = self
+                .quota_denied_forwards
+                .saturating_add(audit.quota_denied_forwards);
+            self.undelivered_forwards = self
+                .undelivered_forwards
+                .saturating_add(audit.undelivered_forwards);
+            self.mailbox_rejected_forwards = self
+                .mailbox_rejected_forwards
+                .saturating_add(audit.mailbox_rejected_forwards);
+            self.malformed_client_frames = self
+                .malformed_client_frames
+                .saturating_add(audit.malformed_client_frames);
+            self.payload_displayed |= audit.payload_displayed;
+            self.token_displayed |= audit.token_displayed;
+            self.token_hash_displayed |= audit.token_hash_displayed;
+            self.key_material_displayed |= audit.key_material_displayed;
+            self.session_id_displayed |= audit.session_id_displayed;
+            self.ciphertext_displayed |= audit.ciphertext_displayed;
+            self.contents_displayed |= audit.contents_displayed;
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedFleetDashboardSnapshot {
+    fleet_file: PathBuf,
+    account_id: Option<String>,
+    node_id: Option<String>,
+    relays: Vec<HostedFleetRelaySnapshot>,
+    totals: HostedFleetDashboardTotals,
+}
+
+fn hosted_fleet_dashboard_from_args(args: Vec<String>) -> Result<(), String> {
+    let parsed = parse_hosted_fleet_dashboard_args(args)?;
+    let snapshot = hosted_fleet_dashboard_snapshot(&parsed)?;
+    if parsed.json {
+        println!("{}", render_hosted_fleet_dashboard_json(&snapshot));
+    } else {
+        println!("{}", render_hosted_fleet_dashboard_text(&snapshot));
+    }
+    Ok(())
+}
+
+fn parse_hosted_fleet_dashboard_args(
+    args: Vec<String>,
+) -> Result<HostedFleetDashboardArgs, String> {
+    let mut fleet_file = None::<PathBuf>;
+    let mut account_id = None::<String>;
+    let mut node_id = None::<String>;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--fleet-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_dashboard_usage());
+                };
+                fleet_file = Some(PathBuf::from(value));
+            }
+            "--account" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_dashboard_usage());
+                };
+                account_id = Some(value.to_string());
+            }
+            "--node" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(hosted_fleet_dashboard_usage());
+                };
+                node_id = Some(value.to_string());
+            }
+            "--json" => json = true,
+            "--help" | "-h" => return Err(hosted_fleet_dashboard_usage()),
+            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            _ => return Err(hosted_fleet_dashboard_usage()),
+        }
+        index += 1;
+    }
+
+    let Some(fleet_file) = fleet_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return Err(hosted_fleet_dashboard_usage());
+    };
+    let account_id = account_id
+        .map(|value| validate_dashboard_filter_id(value, "account id"))
+        .transpose()?;
+    let node_id = node_id
+        .map(|value| validate_dashboard_filter_id(value, "node id"))
+        .transpose()?;
+
+    Ok(HostedFleetDashboardArgs {
+        fleet_file,
+        account_id,
+        node_id,
+        json,
+    })
+}
+
+fn hosted_fleet_dashboard_usage() -> String {
+    "usage: conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--json]".to_string()
+}
+
+fn hosted_fleet_dashboard_snapshot(
+    args: &HostedFleetDashboardArgs,
+) -> Result<HostedFleetDashboardSnapshot, String> {
+    let configs = parse_hosted_fleet_dashboard_file(&args.fleet_file)?;
+    let mut relays = Vec::with_capacity(configs.len());
+    let mut totals = HostedFleetDashboardTotals::default();
+
+    for config in configs {
+        let credentials = config
+            .credentials_file
+            .as_ref()
+            .map(|path| audit_hosted_relay_credentials_file(path, args.account_id.as_deref()))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let tenants = config
+            .tenants_file
+            .as_ref()
+            .map(|path| audit_hosted_tenants_file(path, args.account_id.as_deref()))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let session_state = config
+            .session_state_dir
+            .as_ref()
+            .map(|path| audit_relay_session_state_dir(path, args.node_id.as_deref()))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let mailbox = config
+            .mailbox_dir
+            .as_ref()
+            .map(|path| {
+                let ttl = config.mailbox_ttl_seconds.map(Duration::from_secs);
+                audit_relay_mailbox_dir(path, args.node_id.as_deref(), ttl)
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let accounting = config
+            .accounting_dir
+            .as_ref()
+            .map(|path| audit_relay_accounting_dir(path, args.node_id.as_deref()))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let abuse = config
+            .abuse_dir
+            .as_ref()
+            .map(|path| audit_relay_abuse_dir(path, args.node_id.as_deref()))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+
+        let relay = HostedFleetRelaySnapshot {
+            config,
+            credentials,
+            tenants,
+            session_state,
+            mailbox,
+            accounting,
+            abuse,
+        };
+        totals.add(&relay);
+        relays.push(relay);
+    }
+
+    Ok(HostedFleetDashboardSnapshot {
+        fleet_file: args.fleet_file.clone(),
+        account_id: args.account_id.clone(),
+        node_id: args.node_id.clone(),
+        relays,
+        totals,
+    })
+}
+
+fn parse_hosted_fleet_dashboard_file(path: &Path) -> Result<Vec<HostedFleetRelayConfig>, String> {
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("read hosted fleet dashboard file: {error}"))?;
+    let base_dir = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut version_seen = false;
+    let mut guards = HostedFleetDashboardFileGuards::default();
+    let mut relays = Vec::<HostedFleetRelayConfig>::new();
+    let mut current = None::<HostedFleetRelayConfigBuilder>;
+
+    for (line_index, raw_line) in contents.lines().enumerate() {
+        let line_number = line_index + 1;
+        let line = strip_config_comment(raw_line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "[[relay]]" {
+            if let Some(builder) = current.take() {
+                push_hosted_fleet_relay(&mut relays, builder.finish()?)?;
+            }
+            current = Some(HostedFleetRelayConfigBuilder::default());
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!(
+                "hosted fleet dashboard file line {line_number} must use key = value"
+            ));
+        };
+        let key = key.trim();
+        let value = clean_config_value(value);
+
+        if let Some(builder) = current.as_mut() {
+            builder.set(base_dir, key, &value, line_number)?;
+            continue;
+        }
+
+        if key == "version" {
+            if value != HOSTED_FLEET_DASHBOARD_FILE_VERSION {
+                return Err(format!(
+                    "hosted fleet dashboard file line {line_number} has unsupported version"
+                ));
+            }
+            version_seen = true;
+            continue;
+        }
+        if guards.record_false(key, &value, line_number)? {
+            continue;
+        }
+        return Err(format!(
+            "hosted fleet dashboard file line {line_number} uses unsupported top-level key {key}"
+        ));
+    }
+
+    if let Some(builder) = current.take() {
+        push_hosted_fleet_relay(&mut relays, builder.finish()?)?;
+    }
+    if !version_seen {
+        return Err("hosted fleet dashboard file requires version = \"1\"".to_string());
+    }
+    guards.validate()?;
+    if relays.is_empty() {
+        return Err(
+            "hosted fleet dashboard file requires at least one [[relay]] entry".to_string(),
+        );
+    }
+    Ok(relays)
+}
+
+fn push_hosted_fleet_relay(
+    relays: &mut Vec<HostedFleetRelayConfig>,
+    relay: HostedFleetRelayConfig,
+) -> Result<(), String> {
+    if relays.iter().any(|existing| existing.name == relay.name) {
+        return Err(format!(
+            "hosted fleet dashboard relay {} is duplicated",
+            relay.name
+        ));
+    }
+    relays.push(relay);
+    Ok(())
+}
+
+fn resolve_fleet_path(
+    base_dir: &Path,
+    value: &str,
+    key: &str,
+    line: usize,
+) -> Result<PathBuf, String> {
+    if value.trim().is_empty() {
+        return Err(format!(
+            "hosted fleet dashboard file line {line} {key} cannot be empty"
+        ));
+    }
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(base_dir.join(path))
+    }
+}
+
+#[derive(Debug, Clone)]
 struct HostedDashboardArgs {
     credentials_file: Option<PathBuf>,
     tenants_file: Option<PathBuf>,
@@ -5891,6 +6534,507 @@ fn parse_cli_bool(value: &str, flag: &str) -> Result<bool, String> {
         "false" => Ok(false),
         _ => Err(format!("{flag} must be true or false")),
     }
+}
+
+fn render_hosted_fleet_dashboard_text(snapshot: &HostedFleetDashboardSnapshot) -> String {
+    let totals = &snapshot.totals;
+    let mut output = format!(
+        r"conU hosted relay fleet dashboard snapshot
+
+fleet file: {}
+account: {}
+node: {}
+relays: {}
+credential sources: {}
+credentials: {}
+active credentials: {}
+revoked credentials: {}
+expired credentials: {}
+credential account entries: {}
+tenant sources: {}
+tenants: {}
+active tenants: {}
+revoked tenants: {}
+tenant nodes: {}
+active tenant nodes: {}
+revoked tenant nodes: {}
+hosted policies: {}
+session-state sources: {}
+session records: {}
+active session records: {}
+expired session records: {}
+invalid session records: {}
+mailbox sources: {}
+mailbox nodes: {}
+mailbox records: {}
+mailbox invalid records: {}
+mailbox bytes: {}
+mailbox expired records: {}
+mailbox expired bytes: {}
+accounting sources: {}
+accounting records: {}
+sessions authenticated: {}
+sessions resumed: {}
+envelopes sent: {}
+bytes sent: {}
+envelopes received: {}
+bytes received: {}
+envelopes mailboxed: {}
+bytes mailboxed: {}
+abuse sources: {}
+abuse records: {}
+admin unauthorized: {}
+admin failed: {}
+unauthorized sessions: {}
+credential denied sessions: {}
+tenant denied sessions: {}
+rate limited sessions: {}
+session expired: {}
+quota denied forwards: {}
+undelivered forwards: {}
+mailbox rejected forwards: {}
+malformed client frames: {}
+
+relay sources:",
+        snapshot.fleet_file.display(),
+        snapshot.account_id.as_deref().unwrap_or("all"),
+        snapshot.node_id.as_deref().unwrap_or("all"),
+        totals.relays,
+        totals.credential_sources,
+        totals.credentials,
+        totals.active_credentials,
+        totals.revoked_credentials,
+        totals.expired_credentials,
+        totals.credential_account_entries,
+        totals.tenant_sources,
+        totals.tenants,
+        totals.active_tenants,
+        totals.revoked_tenants,
+        totals.tenant_nodes,
+        totals.active_tenant_nodes,
+        totals.revoked_tenant_nodes,
+        totals.tenant_policies,
+        totals.session_state_sources,
+        totals.session_records,
+        totals.active_session_records,
+        totals.expired_session_records,
+        totals.invalid_session_records,
+        totals.mailbox_sources,
+        totals.mailbox_nodes,
+        totals.mailbox_records,
+        totals.mailbox_invalid_records,
+        totals.mailbox_bytes,
+        totals.mailbox_expired_records,
+        totals.mailbox_expired_bytes,
+        totals.accounting_sources,
+        totals.accounting_records,
+        totals.sessions_authenticated,
+        totals.sessions_resumed,
+        totals.envelopes_sent,
+        totals.bytes_sent,
+        totals.envelopes_received,
+        totals.bytes_received,
+        totals.envelopes_mailboxed,
+        totals.bytes_mailboxed,
+        totals.abuse_sources,
+        totals.abuse_records,
+        totals.admin_unauthorized,
+        totals.admin_failed,
+        totals.unauthorized_sessions,
+        totals.credential_denied_sessions,
+        totals.tenant_denied_sessions,
+        totals.rate_limited_sessions,
+        totals.session_expired,
+        totals.quota_denied_forwards,
+        totals.undelivered_forwards,
+        totals.mailbox_rejected_forwards,
+        totals.malformed_client_frames
+    );
+
+    for relay in &snapshot.relays {
+        output.push_str(&format!(
+            "\n- {}: credentials {} tenants {} session-state {} mailbox {} accounting {} abuse {}",
+            relay.config.name,
+            yes_no(relay.credentials.is_some()),
+            yes_no(relay.tenants.is_some()),
+            yes_no(relay.session_state.is_some()),
+            yes_no(relay.mailbox.is_some()),
+            yes_no(relay.accounting.is_some()),
+            yes_no(relay.abuse.is_some())
+        ));
+    }
+
+    output.push_str(&format!(
+        r"
+
+payload displayed: {}
+token displayed: {}
+token hash displayed: {}
+key material displayed: {}
+session id displayed: {}
+ciphertext displayed: {}
+contents displayed: {}",
+        yes_no(totals.payload_displayed),
+        yes_no(totals.token_displayed),
+        yes_no(totals.token_hash_displayed),
+        yes_no(totals.key_material_displayed),
+        yes_no(totals.session_id_displayed),
+        yes_no(totals.ciphertext_displayed),
+        yes_no(totals.contents_displayed)
+    ));
+    output
+}
+
+fn render_hosted_fleet_dashboard_json(snapshot: &HostedFleetDashboardSnapshot) -> String {
+    let relays = snapshot
+        .relays
+        .iter()
+        .map(render_hosted_fleet_relay_json)
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    format!(
+        r#"{{
+  "status": "snapshotted",
+  "fleetFile": "{}",
+  "accountId": {},
+  "nodeId": {},
+  "totals": {},
+  "relays": [
+{}
+  ],
+  "payloadDisplayed": {},
+  "tokenDisplayed": {},
+  "tokenHashDisplayed": {},
+  "keyMaterialDisplayed": {},
+  "sessionIdDisplayed": {},
+  "ciphertextDisplayed": {},
+  "contentsDisplayed": {}
+}}"#,
+        json_escape(&snapshot.fleet_file.display().to_string()),
+        optional_string_json(snapshot.account_id.as_deref()),
+        optional_string_json(snapshot.node_id.as_deref()),
+        render_hosted_fleet_totals_json(&snapshot.totals),
+        relays,
+        bool_json(snapshot.totals.payload_displayed),
+        bool_json(snapshot.totals.token_displayed),
+        bool_json(snapshot.totals.token_hash_displayed),
+        bool_json(snapshot.totals.key_material_displayed),
+        bool_json(snapshot.totals.session_id_displayed),
+        bool_json(snapshot.totals.ciphertext_displayed),
+        bool_json(snapshot.totals.contents_displayed)
+    )
+}
+
+fn render_hosted_fleet_totals_json(totals: &HostedFleetDashboardTotals) -> String {
+    format!(
+        r#"{{
+    "relays": {},
+    "credentialSources": {},
+    "credentials": {},
+    "activeCredentials": {},
+    "revokedCredentials": {},
+    "expiredCredentials": {},
+    "credentialAccountEntries": {},
+    "tenantSources": {},
+    "tenants": {},
+    "activeTenants": {},
+    "revokedTenants": {},
+    "tenantNodes": {},
+    "activeTenantNodes": {},
+    "revokedTenantNodes": {},
+    "hostedPolicies": {},
+    "sessionStateSources": {},
+    "sessionRecords": {},
+    "activeSessionRecords": {},
+    "expiredSessionRecords": {},
+    "invalidSessionRecords": {},
+    "mailboxSources": {},
+    "mailboxNodes": {},
+    "mailboxRecords": {},
+    "mailboxInvalidRecords": {},
+    "mailboxBytes": {},
+    "mailboxExpiredRecords": {},
+    "mailboxExpiredBytes": {},
+    "accountingSources": {},
+    "accountingRecords": {},
+    "sessionsAuthenticated": {},
+    "sessionsResumed": {},
+    "envelopesSent": {},
+    "bytesSent": {},
+    "envelopesReceived": {},
+    "bytesReceived": {},
+    "envelopesMailboxed": {},
+    "bytesMailboxed": {},
+    "abuseSources": {},
+    "abuseRecords": {},
+    "adminUnauthorized": {},
+    "adminFailed": {},
+    "unauthorizedSessions": {},
+    "credentialDeniedSessions": {},
+    "tenantDeniedSessions": {},
+    "rateLimitedSessions": {},
+    "sessionExpired": {},
+    "quotaDeniedForwards": {},
+    "undeliveredForwards": {},
+    "mailboxRejectedForwards": {},
+    "malformedClientFrames": {}
+  }}"#,
+        totals.relays,
+        totals.credential_sources,
+        totals.credentials,
+        totals.active_credentials,
+        totals.revoked_credentials,
+        totals.expired_credentials,
+        totals.credential_account_entries,
+        totals.tenant_sources,
+        totals.tenants,
+        totals.active_tenants,
+        totals.revoked_tenants,
+        totals.tenant_nodes,
+        totals.active_tenant_nodes,
+        totals.revoked_tenant_nodes,
+        totals.tenant_policies,
+        totals.session_state_sources,
+        totals.session_records,
+        totals.active_session_records,
+        totals.expired_session_records,
+        totals.invalid_session_records,
+        totals.mailbox_sources,
+        totals.mailbox_nodes,
+        totals.mailbox_records,
+        totals.mailbox_invalid_records,
+        totals.mailbox_bytes,
+        totals.mailbox_expired_records,
+        totals.mailbox_expired_bytes,
+        totals.accounting_sources,
+        totals.accounting_records,
+        totals.sessions_authenticated,
+        totals.sessions_resumed,
+        totals.envelopes_sent,
+        totals.bytes_sent,
+        totals.envelopes_received,
+        totals.bytes_received,
+        totals.envelopes_mailboxed,
+        totals.bytes_mailboxed,
+        totals.abuse_sources,
+        totals.abuse_records,
+        totals.admin_unauthorized,
+        totals.admin_failed,
+        totals.unauthorized_sessions,
+        totals.credential_denied_sessions,
+        totals.tenant_denied_sessions,
+        totals.rate_limited_sessions,
+        totals.session_expired,
+        totals.quota_denied_forwards,
+        totals.undelivered_forwards,
+        totals.mailbox_rejected_forwards,
+        totals.malformed_client_frames
+    )
+}
+
+fn render_hosted_fleet_relay_json(relay: &HostedFleetRelaySnapshot) -> String {
+    format!(
+        r#"    {{
+      "name": "{}",
+      "sources": {{
+        "credentialsFile": {},
+        "tenantsFile": {},
+        "sessionStateDir": {},
+        "mailboxDir": {},
+        "mailboxTtlSeconds": {},
+        "accountingDir": {},
+        "abuseDir": {}
+      }},
+      "credentials": {},
+      "tenants": {},
+      "sessionState": {},
+      "mailbox": {},
+      "accounting": {},
+      "abuse": {},
+      "payloadDisplayed": {},
+      "tokenDisplayed": {},
+      "tokenHashDisplayed": {},
+      "keyMaterialDisplayed": {},
+      "sessionIdDisplayed": {},
+      "ciphertextDisplayed": {},
+      "contentsDisplayed": {}
+    }}"#,
+        json_escape(&relay.config.name),
+        optional_path_json(relay.config.credentials_file.as_deref()),
+        optional_path_json(relay.config.tenants_file.as_deref()),
+        optional_path_json(relay.config.session_state_dir.as_deref()),
+        optional_path_json(relay.config.mailbox_dir.as_deref()),
+        optional_u64_json(relay.config.mailbox_ttl_seconds),
+        optional_path_json(relay.config.accounting_dir.as_deref()),
+        optional_path_json(relay.config.abuse_dir.as_deref()),
+        render_dashboard_credentials_json(relay.credentials.as_ref()),
+        render_dashboard_tenants_json(relay.tenants.as_ref()),
+        render_readiness_session_state_json(relay.session_state.as_ref()),
+        render_readiness_mailbox_json(relay.mailbox.as_ref()),
+        render_dashboard_accounting_json(relay.accounting.as_ref()),
+        render_dashboard_abuse_json(relay.abuse.as_ref()),
+        bool_json(hosted_fleet_relay_payload_displayed(relay)),
+        bool_json(hosted_fleet_relay_token_displayed(relay)),
+        bool_json(hosted_fleet_relay_token_hash_displayed(relay)),
+        bool_json(hosted_fleet_relay_key_material_displayed(relay)),
+        bool_json(hosted_fleet_relay_session_id_displayed(relay)),
+        bool_json(hosted_fleet_relay_ciphertext_displayed(relay)),
+        bool_json(hosted_fleet_relay_contents_displayed(relay))
+    )
+}
+
+fn hosted_fleet_relay_payload_displayed(relay: &HostedFleetRelaySnapshot) -> bool {
+    relay
+        .session_state
+        .as_ref()
+        .is_some_and(|audit| audit.payload_displayed)
+        || relay
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+        || relay
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+        || relay
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.payload_displayed)
+}
+
+fn hosted_fleet_relay_token_displayed(relay: &HostedFleetRelaySnapshot) -> bool {
+    relay
+        .credentials
+        .as_ref()
+        .is_some_and(|audit| audit.token_displayed)
+        || relay
+            .tenants
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || relay
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || relay
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || relay
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+        || relay
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.token_displayed)
+}
+
+fn hosted_fleet_relay_token_hash_displayed(relay: &HostedFleetRelaySnapshot) -> bool {
+    relay
+        .session_state
+        .as_ref()
+        .is_some_and(|audit| audit.token_hash_displayed)
+        || relay
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+        || relay
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+        || relay
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.token_hash_displayed)
+}
+
+fn hosted_fleet_relay_key_material_displayed(relay: &HostedFleetRelaySnapshot) -> bool {
+    relay
+        .tenants
+        .as_ref()
+        .is_some_and(|audit| audit.key_material_displayed)
+        || relay
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+        || relay
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+        || relay
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+        || relay
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.key_material_displayed)
+}
+
+fn hosted_fleet_relay_session_id_displayed(relay: &HostedFleetRelaySnapshot) -> bool {
+    relay
+        .session_state
+        .as_ref()
+        .is_some_and(|audit| audit.session_id_displayed)
+        || relay
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
+        || relay
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
+        || relay
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.session_id_displayed)
+}
+
+fn hosted_fleet_relay_ciphertext_displayed(relay: &HostedFleetRelaySnapshot) -> bool {
+    relay
+        .session_state
+        .as_ref()
+        .is_some_and(|audit| audit.ciphertext_displayed)
+        || relay
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+        || relay
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+        || relay
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.ciphertext_displayed)
+}
+
+fn hosted_fleet_relay_contents_displayed(relay: &HostedFleetRelaySnapshot) -> bool {
+    relay
+        .credentials
+        .as_ref()
+        .is_some_and(|audit| audit.contents_displayed)
+        || relay
+            .tenants
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || relay
+            .session_state
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || relay
+            .mailbox
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || relay
+            .accounting
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
+        || relay
+            .abuse
+            .as_ref()
+            .is_some_and(|audit| audit.contents_displayed)
 }
 
 fn render_tenant_update_text(update: &HostedTenantManifestUpdate) -> String {
@@ -7677,6 +8821,28 @@ mod tests {
             std::process::id(),
         ));
         fs::write(&path, contents).expect("write mailbox retention policy file");
+        path
+    }
+
+    fn hosted_fleet_dashboard_file_contents(relays: &str) -> String {
+        format!(
+            "version = \"1\"\npayload_displayed = false\ntoken_displayed = false\ntoken_hash_displayed = false\nkey_material_displayed = false\nsession_id_displayed = false\nciphertext_displayed = false\ncontents_displayed = false\n{relays}"
+        )
+    }
+
+    fn write_hosted_fleet_dashboard_file(contents: &str) -> PathBuf {
+        let counter = TEST_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!(
+            "conu-relay-hosted-fleet-dashboard-{}-{nanos}-{counter}",
+            std::process::id(),
+        ));
+        fs::create_dir_all(&dir).expect("create hosted fleet dashboard test dir");
+        let path = dir.join("fleet.toml");
+        fs::write(&path, contents).expect("write hosted fleet dashboard file");
         path
     }
 
@@ -9565,6 +10731,212 @@ mod tests {
             assert!(output.contains("mailbox"));
             assert!(output.contains("purge") || output.contains("purged"));
             assert!(output.contains("contents"));
+            assert!(!output.contains(secret_token));
+            assert!(!output.contains(secret_hash));
+            assert!(!output.contains(session_id));
+            assert!(!output.contains("BEGIN PRIVATE KEY"));
+            assert!(!output.contains("payload-body"));
+            assert!(!output.contains("ciphertext_body"));
+            assert!(!output.contains("ENVELOPE from=node.a"));
+        }
+    }
+
+    #[test]
+    fn hosted_fleet_dashboard_parser_and_renderers_are_metadata_only() {
+        let parsed = parse_hosted_fleet_dashboard_args(vec![
+            "--fleet-file".to_string(),
+            "fleet.toml".to_string(),
+            "--account".to_string(),
+            "account.prod".to_string(),
+            "--node".to_string(),
+            "node.hosted".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("hosted fleet dashboard args parse");
+        assert_eq!(parsed.fleet_file.as_path(), Path::new("fleet.toml"));
+        assert_eq!(parsed.account_id.as_deref(), Some("account.prod"));
+        assert_eq!(parsed.node_id.as_deref(), Some("node.hosted"));
+        assert!(parsed.json);
+        assert!(parse_hosted_fleet_dashboard_args(Vec::new()).is_err());
+        let invalid_filter = parse_hosted_fleet_dashboard_args(vec![
+            "--fleet-file".to_string(),
+            "fleet.toml".to_string(),
+            "--node".to_string(),
+            "bad secret value".to_string(),
+        ])
+        .expect_err("invalid node filter should fail closed");
+        assert!(!invalid_filter.contains("bad secret value"));
+
+        let fleet_file = write_hosted_fleet_dashboard_file(&hosted_fleet_dashboard_file_contents(
+            r#"
+[[relay]]
+name = "relay-east"
+credentials_file = "credentials.toml"
+tenants_file = "tenants.toml"
+session_state_dir = "sessions"
+mailbox_dir = "mailbox"
+mailbox_ttl_seconds = 3600
+accounting_dir = "accounting"
+abuse_dir = "abuse"
+"#,
+        ));
+        let configs =
+            parse_hosted_fleet_dashboard_file(&fleet_file).expect("hosted fleet file parses");
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].name, "relay-east");
+        let base_dir = fleet_file.parent().expect("fleet file parent");
+        let expected_credentials = base_dir.join("credentials.toml");
+        assert_eq!(
+            configs[0].credentials_file.as_deref(),
+            Some(expected_credentials.as_path())
+        );
+        assert_eq!(configs[0].mailbox_ttl_seconds, Some(3600));
+
+        let missing_guard = write_hosted_fleet_dashboard_file(
+            "version = \"1\"\npayload_displayed = false\n[[relay]]\nname = \"relay-east\"\nabuse_dir = \"abuse\"\n",
+        );
+        let error = parse_hosted_fleet_dashboard_file(&missing_guard)
+            .expect_err("missing guards should fail closed");
+        assert!(error.contains("requires"));
+        assert!(!error.contains("relay-secret-token"));
+
+        let relay = HostedFleetRelaySnapshot {
+            config: HostedFleetRelayConfig {
+                name: "relay-east".to_string(),
+                credentials_file: Some(PathBuf::from("credentials.toml")),
+                tenants_file: Some(PathBuf::from("tenants.toml")),
+                session_state_dir: Some(PathBuf::from("sessions")),
+                mailbox_dir: Some(PathBuf::from("mailbox")),
+                mailbox_ttl_seconds: Some(3600),
+                accounting_dir: Some(PathBuf::from("accounting")),
+                abuse_dir: Some(PathBuf::from("abuse")),
+            },
+            credentials: Some(HostedCredentialAudit {
+                account_id: Some("account.prod".to_string()),
+                credentials: 3,
+                active: 1,
+                revoked: 1,
+                expired: 1,
+                accounts: 1,
+                token_displayed: false,
+                contents_displayed: false,
+            }),
+            tenants: Some(HostedTenantAudit {
+                account_id: Some("account.prod".to_string()),
+                tenants: 1,
+                active_tenants: 1,
+                revoked_tenants: 0,
+                nodes: 2,
+                active_nodes: 1,
+                revoked_nodes: 1,
+                policies: 1,
+                token_displayed: false,
+                key_material_displayed: false,
+                contents_displayed: false,
+            }),
+            session_state: Some(RelaySessionAudit {
+                node_id: Some("node.hosted".to_string()),
+                records: 2,
+                active_records: 1,
+                expired_records: 1,
+                invalid_records: 0,
+                oldest_created_unix_millis: Some(1_763_596_800_000),
+                newest_last_seen_unix_millis: Some(1_763_596_900_000),
+                next_expires_unix_millis: Some(1_763_597_000_000),
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+            mailbox: Some(RelayMailboxAudit {
+                node_id: Some("node.hosted".to_string()),
+                retention_ttl_seconds: Some(3600),
+                nodes: 1,
+                records: 2,
+                invalid_records: 1,
+                bytes: 512,
+                oldest_queued_unix_millis: Some(1_763_596_700_000),
+                newest_queued_unix_millis: Some(1_763_596_800_000),
+                expired_records: Some(1),
+                expired_bytes: Some(256),
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+            accounting: Some(RelayAccountingAudit {
+                node_id: Some("node.hosted".to_string()),
+                records: 1,
+                window_started_unix: Some(1_763_596_800),
+                sessions_authenticated: 2,
+                sessions_resumed: 1,
+                envelopes_sent: 3,
+                bytes_sent: 33,
+                envelopes_received: 4,
+                bytes_received: 44,
+                envelopes_mailboxed: 1,
+                bytes_mailboxed: 11,
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+            abuse: Some(RelayAbuseAudit {
+                node_id: Some("node.hosted".to_string()),
+                records: 1,
+                window_started_unix: Some(1_763_596_800),
+                admin_unauthorized: 1,
+                admin_failed: 1,
+                unauthorized_sessions: 2,
+                credential_denied_sessions: 1,
+                tenant_denied_sessions: 1,
+                rate_limited_sessions: 1,
+                session_expired: 1,
+                quota_denied_forwards: 1,
+                undelivered_forwards: 1,
+                mailbox_rejected_forwards: 1,
+                malformed_client_frames: 1,
+                payload_displayed: false,
+                token_displayed: false,
+                token_hash_displayed: false,
+                key_material_displayed: false,
+                session_id_displayed: false,
+                ciphertext_displayed: false,
+                contents_displayed: false,
+            }),
+        };
+        let mut totals = HostedFleetDashboardTotals::default();
+        totals.add(&relay);
+        let snapshot = HostedFleetDashboardSnapshot {
+            fleet_file: PathBuf::from("fleet.toml"),
+            account_id: Some("account.prod".to_string()),
+            node_id: Some("node.hosted".to_string()),
+            relays: vec![relay],
+            totals,
+        };
+        let secret_token = "relay-secret-token";
+        let secret_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let session_id = "relay_node.hosted_123456789";
+
+        let outputs = [
+            render_hosted_fleet_dashboard_text(&snapshot),
+            render_hosted_fleet_dashboard_json(&snapshot),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("fleet") || output.contains("snapshotted"));
+            assert!(output.contains("relay-east"));
+            assert!(output.contains("credentials"));
+            assert!(output.contains("session"));
             assert!(!output.contains(secret_token));
             assert!(!output.contains(secret_hash));
             assert!(!output.contains(session_id));

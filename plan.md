@@ -4792,6 +4792,45 @@ Next recommendation:
 
 - Merge PR #123 without deleting local or remote work branches, then continue with tagged release signing/publication verification when release secrets are configured, distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
+## Post Phase 15 Hosted Fleet Dashboard Snapshot (Completed)
+
+Objective: give controlled multi-relay operators a payload-safe fleet-level dashboard snapshot without claiming hosted billing, distributed alerting, or adaptive abuse automation.
+
+Current status:
+
+- Created GitHub issue #124 for hosted fleet dashboard snapshots.
+- Created branch `hosted-fleet-dashboard` from `main` without a `codex/` prefix, per user preference.
+- Added `conu-relay --hosted-fleet-dashboard --fleet-file <path> [--account <account-id>] [--node <node-id>] [--json]`.
+- Added a versioned fleet manifest parser with required false display guards and `[[relay]]` entries for optional credential, tenant, session-state, mailbox, accounting, and abuse metadata stores.
+- The fleet command resolves relative source paths from the manifest directory, reuses the existing payload-safe audit functions, and returns only relay names, source paths, aggregate counters, filters, and display guards.
+- Updated README, architecture, relay hosting docs, release checklist, security docs, user guide, repo memory, and implementation guardrails to describe the fleet dashboard boundary.
+- Opened PR #125 to close issue #124.
+
+Validation:
+
+- `cargo fmt --all` passed after implementation.
+- `cargo +stable-x86_64-pc-windows-gnu check -p conu-relay --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy -p conu-relay --all-targets -- -D warnings` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `python -m py_compile scripts\verify-release-versions.py scripts\verify-release-artifacts.py` passed.
+- `python scripts\verify-release-versions.py` passed.
+- `cargo fmt --all -- --check` passed.
+- `git diff --check` passed.
+- PR #125 CI passed across Packages plus Rust on Ubuntu, Windows, and macOS: https://github.com/imthegoodboy/conU/actions/runs/26269251690
+- Branch `Release Artifacts` smoke passed across release preflight, package checks, attestations/uploads, and five platform builds: https://github.com/imthegoodboy/conU/actions/runs/26269402546
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_dashboard_parser_and_renderers_are_metadata_only` was blocked locally because `dlltool.exe` is not installed.
+
+Known gaps:
+
+- This is a manifest-driven local/operator aggregate over available relay-local metadata stores. It is not hosted billing, distributed alerting, adaptive abuse response, distributed retention orchestration, a managed analytics service, or distributed session migration.
+
+Next recommendation:
+
+- Merge PR #125 without deleting local or remote work branches, then continue with adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
@@ -4888,4 +4927,5 @@ Add entries here when a phase is completed.
 2026-05-22 - Post Phase 15 hosted readiness policy files completed. Added `--retention-policy-file`, `--thresholds-file`, and inline `--max-*` support to payload-safe local `conu-relay --hosted-readiness`, reused existing metadata-only retention/threshold policy parsers and CLI override semantics, added threshold checks/exceeded counts to text/JSON output, made exceeded thresholds contribute to warnings and `--fail-on-warning`, updated docs/plan, validated local fmt/diff/Python/package checks, passed PR #118 CI across Packages plus Rust on Ubuntu/Windows/macOS, merged PR #118, closed issue #117, and preserved local/remote branches. Next: distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-22 - Post Phase 15 tagged release preflight hardening completed. Added a fail-closed `Release Tag Preflight` for `v*` releases requiring Windows signing, macOS signing/notarization, and `NPM_TOKEN` before package checks/builds, changed tagged npm publish steps from warning-and-skip to errors, preserved unsigned non-tag workflow_dispatch smoke builds, updated release docs/plan, passed local workflow/package/Rust GNU checks with documented local linker blockers, passed PR #121 CI, and passed a branch `Release Artifacts` smoke run across preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
 2026-05-22 - Post Phase 15 release version consistency gate completed. Added `scripts/verify-release-versions.py` for shared Cargo/npm package version checks and `v*` tag-to-package-version enforcement, wired it into CI and Release Artifacts package gates before npm checks/dry-runs, updated release/package docs, validated local good and fail-closed tag paths, passed PR #123 CI, and passed a branch `Release Artifacts` smoke across release preflight, package checks, attestations/uploads, and five platform builds. Next: configure release signing secrets plus `NPM_TOKEN` before the next real tag, then continue hosted/distributed product gaps.
+2026-05-22 - Post Phase 15 hosted fleet dashboard snapshot completed. Added `conu-relay --hosted-fleet-dashboard --fleet-file <path>` for guarded multi-relay metadata aggregation across credential, tenant, session-state, mailbox, accounting, and abuse stores; required versioned manifest false display guards; kept output to relay names, source paths, filters, aggregate counters, and display guards; updated docs/skills/plan; passed local GNU workspace check/clippy, package/Python checks, PR #125 CI, and a branch `Release Artifacts` smoke across all five platform builds. Next: adaptive hosted abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
