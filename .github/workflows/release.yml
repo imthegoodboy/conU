@@ -67,6 +67,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - name: Release version consistency
+        run: python scripts/verify-release-versions.py
       - name: TypeScript SDK check
         run: npm run check --prefix sdk/typescript
       - name: npm launcher check

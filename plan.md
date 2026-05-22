@@ -4751,6 +4751,44 @@ Next recommendation:
 
 - Configure release signing secrets plus `NPM_TOKEN` before the next real `v*` tag, then continue with distributed hosted dashboards/adaptive abuse workflows, distributed tenant workflow automation, distributed multi-instance session migration, managed hosted identity/key administration, distributed hosted mailbox retention orchestration, or ICE/STUN/TURN managed traversal. Preserve local and remote work branches.
 
+## Post Phase 15 Release Version Consistency Gate (In Progress)
+
+Objective: prevent a release tag, native archive, or npm package publication from using inconsistent Cargo/npm package versions.
+
+Current status:
+
+- Created GitHub issue #122 for release tag and package version consistency.
+- Created branch `release-version-consistency-gate` from `main` without a `codex/` prefix, per user preference.
+- Added `scripts/verify-release-versions.py` to validate all conU Cargo crate versions, `@conu/cli`, and `@conu/sdk` share one semver-like version.
+- The verifier also compares `v*` tag names against the package version when `GITHUB_REF_TYPE=tag`/`GITHUB_REF_NAME` or `CONU_RELEASE_TAG` is present.
+- Wired the verifier into the CI package job and the `Release Artifacts` package gate before npm checks/dry-runs.
+- Updated README, distribution, production-readiness, release checklist, and packaging docs with the automated version gate.
+
+Validation so far:
+
+- `python scripts\verify-release-versions.py` passed.
+- `GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0 python scripts\verify-release-versions.py` passed.
+- `GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 python scripts\verify-release-versions.py` failed as expected with a tag/package mismatch.
+- `CONU_RELEASE_TAG=0.1.0 python scripts\verify-release-versions.py` failed as expected with a clean non-`v` tag error.
+- `python -m py_compile scripts\verify-release-versions.py scripts\verify-release-artifacts.py sdk\python\conu_sdk\__init__.py examples\python\local_agent_pair.py` passed.
+- Python YAML parse passed for `.github/workflows/release.yml` and `.github/workflows/ci.yml`.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `git diff --check` passed.
+- Default MSVC `cargo check --workspace --all-targets` was blocked locally because `link.exe` is not installed.
+- GNU `cargo +stable-x86_64-pc-windows-gnu test --workspace` was blocked locally because `dlltool.exe` is not installed.
+
+Known gaps:
+
+- This version gate does not publish a release tag, publish npm packages, configure signing/npm secrets, or change the known hosted/distributed product gaps.
+
+Next recommendation:
+
+- Open a PR, run GitHub CI and a non-tag `Release Artifacts` smoke, then preserve local and remote work branches.
+
 ## Phase Completion Log
 
 Add entries here when a phase is completed.
