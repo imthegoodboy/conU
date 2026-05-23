@@ -81,6 +81,10 @@ jobs:
         run: python scripts/check-npm-launcher-local-smoke-preflight.py
       - name: Verify npm package contents
         run: python scripts/verify-npm-package-contents.py
+      - name: npm publish preflight
+        run: python scripts/check-npm-publish-preflight.py
+      - name: npm publish preflight regression
+        run: python scripts/check-npm-publish-preflight-regression.py
 
   production-readiness:
     name: Production Readiness Smoke
@@ -280,6 +284,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Verify npm package contents
         run: python scripts/verify-npm-package-contents.py
+      - name: npm publish conflict preflight
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN
       - name: Publish @conu/cli
         working-directory: packaging/npm/conu-cli
         env:

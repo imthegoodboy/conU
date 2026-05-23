@@ -64,7 +64,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
 5. Configure the repository signing secrets and `NPM_TOKEN` before creating the tag; the tagged release workflow fails before package checks if any required release secret is missing.
-6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, run the npm launcher local-smoke preflight regression, smoke-test the npm launcher local install path with an existing regular-file binary directory, and smoke-test the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, archive-member count/duplicate/state-path preflight, bounded extracted-tree scanning, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, run the npm launcher local-smoke preflight regression, smoke-test the npm launcher local install path with an existing regular-file binary directory, and smoke-test the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, archive-member count/duplicate/state-path preflight, bounded extracted-tree scanning, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, run the npm publish preflight so public package metadata is present and existing `@conu/cli`/`@conu/sdk` versions fail before either package is published, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
 ```sh
@@ -113,6 +113,11 @@ those binaries into `vendor/`, create npm bin shims, download the archive throug
 loopback HTTP smoke server with bounded request time and response sizes, require
 a strict `.sha256` line naming the archive, stream the archive hash, reject excessive members, duplicate normalized paths, and forbidden state paths before extraction, extract it, bound extracted-tree entry/depth scanning, require either a rootless release layout or the expected `conu-<version>-<platform>/bin/` layout without duplicate binary names elsewhere, and report
 `ready_for_local_use` without displaying payload contents.
+Before npm publication, `scripts/check-npm-publish-preflight.py` validates
+public publish metadata for both npm packages. Tagged publication runs the same
+preflight with registry availability checks and a required token-env guard so an
+already-published package version or missing npm token fails before any publish
+command can create a partial release.
 
 ## User Install Choices
 

@@ -2,6 +2,15 @@
   "name": "@conu/sdk",
   "version": "0.1.0",
   "description": "Dependency-free Node.js SDK wrapper for local conU CLI, conUD, and conU MCP binaries.",
+  "homepage": "https://github.com/imthegoodboy/conU#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imthegoodboy/conU.git",
+    "directory": "sdk/typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/imthegoodboy/conU/issues"
+  },
   "type": "module",
   "main": "./src/index.js",
   "types": "./src/index.d.ts",
