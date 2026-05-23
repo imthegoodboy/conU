@@ -263,7 +263,7 @@ Known gaps:
 
 Next:
 
-- Merge PR #165 without deleting branches, then verify main CI and main `Release Artifacts`.
+- After PR #165 lands and main CI plus main `Release Artifacts` are green, continue the hosted/distributed production-readiness gaps.
 
 ## Phase 0 - Project Memory
 
