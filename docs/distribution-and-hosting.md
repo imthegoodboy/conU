@@ -105,8 +105,9 @@ the matching archive, bounds archive/member/manifest sizes plus member counts,
 checks required binaries, `manifest.toml` payload flags, required install/service templates, and common forbidden
 local-state paths such as `.conu`, `security/`, `messages/`, `runtime/`,
 `logs/`, `routes/`, `node_modules/`, and vendored package binaries. The smoke
-scripts then prove the current-platform archive starts from an unpacked install
-and that the npm launcher package first requires `CONU_NPM_BINARY_DIR` to point
+scripts then require the current-platform archive to expose every expected
+binary as a regular non-symlink file before execution, prove the archive starts
+from an unpacked install, and prove that the npm launcher package first requires `CONU_NPM_BINARY_DIR` to point
 at an existing directory with regular files for every expected binary, can copy
 those binaries into `vendor/`, create npm bin shims, download the archive through an HTTPS `CONU_NPM_DIST_BASE` or a
 loopback HTTP smoke server with bounded request time and response sizes, require

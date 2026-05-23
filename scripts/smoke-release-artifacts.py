@@ -195,16 +195,9 @@ def safe_extract_path(destination: Path, member_name: str) -> Path:
 def smoke_extracted_package(archive: Path, smoke_dir: Path, temp_root: Path) -> None:
     package_root = find_package_root(smoke_dir)
     bin_dir = package_root / "bin"
-    exe_suffix = ".exe" if platform.system().lower() == "windows" else ""
-    binaries = {
-        name: bin_dir / f"{name}{exe_suffix}"
-        for name in REQUIRED_BINARIES
-    }
-    missing = [name for name, path in binaries.items() if not path.exists()]
-    if missing:
-        raise SystemExit(f"{archive.name} missing executable(s): {', '.join(missing)}")
+    binaries = verify_archive_binaries(archive, bin_dir)
 
-    if exe_suffix == "":
+    if binary_suffix() == "":
         for path in binaries.values():
             path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
@@ -260,6 +253,40 @@ def find_package_root(smoke_dir: Path) -> Path:
     if len(candidates) == 1:
         return candidates[0]
     return smoke_dir
+
+
+def verify_archive_binaries(archive: Path, bin_dir: Path) -> dict[str, Path]:
+    exe_suffix = binary_suffix()
+    if not bin_dir.is_dir():
+        raise SystemExit(f"{archive.name} missing binary directory: {bin_dir}")
+
+    binaries = {
+        name: bin_dir / f"{name}{exe_suffix}"
+        for name in REQUIRED_BINARIES
+    }
+    missing = [name for name, path in binaries.items() if not path.exists()]
+    if missing:
+        raise SystemExit(f"{archive.name} missing executable(s): {', '.join(missing)}")
+
+    not_regular = [
+        name
+        for name, path in binaries.items()
+        if not is_regular_file(path)
+    ]
+    if not_regular:
+        raise SystemExit(
+            f"{archive.name} executable path is not a regular file: {', '.join(not_regular)}"
+        )
+
+    return binaries
+
+
+def is_regular_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
+def binary_suffix() -> str:
+    return ".exe" if platform.system().lower() == "windows" else ""
 
 
 def run_json_command(archive: Path, command: list[str], env: dict[str, str]) -> dict[str, object]:
