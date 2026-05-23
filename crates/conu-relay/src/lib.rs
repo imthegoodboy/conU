@@ -9689,7 +9689,7 @@ token_displayed = true\n",
 
     #[test]
     fn relay_accounting_quota_rejects_sender_without_payloads() {
-        let accounting_policy = RelayAccountingPolicy::new(Duration::from_secs(60), Some(1), None)
+        let accounting_policy = RelayAccountingPolicy::new(stable_counter_window(), Some(1), None)
             .expect("accounting policy");
         let relay = spawn_relay(
             RelayConfig::new("127.0.0.1:0", "test-token")
@@ -9862,7 +9862,7 @@ token_displayed = true\n",
         let accounting_dir = test_home("relay-accounting-quota").join("accounting");
         let accounting_storage =
             RelayAccountingStorage::file_backed(accounting_dir).expect("storage config");
-        let accounting_policy = RelayAccountingPolicy::new(Duration::from_secs(60), Some(1), None)
+        let accounting_policy = RelayAccountingPolicy::new(stable_counter_window(), Some(1), None)
             .expect("accounting policy");
         let mut state = RelayAccountingState::load(&accounting_storage, accounting_policy)
             .expect("accounting loads");
@@ -9889,13 +9889,16 @@ token_displayed = true\n",
         let abuse_dir = test_home("relay-abuse-dashboard").join("abuse");
         let abuse_storage =
             RelayAbuseStorage::file_backed(abuse_dir.clone()).expect("abuse storage config");
-        let accounting_policy = RelayAccountingPolicy::new(Duration::from_secs(60), Some(2), None)
-            .expect("accounting policy");
+        let counter_window = stable_counter_window();
+        let abuse_policy = RelayAbusePolicy::new(counter_window).expect("abuse policy");
+        let accounting_policy =
+            RelayAccountingPolicy::new(counter_window, Some(2), None).expect("accounting policy");
         let mailbox_policy =
             RelayMailboxPolicy::new(1, Duration::from_secs(60)).expect("mailbox policy");
         let relay = spawn_relay(
             RelayConfig::new("127.0.0.1:0", "test-token")
                 .expect("valid config")
+                .with_abuse_policy(abuse_policy)
                 .with_abuse_storage(abuse_storage.clone())
                 .with_accounting_policy(accounting_policy)
                 .with_mailbox_policy(mailbox_policy),
@@ -9962,6 +9965,7 @@ token_displayed = true\n",
         let rate_relay = spawn_relay(
             RelayConfig::new("127.0.0.1:0", "test-token")
                 .expect("valid config")
+                .with_abuse_policy(abuse_policy)
                 .with_abuse_storage(abuse_storage.clone())
                 .with_limits(RelayLimits::new(8, 8, 1).expect("limits")),
         )
@@ -9989,6 +9993,7 @@ token_displayed = true\n",
         let expiring_relay = spawn_relay(
             RelayConfig::new("127.0.0.1:0", "test-token")
                 .expect("valid config")
+                .with_abuse_policy(abuse_policy)
                 .with_abuse_storage(abuse_storage.clone())
                 .with_session_policy(session_policy),
         )
@@ -11566,5 +11571,9 @@ token_displayed = false\n"
             process::id(),
             current_unix_nanos()
         ))
+    }
+
+    fn stable_counter_window() -> Duration {
+        Duration::from_secs(10 * 365 * 24 * 60 * 60)
     }
 }
