@@ -20,6 +20,8 @@ jobs:
         run: python scripts/check-release-artifact-verifier.py
       - name: Release artifact smoke preflight regression
         run: python scripts/check-release-artifact-smoke-preflight.py
+      - name: Package-manager manifest regression
+        run: python scripts/check-package-manager-manifests.py
       - name: TypeScript SDK check
         run: npm run check --prefix sdk/typescript
       - name: npm launcher check

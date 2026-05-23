@@ -246,7 +246,7 @@ try {
 
     if (-not $SmokeOnly -and -not $SkipPackages) {
         Invoke-ReadinessStep "python compile" {
-            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/check-release-artifact-verifier.py scripts/check-release-artifact-smoke-preflight.py scripts/check-npm-launcher-local-smoke-preflight.py scripts/check-npm-publish-preflight.py scripts/check-npm-publish-preflight-regression.py
+            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/generate-package-manager-manifests.py scripts/check-package-manager-manifests.py scripts/check-release-artifact-verifier.py scripts/check-release-artifact-smoke-preflight.py scripts/check-npm-launcher-local-smoke-preflight.py scripts/check-npm-publish-preflight.py scripts/check-npm-publish-preflight-regression.py
         }
         Invoke-ReadinessStep "release version consistency" {
             & python scripts/verify-release-versions.py
@@ -256,6 +256,9 @@ try {
         }
         Invoke-ReadinessStep "release artifact smoke preflight regression" {
             & python scripts/check-release-artifact-smoke-preflight.py
+        }
+        Invoke-ReadinessStep "package-manager manifest regression" {
+            & python scripts/check-package-manager-manifests.py
         }
         Invoke-ReadinessStep "TypeScript SDK check" {
             & npm run check --prefix sdk/typescript
