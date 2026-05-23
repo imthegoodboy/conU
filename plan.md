@@ -149,6 +149,37 @@ Next:
 
 - Continue closing the hosted/distributed product gaps, using `scripts/verify-production-readiness.ps1` as the release-candidate gate for future production-affecting changes.
 
+## Post Phase 15 - Release Workflow Readiness Gate
+
+Status: completed
+
+Goal:
+
+Require release artifact workflow runs to pass the same Windows production-readiness smoke gate before platform artifact build jobs start.
+
+Completed work:
+
+- Issue #160 tracks release workflow enforcement for the production-readiness smoke path, and PR #161 carries the implementation.
+- Added a `Production Readiness Smoke` job to `.github/workflows/release.yml` that runs `scripts/verify-production-readiness.ps1 -SmokeOnly` on `windows-2025-vs2026` after release preflight.
+- Made release artifact build jobs depend on both package checks and the production-readiness smoke job.
+- Updated the release checklist to state that the release artifact workflow runs the smoke/readiness gate before artifact builds.
+
+Validation:
+
+- `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('release workflow yaml parse ok')"` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipPackages -SkipSmokes` passed.
+- `git diff --check` passed.
+- PR #161 CI passed on Packages, Rust macOS, Rust Ubuntu, Rust Windows, and CodeRabbit: <https://github.com/imthegoodboy/conU/actions/runs/26326169760>.
+- Branch `Release Artifacts` workflow dispatch passed on `release-workflow-readiness-gate`, including the new `Production Readiness Smoke` job before platform artifact builds: <https://github.com/imthegoodboy/conU/actions/runs/26326231693>.
+
+Known gaps:
+
+- This workflow gate covers release artifact readiness enforcement; it does not add new hosted/distributed runtime features.
+
+Next:
+
+- Merge PR #161 without deleting branches, then verify main CI and continue hosted/distributed production-readiness gaps.
+
 ## Phase 0 - Project Memory
 
 Status: completed
