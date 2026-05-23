@@ -84,7 +84,7 @@ temporary localhost HTTP server, installs the package with `CONU_NPM_DIST_BASE`,
 and exercises the default HTTPS-or-loopback download policy, bounded
 timeout/size behavior, strict `.sha256` archive-name verification with streamed
 archive hashing, archive-member preflight, exact extracted release-root binary selection,
-extraction, and launcher readiness path without publishing assets.
+bounded extracted-tree scanning, extraction, and launcher readiness path without publishing assets.
 When a local `dist/` also contains a `conu-<version>-host` archive, the download
 smoke treats the platform-named npm asset as canonical and skips the host alias.
 Tagged release builds also create GitHub artifact attestations for each platform
@@ -106,7 +106,7 @@ The `npm/conu-cli` package is the intended one-command install wrapper:
 npm install -g @conu/cli
 ```
 
-It downloads the native release archive from GitHub Releases with bounded request time and response sizes, requires a strict checksum line naming that archive, hashes the archive in chunks, requires extracted binaries to come from the expected release `bin/` directory, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp`.
+It downloads the native release archive from GitHub Releases with bounded request time and response sizes, requires a strict checksum line naming that archive, hashes the archive in chunks, bounds extracted-tree entry/depth scanning, requires extracted binaries to come from the expected release `bin/` directory, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp`.
 
 Local package test:
 
