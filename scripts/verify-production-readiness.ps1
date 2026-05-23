@@ -246,7 +246,7 @@ try {
 
     if (-not $SmokeOnly -and -not $SkipPackages) {
         Invoke-ReadinessStep "python compile" {
-            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py
+            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py
         }
         Invoke-ReadinessStep "release version consistency" {
             & python scripts/verify-release-versions.py
@@ -256,6 +256,9 @@ try {
         }
         Invoke-ReadinessStep "npm launcher check" {
             & npm run check --prefix packaging/npm/conu-cli
+        }
+        Invoke-ReadinessStep "npm package content check" {
+            & python scripts/verify-npm-package-contents.py
         }
     }
 
