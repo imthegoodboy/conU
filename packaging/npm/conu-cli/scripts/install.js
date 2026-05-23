@@ -8,6 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
+const { validateArchiveMembers } = require("../lib/archive-preflight");
 const {
   BINARIES,
   assetName,
@@ -111,6 +112,8 @@ function installBinary(source, name) {
 }
 
 function extractArchive(archivePath, destination) {
+  validateArchiveMembers(archivePath);
+
   const tar = spawnSync("tar", ["-xf", archivePath, "-C", destination], { stdio: "inherit" });
   if (tar.status === 0) {
     return;

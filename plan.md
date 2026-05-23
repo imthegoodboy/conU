@@ -310,6 +310,51 @@ Next:
 
 - After PR #167 lands and main CI plus main `Release Artifacts` are green, continue the hosted/distributed production-readiness gaps.
 
+## Post Phase 15 - npm Installer Safe Archive Preflight
+
+Status: completed
+
+Goal:
+
+Harden the public `@conu/cli` npm installer so a checksum-verified but malformed release archive still fails before extraction if it contains unsafe member paths or unsupported link entries.
+
+Completed work:
+
+- Issue #168 tracks npm installer archive preflight hardening, and branch `npm-installer-safe-archive-preflight` carries the implementation.
+- Added `packaging/npm/conu-cli/lib/archive-preflight.js` to inspect archive members before extraction, reject absolute paths, Windows drive paths, parent traversal, newline/control path separators, symlinks, hardlinks, and unsupported member types, and fall back to PowerShell ZIP inspection on Windows when needed.
+- Wired `packaging/npm/conu-cli/scripts/install.js` to run the preflight immediately before `tar` or PowerShell extraction.
+- Added `packaging/npm/conu-cli/scripts/check-archive-preflight.js` and extended `npm run check --prefix packaging/npm/conu-cli` so package checks cover safe and unsafe member fixtures.
+- Updated npm/package, production-readiness, release-checklist, packaging, and implementation-guardrail docs with the archive-member preflight requirement.
+
+Files changed:
+
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `packaging/npm/conu-cli/lib/archive-preflight.js`
+- `packaging/npm/conu-cli/package.json`
+- `packaging/npm/conu-cli/scripts/check-archive-preflight.js`
+- `packaging/npm/conu-cli/scripts/install.js`
+- `plan.md`
+
+Validation:
+
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `npm pack --dry-run` from `packaging/npm/conu-cli` passed and included the new preflight module/script without vendored binaries.
+- `node --check packaging\npm\conu-cli\lib\archive-preflight.js`, `node --check packaging\npm\conu-cli\scripts\check-archive-preflight.js`, and `node --check packaging\npm\conu-cli\scripts\install.js` passed.
+- `git diff --check` passed.
+- Temporary Windows-style archive download smoke using local debug binaries and a localhost artifact server passed with `npm launcher download install verified checksum`.
+
+Known gaps:
+
+- This hardens npm installer extraction for verified release archives. It does not publish the npm package, add OS package-manager installers, configure signing/npm secrets, implement managed public relay hosting, or close the known distributed hosted runtime gaps.
+
+Next:
+
+- Open PR for issue #168, run PR CI and branch `Release Artifacts`, then merge without deleting branches if checks stay green.
+
 ## Phase 0 - Project Memory
 
 Status: completed
