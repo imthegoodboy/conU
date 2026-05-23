@@ -42,7 +42,10 @@ Before attestation/upload, the release workflow also installs this package into
 a temporary npm prefix with `CONU_NPM_BINARY_DIR` pointed at the generated
 archive binaries, verifies the package-local `vendor/` copies and npm bin
 shims, and runs the installed launcher through `conu init`, `conu security audit
---json`, and `conu doctor --json`.
+--json`, and `conu doctor --json`. A second release smoke serves the generated
+archive plus `.sha256` from localhost and installs with `CONU_NPM_DIST_BASE`, so
+the default download, checksum verification, extraction, and launcher path are
+checked before publishing.
 
 ## Environment
 
