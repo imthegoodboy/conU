@@ -64,7 +64,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
 5. Configure the repository signing secrets and `NPM_TOKEN` before creating the tag; the tagged release workflow fails before package checks if any required release secret is missing.
-6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run npm package dry-runs, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates, smoke-test the unpacked archive and the npm launcher local install path, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run npm package dry-runs, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
 ```sh
@@ -78,12 +78,15 @@ For local package testing without downloading from GitHub Releases:
 
 ```sh
 CONU_NPM_BINARY_DIR=/absolute/path/to/bin npm install -g ./packaging/npm/conu-cli
+python scripts/smoke-npm-launcher-local.py dist
 ```
 
 For a local archive verification pass after running a build script:
 
 ```sh
 python scripts/verify-release-artifacts.py dist
+python scripts/smoke-release-artifacts.py dist
+python scripts/smoke-npm-launcher-local.py dist
 ```
 
 For a downloaded release archive, verify the GitHub artifact attestation when `gh` is available:
@@ -98,7 +101,11 @@ see `docs/platform-code-signing.md`.
 The verifier checks each archive checksum, required binaries, `manifest.toml`
 payload flags, required install/service templates, and common forbidden
 local-state paths such as `.conu`, `security/`, `messages/`, `runtime/`,
-`logs/`, `routes/`, `node_modules/`, and vendored package binaries.
+`logs/`, `routes/`, `node_modules/`, and vendored package binaries. The smoke
+scripts then prove the current-platform archive starts from an unpacked install
+and that the npm launcher package can copy those binaries into `vendor/`, create
+npm bin shims, and report `ready_for_local_use` without displaying payload
+contents.
 
 ## User Install Choices
 

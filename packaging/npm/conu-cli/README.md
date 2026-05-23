@@ -38,6 +38,11 @@ builds also require Windows Authenticode signing secrets, macOS Developer
 ID/notarization secrets, and the repository `NPM_TOKEN` secret. Tagged release
 preflight fails before package checks when any required release secret is
 missing so npm publication cannot silently skip after a GitHub-only release.
+Before attestation/upload, the release workflow also installs this package into
+a temporary npm prefix with `CONU_NPM_BINARY_DIR` pointed at the generated
+archive binaries, verifies the package-local `vendor/` copies and npm bin
+shims, and runs the installed launcher through `conu init`, `conu security audit
+--json`, and `conu doctor --json`.
 
 ## Environment
 

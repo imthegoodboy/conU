@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+"""Smoke test the @conu/cli npm launcher against local release binaries."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import zipfile
+from pathlib import Path, PurePosixPath
+
+
+REQUIRED_BINARIES = ("conu", "conud", "conu-relay", "conu-mcp")
+DEFAULT_PACKAGE_DIR = Path("packaging/npm/conu-cli")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("dist", type=Path, help="directory containing release archives")
+    parser.add_argument(
+        "--package-dir",
+        type=Path,
+        default=DEFAULT_PACKAGE_DIR,
+        help="path to the @conu/cli package directory",
+    )
+    args = parser.parse_args()
+
+    dist = args.dist.resolve()
+    package_dir = args.package_dir.resolve()
+    if not package_dir.joinpath("package.json").exists():
+        raise SystemExit(f"missing npm package manifest in {package_dir}")
+
+    node = require_tool("node")
+    npm = require_tool("npm", "npm.cmd")
+
+    archives = sorted(dist.glob("*.zip")) + sorted(dist.glob("*.tar.gz"))
+    if not archives:
+        raise SystemExit(f"no release archives found in {dist}")
+
+    smoked = 0
+    skipped = 0
+    with tempfile.TemporaryDirectory(prefix="conu-npm-launcher-smoke-") as temp_dir:
+        temp_root = Path(temp_dir)
+        for archive in archives:
+            target = read_manifest_target(archive)
+            if not target_is_current_platform(target):
+                skipped += 1
+                print(f"skipping {archive.name}: target {target!r} is not this runner")
+                continue
+
+            extract_dir = temp_root / archive_stem(archive)
+            extract_archive(archive, extract_dir)
+            bin_dir = find_package_root(extract_dir) / "bin"
+            verify_archive_binaries(archive, bin_dir)
+
+            prefix = temp_root / f"{archive_stem(archive)}-npm"
+            install_npm_package(archive, npm, package_dir, bin_dir, prefix)
+            smoke_installed_launcher(archive, node, prefix, temp_root)
+            smoked += 1
+
+    if smoked == 0:
+        raise SystemExit("no current-platform release archives were npm-smoke tested")
+
+    print(f"smoked {smoked} conU npm launcher install(s); skipped {skipped}")
+    return 0
+
+
+def require_tool(*names: str) -> str:
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    raise SystemExit(f"required tool not found on PATH: {' or '.join(names)}")
+
+
+def read_manifest_target(archive: Path) -> str:
+    manifest_bytes = read_archive_member(archive, "manifest.toml")
+    if manifest_bytes is None:
+        raise SystemExit(f"{archive.name} missing manifest.toml")
+
+    for raw_line in manifest_bytes.decode("utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if line.startswith("target") and "=" in line:
+            value = line.split("=", 1)[1].strip()
+            if value.startswith('"') and value.endswith('"'):
+                return value[1:-1]
+            return value
+
+    raise SystemExit(f"{archive.name} manifest.toml missing target")
+
+
+def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as package:
+            for member in package.infolist():
+                if member.filename.endswith("/"):
+                    continue
+                if normalize_member(member.filename) == normalized_name:
+                    return package.read(member)
+        return None
+
+    if archive.name.endswith(".tar.gz"):
+        with tarfile.open(archive, "r:gz") as package:
+            for member in package.getmembers():
+                if not member.isfile():
+                    continue
+                if normalize_member(member.name) == normalized_name:
+                    file_object = package.extractfile(member)
+                    return file_object.read() if file_object is not None else None
+        return None
+
+    raise SystemExit(f"unsupported release archive {archive.name}")
+
+
+def normalize_member(name: str) -> str:
+    normalized = name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    parts = [part for part in path.parts if part not in {"", ".", "/"}]
+    if path.is_absolute() or ".." in parts:
+        raise SystemExit(f"unsafe archive path: {name}")
+    if parts and parts[0].startswith("conu-"):
+        parts = parts[1:]
+    return "/".join(parts)
+
+
+def target_is_current_platform(target: str) -> bool:
+    target = target.lower()
+    if target == "host":
+        return True
+
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    current_os = {
+        "windows": ("windows",),
+        "linux": ("linux",),
+        "darwin": ("macos", "darwin", "apple"),
+    }.get(system)
+    current_arch = {
+        "amd64": ("x64", "x86_64", "amd64"),
+        "x86_64": ("x64", "x86_64", "amd64"),
+        "arm64": ("arm64", "aarch64"),
+        "aarch64": ("arm64", "aarch64"),
+    }.get(machine)
+
+    if current_os is None or current_arch is None:
+        return False
+
+    return any(value in target for value in current_os) and any(
+        value in target for value in current_arch
+    )
+
+
+def archive_stem(archive: Path) -> str:
+    if archive.name.endswith(".tar.gz"):
+        return archive.name[:-7]
+    return archive.stem
+
+
+def extract_archive(archive: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as package:
+            for member in package.infolist():
+                if member.filename.endswith("/"):
+                    continue
+                file_type = (member.external_attr >> 16) & 0o170000
+                if file_type == stat.S_IFLNK:
+                    raise SystemExit(
+                        f"{archive.name} contains unsupported link member: {member.filename}"
+                    )
+                output_path = safe_extract_path(destination, member.filename)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(package.read(member))
+                unix_mode = (member.external_attr >> 16) & 0o777
+                if unix_mode:
+                    output_path.chmod(unix_mode)
+        return
+
+    if archive.name.endswith(".tar.gz"):
+        with tarfile.open(archive, "r:gz") as package:
+            for member in package.getmembers():
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    raise SystemExit(
+                        f"{archive.name} contains unsupported non-file member: {member.name}"
+                    )
+                output_path = safe_extract_path(destination, member.name)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                file_object = package.extractfile(member)
+                if file_object is None:
+                    raise SystemExit(f"{archive.name} could not read member {member.name}")
+                output_path.write_bytes(file_object.read())
+                output_path.chmod(member.mode & 0o777)
+        return
+
+    raise SystemExit(f"unsupported release archive {archive.name}")
+
+
+def safe_extract_path(destination: Path, member_name: str) -> Path:
+    normalized = member_name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    parts = [part for part in path.parts if part not in {"", ".", "/"}]
+    if path.is_absolute() or ".." in parts:
+        raise SystemExit(f"unsafe archive path: {member_name}")
+
+    output_path = (destination / Path(*parts)).resolve()
+    destination_resolved = destination.resolve()
+    try:
+        output_path.relative_to(destination_resolved)
+    except ValueError as exc:
+        raise SystemExit(f"unsafe archive path: {member_name}") from exc
+    return output_path
+
+
+def find_package_root(extract_dir: Path) -> Path:
+    candidates = [
+        path
+        for path in extract_dir.iterdir()
+        if path.is_dir() and path.name.startswith("conu-")
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    return extract_dir
+
+
+def verify_archive_binaries(archive: Path, bin_dir: Path) -> None:
+    exe_suffix = binary_suffix()
+    missing = [
+        name
+        for name in REQUIRED_BINARIES
+        if not bin_dir.joinpath(f"{name}{exe_suffix}").exists()
+    ]
+    if missing:
+        raise SystemExit(f"{archive.name} missing executable(s): {', '.join(missing)}")
+
+
+def install_npm_package(
+    archive: Path,
+    npm: str,
+    package_dir: Path,
+    bin_dir: Path,
+    prefix: Path,
+) -> None:
+    env = os.environ.copy()
+    env["CONU_NPM_BINARY_DIR"] = str(bin_dir)
+    for name in ("CONU_NPM_SKIP_DOWNLOAD", "CONU_NPM_DIST_BASE", "CONU_NPM_ALLOW_UNVERIFIED"):
+        env.pop(name, None)
+
+    run_command(
+        archive,
+        [
+            npm,
+            "install",
+            "--prefix",
+            str(prefix),
+            "--no-audit",
+            "--no-fund",
+            str(package_dir),
+        ],
+        env,
+    )
+
+
+def smoke_installed_launcher(archive: Path, node: str, prefix: Path, temp_root: Path) -> None:
+    package_root = prefix / "node_modules" / "@conu" / "cli"
+    if not package_root.joinpath("package.json").exists():
+        raise SystemExit(f"{archive.name} npm install did not create {package_root}")
+
+    verify_installed_package_files(archive, prefix, package_root)
+
+    home = temp_root / f"{archive_stem(archive)}-npm-home"
+    env = os.environ.copy()
+    env["CONU_HOME"] = str(home)
+    for name in ("CONUD_EXE", "CONU_RELAY_EXE", "CONU_MCP_EXE"):
+        env.pop(name, None)
+
+    conu_wrapper = package_root / "bin" / "conu.js"
+    conud_wrapper = package_root / "bin" / "conud.js"
+    relay_wrapper = package_root / "bin" / "conu-relay.js"
+    mcp_wrapper = package_root / "bin" / "conu-mcp.js"
+
+    run_command(archive, [node, str(conu_wrapper), "init"], env)
+
+    audit = run_json_command(
+        archive,
+        [node, str(conu_wrapper), "security", "audit", "--json"],
+        env,
+    )
+    if audit.get("contentsDisplayed") is not False:
+        raise SystemExit(f"{archive.name} npm launcher security audit displayed contents")
+
+    doctor = run_json_command(archive, [node, str(conu_wrapper), "doctor", "--json"], env)
+    if doctor.get("status") != "ready_for_local_use":
+        status = doctor.get("status")
+        raise SystemExit(
+            f"{archive.name} npm launcher doctor status was {status!r}, "
+            "expected ready_for_local_use"
+        )
+    if doctor.get("releaseGates", {}).get("localInstallReady") is not True:
+        raise SystemExit(
+            f"{archive.name} npm launcher doctor did not report localInstallReady=true"
+        )
+    if doctor.get("privacy", {}).get("contentsDisplayed") is not False:
+        raise SystemExit(f"{archive.name} npm launcher doctor displayed contents")
+
+    verify_doctor_binaries_point_to_vendor(archive, package_root, doctor)
+
+    run_command(archive, [node, str(conud_wrapper), "--check"], env)
+    run_command(archive, [node, str(relay_wrapper), "--check"], env)
+    run_command(archive, [node, str(mcp_wrapper)], env, input_text="")
+
+    if home.exists():
+        shutil.rmtree(home)
+    print(f"smoked {archive.name}: npm launcher install is ready_for_local_use")
+
+
+def verify_installed_package_files(archive: Path, prefix: Path, package_root: Path) -> None:
+    platform_key = npm_platform_key()
+    vendor_dir = package_root / "vendor" / platform_key
+    exe_suffix = binary_suffix()
+    missing_vendor = [
+        name
+        for name in REQUIRED_BINARIES
+        if not vendor_dir.joinpath(f"{name}{exe_suffix}").exists()
+    ]
+    if missing_vendor:
+        raise SystemExit(
+            f"{archive.name} npm install missing vendor executable(s): "
+            f"{', '.join(missing_vendor)}"
+        )
+
+    missing_wrappers = [
+        name
+        for name in REQUIRED_BINARIES
+        if not package_root.joinpath("bin", f"{name}.js").exists()
+    ]
+    if missing_wrappers:
+        raise SystemExit(
+            f"{archive.name} npm install missing wrapper(s): {', '.join(missing_wrappers)}"
+        )
+
+    bin_dir = prefix / "node_modules" / ".bin"
+    shim_suffix = ".cmd" if platform.system().lower() == "windows" else ""
+    missing_shims = [
+        name
+        for name in REQUIRED_BINARIES
+        if not bin_dir.joinpath(f"{name}{shim_suffix}").exists()
+    ]
+    if missing_shims:
+        raise SystemExit(
+            f"{archive.name} npm install missing bin shim(s): {', '.join(missing_shims)}"
+        )
+
+
+def verify_doctor_binaries_point_to_vendor(
+    archive: Path,
+    package_root: Path,
+    doctor: dict[str, object],
+) -> None:
+    binaries = doctor.get("binaries", {})
+    if not isinstance(binaries, dict):
+        raise SystemExit(f"{archive.name} npm launcher doctor missing binaries object")
+
+    doctor_paths = {
+        "conu": binaries.get("conu"),
+        "conud": binaries.get("conud"),
+        "conu-relay": binaries.get("conuRelay"),
+        "conu-mcp": binaries.get("conuMcp"),
+    }
+    unresolved = [name for name, value in doctor_paths.items() if not value]
+    if unresolved:
+        raise SystemExit(
+            f"{archive.name} npm launcher doctor did not resolve: {', '.join(unresolved)}"
+        )
+
+    vendor_dir = (package_root / "vendor" / npm_platform_key()).resolve()
+    for name, value in doctor_paths.items():
+        path = Path(str(value)).resolve()
+        try:
+            path.relative_to(vendor_dir)
+        except ValueError as exc:
+            raise SystemExit(
+                f"{archive.name} npm launcher doctor resolved {name} outside vendor dir: {path}"
+            ) from exc
+
+
+def npm_platform_key() -> str:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    platforms = {
+        "windows": "windows",
+        "linux": "linux",
+        "darwin": "macos",
+    }
+    arches = {
+        "amd64": "x64",
+        "x86_64": "x64",
+        "arm64": "arm64",
+        "aarch64": "arm64",
+    }
+    platform_name = platforms.get(system)
+    arch_name = arches.get(machine)
+    if platform_name is None or arch_name is None:
+        raise SystemExit(f"unsupported npm launcher platform: {system}-{machine}")
+    if platform_name == "windows" and arch_name != "x64":
+        raise SystemExit("the npm launcher currently supports Windows x64 only")
+    return f"{platform_name}-{arch_name}"
+
+
+def binary_suffix() -> str:
+    return ".exe" if platform.system().lower() == "windows" else ""
+
+
+def run_json_command(archive: Path, command: list[str], env: dict[str, str]) -> dict[str, object]:
+    output = run_command(archive, command, env)
+    try:
+        parsed = json.loads(output.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"{archive.name} command did not return JSON: {' '.join(command)}\n"
+            f"{safe_snippet(output.stdout)}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit(f"{archive.name} command returned non-object JSON: {' '.join(command)}")
+    return parsed
+
+
+def run_command(
+    archive: Path,
+    command: list[str],
+    env: dict[str, str],
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    output = subprocess.run(
+        command,
+        env=env,
+        input=input_text,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if output.returncode != 0:
+        raise SystemExit(
+            f"{archive.name} command failed with exit code {output.returncode}: "
+            f"{' '.join(command)}\n"
+            f"stdout:\n{safe_snippet(output.stdout)}\n"
+            f"stderr:\n{safe_snippet(output.stderr)}"
+        )
+    return output
+
+
+def safe_snippet(value: str) -> str:
+    value = value.strip()
+    if len(value) > 2000:
+        return value[:2000] + "\n... truncated ..."
+    return value
+
+
+if __name__ == "__main__":
+    sys.exit(main())
