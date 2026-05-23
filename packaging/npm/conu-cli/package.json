@@ -32,7 +32,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/install.js",
-    "check": "node scripts/install.js --check-only && node scripts/check-archive-preflight.js && node scripts/check-download-policy.js"
+    "check": "node scripts/install.js --check-only && node scripts/check-archive-preflight.js && node scripts/check-download-policy.js && node scripts/check-download-limits.js"
   },
   "engines": {
     "node": ">=22 <23 || >=24 <25"

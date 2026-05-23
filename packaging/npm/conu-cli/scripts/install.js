@@ -10,6 +10,11 @@ const { spawnSync } = require("node:child_process");
 
 const { validateArchiveMembers } = require("../lib/archive-preflight");
 const {
+  downloadLimitError,
+  getDownloadLimits,
+  parseContentLength
+} = require("../lib/download-limits");
+const {
   formatDownloadUrlForError,
   validateDownloadUrl
 } = require("../lib/download-policy");
@@ -26,6 +31,7 @@ const checkOnly = process.argv.includes("--check-only");
 const skipDownload = process.env.CONU_NPM_SKIP_DOWNLOAD === "1";
 const allowUnverified = process.env.CONU_NPM_ALLOW_UNVERIFIED === "1";
 const localBinaryDir = process.env.CONU_NPM_BINARY_DIR;
+const downloadLimits = getDownloadLimits();
 const version = packageVersion();
 const asset = assetName(version);
 const releaseBase =
@@ -61,9 +67,12 @@ async function main() {
   try {
     const archivePath = path.join(tempDir, asset);
     const checksumPath = `${archivePath}.sha256`;
-    await downloadFile(`${releaseBase}/${asset}`, archivePath);
+    await downloadFile(`${releaseBase}/${asset}`, archivePath, downloadLimits.maxArchiveBytes);
 
-    const checksum = await downloadOptionalText(`${releaseBase}/${asset}.sha256`);
+    const checksum = await downloadOptionalText(
+      `${releaseBase}/${asset}.sha256`,
+      downloadLimits.maxChecksumBytes
+    );
     if (checksum) {
       fs.writeFileSync(checksumPath, checksum, "utf8");
       verifySha256(archivePath, checksum);
@@ -172,7 +181,7 @@ function verifySha256(filePath, checksumText) {
   }
 }
 
-function downloadOptionalText(url) {
+function downloadOptionalText(url, maxBytes) {
   return new Promise((resolve, reject) => {
     request(url, reject, (response) => {
       if (response.statusCode === 404) {
@@ -187,45 +196,123 @@ function downloadOptionalText(url) {
         );
         return;
       }
+
+      const contentLength = parseContentLength(response.headers["content-length"]);
+      if (contentLength !== null && contentLength > maxBytes) {
+        response.resume();
+        reject(downloadLimitError("checksum", url, contentLength, maxBytes, formatDownloadUrlForError));
+        return;
+      }
+
       response.setEncoding("utf8");
       let body = "";
+      let bytes = 0;
+      let settled = false;
+      const fail = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        response.destroy();
+        reject(error);
+      };
+
       response.on("data", (chunk) => {
+        if (settled) {
+          return;
+        }
+        bytes += Buffer.byteLength(chunk, "utf8");
+        if (bytes > maxBytes) {
+          fail(downloadLimitError("checksum", url, bytes, maxBytes, formatDownloadUrlForError));
+          return;
+        }
         body += chunk;
       });
-      response.on("end", () => resolve(body));
+      response.on("end", () => {
+        if (!settled) {
+          settled = true;
+          resolve(body);
+        }
+      });
+      response.on("error", fail);
     }).on("error", reject);
   });
 }
 
-function downloadFile(url, target) {
+function downloadFile(url, target, maxBytes) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(target);
-    request(url, reject, (response) => {
-      if (response.statusCode !== 200) {
-        response.resume();
-        file.close(() => {
-          fs.rmSync(target, { force: true });
-          reject(
-            new Error(`download failed ${formatDownloadUrlForError(url)}: HTTP ${response.statusCode}`)
-          );
-        });
+    let file = null;
+    let activeRequest = null;
+    let settled = false;
+
+    const fail = (error) => {
+      if (settled) {
         return;
       }
-      response.pipe(file);
-      file.on("finish", () => file.close(resolve));
-    }).on("error", (error) => {
-      file.close(() => {
-        fs.rmSync(target, { force: true });
-        reject(error);
+      settled = true;
+      if (activeRequest) {
+        activeRequest.destroy();
+      }
+      if (file) {
+        file.destroy();
+      }
+      fs.rmSync(target, { force: true });
+      reject(error);
+    };
+
+    activeRequest = request(url, fail, (response) => {
+      if (response.statusCode !== 200) {
+        response.resume();
+        fail(new Error(`download failed ${formatDownloadUrlForError(url)}: HTTP ${response.statusCode}`));
+        return;
+      }
+
+      const contentLength = parseContentLength(response.headers["content-length"]);
+      if (contentLength !== null && contentLength > maxBytes) {
+        response.resume();
+        fail(downloadLimitError("archive", url, contentLength, maxBytes, formatDownloadUrlForError));
+        return;
+      }
+
+      file = fs.createWriteStream(target);
+      let bytes = 0;
+
+      response.on("data", (chunk) => {
+        if (settled) {
+          return;
+        }
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          fail(downloadLimitError("archive", url, bytes, maxBytes, formatDownloadUrlForError));
+          return;
+        }
+        if (!file.write(chunk)) {
+          response.pause();
+        }
       });
+      response.on("end", () => {
+        if (settled) {
+          return;
+        }
+        file.end(() => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        });
+      });
+      response.on("error", fail);
+      file.on("drain", () => response.resume());
+      file.on("error", fail);
     });
+    activeRequest.on("error", fail);
   });
 }
 
 function request(url, onError, handler, redirects = 0) {
   const parsedUrl = validateDownloadUrl(url);
   const client = parsedUrl.protocol === "https:" ? https : http;
-  return client.get(parsedUrl, (response) => {
+  const requestHandle = client.get(parsedUrl, (response) => {
     if (
       response.statusCode >= 300 &&
       response.statusCode < 400 &&
@@ -241,4 +328,12 @@ function request(url, onError, handler, redirects = 0) {
     }
     handler(response);
   });
+  requestHandle.setTimeout(downloadLimits.timeoutMs, () => {
+    requestHandle.destroy(
+      new Error(
+        `download timed out after ${downloadLimits.timeoutMs} ms: ${formatDownloadUrlForError(url)}`
+      )
+    );
+  });
+  return requestHandle;
 }
