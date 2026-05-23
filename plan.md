@@ -190,7 +190,7 @@ Prove each generated release archive is not only structurally valid, but also ex
 
 Completed work:
 
-- Issue #162 tracks packaged release archive smoke testing.
+- Issue #162 tracks packaged release archive smoke testing, and PR #163 carries the implementation.
 - Added `scripts/smoke-release-artifacts.py` to extract current-platform release archives into a temporary directory, run packaged `conu init`, `conu security audit --json`, and `conu doctor --json`, and require `ready_for_local_use` plus false content-display guards.
 - Wired the release artifact workflow to run the smoke test after structural artifact verification and before provenance attestation/upload.
 - Updated packaging and release checklist docs with the new archive smoke command.
