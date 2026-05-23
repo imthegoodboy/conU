@@ -19,6 +19,7 @@ function main() {
   expectFail([{ name: "conu-0.1.0/bin/conu", type: "symlink" }], "unsupported symlink member");
   expectFail([{ name: "conu-0.1.0/bin/conu", type: "hardlink" }], "unsupported hardlink member");
   expectFail([{ name: "conu-0.1.0/bin/conu", type: "other" }], "unsupported other member");
+  expectFail([{ name: "conu-0.1.0/bin/conu", type: "unknown" }], "unsupported unknown member");
   console.log("archive member preflight check passed");
 }
 

@@ -4,7 +4,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const MAX_ARCHIVE_LIST_BYTES = 2 * 1024 * 1024;
-const UNSUPPORTED_MEMBER_TYPES = new Set(["symlink", "hardlink", "other"]);
+const SUPPORTED_MEMBER_TYPES = new Set(["file", "directory"]);
 
 function validateArchiveMembers(archivePath) {
   const members = listArchiveMembers(archivePath);
@@ -18,8 +18,8 @@ function assertSafeArchiveMemberList(members, archiveLabel = "archive") {
 
   for (const member of members) {
     const name = typeof member === "string" ? member : member.name;
-    const type = typeof member === "string" ? "unknown" : member.type || "unknown";
-    if (UNSUPPORTED_MEMBER_TYPES.has(type)) {
+    const type = typeof member === "string" ? "file" : member.type || "unknown";
+    if (!SUPPORTED_MEMBER_TYPES.has(type)) {
       throw new Error(`${archiveLabel} contains unsupported ${type} member: ${name}`);
     }
     validateArchiveMemberName(name, archiveLabel);
