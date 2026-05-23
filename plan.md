@@ -355,6 +355,55 @@ Next:
 
 - Open PR for issue #168, run PR CI and branch `Release Artifacts`, then merge without deleting branches if checks stay green.
 
+## Post Phase 15 - npm Installer HTTPS Download Policy
+
+Status: completed
+
+Goal:
+
+Harden the public `@conu/cli` npm installer so native release archive downloads require HTTPS, while preserving loopback HTTP for local and CI release artifact smoke servers.
+
+Completed work:
+
+- Issue #170 tracks npm installer download URL policy hardening, and branch `npm-installer-https-download-policy` carries the implementation.
+- Added `packaging/npm/conu-cli/lib/download-policy.js` to reject non-HTTPS download URLs unless they target loopback hosts, reject embedded URL credentials, and fail closed on unsupported or invalid URL schemes.
+- Wired `packaging/npm/conu-cli/scripts/install.js` to validate every archive/checksum request URL, including redirects, before selecting `http` or `https`.
+- Kept download error URLs payload-safe by omitting query strings and fragments from rendered failure messages.
+- Added `packaging/npm/conu-cli/scripts/check-download-policy.js` and extended `npm run check --prefix packaging/npm/conu-cli` so package checks cover HTTPS, loopback HTTP, remote HTTP, credential-bearing, and invalid URL cases.
+- Updated npm/package, distribution, production-readiness, release-checklist, README, and implementation-guardrail docs with the HTTPS-or-loopback download requirement.
+
+Files changed:
+
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `packaging/npm/conu-cli/lib/download-policy.js`
+- `packaging/npm/conu-cli/package.json`
+- `packaging/npm/conu-cli/scripts/check-download-policy.js`
+- `packaging/npm/conu-cli/scripts/install.js`
+- `plan.md`
+
+Validation:
+
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `npm pack --dry-run` from `packaging/npm/conu-cli` passed and included the new download policy module/script without vendored binaries.
+- `node --check packaging\npm\conu-cli\lib\download-policy.js`, `node --check packaging\npm\conu-cli\scripts\check-download-policy.js`, and `node --check packaging\npm\conu-cli\scripts\install.js` passed.
+- `git diff --check` passed.
+- Temporary Windows-style archive download smoke using local debug binaries and a localhost artifact server passed with `npm launcher download install verified checksum`.
+- Negative npm install smoke with remote plain-HTTP `CONU_NPM_DIST_BASE=http://example.com/conu-test?token=secret` failed closed with the expected HTTPS policy error before download and did not display query material.
+
+Known gaps:
+
+- This hardens npm installer transport for release archive downloads. It does not publish the npm package, add OS package-manager installers, configure signing/npm secrets, implement managed public relay hosting, or close the known distributed hosted runtime gaps.
+
+Next:
+
+- Run local validation, open PR for issue #170, run PR CI and branch `Release Artifacts`, then merge without deleting branches if checks stay green.
+
 ## Phase 0 - Project Memory
 
 Status: completed
