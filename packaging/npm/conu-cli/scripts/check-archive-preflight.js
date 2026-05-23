@@ -1,6 +1,9 @@
 "use strict";
 
-const { assertSafeArchiveMemberList } = require("../lib/archive-preflight");
+const {
+  MAX_ARCHIVE_MEMBERS,
+  assertSafeArchiveMemberList
+} = require("../lib/archive-preflight");
 
 const SAFE_MEMBERS = [
   { name: "conu-0.1.0/bin/conu", type: "file" },
@@ -20,6 +23,17 @@ function main() {
   expectFail([{ name: "conu-0.1.0/bin/conu", type: "hardlink" }], "unsupported hardlink member");
   expectFail([{ name: "conu-0.1.0/bin/conu", type: "other" }], "unsupported other member");
   expectFail([{ name: "conu-0.1.0/bin/conu", type: "unknown" }], "unsupported unknown member");
+  expectFail(
+    [
+      { name: "conu-0.1.0/bin/conu", type: "file" },
+      { name: "conu-0.1.0/bin/./conu", type: "file" }
+    ],
+    "duplicate archive path"
+  );
+  expectFail([{ name: "conu-0.1.0/.conu/state.toml", type: "file" }], "forbidden state path");
+  expectFail([{ name: "conu-0.1.0/security/identity.key", type: "file" }], "forbidden state path");
+  expectFail([{ name: "conu-0.1.0/runtime/node.toml", type: "file" }], "forbidden state path");
+  expectFail(makeMemberList(MAX_ARCHIVE_MEMBERS + 1), `more than ${MAX_ARCHIVE_MEMBERS} entries`);
   console.log("archive member preflight check passed");
 }
 
@@ -37,6 +51,13 @@ function expectFail(members, expectedMessage) {
     throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`expected archive preflight failure: ${expectedMessage}`);
+}
+
+function makeMemberList(count) {
+  return Array.from({ length: count }, (_value, index) => ({
+    name: `conu-0.1.0/docs/file-${index}.txt`,
+    type: "file"
+  }));
 }
 
 main();

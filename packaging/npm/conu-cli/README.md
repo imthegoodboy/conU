@@ -45,8 +45,8 @@ shims, and runs the installed launcher through `conu init`, `conu security audit
 --json`, and `conu doctor --json`. A second release smoke serves the generated
 archive plus `.sha256` from localhost and installs with `CONU_NPM_DIST_BASE`, so
 the default HTTPS download policy, checksum verification, archive-member
-preflight, bounded extracted-tree binary selection, extraction, and launcher path
-are checked before publishing.
+count/duplicate/state-path preflight, bounded extracted-tree binary selection,
+extraction, and launcher path are checked before publishing.
 
 ## Environment
 
