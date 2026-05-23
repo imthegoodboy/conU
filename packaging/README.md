@@ -61,19 +61,23 @@ Validate generated archives before upload:
 ```sh
 python scripts/verify-release-artifacts.py dist
 python scripts/smoke-release-artifacts.py dist
+python scripts/smoke-npm-launcher-local.py dist
 ```
 
-The release workflow runs the same verifier and smoke test before publishing
+The release workflow runs the same verifier and smoke tests before publishing
 artifacts. The verifier checks checksums, required binaries, `manifest.toml`,
 required install/service templates, and common forbidden local-state paths so
 developer `CONU_HOME`, logs, private keys, inboxes, route registries, package
-`node_modules`, and vendored npm binaries are not shipped. The smoke test
+`node_modules`, and vendored npm binaries are not shipped. The archive smoke
 extracts the current-platform archive into a temporary directory, runs the
 packaged `conu init`, `conu security audit --json`, and `conu doctor --json`,
-and requires `ready_for_local_use` without displaying payload contents. Tagged
-release builds also create GitHub artifact attestations for each platform
-archive and checksum file. See `docs/platform-code-signing.md` for signing
-secrets and verification commands.
+and requires `ready_for_local_use` without displaying payload contents. The npm
+launcher smoke installs `packaging/npm/conu-cli` into a temporary npm prefix
+with `CONU_NPM_BINARY_DIR` pointed at the archive binaries, verifies the copied
+vendor binaries and npm bin shims, then runs the installed launcher through the
+same payload-safe readiness checks. Tagged release builds also create GitHub
+artifact attestations for each platform archive and checksum file. See
+`docs/platform-code-signing.md` for signing secrets and verification commands.
 
 Verify a downloaded archive's provenance when `gh` is available:
 
@@ -95,6 +99,7 @@ Local package test:
 
 ```sh
 CONU_NPM_BINARY_DIR=/absolute/path/to/bin npm install -g ./packaging/npm/conu-cli
+python scripts/smoke-npm-launcher-local.py dist
 ```
 
 See `docs/distribution-and-hosting.md` for the publish flow. Tagged releases

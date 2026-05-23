@@ -178,7 +178,7 @@ Known gaps:
 
 Next:
 
-- Merge PR #161 without deleting branches, then verify main CI and continue hosted/distributed production-readiness gaps.
+- PR #161 has been merged. Continue hosted/distributed production-readiness gaps.
 
 ## Post Phase 15 - Release Artifact Install Smoke
 
@@ -218,7 +218,50 @@ Known gaps:
 
 Next:
 
-- Merge PR #163 without deleting branches, then verify main CI and main Release Artifacts.
+- PR #163 has been merged. Continue hosted/distributed production-readiness gaps.
+
+## Post Phase 15 - npm Launcher Local Install Smoke
+
+Status: completed
+
+Goal:
+
+Prove the public `@conu/cli` npm launcher path can install generated release binaries locally and invoke the packaged CLI from the installed package.
+
+Completed work:
+
+- Issue #164 tracks npm launcher local install smoke testing, and branch `npm-launcher-local-install-smoke` carries the implementation.
+- Added `scripts/smoke-npm-launcher-local.py` to extract current-platform release archives, install `packaging/npm/conu-cli` into a temporary npm prefix with `CONU_NPM_BINARY_DIR` pointed at the archive `bin/` directory, verify vendor binaries and npm bin shims, run installed launcher wrappers, and require `conu doctor --json` to report `ready_for_local_use` with false content-display guards.
+- Wired the release artifact workflow to run the npm launcher smoke after unpacked archive smoke and before provenance attestation/upload.
+- Updated packaging, distribution, production-readiness, npm package, README, and release checklist docs with the new smoke command and release workflow gate.
+
+Files changed:
+
+- `.github/workflows/release.yml`
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `scripts/smoke-npm-launcher-local.py`
+- `plan.md`
+
+Validation:
+
+- `python -m py_compile scripts\smoke-npm-launcher-local.py scripts\smoke-release-artifacts.py scripts\verify-release-artifacts.py scripts\verify-release-versions.py` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('release workflow yaml parse ok')"` passed.
+- `git diff --check` passed.
+- Temporary Windows-style archive smoke using local debug binaries passed with `npm launcher install is ready_for_local_use`.
+
+Known gaps:
+
+- This proves the local npm launcher install path against generated archive binaries. It does not publish the npm package, add OS package-manager installers, configure signing/npm secrets, implement managed public relay hosting, or close the known distributed hosted runtime gaps.
+
+Next:
+
+- Open PR #164 without deleting branches and verify PR CI plus a branch `Release Artifacts` run.
 
 ## Phase 0 - Project Memory
 
