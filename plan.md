@@ -44,11 +44,32 @@ Add guarded local fleet tenant account upsert/revoke commands for controlled ope
 
 Completed work:
 
-- Issue #153 is covered by PR #154 on branch `fleet-tenant-account-lifecycle`.
+- Issue #153 was closed by PR #154 on branch `fleet-tenant-account-lifecycle`; PR #154 merged to `main` at merge commit `d06425bb2458d4f39392155cb520ff34e9e77289`.
 - Added `conu-relay --hosted-fleet-tenant-upsert <account-id> --fleet-file <path> (--dry-run|--confirm) [--json]` and `conu-relay --hosted-fleet-tenant-revoke <account-id> --fleet-file <path> (--dry-run|--confirm) [--json]`.
 - Reused the guarded hosted fleet manifest for configured local `tenants_file` sources only.
 - Preflights every configured tenant registry before confirmed mutation, allows confirmed upsert to create missing tenant files, requires the account to exist before revoke, never contacts remote relays, and reports only account id, tenant/node counts, paths, mode/status, and display guards.
 - Updated README, architecture, hosted relay, production/readiness, distribution/hosting, SDK/MCP, release checklist, security docs, repo memory, guardrails, security checklist, and plan docs.
+- Issue #155 was closed by PR #156 on branch `relay-counter-window-ci-fix`; PR #156 merged to `main` at merge commit `061bf5192d9dc218c335f70dab52e1155ee1d010` after stabilizing relay quota/accounting/abuse tests that could cross a wall-clock counter-window boundary on Windows CI.
+- Local and remote branches were intentionally preserved: `fleet-tenant-account-lifecycle` and `relay-counter-window-ci-fix`.
+
+Files changed:
+
+- `crates/conu-relay/src/main.rs`
+- `crates/conu-relay/src/lib.rs`
+- `README.md`
+- `architecture.md`
+- `docs/hosted-relay-account-auth.md`
+- `docs/production-readiness.md`
+- `docs/distribution-and-hosting.md`
+- `docs/user-install-and-agent-guide.md`
+- `docs/sdk-and-mcp.md`
+- `docs/security-hardening.md`
+- `docs/release-checklist.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/agent-gateway-contract.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
 
 Validation:
 
@@ -65,6 +86,12 @@ Validation:
 - `git diff --check` passed.
 - `codex review --uncommitted` reported no actionable correctness, security, or privacy issues.
 - `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay hosted_fleet_tenant_account_lifecycle_parser_report_and_renderers_are_metadata_only -- --nocapture` is blocked locally because `dlltool.exe` is not installed while compiling `getrandom`/`windows-sys`.
+- PR #154 CI passed on Packages, Rust macOS, Rust Ubuntu, and Rust Windows: <https://github.com/imthegoodboy/conU/actions/runs/26324659510>.
+- The first PR #154 merge run exposed a pre-existing relay counter-window test flake on Windows when the test crossed a minute boundary: <https://github.com/imthegoodboy/conU/actions/runs/26324723070>.
+- PR #156 CI passed on Packages, Rust macOS, Rust Ubuntu, Rust Windows, and CodeRabbit: <https://github.com/imthegoodboy/conU/actions/runs/26325010004>.
+- Main CI passed after PR #156 merged: <https://github.com/imthegoodboy/conU/actions/runs/26325079473>.
+- `Release Artifacts` smoke passed on `main`, including package checks, platform builds, artifact verification, and attestations in unsigned smoke mode: <https://github.com/imthegoodboy/conU/actions/runs/26325123480>.
+- `cargo +stable-x86_64-pc-windows-gnu test -p conu-relay relay_file_backed_abuse_records_denials_without_secret_material --lib -- --nocapture` is blocked locally because `dlltool.exe` is not installed while compiling `getrandom`/`windows-sys`; GitHub Windows CI covered this path.
 
 Known gaps:
 
@@ -72,7 +99,7 @@ Known gaps:
 
 Next:
 
-- Let PR #154 CI cover the focused Rust runtime test path, merge without deleting local or remote branches, then continue hosted/distributed product gaps.
+- Continue the remaining hosted/distributed product gaps: distributed hosted accounting dashboards, adaptive abuse automation, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle workflow automation, tenant-wide hosted dashboard workflow services, and remote relay/cross-region mailbox retention orchestration.
 
 ## Phase 0 - Project Memory
 
