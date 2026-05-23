@@ -9,6 +9,7 @@ const { spawnSync } = require("node:child_process");
 
 const { validateArchiveMembers } = require("../lib/archive-preflight");
 const { verifySha256File } = require("../lib/checksum");
+const { resolveExtractedBinaries } = require("../lib/extract-selection");
 const {
   downloadLimitError,
   getDownloadLimits,
@@ -105,12 +106,13 @@ function installFromLocalDir(sourceDir) {
 }
 
 function installFromExtractedArchive(root) {
+  const binaries = resolveExtractedBinaries(root, {
+    archiveName: asset,
+    binaryNames: BINARIES,
+    binarySuffix: binarySuffix()
+  });
   for (const name of BINARIES) {
-    const found = findFile(root, `${name}${binarySuffix()}`);
-    if (!found) {
-      throw new Error(`archive ${asset} did not contain ${name}${binarySuffix()}`);
-    }
-    installBinary(found, name);
+    installBinary(binaries[name], name);
   }
   console.log(`installed conU native binaries for ${asset}`);
 }
@@ -152,22 +154,6 @@ function extractArchive(archivePath, destination) {
   }
 
   throw new Error(`failed to extract ${archivePath}`);
-}
-
-function findFile(root, fileName) {
-  const entries = fs.readdirSync(root, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      const found = findFile(fullPath, fileName);
-      if (found) {
-        return found;
-      }
-    } else if (entry.isFile() && entry.name === fileName) {
-      return fullPath;
-    }
-  }
-  return null;
 }
 
 function downloadOptionalText(url, maxBytes) {
