@@ -69,6 +69,7 @@ PACKAGES = (
                 "lib/checksum.js",
                 "lib/download-limits.js",
                 "lib/download-policy.js",
+                "lib/extract-selection.js",
                 "lib/platform.js",
                 "lib/run.js",
                 "package.json",
@@ -76,6 +77,7 @@ PACKAGES = (
                 "scripts/check-checksum-verification.js",
                 "scripts/check-download-limits.js",
                 "scripts/check-download-policy.js",
+                "scripts/check-extract-selection.js",
                 "scripts/install.js",
             }
         ),

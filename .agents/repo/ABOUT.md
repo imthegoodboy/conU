@@ -105,7 +105,7 @@ Implemented so far:
 - bounded streaming release archive verifier under `scripts/verify-release-artifacts.py` with regression checks in `scripts/check-release-artifact-verifier.py`
 - packaging templates under `packaging/`, including Windows install, Linux systemd, macOS launchd, Docker relay, and npm launcher templates
 - platform-named release artifacts with SHA-256 checksum support
-- GitHub CI and release artifact workflows, including Rust OS-matrix checks plus TypeScript SDK, release artifact verifier regression checks, npm launcher package checks with archive preflight, trusted download URL, strict checksum archive-name matching, streamed npm archive hashing, bounded download coverage, verified npm package content dry-runs, bounded streaming release archive verification, GitHub Release asset upload, and optional npm package publishing
+- GitHub CI and release artifact workflows, including Rust OS-matrix checks plus TypeScript SDK, release artifact verifier regression checks, npm launcher package checks with archive preflight, trusted download URL, strict checksum archive-name matching, streamed npm archive hashing, exact extracted release-root binary selection, bounded download coverage, verified npm package content dry-runs, bounded streaming release archive verification, GitHub Release asset upload, and optional npm package publishing
 - GitHub artifact attestation generation for release archives and checksum files
 - tagged release signing workflow for Windows Authenticode and macOS Developer ID/notarized ZIP archives, with Linux SHA-256 plus GitHub-attestation policy
 - release checklist and observability docs
