@@ -111,7 +111,7 @@ Turn the release-candidate validation baseline into one executable production-re
 
 Completed work:
 
-- Issue #158 tracks the production readiness verification gate.
+- Issue #158 tracks the production readiness verification gate, and PR #159 carries the implementation.
 - Added `scripts/verify-production-readiness.ps1` with a full release-candidate mode and a CI-friendly `-SmokeOnly` mode.
 - The full gate runs formatting, Rust check/clippy/test/build, Python compile, release version consistency, TypeScript SDK check, npm launcher check, local smoke, identity archive retirement smoke, relay daemon smoke, hosted-readiness fixture validation, and `git diff --check`.
 - The hosted-readiness fixture builds temporary credential, tenant, scoped admin-token, mailbox retention, accounting, abuse, and threshold stores, runs `conu-relay --hosted-readiness --json --fail-on-warning`, requires `status=ready` with zero warnings, and checks that fixture token material is not displayed.
@@ -130,6 +130,7 @@ Files changed:
 Validation:
 
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipPackages -SkipSmokes` passed.
+- PowerShell parser validation for `scripts\verify-production-readiness.ps1` passed.
 - `cargo fmt --all -- --check` passed.
 - `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
 - `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
