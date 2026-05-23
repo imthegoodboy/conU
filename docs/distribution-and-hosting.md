@@ -64,7 +64,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
 5. Configure the repository signing secrets and `NPM_TOKEN` before creating the tag; the tagged release workflow fails before package checks if any required release secret is missing.
-6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates, smoke-test the unpacked archive, the npm launcher local install path, and the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement plus bounded timeout/size behavior, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, the npm launcher local install path, and the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement plus bounded timeout/size behavior, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
 ```sh
@@ -100,8 +100,9 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 For platform signing verification commands and the required repository secrets,
 see `docs/platform-code-signing.md`.
 
-The verifier checks each archive checksum, required binaries, `manifest.toml`
-payload flags, required install/service templates, and common forbidden
+The verifier streams each archive check, requires a strict checksum line naming
+the matching archive, bounds archive/member/manifest sizes plus member counts,
+checks required binaries, `manifest.toml` payload flags, required install/service templates, and common forbidden
 local-state paths such as `.conu`, `security/`, `messages/`, `runtime/`,
 `logs/`, `routes/`, `node_modules/`, and vendored package binaries. The smoke
 scripts then prove the current-platform archive starts from an unpacked install
