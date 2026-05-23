@@ -37,6 +37,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64
 python scripts\verify-release-artifacts.py dist
+python scripts\smoke-release-artifacts.py dist
 ```
 
 macOS/Linux:
@@ -53,6 +54,7 @@ npm run check --prefix packaging/npm/conu-cli
 PACKAGE_SUFFIX=linux-x64 ./scripts/build-release.sh
 PACKAGE_SUFFIX=macos-arm64 ./scripts/build-release.sh
 python scripts/verify-release-artifacts.py dist
+python scripts/smoke-release-artifacts.py dist
 ```
 
 ## Smoke

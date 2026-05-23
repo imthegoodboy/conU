@@ -180,6 +180,45 @@ Next:
 
 - Merge PR #161 without deleting branches, then verify main CI and continue hosted/distributed production-readiness gaps.
 
+## Post Phase 15 - Release Artifact Install Smoke
+
+Status: in progress
+
+Goal:
+
+Prove each generated release archive is not only structurally valid, but also executable as an unpacked install on the platform that built it.
+
+Completed work:
+
+- Issue #162 tracks packaged release archive smoke testing.
+- Added `scripts/smoke-release-artifacts.py` to extract current-platform release archives into a temporary directory, run packaged `conu init`, `conu security audit --json`, and `conu doctor --json`, and require `ready_for_local_use` plus false content-display guards.
+- Wired the release artifact workflow to run the smoke test after structural artifact verification and before provenance attestation/upload.
+- Updated packaging and release checklist docs with the new archive smoke command.
+
+Files changed:
+
+- `.github/workflows/release.yml`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `scripts/smoke-release-artifacts.py`
+- `plan.md`
+
+Validation:
+
+- `python -m py_compile scripts\smoke-release-artifacts.py scripts\verify-release-artifacts.py scripts\verify-release-versions.py` passed.
+- `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('release workflow yaml parse ok')"` passed.
+- `git diff --check` passed.
+- Temporary Windows-style archive smoke using local debug binaries passed with `packaged conu doctor is ready_for_local_use`.
+- PR CI pending.
+
+Known gaps:
+
+- This proves unpacked artifact executability for the current runner platform; it does not add OS package-manager installers, managed hosted account/key administration, distributed hosted services, or browser-native protocol support.
+
+Next:
+
+- Open the PR for issue #162, then use PR CI plus Release Artifacts workflow dispatch for platform archive smoke coverage.
+
 ## Phase 0 - Project Memory
 
 Status: completed
