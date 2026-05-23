@@ -4,7 +4,23 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const MAX_ARCHIVE_LIST_BYTES = 2 * 1024 * 1024;
+const MAX_ARCHIVE_MEMBERS = 10000;
 const SUPPORTED_MEMBER_TYPES = new Set(["file", "directory"]);
+const FORBIDDEN_PARTS = new Set([
+  ".conu",
+  ".git",
+  "logs",
+  "messages",
+  "node_modules",
+  "routes",
+  "runtime",
+  "security",
+  "sessions",
+  "streams",
+  "target",
+  "vendor"
+]);
+const FORBIDDEN_NAMES = new Set(["node.toml", "runtime.toml", "trust.toml"]);
 
 function validateArchiveMembers(archivePath) {
   const members = listArchiveMembers(archivePath);
@@ -15,14 +31,23 @@ function assertSafeArchiveMemberList(members, archiveLabel = "archive") {
   if (!Array.isArray(members) || members.length === 0) {
     throw new Error(`${archiveLabel} did not contain any extractable members`);
   }
+  if (members.length > MAX_ARCHIVE_MEMBERS) {
+    throw new Error(`${archiveLabel} contains more than ${MAX_ARCHIVE_MEMBERS} entries`);
+  }
 
+  const paths = new Set();
   for (const member of members) {
     const name = typeof member === "string" ? member : member.name;
     const type = typeof member === "string" ? "file" : member.type || "unknown";
     if (!SUPPORTED_MEMBER_TYPES.has(type)) {
       throw new Error(`${archiveLabel} contains unsupported ${type} member: ${name}`);
     }
-    validateArchiveMemberName(name, archiveLabel);
+    const normalized = validateArchiveMemberName(name, archiveLabel);
+    if (paths.has(normalized)) {
+      throw new Error(`${archiveLabel} contains duplicate archive path: ${normalized}`);
+    }
+    paths.add(normalized);
+    rejectForbiddenArchivePath(normalized, archiveLabel);
   }
 }
 
@@ -41,8 +66,27 @@ function validateArchiveMemberName(name, archiveLabel) {
   }
 
   const parts = normalized.split("/").filter((part) => part !== "" && part !== ".");
+  if (parts.length === 0) {
+    throw new Error(`${archiveLabel} contains an empty archive member path`);
+  }
   if (parts.includes("..")) {
     throw new Error(`${archiveLabel} contains a parent-traversal archive path: ${name}`);
+  }
+  return parts.join("/");
+}
+
+function rejectForbiddenArchivePath(normalized, archiveLabel) {
+  const parts = normalized.split("/");
+  const lowerParts = new Set(parts.map((part) => part.toLowerCase()));
+  for (const forbidden of FORBIDDEN_PARTS) {
+    if (lowerParts.has(forbidden)) {
+      throw new Error(`${archiveLabel} contains forbidden state path: ${normalized}`);
+    }
+  }
+
+  const fileName = parts[parts.length - 1].toLowerCase();
+  if (FORBIDDEN_NAMES.has(fileName)) {
+    throw new Error(`${archiveLabel} contains forbidden state path: ${normalized}`);
   }
 }
 
@@ -148,6 +192,7 @@ function splitToolLines(output) {
 }
 
 module.exports = {
+  MAX_ARCHIVE_MEMBERS,
   assertSafeArchiveMemberList,
   validateArchiveMembers
 };
