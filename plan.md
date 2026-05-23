@@ -182,7 +182,7 @@ Next:
 
 ## Post Phase 15 - Release Artifact Install Smoke
 
-Status: in progress
+Status: completed
 
 Goal:
 
@@ -209,7 +209,8 @@ Validation:
 - `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('release workflow yaml parse ok')"` passed.
 - `git diff --check` passed.
 - Temporary Windows-style archive smoke using local debug binaries passed with `packaged conu doctor is ready_for_local_use`.
-- PR CI pending.
+- PR #163 CI passed on Packages, Rust macOS, Rust Ubuntu, Rust Windows, and CodeRabbit: <https://github.com/imthegoodboy/conU/actions/runs/26326838911>.
+- Branch `Release Artifacts` workflow dispatch passed on `release-artifact-install-smoke`, including `Smoke release artifact install` on windows-x64, linux-x64, linux-arm64, macos-arm64, and macos-x64 artifact builds before attestation/upload: <https://github.com/imthegoodboy/conU/actions/runs/26326897480>.
 
 Known gaps:
 
@@ -217,7 +218,7 @@ Known gaps:
 
 Next:
 
-- Open the PR for issue #162, then use PR CI plus Release Artifacts workflow dispatch for platform archive smoke coverage.
+- Merge PR #163 without deleting branches, then verify main CI and main Release Artifacts.
 
 ## Phase 0 - Project Memory
 
