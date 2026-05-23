@@ -56,6 +56,7 @@ python scripts/verify-release-versions.py
 
 The CI and release package jobs run the same check before package validation. Branch and PR runs verify that every Cargo/npm manifest uses the same version; `v*` tag runs also require the tag version to match.
 The same package jobs run `python scripts/check-release-artifact-verifier.py` so checksum format, duplicate path, and forbidden state-path regressions fail before platform artifacts are generated.
+They also run `python scripts/check-release-artifact-smoke-preflight.py` so release artifact smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before execution.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 
 Validate generated archives before upload:
@@ -74,7 +75,8 @@ member counts, checks required binaries, `manifest.toml`, required
 install/service templates, and common forbidden local-state paths so
 developer `CONU_HOME`, logs, private keys, inboxes, route registries, package
 `node_modules`, and vendored npm binaries are not shipped. The archive smoke
-extracts the current-platform archive into a temporary directory, runs the
+extracts the current-platform archive into a temporary directory, requires
+every expected extracted binary to be a regular non-symlink file, runs the
 packaged `conu init`, `conu security audit --json`, and `conu doctor --json`,
 and requires `ready_for_local_use` without displaying payload contents. The npm
 launcher smoke installs `packaging/npm/conu-cli` into a temporary npm prefix

@@ -60,7 +60,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Linux systemd and macOS launchd service templates.
 - Docker relay hosting template.
 - npm native launcher package template under `packaging/npm/conu-cli`.
-- GitHub CI and release artifact workflows, including Rust matrix checks, Python wrapper compile, TypeScript SDK check, release artifact verifier regression checks, npm launcher check with local binary directory preflight, npm launcher local-smoke preflight regression checks, archive-member count/duplicate/state-path preflight, download URL policy, strict checksum archive-name matching, streamed npm archive hashing, bounded extracted-tree scanning, exact extracted release-root binary selection, and download timeout/size limit coverage, verified npm package content dry-runs, bounded streaming archive verification with strict checksum parsing, unpacked archive install smoke, npm launcher local install smoke, npm launcher download/checksum install smoke, fail-closed `v*` tag preflight for platform signing plus `NPM_TOKEN`, GitHub Release asset upload, and npm provenance publication after release assets are available.
+- GitHub CI and release artifact workflows, including Rust matrix checks, Python wrapper compile, TypeScript SDK check, release artifact verifier regression checks, release artifact smoke preflight regression checks for missing/non-file binaries before execution, npm launcher check with local binary directory preflight, npm launcher local-smoke preflight regression checks, archive-member count/duplicate/state-path preflight, download URL policy, strict checksum archive-name matching, streamed npm archive hashing, bounded extracted-tree scanning, exact extracted release-root binary selection, and download timeout/size limit coverage, verified npm package content dry-runs, bounded streaming archive verification with strict checksum parsing, unpacked archive install smoke, npm launcher local install smoke, npm launcher download/checksum install smoke, fail-closed `v*` tag preflight for platform signing plus `NPM_TOKEN`, GitHub Release asset upload, and npm provenance publication after release assets are available.
 - Release checklist and observability docs.
 - Payload-safe logs, receipts, watch output, and CLI JSON.
 - Phase 11 security audit command, Phase 12 SDK/MCP receive path, Phase 13 route manager, and Phase 15 packaging layer.
@@ -115,6 +115,7 @@ cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
 cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py
+python scripts/check-release-artifact-smoke-preflight.py
 npm run check --prefix sdk/typescript
 powershell -ExecutionPolicy Bypass -File scripts/smoke-identity-retirement.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu
