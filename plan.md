@@ -151,7 +151,7 @@ Next:
 
 ## Post Phase 15 - Release Workflow Readiness Gate
 
-Status: in progress
+Status: completed
 
 Goal:
 
@@ -169,7 +169,8 @@ Validation:
 - `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('release workflow yaml parse ok')"` passed.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipPackages -SkipSmokes` passed.
 - `git diff --check` passed.
-- PR CI pending.
+- PR #161 CI passed on Packages, Rust macOS, Rust Ubuntu, Rust Windows, and CodeRabbit: <https://github.com/imthegoodboy/conU/actions/runs/26326169760>.
+- Branch `Release Artifacts` workflow dispatch passed on `release-workflow-readiness-gate`, including the new `Production Readiness Smoke` job before platform artifact builds: <https://github.com/imthegoodboy/conU/actions/runs/26326231693>.
 
 Known gaps:
 
@@ -177,7 +178,7 @@ Known gaps:
 
 Next:
 
-- Open the PR for issue #160 and use GitHub Actions as the release workflow validation source.
+- Merge PR #161 without deleting branches, then verify main CI and continue hosted/distributed production-readiness gaps.
 
 ## Phase 0 - Project Memory
 
