@@ -43,11 +43,11 @@ function Invoke-PwshScript {
     param(
         [string]$Name,
         [string]$Path,
-        [string[]]$Arguments
+        [hashtable]$Parameters = @{}
     )
 
     Invoke-ReadinessStep $Name {
-        & $Path @Arguments
+        & $Path @Parameters
     }
 }
 
@@ -265,9 +265,22 @@ try {
 
     if (-not $SkipSmokes) {
         $smokeToolchain = Get-EffectiveSmokeToolchain
-        Invoke-PwshScript "local smoke" (Join-Path $repo "scripts/smoke-local.ps1") @("-Conu", $conu, "-Conud", $conud, "-Toolchain", $smokeToolchain, "-SkipBuild")
-        Invoke-PwshScript "identity retirement smoke" (Join-Path $repo "scripts/smoke-identity-retirement.ps1") @("-Toolchain", $smokeToolchain)
-        Invoke-PwshScript "relay daemon smoke" (Join-Path $repo "scripts/smoke-relay-daemon.ps1") @("-Conu", $conu, "-Conud", $conud, "-ConuRelay", $conuRelay, "-Toolchain", $smokeToolchain, "-SkipBuild")
+        Invoke-PwshScript "local smoke" (Join-Path $repo "scripts/smoke-local.ps1") @{
+            Conu = $conu
+            Conud = $conud
+            Toolchain = $smokeToolchain
+            SkipBuild = $true
+        }
+        Invoke-PwshScript "identity retirement smoke" (Join-Path $repo "scripts/smoke-identity-retirement.ps1") @{
+            Toolchain = $smokeToolchain
+        }
+        Invoke-PwshScript "relay daemon smoke" (Join-Path $repo "scripts/smoke-relay-daemon.ps1") @{
+            Conu = $conu
+            Conud = $conud
+            ConuRelay = $conuRelay
+            Toolchain = $smokeToolchain
+            SkipBuild = $true
+        }
         Invoke-HostedReadinessFixture -ConuRelay $conuRelay
     }
 
