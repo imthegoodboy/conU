@@ -202,6 +202,8 @@ jobs:
         run: ${{ matrix.script }}
       - name: Verify release artifact
         run: python scripts/verify-release-artifacts.py dist
+      - name: Smoke release artifact install
+        run: python scripts/smoke-release-artifacts.py dist
       - name: Attest release artifact provenance
         uses: actions/attest@v4.1.0
         with:

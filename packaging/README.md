@@ -60,16 +60,20 @@ Validate generated archives before upload:
 
 ```sh
 python scripts/verify-release-artifacts.py dist
+python scripts/smoke-release-artifacts.py dist
 ```
 
-The release workflow runs the same verifier before publishing artifacts. It
-checks checksums, required binaries, `manifest.toml`, required install/service
-templates, and common forbidden local-state paths so developer `CONU_HOME`,
-logs, private keys, inboxes, route registries, package `node_modules`, and
-vendored npm binaries are not shipped. Tagged release builds also create
-GitHub artifact attestations for each platform archive and checksum file.
-See `docs/platform-code-signing.md` for signing secrets and verification
-commands.
+The release workflow runs the same verifier and smoke test before publishing
+artifacts. The verifier checks checksums, required binaries, `manifest.toml`,
+required install/service templates, and common forbidden local-state paths so
+developer `CONU_HOME`, logs, private keys, inboxes, route registries, package
+`node_modules`, and vendored npm binaries are not shipped. The smoke test
+extracts the current-platform archive into a temporary directory, runs the
+packaged `conu init`, `conu security audit --json`, and `conu doctor --json`,
+and requires `ready_for_local_use` without displaying payload contents. Tagged
+release builds also create GitHub artifact attestations for each platform
+archive and checksum file. See `docs/platform-code-signing.md` for signing
+secrets and verification commands.
 
 Verify a downloaded archive's provenance when `gh` is available:
 
