@@ -233,6 +233,9 @@ def find_package_root(extract_dir: Path) -> Path:
 
 def verify_archive_binaries(archive: Path, bin_dir: Path) -> None:
     exe_suffix = binary_suffix()
+    if not bin_dir.is_dir():
+        raise SystemExit(f"{archive.name} missing binary directory: {bin_dir}")
+
     missing = [
         name
         for name in REQUIRED_BINARIES
@@ -240,6 +243,20 @@ def verify_archive_binaries(archive: Path, bin_dir: Path) -> None:
     ]
     if missing:
         raise SystemExit(f"{archive.name} missing executable(s): {', '.join(missing)}")
+
+    not_regular = [
+        name
+        for name in REQUIRED_BINARIES
+        if not is_regular_file(bin_dir.joinpath(f"{name}{exe_suffix}"))
+    ]
+    if not_regular:
+        raise SystemExit(
+            f"{archive.name} executable path is not a regular file: {', '.join(not_regular)}"
+        )
+
+
+def is_regular_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
 
 
 def install_npm_package(
