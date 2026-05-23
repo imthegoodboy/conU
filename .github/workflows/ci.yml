@@ -45,3 +45,7 @@ jobs:
         run: python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py
       - name: Doctor smoke
         run: cargo run -p conu-cli -- doctor --json
+      - name: Production readiness smoke gate
+        if: matrix.os == 'windows-2025-vs2026'
+        shell: pwsh
+        run: ./scripts/verify-production-readiness.ps1 -SmokeOnly

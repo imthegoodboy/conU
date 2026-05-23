@@ -8,6 +8,7 @@ Use this checklist before publishing any conU build.
 - Confirm `packaging/npm/conu-cli/package.json` has the same version.
 - Confirm `sdk/typescript/package.json` has the same version if publishing the TypeScript/JavaScript SDK package.
 - Run `python scripts/verify-release-versions.py`; on `v*` tag builds the CI/release package gates also compare the tag version to the Cargo/npm package version.
+- Run `powershell -ExecutionPolicy Bypass -File scripts/verify-production-readiness.ps1 -Toolchain stable-x86_64-pc-windows-gnu` before a release candidate; CI runs the same script in `-SmokeOnly` mode on Windows to keep the production smoke/readiness path exercised.
 - Confirm `plan.md` reflects the completed phase and known gaps.
 - Confirm Phase 14 room claims stay scoped to implemented local metadata/fanout, relay-backed room-event fanout, and local room topic policy behavior. Do not claim hosted multi-tenant room permission administration.
 - Confirm relay hosting docs mention `CONU_RELAY_MAX_CONNECTIONS`, `CONU_RELAY_MAX_CONNECTIONS_PER_IP`, `CONU_RELAY_MAX_FRAMES_PER_MINUTE`, `CONU_RELAY_IDLE_TIMEOUT_SECONDS`, `CONU_RELAY_SESSION_TTL_SECONDS`, optional `CONU_RELAY_SESSION_STATE_DIR`, `conu-relay --session-audit`, `conu-relay --admin-session-audit`, `CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE`, `CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS`, optional `CONU_RELAY_MAILBOX_DIR`, `conu-relay --mailbox-audit`, `conu-relay --admin-mailbox-audit`, `conu-relay --admin-mailbox-purge`, optional mailbox `--retention-policy-file` policy files, optional `CONU_RELAY_ACCOUNTING_DIR`, `CONU_RELAY_ACCOUNTING_WINDOW_SECONDS`, `CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE`, `CONU_RELAY_MAX_BYTES_SENT_PER_NODE`, optional `CONU_RELAY_ABUSE_DIR`, `CONU_RELAY_ABUSE_WINDOW_SECONDS`, `conu-relay --abuse-threshold-report`, `conu-relay --admin-abuse-threshold-report`, optional threshold `--thresholds-file` policy files, optional threshold `--fail-on-threshold` exit code behavior, optional full-admin `CONU_RELAY_ADMIN_TOKEN`, optional scoped `CONU_RELAY_ADMIN_TOKENS_FILE`, `conu-relay --admin-token-audit` for payload-safe scoped admin-token manifest checks, `conu-relay --hosted-readiness` for payload-safe local startup/release preflights with reusable retention/threshold policy files and `--fail-on-warning`, `conu-relay --hosted-fleet-dashboard` for guarded multi-relay metadata aggregation with optional reusable mailbox retention policy gates, optional reusable abuse threshold policy checks, `--fail-on-retention`, and `--fail-on-threshold`, `conu-relay --hosted-fleet-account-audit [--node <node-id>]` for read-only guarded local fleet account or account/node consistency warnings, `conu-relay --hosted-fleet-tenant-upsert` and `conu-relay --hosted-fleet-tenant-revoke` for dry-run/confirm guarded local fleet tenant account lifecycle, `conu-relay --hosted-fleet-account-suspend [--node <node-id>]` for dry-run/confirm guarded local fleet account or account/node suspension, account/action-scoped online credential lifecycle, online tenant lifecycle, hosted account suspension, session-state audits, dashboard snapshots/threshold reports, and online mailbox audit/purge, and optional `CONU_RELAY_TENANTS_FILE` for metadata-only hosted tenant checks.
@@ -32,13 +33,7 @@ Use this checklist before publishing any conU build.
 Windows:
 
 ```powershell
-cargo fmt --all -- --check
-python scripts\verify-release-versions.py
-cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets
-cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings
-cargo +stable-x86_64-pc-windows-gnu test --workspace
-npm run check --prefix sdk/typescript
-npm run check --prefix packaging/npm/conu-cli
+powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64
 python scripts\verify-release-artifacts.py dist

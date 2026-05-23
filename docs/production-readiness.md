@@ -99,7 +99,15 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 
 ## Validation Baseline
 
-Before merging production-affecting work, run:
+Before merging production-affecting work or cutting a release candidate, run the executable gate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify-production-readiness.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+```
+
+The gate runs the baseline checks below, then exercises local install, identity-retirement, relay-daemon delivery, and hosted-readiness smoke coverage with temporary state only. CI also runs `scripts/verify-production-readiness.ps1 -SmokeOnly` on the Windows Rust job so the smoke/readiness workflow is continuously checked without duplicating the full Rust matrix on every OS.
+
+The full gate covers:
 
 ```bash
 cargo fmt --all -- --check
