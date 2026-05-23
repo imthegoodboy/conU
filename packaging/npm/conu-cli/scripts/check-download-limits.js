@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const http = require("node:http");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -25,6 +26,7 @@ async function main() {
   expectContentLengthParsing();
   await expectArchiveLimitFailure();
   await expectChecksumLimitFailure();
+  await expectChecksumArchiveNameFailure();
   await expectTimeoutFailure();
   console.log("download limit check passed");
 }
@@ -97,6 +99,27 @@ async function expectChecksumLimitFailure() {
       CONU_NPM_MAX_CHECKSUM_BYTES: "8"
     });
     expectFailedWith(result, "checksum download exceeded maximum size");
+    expectNoSecretDisplay(result);
+  });
+}
+
+async function expectChecksumArchiveNameFailure() {
+  const body = Buffer.from("tiny");
+  const digest = crypto.createHash("sha256").update(body).digest("hex");
+  await withServer((request, response) => {
+    if (request.url.includes(".sha256")) {
+      response.writeHead(200, { "Content-Length": String(digest.length + 12) });
+      response.end(`${digest}  other.zip\n`);
+      return;
+    }
+    response.writeHead(200, { "Content-Length": String(body.length) });
+    response.end(body);
+  }, async (baseUrl) => {
+    const result = await runInstall({
+      CONU_NPM_DIST_BASE: `${baseUrl}/release?token=secret`,
+      CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
+    });
+    expectFailedWith(result, "names wrong archive");
     expectNoSecretDisplay(result);
   });
 }
