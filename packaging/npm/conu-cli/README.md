@@ -39,10 +39,11 @@ ID/notarization secrets, and the repository `NPM_TOKEN` secret. Tagged release
 preflight fails before package checks when any required release secret is
 missing so npm publication cannot silently skip after a GitHub-only release.
 Before attestation/upload, the release workflow also installs this package into
-a temporary npm prefix with `CONU_NPM_BINARY_DIR` pointed at the generated
-archive binaries, verifies the package-local `vendor/` copies and npm bin
-shims, and runs the installed launcher through `conu init`, `conu security audit
---json`, and `conu doctor --json`. A second release smoke serves the generated
+a temporary npm prefix with `CONU_NPM_BINARY_DIR` pointed at an existing
+directory of generated archive binaries, requires every expected binary to be a
+regular file before copying to `vendor/`, verifies the package-local `vendor/`
+copies and npm bin shims, and runs the installed launcher through `conu init`,
+`conu security audit --json`, and `conu doctor --json`. A second release smoke serves the generated
 archive plus `.sha256` from localhost and installs with `CONU_NPM_DIST_BASE`, so
 the default HTTPS download policy, checksum verification, archive-member
 count/duplicate/state-path preflight, bounded extracted-tree binary selection,
@@ -52,7 +53,7 @@ extraction, and launcher path are checked before publishing.
 
 ```txt
 CONU_NPM_DIST_BASE             Override the release base URL; HTTPS is required unless the URL is loopback HTTP.
-CONU_NPM_BINARY_DIR            Copy binaries from a local directory instead of downloading.
+CONU_NPM_BINARY_DIR            Copy binaries from an existing local directory after regular-file preflight.
 CONU_NPM_SKIP_DOWNLOAD         Skip install download for package publishing checks.
 CONU_NPM_ALLOW_UNVERIFIED      Allow install when a checksum file is unavailable.
 CONU_NPM_DOWNLOAD_TIMEOUT_MS   Override the per-request download timeout; default is 300000.

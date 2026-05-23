@@ -30,8 +30,9 @@ needs_revision
 ```txt
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
-Last updated: 2026-05-23
+Last updated: 2026-05-24
 Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/session/mailbox actions, payload-safe local scoped admin-token manifest audit, payload-safe hosted relay readiness preflight, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, guarded hosted fleet account/node audit, guarded hosted fleet account/node credential revoke, hosted fleet tenant account upsert/revoke, hosted fleet tenant-node upsert/revoke, and guarded hosted fleet account/node suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, payload-safe hosted relay readiness preflights, guarded hosted fleet dashboard snapshots with aggregate mailbox retention policy gates and aggregate abuse threshold checks, guarded hosted fleet abuse response plans, guarded hosted fleet mailbox purge orchestration, relay session state storage, payload-safe local/admin-gated relay session-state audit, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, reusable durable mailbox retention policy files, confirm-gated local, admin-gated online, and guarded hosted fleet durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, platform signing/notarization workflow hardening, tagged release preflight hardening, Node LTS package hardening, npm installer download timeout/size hardening, npm download smoke host-archive handling, npm package content verification, release artifact verifier bounds, npm installer strict checksum verification, npm installer extracted binary selection hardening, npm installer extracted-tree traversal bounds, and npm installer archive-member preflight hardening are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse automation beyond local/admin-gated single-relay snapshots, guarded fleet snapshots, threshold reports, guarded response plans, and readiness preflights, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, fleet credential revoke, fleet tenant account lifecycle, fleet tenant-node lifecycle, and account/node suspension plus single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and remote relay/cross-region mailbox retention orchestration beyond guarded local fleet cleanup.
+Latest hardening addition: npm installer local binary directory preflight hardening is complete on branch `npm-installer-local-binary-dir-guard` for Issue #188 pending PR/main verification.
 ```
 
 ## Post Phase 15 - Hosted Fleet Tenant Account Lifecycle
@@ -777,6 +778,7 @@ Validation:
 - `python scripts\smoke-npm-launcher-download.py dist` passed against the mixed local `dist/`, skipping the host alias and verifying the platform-named npm download install checksum and extraction path.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed.
 - `git diff --check` passed.
+- `codex review --uncommitted` exited 0 and reported no actionable correctness, security, or privacy issues.
 
 Known gaps:
 
@@ -842,6 +844,66 @@ Known gaps:
 Next:
 
 - After PR #187 and main verification gates pass without deleting branches, continue the remaining hosted/distributed production-readiness gaps.
+
+## Post Phase 15 - npm Installer Local Binary Directory Preflight
+
+Status: completed
+
+Goal:
+
+Make the public `@conu/cli` npm installer fail closed for `CONU_NPM_BINARY_DIR` overrides unless the override points at an existing directory containing regular files for every expected native binary.
+
+Completed work:
+
+- Issue #188 tracks npm installer local binary override preflight hardening, and branch `npm-installer-local-binary-dir-guard` carries the implementation.
+- Added `packaging/npm/conu-cli/lib/local-binary-dir.js` so local override installs resolve the source directory once, require it to be an existing directory, and preflight every expected binary as a regular file before copying.
+- Reworked `packaging/npm/conu-cli/scripts/install.js` so the local override path preflights all source binaries before any package-local `vendor/` writes.
+- Added `packaging/npm/conu-cli/scripts/check-local-binary-dir.js` with fixtures for valid layouts, missing source directories, file-as-directory source paths, missing binaries, and directory entries named as binaries.
+- Wired the local binary directory fixture into `npm run check --prefix packaging/npm/conu-cli`.
+- Updated npm package content allowlists and release/distribution/production-readiness/packaging/security docs with the stricter local override behavior.
+
+Files changed:
+
+- `packaging/npm/conu-cli/lib/local-binary-dir.js`
+- `packaging/npm/conu-cli/scripts/check-local-binary-dir.js`
+- `packaging/npm/conu-cli/scripts/install.js`
+- `packaging/npm/conu-cli/package.json`
+- `scripts/verify-npm-package-contents.py`
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `docs/user-install-and-agent-guide.md`
+- `packaging/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `node --check packaging\npm\conu-cli\lib\local-binary-dir.js` passed.
+- `node --check packaging\npm\conu-cli\scripts\check-local-binary-dir.js` passed.
+- `node --check packaging\npm\conu-cli\scripts\install.js` passed.
+- `node packaging\npm\conu-cli\scripts\check-local-binary-dir.js` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `python scripts\verify-npm-package-contents.py --package @conu/cli` passed.
+- `python -m py_compile scripts\verify-npm-package-contents.py scripts\verify-release-versions.py scripts\verify-release-artifacts.py scripts\check-release-artifact-verifier.py` passed.
+- `python scripts\verify-release-versions.py` passed.
+- `python scripts\verify-npm-package-contents.py` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `python scripts\smoke-npm-launcher-download.py dist` passed against the mixed local `dist/`, skipping the host alias and verifying the platform-named npm download install checksum and extraction path.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This hardens npm installer local override preflight only. It does not publish npm packages, add OS package-manager installers, configure signing/npm secrets, implement managed public relay hosting, or close the known distributed hosted runtime gaps.
+
+Next:
+
+- Open the PR, run PR CI plus branch `Release Artifacts`, merge only after green gates, verify main CI and main `Release Artifacts`, and preserve the branch.
 
 ## Phase 0 - Project Memory
 

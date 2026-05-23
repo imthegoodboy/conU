@@ -63,7 +63,7 @@ conu telemetry snapshot --json
 conu start
 ```
 
-The npm package is not the conU implementation. It is a small launcher that downloads the native Rust archive for the user's platform with bounded request time and response sizes, verifies the `.sha256` checksum, rejects unsafe archive member lists before extraction, bounds post-extraction binary selection, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp` on `PATH`.
+The npm package is not the conU implementation. It is a small launcher that downloads the native Rust archive for the user's platform with bounded request time and response sizes, verifies the `.sha256` checksum, rejects unsafe archive member lists before extraction, bounds post-extraction binary selection, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp` on `PATH`. For local package testing, `CONU_NPM_BINARY_DIR` must point to an existing directory containing regular files for every expected binary.
 
 For local testing of the package template from this repo:
 

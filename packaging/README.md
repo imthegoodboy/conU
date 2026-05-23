@@ -77,9 +77,10 @@ extracts the current-platform archive into a temporary directory, runs the
 packaged `conu init`, `conu security audit --json`, and `conu doctor --json`,
 and requires `ready_for_local_use` without displaying payload contents. The npm
 launcher smoke installs `packaging/npm/conu-cli` into a temporary npm prefix
-with `CONU_NPM_BINARY_DIR` pointed at the archive binaries, verifies the copied
-vendor binaries and npm bin shims, then runs the installed launcher through the
-same payload-safe readiness checks. The npm download smoke serves `dist/` from a
+with `CONU_NPM_BINARY_DIR` pointed at the archive binaries, requires every
+expected binary to be a regular file before copying into `vendor/`, verifies the
+copied vendor binaries and npm bin shims, then runs the installed launcher
+through the same payload-safe readiness checks. The npm download smoke serves `dist/` from a
 temporary localhost HTTP server, installs the package with `CONU_NPM_DIST_BASE`,
 and exercises the default HTTPS-or-loopback download policy, bounded
 timeout/size behavior, strict `.sha256` archive-name verification with streamed
@@ -107,7 +108,7 @@ The `npm/conu-cli` package is the intended one-command install wrapper:
 npm install -g @conu/cli
 ```
 
-It downloads the native release archive from GitHub Releases with bounded request time and response sizes, requires a strict checksum line naming that archive, hashes the archive in chunks, bounds extracted-tree entry/depth scanning, requires extracted binaries to come from the expected release `bin/` directory, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp`.
+It downloads the native release archive from GitHub Releases with bounded request time and response sizes, requires a strict checksum line naming that archive, hashes the archive in chunks, bounds extracted-tree entry/depth scanning, requires extracted binaries to come from the expected release `bin/` directory, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp`. The local `CONU_NPM_BINARY_DIR` override must point at an existing directory containing regular files for every expected binary before the installer copies anything into `vendor/`.
 
 Local package test:
 

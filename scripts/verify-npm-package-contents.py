@@ -70,6 +70,7 @@ PACKAGES = (
                 "lib/download-limits.js",
                 "lib/download-policy.js",
                 "lib/extract-selection.js",
+                "lib/local-binary-dir.js",
                 "lib/platform.js",
                 "lib/run.js",
                 "package.json",
@@ -78,6 +79,7 @@ PACKAGES = (
                 "scripts/check-download-limits.js",
                 "scripts/check-download-policy.js",
                 "scripts/check-extract-selection.js",
+                "scripts/check-local-binary-dir.js",
                 "scripts/install.js",
             }
         ),

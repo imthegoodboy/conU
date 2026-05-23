@@ -10,6 +10,7 @@ const { spawnSync } = require("node:child_process");
 const { validateArchiveMembers } = require("../lib/archive-preflight");
 const { verifySha256File } = require("../lib/checksum");
 const { resolveExtractedBinaries } = require("../lib/extract-selection");
+const { resolveLocalBinaries } = require("../lib/local-binary-dir");
 const {
   downloadLimitError,
   getDownloadLimits,
@@ -57,8 +58,6 @@ async function main() {
     return;
   }
 
-  fs.mkdirSync(vendorDir(), { recursive: true });
-
   if (localBinaryDir) {
     installFromLocalDir(localBinaryDir);
     return;
@@ -95,12 +94,12 @@ async function main() {
 }
 
 function installFromLocalDir(sourceDir) {
+  const binaries = resolveLocalBinaries(sourceDir, {
+    binaryNames: BINARIES,
+    binarySuffix: binarySuffix()
+  });
   for (const name of BINARIES) {
-    const source = path.join(sourceDir, `${name}${binarySuffix()}`);
-    if (!fs.existsSync(source)) {
-      throw new Error(`missing ${source}`);
-    }
-    installBinary(source, name);
+    installBinary(binaries[name], name);
   }
   console.log(`installed conU binaries from ${sourceDir}`);
 }
