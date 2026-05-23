@@ -75,6 +75,8 @@ jobs:
         run: npm run check --prefix sdk/typescript
       - name: npm launcher check
         run: npm run check --prefix packaging/npm/conu-cli
+      - name: npm launcher local smoke preflight regression
+        run: python scripts/check-npm-launcher-local-smoke-preflight.py
       - name: Verify npm package contents
         run: python scripts/verify-npm-package-contents.py
 
