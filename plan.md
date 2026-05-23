@@ -101,6 +101,54 @@ Next:
 
 - Continue the remaining hosted/distributed product gaps: distributed hosted accounting dashboards, adaptive abuse automation, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle workflow automation, tenant-wide hosted dashboard workflow services, and remote relay/cross-region mailbox retention orchestration.
 
+## Post Phase 15 - Production Readiness Verification Gate
+
+Status: completed
+
+Goal:
+
+Turn the release-candidate validation baseline into one executable production-readiness gate so maintainers and future agents can verify formatting, Rust/package checks, local smoke flows, relay delivery, and hosted-readiness preflights from a single command.
+
+Completed work:
+
+- Issue #158 tracks the production readiness verification gate, and PR #159 carries the implementation.
+- Added `scripts/verify-production-readiness.ps1` with a full release-candidate mode and a CI-friendly `-SmokeOnly` mode.
+- The full gate runs formatting, Rust check/clippy/test/build, Python compile, release version consistency, TypeScript SDK check, npm launcher check, local smoke, identity archive retirement smoke, relay daemon smoke, hosted-readiness fixture validation, and `git diff --check`.
+- The hosted-readiness fixture builds temporary credential, tenant, scoped admin-token, mailbox retention, accounting, abuse, and threshold stores, runs `conu-relay --hosted-readiness --json --fail-on-warning`, requires `status=ready` with zero warnings, and checks that fixture token material is not displayed.
+- CI now runs `scripts/verify-production-readiness.ps1 -SmokeOnly` on the Windows Rust job so the production smoke/readiness path stays covered without duplicating the full Rust matrix on every OS.
+- Updated README, production readiness docs, and release checklist to make the executable gate the release-candidate entry point.
+
+Files changed:
+
+- `.github/workflows/ci.yml`
+- `README.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `scripts/verify-production-readiness.ps1`
+- `plan.md`
+
+Validation:
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipPackages -SkipSmokes` passed.
+- PowerShell parser validation for `scripts\verify-production-readiness.ps1` passed.
+- `cargo fmt --all -- --check` passed.
+- `cargo +stable-x86_64-pc-windows-gnu check --workspace --all-targets` passed.
+- `cargo +stable-x86_64-pc-windows-gnu clippy --workspace --all-targets -- -D warnings` passed.
+- `python -m py_compile scripts\verify-release-versions.py scripts\verify-release-artifacts.py sdk\python\conu_sdk\__init__.py examples\python\local_agent_pair.py` passed.
+- `python scripts\verify-release-versions.py` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `git diff --check` passed.
+- Local linked runtime tests and full `-SmokeOnly` execution are still blocked on this machine by missing `dlltool.exe`/MSVC linker support for linked test binaries; PR Windows CI is expected to cover the new smoke gate with a current build.
+
+Known gaps:
+
+- This gate makes the existing release-candidate baseline executable; it does not itself implement distributed hosted dashboards, adaptive abuse automation, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle workflow automation, tenant-wide hosted dashboard workflow services, or remote relay/cross-region mailbox retention orchestration.
+
+Next:
+
+- Continue closing the hosted/distributed product gaps, using `scripts/verify-production-readiness.ps1` as the release-candidate gate for future production-affecting changes.
+
 ## Phase 0 - Project Memory
 
 Status: completed
