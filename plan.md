@@ -159,7 +159,7 @@ Require release artifact workflow runs to pass the same Windows production-readi
 
 Completed work:
 
-- Issue #160 tracks release workflow enforcement for the production-readiness smoke path.
+- Issue #160 tracks release workflow enforcement for the production-readiness smoke path, and PR #161 carries the implementation.
 - Added a `Production Readiness Smoke` job to `.github/workflows/release.yml` that runs `scripts/verify-production-readiness.ps1 -SmokeOnly` on `windows-2025-vs2026` after release preflight.
 - Made release artifact build jobs depend on both package checks and the production-readiness smoke job.
 - Updated the release checklist to state that the release artifact workflow runs the smoke/readiness gate before artifact builds.
