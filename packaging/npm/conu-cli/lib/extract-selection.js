@@ -3,6 +3,9 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+const DEFAULT_MAX_EXTRACTED_ENTRIES = 10000;
+const DEFAULT_MAX_EXTRACTED_DEPTH = 64;
+
 function expectedReleaseRootName(assetName) {
   if (assetName.endsWith(".tar.gz")) {
     return assetName.slice(0, -".tar.gz".length);
@@ -12,21 +15,35 @@ function expectedReleaseRootName(assetName) {
 
 function resolveExtractedBinaries(
   extractDir,
-  { archiveName, binaryNames, binarySuffix, expectedRootName = expectedReleaseRootName(archiveName) }
+  {
+    archiveName,
+    binaryNames,
+    binarySuffix,
+    expectedRootName = expectedReleaseRootName(archiveName),
+    maxExtractedEntries = DEFAULT_MAX_EXTRACTED_ENTRIES,
+    maxExtractedDepth = DEFAULT_MAX_EXTRACTED_DEPTH
+  }
 ) {
+  const maxEntries = parsePositiveInteger(maxExtractedEntries, "maxExtractedEntries", archiveName);
+  const maxDepth = parsePositiveInteger(maxExtractedDepth, "maxExtractedDepth", archiveName);
   const root = resolveReleaseRoot(extractDir, archiveName, expectedRootName);
+  const binaryFileNames = new Set(binaryNames.map((name) => `${name}${binarySuffix}`));
+  const matches = collectBinaryMatches(extractDir, binaryFileNames, archiveName, {
+    maxEntries,
+    maxDepth
+  });
   const resolved = {};
   for (const name of binaryNames) {
-    const expectedPath = path.join(root, "bin", `${name}${binarySuffix}`);
+    const fileName = `${name}${binarySuffix}`;
+    const expectedPath = path.join(root, "bin", fileName);
     if (!isFile(expectedPath)) {
-      throw new Error(`archive ${archiveName} missing expected binary: bin/${name}${binarySuffix}`);
+      throw new Error(`archive ${archiveName} missing expected binary: bin/${fileName}`);
     }
 
-    const matches = findBinaryMatches(extractDir, `${name}${binarySuffix}`);
-    const unexpected = matches.filter((candidate) => !samePath(candidate, expectedPath));
+    const unexpected = matches.get(fileName).filter((candidate) => !samePath(candidate, expectedPath));
     if (unexpected.length > 0) {
       throw new Error(
-        `archive ${archiveName} contains unexpected ${name}${binarySuffix} path: ${relativePath(
+        `archive ${archiveName} contains unexpected ${fileName} path: ${relativePath(
           extractDir,
           unexpected[0]
         )}`
@@ -59,25 +76,53 @@ function resolveReleaseRoot(extractDir, archiveName, expectedRootName) {
   );
 }
 
-function findBinaryMatches(root, fileName) {
-  const matches = [];
-  visit(root, (entryPath, entry) => {
-    if (entry.isFile() && entry.name === fileName) {
-      matches.push(entryPath);
+function collectBinaryMatches(root, fileNames, archiveName, limits) {
+  const matches = new Map(Array.from(fileNames, (fileName) => [fileName, []]));
+  visit(root, archiveName, limits, (entryPath, entry) => {
+    const fileMatches = matches.get(entry.name);
+    if (entry.isFile() && fileMatches) {
+      fileMatches.push(entryPath);
     }
   });
   return matches;
 }
 
-function visit(root, onEntry) {
-  const entries = fs.readdirSync(root, { withFileTypes: true });
-  for (const entry of entries) {
-    const entryPath = path.join(root, entry.name);
-    onEntry(entryPath, entry);
-    if (entry.isDirectory()) {
-      visit(entryPath, onEntry);
+function visit(root, archiveName, limits, onEntry, depth = 0, state = { entries: 0 }) {
+  const dir = fs.opendirSync(root);
+  try {
+    let entry = dir.readSync();
+    while (entry !== null) {
+      state.entries += 1;
+      if (state.entries > limits.maxEntries) {
+        throw new Error(
+          `archive ${archiveName} extracted tree exceeds maximum entry count ${limits.maxEntries}`
+        );
+      }
+
+      const entryDepth = depth + 1;
+      if (entryDepth > limits.maxDepth) {
+        throw new Error(
+          `archive ${archiveName} extracted tree exceeds maximum depth ${limits.maxDepth}`
+        );
+      }
+
+      const entryPath = path.join(root, entry.name);
+      onEntry(entryPath, entry);
+      if (entry.isDirectory()) {
+        visit(entryPath, archiveName, limits, onEntry, entryDepth, state);
+      }
+      entry = dir.readSync();
     }
+  } finally {
+    dir.closeSync();
   }
+}
+
+function parsePositiveInteger(value, label, archiveName) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`archive ${archiveName} has invalid ${label}`);
+  }
+  return value;
 }
 
 function isFile(filePath) {
@@ -105,6 +150,8 @@ function relativePath(root, target) {
 }
 
 module.exports = {
+  DEFAULT_MAX_EXTRACTED_DEPTH,
+  DEFAULT_MAX_EXTRACTED_ENTRIES,
   expectedReleaseRootName,
   resolveExtractedBinaries
 };

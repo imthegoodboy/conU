@@ -64,7 +64,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
 5. Configure the repository signing secrets and `NPM_TOKEN` before creating the tag; the tagged release workflow fails before package checks if any required release secret is missing.
-6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, the npm launcher local install path, and the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, the npm launcher local install path, and the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, bounded extracted-tree scanning, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, upload the archives and `.sha256` files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
 ```sh
@@ -109,7 +109,7 @@ scripts then prove the current-platform archive starts from an unpacked install
 and that the npm launcher package can copy those binaries into `vendor/`, create
 npm bin shims, download the archive through an HTTPS `CONU_NPM_DIST_BASE` or a
 loopback HTTP smoke server with bounded request time and response sizes, require
-a strict `.sha256` line naming the archive, stream the archive hash, extract it, require either a rootless release layout or the expected `conu-<version>-<platform>/bin/` layout without duplicate binary names elsewhere, and report
+a strict `.sha256` line naming the archive, stream the archive hash, extract it, bound extracted-tree entry/depth scanning, require either a rootless release layout or the expected `conu-<version>-<platform>/bin/` layout without duplicate binary names elsewhere, and report
 `ready_for_local_use` without displaying payload contents.
 
 ## User Install Choices
