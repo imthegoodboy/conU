@@ -265,6 +265,51 @@ Next:
 
 - After PR #165 lands and main CI plus main `Release Artifacts` are green, continue the hosted/distributed production-readiness gaps.
 
+## Post Phase 15 - npm Launcher Download Install Smoke
+
+Status: completed
+
+Goal:
+
+Prove the public `@conu/cli` default install path can download a generated release archive, verify its sibling `.sha256`, extract it, install native binaries into the package vendor directory, and invoke the packaged CLI from the installed package.
+
+Completed work:
+
+- Issue #166 tracks npm launcher download/checksum install smoke testing, and branch `npm-launcher-download-smoke` carries the implementation.
+- Added `scripts/smoke-npm-launcher-download.py` to serve generated release artifacts from a temporary localhost HTTP server, install `packaging/npm/conu-cli` into a temporary npm prefix with `CONU_NPM_DIST_BASE` pointed at that server, require the default npm installer to report a download-backed native install, and reuse the installed launcher readiness checks from `scripts/smoke-npm-launcher-local.py`.
+- Wired the release artifact workflow to run the download/checksum npm launcher smoke after local npm launcher smoke and before provenance attestation/upload.
+- Updated packaging, distribution, production-readiness, npm package, README, and release checklist docs with the new smoke command and release workflow gate.
+
+Files changed:
+
+- `.github/workflows/release.yml`
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `packaging/npm/conu-cli/README.md`
+- `scripts/smoke-npm-launcher-download.py`
+- `plan.md`
+
+Validation:
+
+- `python -m py_compile scripts\smoke-npm-launcher-download.py scripts\smoke-npm-launcher-local.py scripts\smoke-release-artifacts.py scripts\verify-release-artifacts.py scripts\verify-release-versions.py` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('release workflow yaml parse ok')"` passed.
+- `git diff --check` passed.
+- Temporary Windows-style archive download smoke using local debug binaries and a localhost artifact server passed with `npm launcher download install verified checksum`.
+- PR #167 CI passed on Packages, Rust macOS, Rust Ubuntu, Rust Windows, and CodeRabbit: <https://github.com/imthegoodboy/conU/actions/runs/26329302953>.
+- Branch `Release Artifacts` workflow dispatch passed on `npm-launcher-download-smoke`, including `Smoke npm launcher download install` on windows-x64, linux-x64, linux-arm64, macos-arm64, and macos-x64 artifact builds before attestation/upload: <https://github.com/imthegoodboy/conU/actions/runs/26329384904>.
+
+Known gaps:
+
+- This proves the checksum-backed npm download installer path against generated archive binaries served locally. It does not publish the npm package, add OS package-manager installers, configure signing/npm secrets, implement managed public relay hosting, or close the known distributed hosted runtime gaps.
+
+Next:
+
+- After PR #167 lands and main CI plus main `Release Artifacts` are green, continue the hosted/distributed production-readiness gaps.
+
 ## Phase 0 - Project Memory
 
 Status: completed

@@ -206,6 +206,8 @@ jobs:
         run: python scripts/smoke-release-artifacts.py dist
       - name: Smoke npm launcher local install
         run: python scripts/smoke-npm-launcher-local.py dist
+      - name: Smoke npm launcher download install
+        run: python scripts/smoke-npm-launcher-download.py dist
       - name: Attest release artifact provenance
         uses: actions/attest@v4.1.0
         with:

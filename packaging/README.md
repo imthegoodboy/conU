@@ -62,6 +62,7 @@ Validate generated archives before upload:
 python scripts/verify-release-artifacts.py dist
 python scripts/smoke-release-artifacts.py dist
 python scripts/smoke-npm-launcher-local.py dist
+python scripts/smoke-npm-launcher-download.py dist
 ```
 
 The release workflow runs the same verifier and smoke tests before publishing
@@ -75,9 +76,13 @@ and requires `ready_for_local_use` without displaying payload contents. The npm
 launcher smoke installs `packaging/npm/conu-cli` into a temporary npm prefix
 with `CONU_NPM_BINARY_DIR` pointed at the archive binaries, verifies the copied
 vendor binaries and npm bin shims, then runs the installed launcher through the
-same payload-safe readiness checks. Tagged release builds also create GitHub
-artifact attestations for each platform archive and checksum file. See
-`docs/platform-code-signing.md` for signing secrets and verification commands.
+same payload-safe readiness checks. The npm download smoke serves `dist/` from a
+temporary localhost HTTP server, installs the package with `CONU_NPM_DIST_BASE`,
+and exercises the default download, `.sha256` verification, extraction, and
+launcher readiness path without publishing assets. Tagged release builds also
+create GitHub artifact attestations for each platform archive and checksum file.
+See `docs/platform-code-signing.md` for signing secrets and verification
+commands.
 
 Verify a downloaded archive's provenance when `gh` is available:
 
@@ -100,6 +105,7 @@ Local package test:
 ```sh
 CONU_NPM_BINARY_DIR=/absolute/path/to/bin npm install -g ./packaging/npm/conu-cli
 python scripts/smoke-npm-launcher-local.py dist
+python scripts/smoke-npm-launcher-download.py dist
 ```
 
 See `docs/distribution-and-hosting.md` for the publish flow. Tagged releases
