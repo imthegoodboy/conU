@@ -456,6 +456,42 @@ Next:
 
 - Open PR for issue #172, run PR CI and branch `Release Artifacts`, then merge without deleting branches if checks stay green.
 
+## Post Phase 15 - npm Download Smoke Host Archive Handling
+
+Status: completed
+
+Goal:
+
+Make the documented npm download smoke command reliable when a local `dist/` contains both a developer `conu-<version>-host` archive and the platform-named archive that the npm installer actually downloads.
+
+Completed work:
+
+- Issue #174 tracks npm download smoke host-archive handling, and branch `npm-download-smoke-host-archives` carries the implementation.
+- Updated `scripts/smoke-npm-launcher-download.py` to derive the canonical npm asset name from the `@conu/cli` package version plus the current platform.
+- The smoke now skips a current-platform `target = "host"` archive when the matching platform-named npm asset and checksum exist, while still failing clearly if a current-platform archive uses a name the npm installer cannot download.
+- Updated packaging and release-checklist docs so maintainers know local host archive aliases are skipped by the npm download smoke.
+
+Files changed:
+
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `scripts/smoke-npm-launcher-download.py`
+- `plan.md`
+
+Validation:
+
+- `python scripts\smoke-npm-launcher-download.py dist` passed against the mixed local `dist/` containing both `conu-0.1.0-host.zip` and `conu-0.1.0-windows-x64.zip`; it skipped the host alias and verified the platform-named npm download install.
+- `python -m py_compile scripts\smoke-npm-launcher-download.py scripts\smoke-npm-launcher-local.py` passed.
+- `git diff --check` passed.
+
+Known gaps:
+
+- This fixes local release-smoke robustness only. It does not publish npm packages, add OS package-manager installers, configure signing/npm secrets, implement managed public relay hosting, or close the known distributed hosted runtime gaps.
+
+Next:
+
+- Open PR for issue #174, run PR CI and branch `Release Artifacts`, then merge without deleting branches if checks stay green.
+
 ## Phase 0 - Project Memory
 
 Status: completed

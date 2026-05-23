@@ -81,6 +81,8 @@ temporary localhost HTTP server, installs the package with `CONU_NPM_DIST_BASE`,
 and exercises the default HTTPS-or-loopback download policy, bounded
 timeout/size behavior, `.sha256` verification, archive-member preflight,
 extraction, and launcher readiness path without publishing assets.
+When a local `dist/` also contains a `conu-<version>-host` archive, the download
+smoke treats the platform-named npm asset as canonical and skips the host alias.
 Tagged release builds also create GitHub artifact attestations for each platform
 archive and checksum file.
 See `docs/platform-code-signing.md` for signing secrets and verification

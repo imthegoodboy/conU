@@ -7,6 +7,7 @@ import argparse
 import functools
 import http.server
 import importlib.util
+import json
 import os
 import socketserver
 import sys
@@ -37,6 +38,7 @@ def main() -> int:
     local_smoke = load_local_smoke_helpers()
     node = local_smoke.require_tool("node")
     npm = local_smoke.require_tool("npm", "npm.cmd")
+    expected_asset_name = npm_asset_name(package_dir, local_smoke)
 
     archives = sorted(dist.glob("*.zip")) + sorted(dist.glob("*.tar.gz"))
     if not archives:
@@ -53,6 +55,25 @@ def main() -> int:
                     skipped += 1
                     print(f"skipping {archive.name}: target {target!r} is not this runner")
                     continue
+
+                if archive.name != expected_asset_name:
+                    expected_archive = dist / expected_asset_name
+                    expected_checksum = expected_archive.with_name(f"{expected_archive.name}.sha256")
+                    if (
+                        target.lower() == "host"
+                        and expected_archive.exists()
+                        and expected_checksum.exists()
+                    ):
+                        skipped += 1
+                        print(
+                            f"skipping {archive.name}: host archive alias; "
+                            f"npm downloads {expected_asset_name}"
+                        )
+                        continue
+                    raise SystemExit(
+                        f"{archive.name} targets this runner, but the npm installer downloads "
+                        f"{expected_asset_name}; provide that platform-named archive and checksum"
+                    )
 
                 checksum = archive.with_name(f"{archive.name}.sha256")
                 if not checksum.exists():
@@ -86,6 +107,17 @@ def load_local_smoke_helpers():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def npm_asset_name(package_dir: Path, local_smoke) -> str:
+    manifest = json.loads(package_dir.joinpath("package.json").read_text(encoding="utf-8"))
+    version = manifest.get("version")
+    if not isinstance(version, str) or not version:
+        raise SystemExit(f"{package_dir / 'package.json'} missing package version")
+
+    platform_key = local_smoke.npm_platform_key()
+    extension = ".tar.gz" if platform_key.startswith("linux-") else ".zip"
+    return f"conu-{version}-{platform_key}{extension}"
 
 
 def install_npm_package_from_release_base(
