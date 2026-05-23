@@ -1,6 +1,5 @@
 "use strict";
 
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
@@ -9,6 +8,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { validateArchiveMembers } = require("../lib/archive-preflight");
+const { verifySha256File } = require("../lib/checksum");
 const {
   downloadLimitError,
   getDownloadLimits,
@@ -75,7 +75,7 @@ async function main() {
     );
     if (checksum) {
       fs.writeFileSync(checksumPath, checksum, "utf8");
-      verifySha256(archivePath, checksum);
+      verifySha256File(archivePath, checksum, asset);
     } else if (!allowUnverified) {
       throw new Error(
         `missing checksum ${asset}.sha256; set CONU_NPM_ALLOW_UNVERIFIED=1 only for trusted local testing`
@@ -168,17 +168,6 @@ function findFile(root, fileName) {
     }
   }
   return null;
-}
-
-function verifySha256(filePath, checksumText) {
-  const expected = checksumText.match(/\b[a-fA-F0-9]{64}\b/);
-  if (!expected) {
-    throw new Error("checksum file did not contain a SHA-256 hash");
-  }
-  const actual = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-  if (actual.toLowerCase() !== expected[0].toLowerCase()) {
-    throw new Error(`checksum mismatch for ${path.basename(filePath)}`);
-  }
 }
 
 function downloadOptionalText(url, maxBytes) {
