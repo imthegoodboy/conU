@@ -267,7 +267,7 @@ Next:
 
 ## Post Phase 15 - npm Launcher Download Install Smoke
 
-Status: in_progress
+Status: completed
 
 Goal:
 
@@ -299,6 +299,8 @@ Validation:
 - `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('release workflow yaml parse ok')"` passed.
 - `git diff --check` passed.
 - Temporary Windows-style archive download smoke using local debug binaries and a localhost artifact server passed with `npm launcher download install verified checksum`.
+- PR #167 CI passed on Packages, Rust macOS, Rust Ubuntu, Rust Windows, and CodeRabbit: <https://github.com/imthegoodboy/conU/actions/runs/26329302953>.
+- Branch `Release Artifacts` workflow dispatch passed on `npm-launcher-download-smoke`, including `Smoke npm launcher download install` on windows-x64, linux-x64, linux-arm64, macos-arm64, and macos-x64 artifact builds before attestation/upload: <https://github.com/imthegoodboy/conU/actions/runs/26329384904>.
 
 Known gaps:
 
@@ -306,7 +308,7 @@ Known gaps:
 
 Next:
 
-- Open PR #166 without deleting branches and verify PR CI plus a branch `Release Artifacts` run.
+- After PR #167 lands and main CI plus main `Release Artifacts` are green, continue the hosted/distributed production-readiness gaps.
 
 ## Phase 0 - Project Memory
 
