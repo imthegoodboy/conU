@@ -186,6 +186,7 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - Platform release artifacts used by npm must include a sibling SHA-256 checksum file.
 - The npm package is a thin launcher/downloader for native Rust binaries; it must not reimplement conU protocol behavior in JavaScript.
 - npm install scripts may download release archives and copy binaries, but must require HTTPS except loopback HTTP smoke servers, reject embedded download URL credentials, enforce explicit download timeout and byte limits, avoid printing URL query strings or fragments in download errors, preflight archive member names and unsupported link entries before extraction, and must not read, upload, log, or package local conU state.
+- npm publication gates must run the repository package-content verifier so `@conu/cli` and `@conu/sdk` dry-runs fail closed on missing required files, unexpected local state/build/payload paths, oversized files, vendored native binaries, or bundled dependencies.
 - Release artifacts must not include local conU state, `CONU_HOME`, `.conu`, private keys, logs, inboxes, route registries, message stores, or test payload output.
 - `conu doctor` may report binary paths, readiness booleans, runtime health, and payload-safe log scan counts; it must not print log contents, private keys, payload text, or secrets.
 - `conu logs rotate` may rotate local metadata logs by byte size and archive count, but it must report only file names, sizes, counts, and `contentsDisplayed=false`; it must not read or print log contents.

@@ -73,12 +73,8 @@ jobs:
         run: npm run check --prefix sdk/typescript
       - name: npm launcher check
         run: npm run check --prefix packaging/npm/conu-cli
-      - name: npm launcher pack dry run
-        run: npm pack --dry-run --json
-        working-directory: packaging/npm/conu-cli
-      - name: TypeScript SDK pack dry run
-        run: npm pack --dry-run --json
-        working-directory: sdk/typescript
+      - name: Verify npm package contents
+        run: python scripts/verify-npm-package-contents.py
 
   production-readiness:
     name: Production Readiness Smoke
@@ -276,12 +272,8 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-      - name: Pack @conu/cli
-        run: npm pack --dry-run --json
-        working-directory: packaging/npm/conu-cli
-      - name: Pack @conu/sdk
-        run: npm pack --dry-run --json
-        working-directory: sdk/typescript
+      - name: Verify npm package contents
+        run: python scripts/verify-npm-package-contents.py
       - name: Publish @conu/cli
         working-directory: packaging/npm/conu-cli
         env:

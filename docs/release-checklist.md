@@ -8,6 +8,7 @@ Use this checklist before publishing any conU build.
 - Confirm `packaging/npm/conu-cli/package.json` has the same version.
 - Confirm `sdk/typescript/package.json` has the same version if publishing the TypeScript/JavaScript SDK package.
 - Run `python scripts/verify-release-versions.py`; on `v*` tag builds the CI/release package gates also compare the tag version to the Cargo/npm package version.
+- Run `python scripts/verify-npm-package-contents.py`; CI, release package checks, and tagged npm publication use the same verifier to reject missing required files, unexpected state/build/payload paths, oversized files, and bundled dependencies.
 - Run `powershell -ExecutionPolicy Bypass -File scripts/verify-production-readiness.ps1 -Toolchain stable-x86_64-pc-windows-gnu` before a release candidate; CI and the release artifact workflow run the same script in `-SmokeOnly` mode on Windows to keep the production smoke/readiness path exercised before artifact builds.
 - Confirm `plan.md` reflects the completed phase and known gaps.
 - Confirm Phase 14 room claims stay scoped to implemented local metadata/fanout, relay-backed room-event fanout, and local room topic policy behavior. Do not claim hosted multi-tenant room permission administration.
@@ -34,6 +35,7 @@ Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+python scripts\verify-npm-package-contents.py
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64
 python scripts\verify-release-artifacts.py dist
@@ -52,6 +54,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 npm run check --prefix sdk/typescript
 npm run check --prefix packaging/npm/conu-cli
+python scripts/verify-npm-package-contents.py
 ./scripts/build-release.sh
 PACKAGE_SUFFIX=linux-x64 ./scripts/build-release.sh
 PACKAGE_SUFFIX=macos-arm64 ./scripts/build-release.sh
@@ -132,6 +135,7 @@ conu stop
 - macOS launchd template is present and documents the required user/state path edits.
 - Docker relay template is present and documents current relay limits and knobs.
 - npm launcher package passes `npm run check` from `packaging/npm/conu-cli`; the local npm launcher install smoke copies release binaries into the package vendor directory, and the download install smoke verifies the default HTTPS-or-loopback archive download policy, bounded timeout/size behavior, `.sha256` check, archive-member preflight, extraction, npm bin shims, and `ready_for_local_use` launcher path.
+- `scripts/verify-npm-package-contents.py` passes for `@conu/cli` and `@conu/sdk`, proving the npm dry-run tarballs contain only the expected package files and no local state, build output, vendored native binaries, secrets, or bundled dependencies.
 - Local `dist/` directories may include `conu-<version>-host` archives for developer builds; the npm download smoke skips those aliases when the matching platform-named npm asset and checksum are present.
 - TypeScript/JavaScript SDK package passes `npm run check --prefix sdk/typescript`.
 
@@ -178,7 +182,8 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 
 - CI passed on pull request or equivalent local validation is recorded, including the Rust OS matrix and the package job for `sdk/typescript` plus `packaging/npm/conu-cli`.
 - CI and release package jobs run `scripts/verify-release-versions.py` before npm package checks, so package versions must match each other and `v*` tag names before release assets can be built or published.
-- npm package checks, dry-runs, and publication jobs run on Node 24 LTS, and package `engines` accept supported Node LTS lines only. Revisit the range when the next Node LTS line is promoted.
+- CI, release package checks, and tagged npm publication run `scripts/verify-npm-package-contents.py` so `@conu/cli` and `@conu/sdk` package dry-runs fail closed on missing required files, unexpected files, forbidden state/build/payload paths, oversized files, or bundled dependencies.
+- npm package checks, content dry-runs, and publication jobs run on Node 24 LTS, and package `engines` accept supported Node LTS lines only. Revisit the range when the next Node LTS line is promoted.
 - CI and release workflows use GitHub JavaScript action versions that declare the Node 24 action runtime, avoiding older action-runtime deprecation warnings. Self-hosted runners must be new enough for those actions before release workflows are moved off GitHub-hosted runners.
 - Migration-sensitive GitHub-hosted runner labels are explicit: Windows release/CI jobs run on `windows-2025-vs2026` while the Visual Studio 2026 migration is active, macOS arm64 jobs run on `macos-15`, and macOS x64 release jobs run on `macos-15-intel`. Revisit the Windows label after GitHub completes the June 2026 migration.
 - After changing CI or release action versions, run the `Release Artifacts` workflow with `workflow_dispatch` on `main`, verify package checks, every platform build, artifact attestations, and artifact uploads pass, and confirm GitHub Release/npm publication jobs skip on the non-tag run while the tagged-release preflight remains fail-closed for missing signing or npm secrets.
@@ -192,7 +197,7 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 ```
 
-- `@conu/cli` and `@conu/sdk` npm package dry-runs pass before publication.
+- `@conu/cli` and `@conu/sdk` npm package content verification passes before publication.
 - `@conu/cli` and `@conu/sdk` are published only after the matching GitHub Release assets are available; the tagged release preflight requires the repository `NPM_TOKEN` secret for automated npm publication with provenance.
 - Platform signing workflow is implemented for tagged releases: Windows Authenticode, macOS Developer ID signing/notarization, Linux SHA-256 plus GitHub artifact attestations.
 - `plan.md` completion log is updated.

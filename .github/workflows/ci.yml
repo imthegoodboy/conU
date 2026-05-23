@@ -20,6 +20,8 @@ jobs:
         run: npm run check --prefix sdk/typescript
       - name: npm launcher check
         run: npm run check --prefix packaging/npm/conu-cli
+      - name: Verify npm package contents
+        run: python scripts/verify-npm-package-contents.py
 
   rust:
     name: Rust (${{ matrix.os }})
