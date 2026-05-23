@@ -254,6 +254,8 @@ Validation:
 - `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('release workflow yaml parse ok')"` passed.
 - `git diff --check` passed.
 - Temporary Windows-style archive smoke using local debug binaries passed with `npm launcher install is ready_for_local_use`.
+- PR #165 CI passed on Packages, Rust macOS, Rust Ubuntu, Rust Windows, and CodeRabbit: <https://github.com/imthegoodboy/conU/actions/runs/26327779678>.
+- Branch `Release Artifacts` workflow dispatch passed on `npm-launcher-local-install-smoke`, including `Smoke npm launcher local install` on windows-x64, linux-x64, linux-arm64, macos-arm64, and macos-x64 artifact builds before attestation/upload: <https://github.com/imthegoodboy/conU/actions/runs/26327894908>.
 
 Known gaps:
 
@@ -261,7 +263,7 @@ Known gaps:
 
 Next:
 
-- Open PR #164 without deleting branches and verify PR CI plus a branch `Release Artifacts` run.
+- Merge PR #165 without deleting branches, then verify main CI and main `Release Artifacts`.
 
 ## Phase 0 - Project Memory
 
