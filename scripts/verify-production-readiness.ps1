@@ -246,10 +246,13 @@ try {
 
     if (-not $SmokeOnly -and -not $SkipPackages) {
         Invoke-ReadinessStep "python compile" {
-            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py
+            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/check-release-artifact-verifier.py
         }
         Invoke-ReadinessStep "release version consistency" {
             & python scripts/verify-release-versions.py
+        }
+        Invoke-ReadinessStep "release artifact verifier regression" {
+            & python scripts/check-release-artifact-verifier.py
         }
         Invoke-ReadinessStep "TypeScript SDK check" {
             & npm run check --prefix sdk/typescript

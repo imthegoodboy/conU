@@ -31,7 +31,7 @@ needs_revision
 Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-23
-Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/session/mailbox actions, payload-safe local scoped admin-token manifest audit, payload-safe hosted relay readiness preflight, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, guarded hosted fleet account/node audit, guarded hosted fleet account/node credential revoke, hosted fleet tenant account upsert/revoke, hosted fleet tenant-node upsert/revoke, and guarded hosted fleet account/node suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, payload-safe hosted relay readiness preflights, guarded hosted fleet dashboard snapshots with aggregate mailbox retention policy gates and aggregate abuse threshold checks, guarded hosted fleet abuse response plans, guarded hosted fleet mailbox purge orchestration, relay session state storage, payload-safe local/admin-gated relay session-state audit, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, reusable durable mailbox retention policy files, confirm-gated local, admin-gated online, and guarded hosted fleet durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, platform signing/notarization workflow hardening, tagged release preflight hardening, Node LTS package hardening, npm installer download timeout/size hardening, npm download smoke host-archive handling, and npm package content verification are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse automation beyond local/admin-gated single-relay snapshots, guarded fleet snapshots, threshold reports, guarded response plans, and readiness preflights, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, fleet credential revoke, fleet tenant account lifecycle, fleet tenant-node lifecycle, and account/node suspension plus single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and remote relay/cross-region mailbox retention orchestration beyond guarded local fleet cleanup.
+Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/session/mailbox actions, payload-safe local scoped admin-token manifest audit, payload-safe hosted relay readiness preflight, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, guarded hosted fleet account/node audit, guarded hosted fleet account/node credential revoke, hosted fleet tenant account upsert/revoke, hosted fleet tenant-node upsert/revoke, and guarded hosted fleet account/node suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, payload-safe hosted relay readiness preflights, guarded hosted fleet dashboard snapshots with aggregate mailbox retention policy gates and aggregate abuse threshold checks, guarded hosted fleet abuse response plans, guarded hosted fleet mailbox purge orchestration, relay session state storage, payload-safe local/admin-gated relay session-state audit, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, reusable durable mailbox retention policy files, confirm-gated local, admin-gated online, and guarded hosted fleet durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, platform signing/notarization workflow hardening, tagged release preflight hardening, Node LTS package hardening, npm installer download timeout/size hardening, npm download smoke host-archive handling, and npm package content verification are complete. Release artifact verifier bounds are in progress on issue #178. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse automation beyond local/admin-gated single-relay snapshots, guarded fleet snapshots, threshold reports, guarded response plans, and readiness preflights, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, fleet credential revoke, fleet tenant account lifecycle, fleet tenant-node lifecycle, and account/node suspension plus single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and remote relay/cross-region mailbox retention orchestration beyond guarded local fleet cleanup.
 ```
 
 ## Post Phase 15 - Hosted Fleet Tenant Account Lifecycle
@@ -502,7 +502,7 @@ Fail CI, release package checks, and tagged npm publication before publish if th
 
 Completed work:
 
-- Issue #176 tracks npm package content verification, and PR #177 on branch `npm-pack-content-verifier` carries the implementation.
+- Issue #176 was closed by PR #177 on branch `npm-pack-content-verifier`; PR #177 merged to `main` at merge commit `d220c2561f450efbc32a5e5452917ca5a031ff94`.
 - Added `scripts/verify-npm-package-contents.py` to run `npm pack --dry-run --json` for both npm packages, require the reviewed exact file sets, compare package names/versions against `package.json`, reject forbidden state/build/payload/secret path names, enforce package/file byte bounds, and reject bundled dependencies.
 - Wired the verifier into PR CI package checks, Release Artifacts package checks, tagged npm publication preflight, and the full local `scripts/verify-production-readiness.ps1` package gate.
 - Updated release, distribution, production-readiness, repo memory, guardrail, and security-checklist docs with the deterministic npm package-content gate.
@@ -534,6 +534,10 @@ Validation:
 - `codex review --uncommitted` reported no actionable correctness, security, or privacy issues.
 - PR #177 CI passed on Packages, Rust macOS, Rust Ubuntu, Rust Windows, and CodeRabbit: <https://github.com/imthegoodboy/conU/actions/runs/26336711349>.
 - Branch `Release Artifacts` workflow_dispatch run passed on `npm-pack-content-verifier`, including package checks with npm package content verification, production readiness smoke, and platform builds for `windows-x64`, `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64`: <https://github.com/imthegoodboy/conU/actions/runs/26336725204>. The first attempt hit a transient macOS x64 `actions/checkout@v6` credential fetch failure; rerunning failed jobs passed on attempt 2.
+- Refreshed PR #177 CI passed after the final plan update: <https://github.com/imthegoodboy/conU/actions/runs/26337345059>.
+- Refreshed branch `Release Artifacts` workflow_dispatch run passed after the final plan update: <https://github.com/imthegoodboy/conU/actions/runs/26337347166>.
+- Main CI passed after PR #177 merged: <https://github.com/imthegoodboy/conU/actions/runs/26337455770>.
+- Main `Release Artifacts` workflow_dispatch run passed after PR #177 merged: <https://github.com/imthegoodboy/conU/actions/runs/26337463904>.
 
 Known gaps:
 
@@ -541,7 +545,61 @@ Known gaps:
 
 Next:
 
-- After PR #177 lands and main CI plus main `Release Artifacts` are green, continue the hosted/distributed production-readiness gaps.
+- PR #177 has been merged. Continue the remaining hosted/distributed production-readiness gaps without deleting preserved branches.
+
+## Post Phase 15 - Release Artifact Verifier Bounds
+
+Status: in_progress
+
+Goal:
+
+Harden release artifact verification so archive checks stream file content, read only the manifest body, fail closed on loose or mismatched checksum files, and enforce explicit archive/member/manifest size plus member-count limits before upload, attestation, or npm publication.
+
+Completed work:
+
+- Issue #178 tracks release artifact verifier bounds, and branch `release-artifact-verifier-bounds` carries the implementation.
+- Reworked `scripts/verify-release-artifacts.py` to stream archive hashing, require strict `<sha256>  <archive-name>` checksum files, bound checksum file size, archive size, member size, total uncompressed bytes, member count, and manifest size, reject duplicate normalized paths, and avoid reading non-manifest archive bodies into memory.
+- Added `scripts/check-release-artifact-verifier.py` regression fixtures for valid ZIP/tar archives, pre-hash archive byte limits, checksum filename mismatches, loose checksum files, duplicate normalized paths, encrypted ZIP members, corrupt ZIP member data, forbidden state files, forbidden state directories, and data-bearing ZIP directory entries.
+- Wired the regression check into PR CI package checks, Release Artifacts package checks, and the full local `scripts/verify-production-readiness.ps1` package gate.
+- Updated release, distribution, production-readiness, packaging, repo memory, guardrail, and security-checklist docs with the bounded streaming verifier and strict checksum requirement.
+
+Files changed:
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `scripts/check-release-artifact-verifier.py`
+- `scripts/verify-release-artifacts.py`
+- `scripts/verify-production-readiness.ps1`
+- `plan.md`
+
+Validation:
+
+- `python -m py_compile scripts\verify-release-artifacts.py scripts\check-release-artifact-verifier.py scripts\verify-release-versions.py scripts\verify-npm-package-contents.py` passed.
+- `python scripts\verify-release-versions.py` passed.
+- `python scripts\check-release-artifact-verifier.py` passed.
+- `python scripts\verify-release-artifacts.py dist` passed.
+- `python -c "import yaml, pathlib; [yaml.safe_load(pathlib.Path(p).read_text()) for p in ['.github/workflows/ci.yml', '.github/workflows/release.yml']]; print('workflow yaml parse ok')"` passed.
+- `python scripts\verify-npm-package-contents.py` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed.
+- `git diff --check` passed.
+- `codex review --uncommitted` reported no actionable correctness, security, or privacy issues.
+
+Known gaps:
+
+- This hardens release artifact verification only. It does not publish a release tag, publish npm packages, configure signing/npm secrets, add OS package-manager installers, implement managed public relay hosting, or close the known distributed hosted runtime gaps.
+
+Next:
+
+- Run full local validation, open PR for issue #178, run PR CI and branch `Release Artifacts`, then merge without deleting branches if checks stay green.
 
 ## Phase 0 - Project Memory
 

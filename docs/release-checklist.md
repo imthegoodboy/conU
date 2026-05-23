@@ -8,6 +8,7 @@ Use this checklist before publishing any conU build.
 - Confirm `packaging/npm/conu-cli/package.json` has the same version.
 - Confirm `sdk/typescript/package.json` has the same version if publishing the TypeScript/JavaScript SDK package.
 - Run `python scripts/verify-release-versions.py`; on `v*` tag builds the CI/release package gates also compare the tag version to the Cargo/npm package version.
+- Run `python scripts/check-release-artifact-verifier.py`; CI and release package gates use the same regression check to prove release artifact verification fails closed on loose checksums, checksum filename mismatches, duplicate archive paths, and forbidden state paths.
 - Run `python scripts/verify-npm-package-contents.py`; CI, release package checks, and tagged npm publication use the same verifier to reject missing required files, unexpected state/build/payload paths, oversized files, and bundled dependencies.
 - Run `powershell -ExecutionPolicy Bypass -File scripts/verify-production-readiness.ps1 -Toolchain stable-x86_64-pc-windows-gnu` before a release candidate; CI and the release artifact workflow run the same script in `-SmokeOnly` mode on Windows to keep the production smoke/readiness path exercised before artifact builds.
 - Confirm `plan.md` reflects the completed phase and known gaps.
@@ -35,6 +36,7 @@ Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -Toolchain stable-x86_64-pc-windows-gnu
+python scripts\check-release-artifact-verifier.py
 python scripts\verify-npm-package-contents.py
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64
@@ -49,6 +51,7 @@ macOS/Linux:
 ```sh
 cargo fmt --all -- --check
 python scripts/verify-release-versions.py
+python scripts/check-release-artifact-verifier.py
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -128,7 +131,7 @@ conu stop
 - `manifest.toml` contains `payload_contents_included = false`.
 - Release archive has a matching `.sha256` checksum file.
 - macOS npm release assets are ZIP archives so Apple notarization can run on the distribution container.
-- `scripts/verify-release-artifacts.py dist` passes for every archive and rejects local conU state, logs, private key files, inboxes, route registries, telemetry dumps, node modules, vendored package binaries, and payload-bearing paths.
+- `scripts/verify-release-artifacts.py dist` passes for every archive, streams archive verification without loading every file body, requires strict `<sha256>  <archive-name>` checksum files, bounds archive/member/manifest sizes and member counts, and rejects duplicate paths, local conU state, logs, private key files, inboxes, route registries, telemetry dumps, node modules, vendored package binaries, and payload-bearing paths.
 - `scripts/smoke-release-artifacts.py dist`, `scripts/smoke-npm-launcher-local.py dist`, and `scripts/smoke-npm-launcher-download.py dist` pass on each release build runner before attestation/upload.
 - Windows install script copies binaries to a current-user install directory.
 - Linux systemd template is present and documents the required user/state path edits.
@@ -182,6 +185,7 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 
 - CI passed on pull request or equivalent local validation is recorded, including the Rust OS matrix and the package job for `sdk/typescript` plus `packaging/npm/conu-cli`.
 - CI and release package jobs run `scripts/verify-release-versions.py` before npm package checks, so package versions must match each other and `v*` tag names before release assets can be built or published.
+- CI and release package jobs run `scripts/check-release-artifact-verifier.py` before artifact builds, so release archive verification regressions fail before platform artifacts are generated.
 - CI, release package checks, and tagged npm publication run `scripts/verify-npm-package-contents.py` so `@conu/cli` and `@conu/sdk` package dry-runs fail closed on missing required files, unexpected files, forbidden state/build/payload paths, oversized files, or bundled dependencies.
 - npm package checks, content dry-runs, and publication jobs run on Node 24 LTS, and package `engines` accept supported Node LTS lines only. Revisit the range when the next Node LTS line is promoted.
 - CI and release workflows use GitHub JavaScript action versions that declare the Node 24 action runtime, avoiding older action-runtime deprecation warnings. Self-hosted runners must be new enough for those actions before release workflows are moved off GitHub-hosted runners.

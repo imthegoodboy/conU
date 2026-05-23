@@ -69,6 +69,8 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Release version consistency
         run: python scripts/verify-release-versions.py
+      - name: Release artifact verifier regression
+        run: python scripts/check-release-artifact-verifier.py
       - name: TypeScript SDK check
         run: npm run check --prefix sdk/typescript
       - name: npm launcher check

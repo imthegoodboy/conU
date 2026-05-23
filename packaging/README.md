@@ -55,6 +55,7 @@ python scripts/verify-release-versions.py
 ```
 
 The CI and release package jobs run the same check before package validation. Branch and PR runs verify that every Cargo/npm manifest uses the same version; `v*` tag runs also require the tag version to match.
+The same package jobs run `python scripts/check-release-artifact-verifier.py` so checksum format, duplicate path, and forbidden state-path regressions fail before platform artifacts are generated.
 
 Validate generated archives before upload:
 
@@ -66,8 +67,10 @@ python scripts/smoke-npm-launcher-download.py dist
 ```
 
 The release workflow runs the same verifier and smoke tests before publishing
-artifacts. The verifier checks checksums, required binaries, `manifest.toml`,
-required install/service templates, and common forbidden local-state paths so
+artifacts. The verifier streams archive inspection, requires strict checksum
+files that name the matching archive, bounds archive/member/manifest sizes and
+member counts, checks required binaries, `manifest.toml`, required
+install/service templates, and common forbidden local-state paths so
 developer `CONU_HOME`, logs, private keys, inboxes, route registries, package
 `node_modules`, and vendored npm binaries are not shipped. The archive smoke
 extracts the current-platform archive into a temporary directory, runs the
