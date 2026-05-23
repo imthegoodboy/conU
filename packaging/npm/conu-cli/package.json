@@ -18,6 +18,7 @@
   "bugs": {
     "url": "https://github.com/imthegoodboy/conU/issues"
   },
+  "license": "UNLICENSED",
   "bin": {
     "conu": "bin/conu.js",
     "conud": "bin/conud.js",

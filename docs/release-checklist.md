@@ -11,6 +11,8 @@ Use this checklist before publishing any conU build.
 - Run `python scripts/check-release-artifact-verifier.py`; CI and release package gates use the same regression check to prove release artifact verification fails closed on loose checksums, checksum filename mismatches, duplicate archive paths, and forbidden state paths.
 - Run `python scripts/check-release-artifact-smoke-preflight.py`; CI and release package gates use the same regression check to prove archive smoke validation fails closed on missing binary directories, missing binaries, and non-file binary paths before execution.
 - Run `python scripts/verify-npm-package-contents.py`; CI, release package checks, and tagged npm publication use the same verifier to reject missing required files, unexpected state/build/payload paths, oversized files, and bundled dependencies.
+- Run `python scripts/check-npm-publish-preflight.py`; CI and release package checks validate publish metadata for `@conu/cli` and `@conu/sdk`, and tagged npm publication reruns it with `--registry-check --require-token-env NODE_AUTH_TOKEN` before any package is published.
+- Run `python scripts/check-npm-publish-preflight-regression.py`; CI and release package checks use the same regression check to prove existing npm versions, registry failures, and missing publish tokens fail closed.
 - Run `powershell -ExecutionPolicy Bypass -File scripts/verify-production-readiness.ps1 -Toolchain stable-x86_64-pc-windows-gnu` before a release candidate; CI and the release artifact workflow run the same script in `-SmokeOnly` mode on Windows to keep the production smoke/readiness path exercised before artifact builds.
 - Confirm `plan.md` reflects the completed phase and known gaps.
 - Confirm Phase 14 room claims stay scoped to implemented local metadata/fanout, relay-backed room-event fanout, and local room topic policy behavior. Do not claim hosted multi-tenant room permission administration.
@@ -40,6 +42,8 @@ powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1
 python scripts\check-release-artifact-verifier.py
 python scripts\check-release-artifact-smoke-preflight.py
 python scripts\verify-npm-package-contents.py
+python scripts\check-npm-publish-preflight.py
+python scripts\check-npm-publish-preflight-regression.py
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 .\scripts\build-release.ps1 -Toolchain stable-x86_64-pc-windows-gnu -PackageSuffix windows-x64
 python scripts\verify-release-artifacts.py dist
@@ -61,6 +65,8 @@ cargo test --workspace
 npm run check --prefix sdk/typescript
 npm run check --prefix packaging/npm/conu-cli
 python scripts/verify-npm-package-contents.py
+python scripts/check-npm-publish-preflight.py
+python scripts/check-npm-publish-preflight-regression.py
 ./scripts/build-release.sh
 PACKAGE_SUFFIX=linux-x64 ./scripts/build-release.sh
 PACKAGE_SUFFIX=macos-arm64 ./scripts/build-release.sh
@@ -191,6 +197,7 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 - CI and release package jobs run `scripts/check-release-artifact-verifier.py` before artifact builds, so release archive verification regressions fail before platform artifacts are generated.
 - CI and release package jobs run `scripts/check-release-artifact-smoke-preflight.py` before artifact builds, so release artifact smoke preflight regressions fail before platform artifacts are generated.
 - CI, release package checks, and tagged npm publication run `scripts/verify-npm-package-contents.py` so `@conu/cli` and `@conu/sdk` package dry-runs fail closed on missing required files, unexpected files, forbidden state/build/payload paths, oversized files, or bundled dependencies.
+- CI and release package checks run `scripts/check-npm-publish-preflight.py` and `scripts/check-npm-publish-preflight-regression.py`; tagged npm publication reruns the preflight with `--registry-check --require-token-env NODE_AUTH_TOKEN` before publishing either package, so an already-published `@conu/cli` or `@conu/sdk` version fails before a partial publish starts.
 - npm package checks, content dry-runs, and publication jobs run on Node 24 LTS, and package `engines` accept supported Node LTS lines only. Revisit the range when the next Node LTS line is promoted.
 - CI and release workflows use GitHub JavaScript action versions that declare the Node 24 action runtime, avoiding older action-runtime deprecation warnings. Self-hosted runners must be new enough for those actions before release workflows are moved off GitHub-hosted runners.
 - Migration-sensitive GitHub-hosted runner labels are explicit: Windows release/CI jobs run on `windows-2025-vs2026` while the Visual Studio 2026 migration is active, macOS arm64 jobs run on `macos-15`, and macOS x64 release jobs run on `macos-15-intel`. Revisit the Windows label after GitHub completes the June 2026 migration.
@@ -206,7 +213,7 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 ```
 
 - `@conu/cli` and `@conu/sdk` npm package content verification passes before publication.
-- `@conu/cli` and `@conu/sdk` are published only after the matching GitHub Release assets are available; the tagged release preflight requires the repository `NPM_TOKEN` secret for automated npm publication with provenance.
+- `@conu/cli` and `@conu/sdk` are published only after the matching GitHub Release assets are available; the tagged release preflight requires the repository `NPM_TOKEN` secret for automated npm publication with provenance, and the npm publish conflict preflight confirms both target package versions are absent from npm before any publish command runs.
 - Platform signing workflow is implemented for tagged releases: Windows Authenticode, macOS Developer ID signing/notarization, Linux SHA-256 plus GitHub artifact attestations.
 - `plan.md` completion log is updated.
 - Issue is closed by PR merge.

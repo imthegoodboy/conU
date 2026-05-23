@@ -58,6 +58,7 @@ The CI and release package jobs run the same check before package validation. Br
 The same package jobs run `python scripts/check-release-artifact-verifier.py` so checksum format, duplicate path, and forbidden state-path regressions fail before platform artifacts are generated.
 They also run `python scripts/check-release-artifact-smoke-preflight.py` so release artifact smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before execution.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
+They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
 
 Validate generated archives before upload:
 
@@ -124,7 +125,9 @@ python scripts/smoke-npm-launcher-download.py dist
 See `docs/distribution-and-hosting.md` for the publish flow. Tagged releases
 publish GitHub Release assets automatically and require the repository
 `NPM_TOKEN` secret so npm publication cannot silently skip after a GitHub-only
-release.
+release. Tagged npm publication also runs the npm publish preflight with a
+registry availability check before either package is published, so existing
+`@conu/cli` or `@conu/sdk` versions fail before a partial publish starts.
 
 ## Relay Docker Template
 
