@@ -105,7 +105,7 @@
 - CI and release workflows upload binaries/docs/templates only.
 - Release workflows must verify archives before upload, require install/service templates in each archive, reject local conU state, private keys, logs, inboxes, route registries, telemetry dumps, node modules, vendored npm binaries, and payload-bearing files, sign Windows binaries, sign/notarize macOS ZIP archives, and generate GitHub artifact attestations for release archives plus checksum files. Signing and notarization logs must not display certificates, private keys, signing passwords, npm tokens, relay tokens, local conU state, or payload contents.
 - Service templates must not bake in developer-specific secrets, tokens, or private paths beyond editable placeholders.
-- npm packaging must verify release checksums by default and must not package or inspect local `CONU_HOME` state.
+- npm packaging must verify release checksums by default, require trusted download URLs, enforce bounded archive/checksum downloads, and must not package or inspect local `CONU_HOME` state.
 - Docker relay templates must keep relay tokens in runtime configuration or explicit issued token files only; credential manifests may store token hashes and lifecycle metadata, but never raw relay tokens, and examples should prefer `--credentials-file`, `--replace`, and `--revoke-credential` over hand-editing where possible.
 
 ## CLI Watch

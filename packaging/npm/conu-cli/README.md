@@ -7,7 +7,7 @@ This npm package is a thin launcher for the native Rust conU binaries:
 - `conu-relay`
 - `conu-mcp`
 
-The package does not reimplement conU in JavaScript. On install, it downloads the matching native release archive from GitHub Releases, verifies the `.sha256` file, and places the binaries under the package-local `vendor/` directory.
+The package does not reimplement conU in JavaScript. On install, it downloads the matching native release archive from GitHub Releases with bounded request time and response sizes, verifies the `.sha256` file, and places the binaries under the package-local `vendor/` directory.
 
 ## Install
 
@@ -50,10 +50,13 @@ preflight, extraction, and launcher path are checked before publishing.
 ## Environment
 
 ```txt
-CONU_NPM_DIST_BASE        Override the release base URL; HTTPS is required unless the URL is loopback HTTP.
-CONU_NPM_BINARY_DIR       Copy binaries from a local directory instead of downloading.
-CONU_NPM_SKIP_DOWNLOAD    Skip install download for package publishing checks.
-CONU_NPM_ALLOW_UNVERIFIED Allow install when a checksum file is unavailable.
+CONU_NPM_DIST_BASE             Override the release base URL; HTTPS is required unless the URL is loopback HTTP.
+CONU_NPM_BINARY_DIR            Copy binaries from a local directory instead of downloading.
+CONU_NPM_SKIP_DOWNLOAD         Skip install download for package publishing checks.
+CONU_NPM_ALLOW_UNVERIFIED      Allow install when a checksum file is unavailable.
+CONU_NPM_DOWNLOAD_TIMEOUT_MS   Override the per-request download timeout; default is 300000.
+CONU_NPM_MAX_ARCHIVE_BYTES     Override the native archive download limit; default is 536870912.
+CONU_NPM_MAX_CHECKSUM_BYTES    Override the checksum response limit; default is 16384.
 ```
 
 The default download base is:

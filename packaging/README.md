@@ -78,9 +78,9 @@ with `CONU_NPM_BINARY_DIR` pointed at the archive binaries, verifies the copied
 vendor binaries and npm bin shims, then runs the installed launcher through the
 same payload-safe readiness checks. The npm download smoke serves `dist/` from a
 temporary localhost HTTP server, installs the package with `CONU_NPM_DIST_BASE`,
-and exercises the default HTTPS-or-loopback download policy, `.sha256`
-verification, archive-member preflight, extraction, and launcher readiness path
-without publishing assets.
+and exercises the default HTTPS-or-loopback download policy, bounded
+timeout/size behavior, `.sha256` verification, archive-member preflight,
+extraction, and launcher readiness path without publishing assets.
 Tagged release builds also create GitHub artifact attestations for each platform
 archive and checksum file.
 See `docs/platform-code-signing.md` for signing secrets and verification
@@ -100,7 +100,7 @@ The `npm/conu-cli` package is the intended one-command install wrapper:
 npm install -g @conu/cli
 ```
 
-It downloads the native release archive from GitHub Releases, verifies the checksum, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp`.
+It downloads the native release archive from GitHub Releases with bounded request time and response sizes, verifies the checksum, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp`.
 
 Local package test:
 
