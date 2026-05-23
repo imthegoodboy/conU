@@ -131,7 +131,7 @@ conu stop
 - Linux systemd template is present and documents the required user/state path edits.
 - macOS launchd template is present and documents the required user/state path edits.
 - Docker relay template is present and documents current relay limits and knobs.
-- npm launcher package passes `npm run check` from `packaging/npm/conu-cli`; the local npm launcher install smoke copies release binaries into the package vendor directory, and the download install smoke verifies the default archive download, `.sha256` check, archive-member preflight, extraction, npm bin shims, and `ready_for_local_use` launcher path.
+- npm launcher package passes `npm run check` from `packaging/npm/conu-cli`; the local npm launcher install smoke copies release binaries into the package vendor directory, and the download install smoke verifies the default HTTPS-or-loopback archive download policy, `.sha256` check, archive-member preflight, extraction, npm bin shims, and `ready_for_local_use` launcher path.
 - TypeScript/JavaScript SDK package passes `npm run check --prefix sdk/typescript`.
 
 ## Platform Signing

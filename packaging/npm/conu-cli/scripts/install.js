@@ -10,6 +10,10 @@ const { spawnSync } = require("node:child_process");
 
 const { validateArchiveMembers } = require("../lib/archive-preflight");
 const {
+  formatDownloadUrlForError,
+  validateDownloadUrl
+} = require("../lib/download-policy");
+const {
   BINARIES,
   assetName,
   binaryPath,
@@ -178,7 +182,9 @@ function downloadOptionalText(url) {
       }
       if (response.statusCode !== 200) {
         response.resume();
-        reject(new Error(`download failed ${url}: HTTP ${response.statusCode}`));
+        reject(
+          new Error(`download failed ${formatDownloadUrlForError(url)}: HTTP ${response.statusCode}`)
+        );
         return;
       }
       response.setEncoding("utf8");
@@ -199,7 +205,9 @@ function downloadFile(url, target) {
         response.resume();
         file.close(() => {
           fs.rmSync(target, { force: true });
-          reject(new Error(`download failed ${url}: HTTP ${response.statusCode}`));
+          reject(
+            new Error(`download failed ${formatDownloadUrlForError(url)}: HTTP ${response.statusCode}`)
+          );
         });
         return;
       }
@@ -215,8 +223,9 @@ function downloadFile(url, target) {
 }
 
 function request(url, onError, handler, redirects = 0) {
-  const client = url.startsWith("https:") ? https : http;
-  return client.get(url, (response) => {
+  const parsedUrl = validateDownloadUrl(url);
+  const client = parsedUrl.protocol === "https:" ? https : http;
+  return client.get(parsedUrl, (response) => {
     if (
       response.statusCode >= 300 &&
       response.statusCode < 400 &&
