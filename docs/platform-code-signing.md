@@ -15,12 +15,14 @@ package-manager publishing.
   before checksums and attestations are generated.
 - Linux release tarballs use SHA-256 checksum files, GitHub artifact
   attestations for archive provenance, and armored detached GPG `.asc`
-  signatures. Generated Debian/RPM packages use SHA-256 sidecars plus detached
-  `.asc` signatures. Generated APT metadata ZIP bundles add native
-  `InRelease` and `Release.gpg` signatures over `Release`; generated RPM
-  metadata ZIP bundles add `repodata/repomd.xml.asc` over
-  `repodata/repomd.xml`. Both metadata ZIPs refresh their `.sha256` sidecars
-  before detached `.asc` signatures are created over the final ZIPs.
+  signatures. Generated Debian packages use SHA-256 sidecars plus detached
+  `.asc` signatures. Generated RPM packages use native RPM package signatures,
+  refreshed SHA-256 sidecars, and detached `.asc` signatures. Generated APT
+  metadata ZIP bundles add native `InRelease` and `Release.gpg` signatures over
+  `Release`; generated RPM metadata ZIP bundles are generated from signed RPM
+  packages and add `repodata/repomd.xml.asc` over `repodata/repomd.xml`. Both
+  metadata ZIPs refresh their `.sha256` sidecars before detached `.asc`
+  signatures are created over the final ZIPs.
   Tagged releases also publish `conu-linux-gpg-key.asc` plus its `.sha256`
   sidecar so users can verify those Linux signatures from release assets.
 - Signing secrets are maintainer-owned repository secrets. The workflow never
@@ -80,12 +82,14 @@ absent, which keeps smoke packaging available for maintainers. Those non-tag
 runs do not publish GitHub Releases or npm packages.
 
 Tagged GitHub Release publication imports the Linux GPG private key into a
-temporary `GNUPGHOME`, first adds and verifies native signatures inside the
-generated APT/RPM repository metadata ZIPs, refreshes their `.sha256` sidecars,
-then signs only the Linux archives, generated Debian/RPM packages, and final
-APT/RPM repository metadata ZIPs with detached `.asc` signatures. Every
-signature is verified before upload, and the temporary keyring is removed when
-the job exits.
+temporary `GNUPGHOME`, signs generated RPM package payloads first, refreshes
+their `.rpm.sha256` sidecars, generates RPM repository metadata from those
+signed RPM packages, then adds and verifies native signatures inside the
+generated APT/RPM repository metadata ZIPs and refreshes their `.sha256`
+sidecars. It then signs only the Linux archives, generated Debian/RPM packages,
+and final APT/RPM repository metadata ZIPs with detached `.asc` signatures.
+Every signature is verified before upload, and the temporary keyring is removed
+when the job exits.
 
 The same temporary import path exports only the armored Linux GPG public key as
 `conu-linux-gpg-key.asc` with a strict `.sha256` sidecar. The workflow refuses
@@ -163,6 +167,17 @@ unzip -q conu-0.1.0-rpm-repository-metadata.zip -d rpm-metadata
 gpg --verify rpm-metadata/repodata/repomd.xml.asc rpm-metadata/repodata/repomd.xml
 ```
 
+Generated RPM packages also carry native RPM package signatures. Import the
+release public key into a throwaway RPM database when checking manually:
+
+```sh
+mkdir -p rpmdb
+rpm --define "_dbpath $(pwd)/rpmdb" --import conu-linux-gpg-key.asc
+rpmkeys --define "_dbpath $(pwd)/rpmdb" --checksig --verbose conu-0.1.0-1.x86_64.rpm
+```
+
+Use the matching RPM asset name for `aarch64`.
+
 ## References
 
 - Apple documents that notarization uses Developer ID signing and accepts ZIP,
@@ -174,3 +189,5 @@ gpg --verify rpm-metadata/repodata/repomd.xml.asc rpm-metadata/repodata/repomd.x
   https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/set-authenticodesignature
 - GitHub artifact attestations:
   https://docs.github.com/en/actions/concepts/security/artifact-attestations
+- RPM `rpmsign` manual:
+  https://rpm.org/docs/4.20.x/man/rpmsign.8

@@ -32,8 +32,86 @@ Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-24
 Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/session/mailbox actions, payload-safe local scoped admin-token manifest audit, payload-safe hosted relay readiness preflight, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, guarded hosted fleet account/node audit, guarded hosted fleet account/node credential revoke, hosted fleet tenant account upsert/revoke, hosted fleet tenant-node upsert/revoke, and guarded hosted fleet account/node suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, payload-safe hosted relay readiness preflights, guarded hosted fleet dashboard snapshots with aggregate mailbox retention policy gates and aggregate abuse threshold checks, guarded hosted fleet abuse response plans, guarded hosted fleet mailbox purge orchestration, relay session state storage, payload-safe local/admin-gated relay session-state audit, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, reusable durable mailbox retention policy files, confirm-gated local, admin-gated online, and guarded hosted fleet durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, platform signing/notarization workflow hardening, tagged release preflight hardening, Node LTS package hardening, npm installer download timeout/size hardening, npm download smoke host-archive handling, npm package content verification, release artifact verifier bounds, npm installer strict checksum verification, npm installer extracted binary selection hardening, npm installer extracted-tree traversal bounds, npm installer archive-member preflight hardening, package-manager manifest generation preflight, native RPM package build preflight, unsigned RPM release asset generation, unsigned APT repository metadata generation, unsigned RPM repository metadata generation, Linux detached release signatures, signed Linux repository metadata, and Linux GPG public key release asset publication are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse automation beyond local/admin-gated single-relay snapshots, guarded fleet snapshots, threshold reports, guarded response plans, and readiness preflights, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, fleet credential revoke, fleet tenant account lifecycle, and account/node suspension plus single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and remote relay/cross-region mailbox retention orchestration beyond guarded local fleet cleanup.
+Current hardening addition in progress: RPM package payload signing is on branch `rpm-package-payload-signing` for Issue #216. The branch must be preserved.
 Latest completed hardening addition: Linux GPG public key release asset is complete; PR #215 merged to `main` at `7f81b682044c8eb5bbdfbe952ef933ecd0295c93`, Issue #214 is closed, and branch `linux-gpg-public-key-release-asset` is preserved. Prior completed hardening addition: signed Linux repository metadata is complete; PR #213 merged to `main` at `ac867bcb3d34ad78acb6d660c3443424b2eb22d7`, Issue #212 is closed, and branch `signed-linux-repository-metadata` is preserved. Prior completed hardening addition: Linux detached release signatures are complete; PR #211 merged to `main` at `a3795510370876f5ef0a27b873f70790f23d3923`, Issue #210 is closed, and branch `linux-detached-signatures` is preserved. Prior completed hardening addition: unsigned RPM repository metadata generation is complete; PR #209 merged to `main` at `9e2a3f475250363997d6006c278c3f4ff2f7b85d`, Issue #208 is closed, and branch `rpm-repository-metadata` is preserved. Prior completed hardening addition: unsigned APT repository metadata generation is complete; PR #207 merged to `main` at `f2f7c993e658b31d4a77c3c45059a12fb2f7c986`, Issue #206 is closed, and branch `apt-repository-metadata` is preserved. Prior completed hardening addition: unsigned RPM release asset generation is complete; PR #205 merged to `main` at `4048a7fab4b454ed28e782b169906fb60d97dce8`, Issue #204 is closed, and branch `rpm-release-assets` is preserved. Prior completed hardening addition: native RPM package build preflight is complete; PR #203 merged to `main` at `98b2ef7a1aba3eb0cc5e6f10fb4e36560105f3d4`, Issue #202 is closed, and branch `rpm-native-build-preflight` is preserved. Prior completed hardening addition: Debian package and RPM spec generation is complete; PR #201 merged to `main` at `4023297af7554bddab1cc6e0d1bb0a4c06e5fc98`, Issue #200 is closed, and branch `linux-package-manager-preflight` is preserved. Prior completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
 ```
+
+## Post Phase 15 - RPM Package Payload Signing
+
+Status: in_progress
+
+Goal:
+
+Sign generated conU RPM package payload assets during tagged GitHub Release
+publication, refresh their strict `.rpm.sha256` sidecars, and generate RPM
+repository metadata from the signed RPM packages.
+
+Completed work so far:
+
+- Issue #216 tracks this hardening slice on branch
+  `rpm-package-payload-signing`; the branch must be preserved.
+- Added `scripts/sign-rpm-packages.py` to import the existing Linux GPG signing
+  private key into a temporary `GNUPGHOME`, sign only generated conU RPM assets,
+  verify native RPM signatures with a temporary RPM database containing the
+  exported public key, and refresh `.rpm.sha256` sidecars after signing.
+- Added `scripts/check-rpm-package-signing.py` to build fixture RPM packages
+  when native RPM tooling is available, sign them with an ephemeral GPG key,
+  verify native RPM signatures, prove `.rpm.sha256` sidecars are refreshed, and
+  prove RPM repository metadata is generated from signed package digests. It
+  skips cleanly when `rpmbuild`/`rpmsign`/`rpmkeys` are unavailable locally.
+- Reordered tagged GitHub Release publication so RPM packages are built first,
+  signed second, and RPM repository metadata is generated from the signed
+  packages before repository metadata signing and detached Linux asset signing.
+- Wired CI, Release Artifacts package checks, local production-readiness checks,
+  release docs, package-manager docs, repo memory, guardrails, and the
+  privacy/security checklist.
+
+Files changed:
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `scripts/sign-rpm-packages.py`
+- `scripts/check-rpm-package-signing.py`
+- `scripts/generate-package-manager-manifests.py`
+- `scripts/check-package-manager-manifests.py`
+- `scripts/verify-production-readiness.ps1`
+- `README.md`, `docs/`, `packaging/`, `.agents/`, and `plan.md`
+
+Known gaps:
+
+- Local Windows and WSL validation skip native RPM package signing because
+  `rpmbuild`, `rpmsign`, and `rpmkeys` are not installed in those environments;
+  GitHub Actions package jobs install RPM tooling and must exercise that path.
+- This does not host APT/RPM repositories, submit package-manager repository
+  PRs, publish npm packages, add auto-update policy, or define maintainer key
+  fingerprint trust policy outside release assets.
+
+Validation so far:
+
+- `python -m py_compile scripts/sign-rpm-packages.py scripts/check-rpm-package-signing.py scripts/generate-package-manager-manifests.py scripts/check-package-manager-manifests.py scripts/sign-linux-release-assets.py scripts/check-linux-release-signing.py scripts/sign-linux-repository-metadata.py scripts/check-linux-repository-signing.py scripts/export-linux-gpg-public-key.py scripts/check-linux-gpg-public-key-export.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/check-release-artifact-verifier.py scripts/check-release-artifact-smoke-preflight.py scripts/check-npm-launcher-local-smoke-preflight.py scripts/check-npm-publish-preflight.py scripts/check-npm-publish-preflight-regression.py` passed.
+- `python scripts/check-package-manager-manifests.py` passed.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-package-manager-manifests.py'` passed.
+- `python scripts/check-rpm-package-signing.py` skipped cleanly because native
+  Windows lacks `gpg`, `rpmbuild`, `rpmsign` or `rpm`, and `rpmkeys` or `rpm`.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-rpm-package-signing.py'` skipped cleanly because WSL lacks `rpmbuild`, `rpmsign` or `rpm`, and `rpmkeys` or `rpm`.
+- Native Windows GPG checks skipped cleanly because `gpg` is unavailable:
+  `python scripts/check-linux-release-signing.py`,
+  `python scripts/check-linux-repository-signing.py`, and
+  `python scripts/check-linux-gpg-public-key-export.py`.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-linux-release-signing.py'` passed.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-linux-repository-signing.py'` passed.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-linux-gpg-public-key-export.py'` passed.
+- `python scripts/verify-release-versions.py`, `python scripts/check-release-artifact-verifier.py`, `python scripts/check-release-artifact-smoke-preflight.py`, `python scripts/verify-npm-package-contents.py`, `python scripts/check-npm-publish-preflight.py`, `python scripts/check-npm-publish-preflight-regression.py`, and `python scripts/check-npm-launcher-local-smoke-preflight.py` passed.
+- `npm run check --prefix sdk/typescript` and `npm run check --prefix packaging/npm/conu-cli` passed.
+- Workflow YAML parsed with Python/PyYAML.
+- `git diff --check` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed.
+
+Next:
+
+- Open PR for Issue #216, verify CI package jobs exercise native RPM package
+  signing on Ubuntu, run the branch `Release Artifacts` workflow, then merge
+  without deleting the branch if checks pass.
 
 ## Post Phase 15 - Linux GPG Public Key Release Asset
 
