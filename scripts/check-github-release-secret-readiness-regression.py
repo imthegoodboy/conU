@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import contextlib
+import io
 import subprocess
 import sys
 from pathlib import Path
@@ -106,11 +108,47 @@ def run_error_tests(module) -> None:
         helper.subprocess.run = original_run
 
 
+def run_main_tests(module) -> None:
+    helper = sys.modules["github_release_secrets"]
+
+    def fake_secret_list(args, **_kwargs):
+        if args[1:4] != ["secret", "list", "--repo"]:
+            raise AssertionError(f"unexpected gh args: {args!r}")
+        payload = [{"name": name} for name in module.REQUIRED_RELEASE_SECRETS]
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    original_run = subprocess.run
+    original_argv = sys.argv
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    helper.subprocess.run = fake_secret_list
+    sys.argv = [
+        "check-github-release-secret-readiness.py",
+        "--repo",
+        "owner/repo",
+        "--gh",
+        "gh",
+    ]
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = module.main()
+    finally:
+        helper.subprocess.run = original_run
+        sys.argv = original_argv
+
+    if exit_code != 0:
+        raise AssertionError(f"expected main() to pass, got {exit_code}: {stderr.getvalue()}")
+    rendered = stdout.getvalue() + stderr.getvalue()
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("main() output leaked a secret value")
+
+
 def main() -> int:
     module = load_module()
     run_audit_tests(module)
     run_gh_payload_tests(module)
     run_error_tests(module)
+    run_main_tests(module)
     print("GitHub release secret readiness regression checks passed")
     return 0
 
