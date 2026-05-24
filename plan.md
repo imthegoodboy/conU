@@ -204,6 +204,85 @@ Next:
   administration, remote/distributed tenant workflows, remote/cross-region
   mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
+## Post Phase 15 - Hosted Linux Repository Bundles
+
+Status: completed_on_branch
+
+Goal:
+
+Generate a static hosted Linux repository bundle from the signed release
+assets so tagged releases can publish APT/YUM-ready repository trees without
+rewriting package metadata by hand.
+
+Completed work:
+
+- Issue #228 is addressed by PR #229 on branch
+  `hosted-linux-repository-bundles`; the branch must be preserved after merge.
+- Added `scripts/generate-hosted-linux-repositories.py` to build
+  `conu-<version>-hosted-linux-repositories.zip` from already signed Debian
+  packages, signed RPM packages, signed APT/RPM repository metadata, detached
+  package signatures, strict SHA-256 sidecars, and `conu-linux-gpg-key.asc`.
+- Added `scripts/check-hosted-linux-repositories.py` to validate deterministic
+  bundle layout, flat APT metadata, RPM `repodata/` references, public key
+  copies, embedded package signatures, strict sidecars, unsafe ZIP path
+  rejection, missing-signature rejection, and private-key rejection.
+- Extended Linux release detached signing with
+  `--only-hosted-repository-bundles` so the release workflow can sign the
+  hosted bundle after it embeds the previously generated package and repository
+  signatures.
+- Wired hosted repository regression coverage into CI, Release Artifacts
+  package checks, and local production-readiness package checks.
+- Wired tagged release publication to generate the hosted repository bundle
+  after Linux package/metadata signatures exist, then detached-sign the bundle
+  before GitHub Release upload.
+
+Files changed:
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `scripts/generate-hosted-linux-repositories.py`
+- `scripts/check-hosted-linux-repositories.py`
+- `scripts/sign-linux-release-assets.py`
+- `scripts/check-linux-release-signing.py`
+- `scripts/verify-production-readiness.ps1`
+- `docs/`, `packaging/`, `.agents/`, and `plan.md`
+
+Known gaps:
+
+- The generated bundle still needs an operator-owned static hosting endpoint,
+  DNS/TLS, cache policy, and package-manager source documentation before users
+  can install from hosted APT/YUM URLs.
+- Package-manager repository submission, npm package publication, auto-update
+  policy, real signing/notarization/npm secrets, and the broader managed public
+  relay work remain separate blockers.
+
+Validation:
+
+- `python -m py_compile scripts/generate-hosted-linux-repositories.py scripts/check-hosted-linux-repositories.py scripts/sign-linux-release-assets.py scripts/check-linux-release-signing.py` passed.
+- `python scripts/check-hosted-linux-repositories.py` passed.
+- `python scripts/check-package-manager-manifests.py` passed.
+- `python scripts/check-linux-release-signing.py` skipped cleanly on native
+  Windows because `gpg` is unavailable.
+- `python scripts/check-linux-repository-signing.py` skipped cleanly on native
+  Windows because `gpg` is unavailable.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-linux-release-signing.py'`
+  passed with real GPG, including hosted-bundle-only signing mode.
+- `powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipSmokes`
+  passed.
+- Workflow YAML parsed with Python/PyYAML.
+- `git diff --check` passed.
+
+Next:
+
+- Open and merge the hosted Linux repository bundle PR, then continue with
+  operator-hosted APT/RPM endpoint publication docs/scripts, package-manager
+  repository submission, npm package publication, auto-update policy,
+  maintainer fingerprint publication once the real key is chosen, managed
+  public relay hosting, distributed hosted dashboards/adaptive abuse automation,
+  distributed multi-instance session migration, managed hosted identity/key
+  administration, remote/distributed tenant workflows, remote/cross-region
+  mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
 ## Post Phase 15 - Linux Signing Key Fingerprint Policy
 
 Status: completed
