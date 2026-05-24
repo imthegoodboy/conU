@@ -58,6 +58,10 @@ Completed work:
 - Added `scripts/set-github-release-secrets.py` to read all required release
   secret values from local environment variables and send them to
   `gh secret set` over stdin, not command arguments.
+- Follow-up Issue #226 was closed by PR #227 on branch
+  `release-secret-readiness-cli-fix`; PR #227 merged to `main` at merge commit
+  `6c688653193e87f0c107ba66fdba0fb0d60582e6`, and the branch is preserved.
+  This restored direct readiness CLI execution and added a `main()` regression.
 - Shared required release secret metadata in `scripts/github_release_secrets.py`.
 - Wired readiness/setup regressions into CI, Release Artifacts package checks,
   and local production-readiness package checks.
