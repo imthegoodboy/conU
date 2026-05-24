@@ -187,6 +187,7 @@ version = "0.1.0"
 dependencies = [
  "conu-core",
  "conu-protocol",
+ "native-tls",
  "serde_json",
  "sha2",
 ]

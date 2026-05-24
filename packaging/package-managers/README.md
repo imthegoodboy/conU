@@ -18,6 +18,7 @@ python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
 python scripts/generate-release-update-policy.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --repo imthegoodboy/conU
 python scripts/sign-linux-release-assets.py dist --only-update-policies
 conu update check --policy-file dist/conu-0.1.0-update-policy.json --gpg-verify
+conu update check --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --gpg-verify
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
 python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts/check-github-release-assets-published.py --repo imthegoodboy/conU --tag v0.1.0
@@ -135,14 +136,18 @@ package versions, and manual verification rules with auto-apply disabled, writes
 a strict `.sha256` sidecar, and detached-signs that policy with
 `--only-update-policies`. Installed clients can run
 `conu update check --policy-file <path> [--gpg-verify]` against the generated
-policy plus its `.sha256` and `.asc` sidecars to validate the metadata shape,
-public release URLs, checksum sidecar, signature sidecar, false display guards,
-and auto-apply-disabled contract without downloading or applying an update. The
-workflow then verifies and extracts the signed
+policy plus its `.sha256` and `.asc` sidecars, or
+`conu update check --policy-url <https-url> [--gpg-verify]` after publication,
+to validate the metadata shape, public release URLs, checksum sidecar,
+signature sidecar, false display guards, and auto-apply-disabled contract
+without downloading or applying an update. Remote mode fetches only the policy
+JSON plus sidecars with TLS, size, timeout, redirect, and public-host limits.
+The workflow then verifies and extracts the signed
 site ZIP into a GitHub Pages deployment artifact when the release uses the
 default repository Pages base URL. Custom DNS/TLS endpoint activation,
 package-manager submission, operator proof that the generated cache policy is
-applied, and automatic network fetch/apply update behavior remain future work.
+applied, and automatic update artifact download/apply behavior remain future
+work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary

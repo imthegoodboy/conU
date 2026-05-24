@@ -101,7 +101,7 @@ Implemented so far:
 - route sync integration with remote sessions, streams, Rust SDK, Python wrapper SDK, TypeScript wrapper SDK, and MCP
 - `conu doctor` local install/readiness check with payload-safe log scanning
 - `conu telemetry snapshot` local structured telemetry with an explicit payload-safe field allowlist and aggregate counters only
-- `conu update check --policy-file <path> [--gpg-verify]` installed release update-policy validation, including strict checksum sidecar matching, detached-signature sidecar presence, optional GPG verification, public URL checks, npm package version matching, false display guards, and auto-apply disabled
+- `conu update check --policy-file <path> [--gpg-verify]` and `conu update check --policy-url <https-url> [--gpg-verify]` installed release update-policy validation, including strict checksum sidecar matching, detached-signature sidecar presence, optional GPG verification, public URL checks, npm package version matching, false display guards, auto-apply disabled, and bounded remote policy/sidecar fetching without update artifact download or apply behavior
 - release build scripts under `scripts/`
 - bounded streaming release archive verifier under `scripts/verify-release-artifacts.py` with regression checks in `scripts/check-release-artifact-verifier.py`
 - packaging templates under `packaging/`, including Windows install, Linux systemd, macOS launchd, Docker relay, and npm launcher templates
