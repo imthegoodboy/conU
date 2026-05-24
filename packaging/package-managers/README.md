@@ -69,9 +69,11 @@ SHA-256 values for RPM builds on `x86_64` and `aarch64`. CI and release package
 checks install RPM tooling and run the regression through native `rpmbuild` when
 available. Tagged releases now build unsigned `.rpm` assets and strict
 `.rpm.sha256` sidecars from the generated spec. Tagged releases also upload the
-unsigned APT and RPM repository metadata bundles, but signed APT publication
-through `InRelease` or `Release.gpg`, RPM package/repository signing, hosted
-repository setup, and package-manager submission remain future work.
+unsigned APT and RPM repository metadata bundles and create detached `.asc`
+signatures for Linux archives, generated `.deb`/`.rpm` assets, and generated
+APT/RPM metadata ZIPs. Signed APT publication through `InRelease` or
+`Release.gpg`, native RPM package/repository signing, hosted repository setup,
+and package-manager submission remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
@@ -79,6 +81,6 @@ mappings. Generated Debian packages may embed the verified Linux release
 binaries and minimal package metadata only. Generated APT repository metadata
 may contain hashes and sizes for those generated `.deb` files only. Generated
 RPM repository metadata may contain `createrepo_c` metadata for those generated
-`.rpm` files only. Generated package-manager outputs must not contain signing
-secrets, npm tokens, relay tokens, local paths, conU state, private payloads, or
-package-manager repository credentials.
+`.rpm` files only. Generated package-manager outputs and detached signatures
+must not contain signing secrets, npm tokens, relay tokens, local paths, conU
+state, private payloads, or package-manager repository credentials.

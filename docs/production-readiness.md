@@ -81,7 +81,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Pairing is local trust-store groundwork, not full cross-machine rendezvous.
 - MCP is stdio-only. HTTP MCP transport, auth, and remote MCP hosting are intentionally not implemented.
 - Browser-native TypeScript protocol support is intentionally not implemented. The current `@conu/sdk` package is a Node wrapper, and browser-conditioned imports expose only a safe unsupported stub until hosted auth, browser transport, and key-handling rules are designed.
-- Packaging is still local-first, but tagged release builds now fail closed unless Windows Authenticode, macOS Developer ID/notarization, and `NPM_TOKEN` publication secrets are configured. Manual workflow builds can remain unsigned for maintainer smoke tests. Tagged GitHub Release publication can generate Homebrew, Scoop, winget, Chocolatey, Debian, and RPM package-manager files plus unsigned APT/RPM repository metadata and unsigned RPM packages from verified release checksums, and package gates hash-check the APT/RPM metadata plus build-check the generated RPM spec and RPM assets with `rpmbuild`/`createrepo_c` when available, but submission to package-manager repositories, Linux package-manager signing, signed APT/RPM repository publication, broader OS package publishing, and auto-update are not implemented.
+- Packaging is still local-first, but tagged release builds now fail closed unless Windows Authenticode, macOS Developer ID/notarization, Linux detached GPG signing, and `NPM_TOKEN` publication secrets are configured. Manual workflow builds can remain unsigned for maintainer smoke tests. Tagged GitHub Release publication can generate Homebrew, Scoop, winget, Chocolatey, Debian, and RPM package-manager files plus unsigned APT/RPM repository metadata and unsigned RPM packages from verified release checksums, signs Linux archives and generated Linux package/metadata assets with detached `.asc` signatures, and package gates hash-check the APT/RPM metadata plus build-check the generated RPM spec and RPM assets with `rpmbuild`/`createrepo_c` when available, but submission to package-manager repositories, Linux package-manager repository signing, signed APT/RPM repository publication, broader OS package publishing, and auto-update are not implemented.
 - The npm launcher template is present, requires `CONU_NPM_BINARY_DIR` to point at an existing directory containing regular files for every expected binary when the local override is used, requires HTTPS for native binary downloads except loopback HTTP smoke servers, rejects embedded download URL credentials, enforces configurable download timeouts and archive/checksum byte limits, requires a strict checksum line naming the downloaded archive, hashes archives in chunks before extraction, preflights archive member names and link types before extraction, rejects excessive member counts, duplicate normalized paths, and forbidden local state paths before extraction, bounds post-extraction tree scanning by entry count and depth, requires extracted binaries to come from the expected release root `bin/` directory without duplicate binary names elsewhere, verifies npm package dry-run contents before publication, validates public publish metadata, and tagged publication checks that both target npm package versions are absent before publishing either package. The release workflow smoke-tests both local-binary npm launcher install and download/checksum npm launcher install against generated archive binaries. `@conu/cli` should only be published after GitHub Release archives and checksum files exist for the supported platforms.
 - The Docker relay template runs the current relay with scoped credentials or a live-reloaded hashed credential manifest, optional hosted admin account-credential lifecycle, hosted account suspension, guarded local fleet account/node audit, guarded fleet credential revoke, guarded fleet tenant account upsert/revoke, guarded fleet tenant-node upsert/revoke, guarded fleet account/node suspension, configurable connection/frame-rate caps, metadata-only session-state audit, metadata-only accounting and abuse counters, idle/TTL session policy, durable ciphertext mailbox directory, and non-loopback token guard. The client supports `wss://`, but the relay server itself still needs TLS termination in front of it for public operation, and distributed hosted account/session/abuse services are not implemented.
 
@@ -93,7 +93,7 @@ For hands-on install and agent usage instructions, see `docs/user-install-and-ag
 - Multi-tenant hosted SDK/MCP permission administration beyond the current local peer policy file.
 - Browser-native TypeScript protocol support beyond the current fail-closed Node-wrapper package boundary.
 - Secure Enclave, HSM, or managed key administration beyond current local OS/user secret backends.
-- Package-manager repository submission, signed APT/RPM publication, detached Linux package signatures, broader OS package publishing, and auto-update policy.
+- Package-manager repository submission, signed APT/RPM publication, broader OS package publishing, and auto-update policy.
 - Published npm package backed by verified release checksums.
 - Hosted telemetry pipeline, distributed hosted abuse monitoring beyond single-relay `.abuse` counters, threshold reports, hosted-readiness preflights, and guarded fleet response plans, adaptive response, bounded persistent queues, distributed managed account lifecycle beyond guarded local fleet account/node audit, tenant account lifecycle, tenant-node lifecycle, account/node suspension plus single-relay account suspension, and hosted token distribution workflows.
 - Security review of relay auth, replay cache behavior, and storage migration.
@@ -118,6 +118,7 @@ cargo +stable-x86_64-pc-windows-gnu test --workspace
 python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py
 python scripts/check-release-artifact-smoke-preflight.py
 python scripts/check-package-manager-manifests.py
+python scripts/check-linux-release-signing.py
 npm run check --prefix sdk/typescript
 powershell -ExecutionPolicy Bypass -File scripts/smoke-identity-retirement.ps1 -Toolchain stable-x86_64-pc-windows-gnu
 powershell -ExecutionPolicy Bypass -File scripts/smoke-relay-daemon.ps1 -Toolchain stable-x86_64-pc-windows-gnu
@@ -164,6 +165,10 @@ or:
 Each artifact must include only binaries, docs, packaging templates, and `manifest.toml`. It must not include developer state directories, keys, logs, inboxes, route files, or payload-bearing test output.
 
 Archives intended for npm installation must use platform suffixes such as `windows-x64`, `linux-x64`, `linux-arm64`, `macos-x64`, and `macos-arm64`, and each archive must have a sibling `.sha256` file.
+
+Tagged release publication also attaches detached `.asc` signatures for Linux
+archives, generated Debian/RPM packages, and generated APT/RPM repository
+metadata ZIPs after verifying them with the configured maintainer GPG key.
 
 ## Local Release Decision
 

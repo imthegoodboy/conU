@@ -35,6 +35,70 @@ Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-P
 Latest completed hardening addition: unsigned RPM repository metadata generation is complete; PR #209 merged to `main` at `9e2a3f475250363997d6006c278c3f4ff2f7b85d`, Issue #208 is closed, and branch `rpm-repository-metadata` is preserved. Prior completed hardening addition: unsigned APT repository metadata generation is complete; PR #207 merged to `main` at `f2f7c993e658b31d4a77c3c45059a12fb2f7c986`, Issue #206 is closed, and branch `apt-repository-metadata` is preserved. Prior completed hardening addition: unsigned RPM release asset generation is complete; PR #205 merged to `main` at `4048a7fab4b454ed28e782b169906fb60d97dce8`, Issue #204 is closed, and branch `rpm-release-assets` is preserved. Prior completed hardening addition: native RPM package build preflight is complete; PR #203 merged to `main` at `98b2ef7a1aba3eb0cc5e6f10fb4e36560105f3d4`, Issue #202 is closed, and branch `rpm-native-build-preflight` is preserved. Prior completed hardening addition: Debian package and RPM spec generation is complete; PR #201 merged to `main` at `4023297af7554bddab1cc6e0d1bb0a4c06e5fc98`, Issue #200 is closed, and branch `linux-package-manager-preflight` is preserved. Prior completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
 ```
 
+## Post Phase 15 - Linux Detached Release Signatures
+
+Status: in_progress
+
+Goal:
+
+Generate armored detached GPG signatures for Linux release archives, generated
+Debian/RPM packages, and generated APT/RPM repository metadata during tagged
+GitHub Release publication.
+
+Current branch work:
+
+- Issue #210 tracks this work on branch `linux-detached-signatures`; the branch
+  must be preserved after merge.
+- Added `scripts/sign-linux-release-assets.py` to sign only Linux release
+  archives, generated Debian/RPM package assets, and generated APT/RPM
+  repository metadata ZIPs from maintainer-provided GPG secrets, then verify
+  each signature before upload.
+- Added `scripts/check-linux-release-signing.py` to generate an ephemeral GPG
+  key, exercise detached-signature creation and verification, prove non-Linux
+  and checksum/manifest assets are not signed, and prove missing signing secrets
+  fail closed.
+- Wired CI package checks, Release Artifacts package checks, tagged release
+  secret preflight, GitHub Release asset signing, local production-readiness
+  checks, release docs, repo memory, guardrails, and the privacy/security
+  checklist.
+
+Known gaps:
+
+- This does not add native APT `InRelease`/`Release.gpg` publication, native RPM
+  package signing, RPM repository signing, hosted package repositories,
+  package-manager submission, or auto-update policy.
+- This does not replace GitHub artifact attestations or strict `.sha256`
+  sidecars; it adds detached signatures beside the existing release assets.
+
+Validation:
+
+- `python -m py_compile scripts/sign-linux-release-assets.py scripts/check-linux-release-signing.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/generate-package-manager-manifests.py scripts/check-package-manager-manifests.py scripts/check-release-artifact-verifier.py scripts/check-release-artifact-smoke-preflight.py scripts/check-npm-launcher-local-smoke-preflight.py scripts/check-npm-publish-preflight.py scripts/check-npm-publish-preflight-regression.py` passed.
+- `python scripts/check-linux-release-signing.py` skipped cleanly on native
+  Windows because `gpg` is unavailable.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-linux-release-signing.py'` passed with real GPG signature generation and verification.
+- `python scripts/verify-release-versions.py` passed.
+- `python scripts/check-release-artifact-verifier.py` passed.
+- `python scripts/check-release-artifact-smoke-preflight.py` passed.
+- `python scripts/check-package-manager-manifests.py` passed on Windows.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-package-manager-manifests.py'` passed.
+- `python scripts/verify-npm-package-contents.py` passed.
+- `python scripts/check-npm-publish-preflight.py` passed.
+- `python scripts/check-npm-publish-preflight-regression.py` passed.
+- `python scripts/check-npm-launcher-local-smoke-preflight.py` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed.
+- `git diff --check` passed.
+- Workflow YAML parsed with Python/PyYAML.
+- `codex review -c sandbox_mode="danger-full-access" --uncommitted` timed out
+  locally after five minutes without reported findings; a targeted manual diff
+  review was done instead.
+
+Next:
+
+- Open PR for issue #210, run PR CI and branch `Release Artifacts`, then merge
+  without deleting branches if checks stay green.
+
 ## Post Phase 15 - RPM Repository Metadata Bundle
 
 Status: completed
@@ -70,8 +134,8 @@ Known gaps:
 
 - This does not sign RPM packages or RPM repository metadata.
 - This does not host a YUM/DNF repository, submit package-manager repository
-  PRs, configure package-manager credentials, add detached Linux package
-  signatures, or implement auto-update policy.
+  PRs, configure package-manager credentials, add native APT/RPM repository
+  signing, or implement auto-update policy.
 
 Validation:
 
@@ -98,8 +162,8 @@ Validation:
 
 Next:
 
-- Continue with signed APT/RPM repository publication, detached Linux package
-  signatures, package-manager repository submission, managed public relay
+- Continue with signed APT/RPM repository publication, package-manager
+  repository submission, managed public relay
   hosting, distributed hosted dashboards/adaptive abuse automation, distributed
   multi-instance session migration, managed hosted identity/key administration,
   remote/distributed tenant workflows, remote/cross-region mailbox retention
