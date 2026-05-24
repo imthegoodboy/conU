@@ -278,13 +278,21 @@ Validation:
 - Branch `Release Artifacts` passed on `linux-repository-pages-deploy`:
   package checks, production readiness smoke, all platform build/verify/smoke
   jobs, attestations, and artifact uploads passed.
+- Post-merge main CI passed on closeout commit
+  `856545d6b8881224ce641a796dcda579830e50d7`, including package checks with
+  hosted Linux repository Pages regression plus Rust Ubuntu, Rust Windows, and
+  Rust macOS.
+- Post-merge non-tag `Release Artifacts` passed on `main` run `26370134251`:
+  package checks with hosted Linux repository Pages regression, production
+  readiness smoke, all platform build/verify/smoke jobs, attestations, and
+  artifact uploads passed. Publish GitHub Release, Deploy Linux Repository
+  Pages, and Publish npm Packages skipped because this was not a tag run.
 
 Next:
 
-- Run post-merge main CI and non-tag Release Artifacts gates, then continue with
-  real release secret configuration, package publication, custom DNS/TLS/cache
-  policy, package-manager submission, auto-update policy, or managed public
-  relay hardening.
+- Continue with real release secret configuration, package publication, custom
+  DNS/TLS/cache policy, package-manager submission, auto-update policy, or
+  managed public relay hardening.
 
 ## Post Phase 15 - Hosted Linux Repository Site Artifact
 
