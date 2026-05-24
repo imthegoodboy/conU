@@ -242,6 +242,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Install RPM package tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm
       - name: Verify downloaded release assets
         run: python scripts/verify-release-artifacts.py dist
       - name: Generate package-manager manifests
@@ -251,7 +253,7 @@ jobs:
         run: |
           set -eu
           VERSION="${TAG_NAME#v}"
-          python scripts/generate-package-manager-manifests.py dist --output-dir dist --repo "$GH_REPO" --version "$VERSION" --tag "$TAG_NAME"
+          python scripts/generate-package-manager-manifests.py dist --output-dir dist --repo "$GH_REPO" --version "$VERSION" --tag "$TAG_NAME" --build-rpm-packages
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -272,8 +274,8 @@ jobs:
           Windows archives contain Authenticode-signed binaries. macOS archives
           contain Developer ID-signed binaries and are submitted to Apple
           notarization. Linux archives use SHA-256 checksums plus GitHub
-          artifact attestations, and generated Debian packages use SHA-256
-          sidecars until distro package signing is introduced.
+          artifact attestations, and generated Debian/RPM packages use
+          SHA-256 sidecars until distro package signing is introduced.
 
           Installers, npm launchers, and package-manager submissions must use
           the matching .sha256-derived hashes.

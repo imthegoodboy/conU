@@ -8,9 +8,13 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 import zlib
 from dataclasses import dataclass
@@ -28,6 +32,10 @@ EXPECTED_BINARIES = ("conu", "conud", "conu-relay", "conu-mcp")
 DEBIAN_ARCHES = {
     "linux-x64": "amd64",
     "linux-arm64": "arm64",
+}
+RPM_ARCHES = {
+    "linux-x64": "x86_64",
+    "linux-arm64": "aarch64",
 }
 STATIC_OUTPUT_FILENAMES = (
     "conu.rb",
@@ -119,10 +127,19 @@ def main() -> int:
         package_path = output_dir / package.filename
         package_path.write_bytes(package.content)
         write_sha256_sidecar(package_path, package.sha256)
-    (output_dir / "conu.spec").write_text(rpm_spec, encoding="ascii", newline="\n")
+    rpm_spec_path = output_dir / "conu.spec"
+    rpm_spec_path.write_text(rpm_spec, encoding="ascii", newline="\n")
+    if args.build_rpm_packages:
+        build_rpm_packages(version, dist, rpm_spec_path, output_dir)
     print(
         "generated package-manager manifests: "
-        + ", ".join(str(output_dir / name) for name in output_filenames(version))
+        + ", ".join(
+            str(output_dir / name)
+            for name in output_filenames(
+                version,
+                include_rpm_packages=args.build_rpm_packages,
+            )
+        )
     )
     return 0
 
@@ -139,6 +156,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", help="release version; defaults to npm package version")
     parser.add_argument("--tag", help="release tag; defaults to v<version>")
     parser.add_argument("--repo", default="imthegoodboy/conU", help="GitHub repository owner/name")
+    parser.add_argument(
+        "--build-rpm-packages",
+        action="store_true",
+        help="build unsigned x86_64 and aarch64 .rpm packages with rpmbuild",
+    )
     return parser.parse_args()
 
 
@@ -196,12 +218,30 @@ def rpm_version(version: str) -> str:
     return version.replace("-", "~").replace("+", "_")
 
 
-def output_filenames(version: str) -> tuple[str, ...]:
+def rpm_filename(version: str, target: str) -> str:
+    return f"conu-{rpm_version(version)}-1.{RPM_ARCHES[target]}.rpm"
+
+
+def rpm_output_filenames(version: str) -> tuple[str, ...]:
+    outputs = []
+    for target in RPM_ARCHES:
+        filename = rpm_filename(version, target)
+        outputs.extend([filename, f"{filename}.sha256"])
+    return tuple(outputs)
+
+
+def output_filenames(version: str, *, include_rpm_packages: bool = False) -> tuple[str, ...]:
     debian_outputs = []
     for target in DEBIAN_ARCHES:
         filename = debian_filename(version, target)
         debian_outputs.extend([filename, f"{filename}.sha256"])
-    return (*STATIC_OUTPUT_FILENAMES, chocolatey_filename(version), *debian_outputs)
+    rpm_outputs = rpm_output_filenames(version) if include_rpm_packages else ()
+    return (
+        *STATIC_OUTPUT_FILENAMES,
+        chocolatey_filename(version),
+        *debian_outputs,
+        *rpm_outputs,
+    )
 
 
 def load_release_assets(
@@ -797,6 +837,93 @@ def write_sha256_sidecar(path: Path, digest: str) -> None:
         encoding="ascii",
         newline="\n",
     )
+
+
+def build_rpm_packages(
+    version: str,
+    dist: Path,
+    spec_path: Path,
+    output_dir: Path,
+) -> tuple[Path, ...]:
+    rpmbuild = shutil.which("rpmbuild")
+    if rpmbuild is None:
+        raise SystemExit("rpmbuild is required when --build-rpm-packages is set")
+
+    outputs = []
+    for target, rpm_arch in RPM_ARCHES.items():
+        with tempfile.TemporaryDirectory(
+            prefix=f"conu-rpmbuild-{rpm_arch}-",
+        ) as topdir_text:
+            topdir = Path(topdir_text)
+            for name in ("BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"):
+                (topdir / name).mkdir()
+            command = rpm_build_command(rpmbuild, spec_path, dist, topdir, rpm_arch)
+            env = os.environ.copy()
+            env.setdefault("SOURCE_DATE_EPOCH", str(SOURCE_EPOCH))
+            try:
+                subprocess.run(
+                    command,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                )
+            except subprocess.CalledProcessError as exc:
+                raise SystemExit(
+                    f"rpmbuild failed for {target} with output:\n{exc.stdout}"
+                ) from exc
+
+            packages = sorted((topdir / "RPMS").rglob("conu-*.rpm"))
+            if len(packages) != 1:
+                raise SystemExit(
+                    f"rpmbuild for {target} produced packages {[str(path) for path in packages]!r}"
+                )
+            expected_name = rpm_filename(version, target)
+            if packages[0].name != expected_name:
+                raise SystemExit(
+                    f"rpmbuild for {target} produced unexpected package name "
+                    f"{packages[0].name!r}; expected {expected_name!r}"
+                )
+            output_path = output_dir / expected_name
+            shutil.copy2(packages[0], output_path)
+            write_sha256_sidecar(output_path, sha256_file(output_path))
+            outputs.append(output_path)
+    return tuple(outputs)
+
+
+def rpm_build_command(
+    rpmbuild: str,
+    spec_path: Path,
+    dist: Path,
+    topdir: Path,
+    rpm_arch: str,
+) -> list[str]:
+    return [
+        rpmbuild,
+        "--define",
+        f"_topdir {topdir}",
+        "--define",
+        f"_sourcedir {dist}",
+        "--define",
+        f"_builddir {topdir / 'BUILD'}",
+        "--define",
+        f"_buildrootdir {topdir / 'BUILDROOT'}",
+        "--define",
+        f"_rpmdir {topdir / 'RPMS'}",
+        "--define",
+        f"_srcrpmdir {topdir / 'SRPMS'}",
+        "--define",
+        "dist %{nil}",
+        "--define",
+        "__os_install_post %{nil}",
+        "--target",
+        rpm_arch,
+        "-bb",
+        str(spec_path),
+    ]
 
 
 def render_rpm_spec(version: str, repo: str, assets: dict[str, ReleaseAsset]) -> str:
