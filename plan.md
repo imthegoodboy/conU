@@ -287,17 +287,22 @@ Validation:
 - PR #231 CI passed: package checks, Rust Ubuntu, Rust Windows, Rust macOS,
   and CodeRabbit.
 - Branch `hosted-linux-repository-site` was preserved after merge.
+- Post-merge main CI passed on closeout commit `7f2af94f8dfc596c5c12e81b8abc143313867a27`.
+- Post-merge non-tag `Release Artifacts` passed on `main` after rerunning a
+  transient Windows artifact-attestation failure; package checks, production
+  readiness smoke, all platform build/verify/smoke jobs, attestations, and
+  artifact uploads passed.
 
 Next:
 
-- Run post-merge main CI and Release Artifacts gates, then continue with real
-  DNS/TLS/static hosting deployment, package-manager repository submission, npm
-  package publication, auto-update policy, maintainer fingerprint publication
-  once the real key is chosen, managed public relay hosting, distributed hosted
-  dashboards/adaptive abuse automation, distributed multi-instance session
-  migration, managed hosted identity/key administration, remote/distributed
-  tenant workflows, remote/cross-region mailbox retention orchestration, or
-  ICE/STUN/TURN managed traversal.
+- Continue with real DNS/TLS/static hosting deployment, package-manager
+  repository submission, npm package publication, auto-update policy,
+  maintainer fingerprint publication once the real key is chosen, managed
+  public relay hosting, distributed hosted dashboards/adaptive abuse
+  automation, distributed multi-instance session migration, managed hosted
+  identity/key administration, remote/distributed tenant workflows,
+  remote/cross-region mailbox retention orchestration, or ICE/STUN/TURN
+  managed traversal.
 
 ## Post Phase 15 - Hosted Linux Repository Bundles
 
