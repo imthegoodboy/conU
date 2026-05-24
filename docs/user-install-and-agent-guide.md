@@ -721,4 +721,4 @@ To make conU genuinely useful over the internet, the next phase should build:
 - Tenant-wide hosted dashboard workflow services beyond the current admin-token-gated single-relay dashboard snapshot, scoped admin-token manifest and audit, local topic policy file, and single-writer hosted tenant registry.
 - Managed direct NAT traversal beyond static candidate metadata, including ICE/STUN/TURN or hosted direct-candidate rendezvous.
 - Browser-native TypeScript protocol support remains future work; the current Node wrapper uses installed binaries and MCP for explicit payload receive, while browser-conditioned imports fail closed through a safe unsupported stub.
-- OS package-manager installers, signed APT/RPM publication, and managed hosted account/key administration after local packaging stabilizes.
+- OS package-manager installers, hosted APT/RPM repository publication, RPM package payload signing, and managed hosted account/key administration after local packaging stabilizes.

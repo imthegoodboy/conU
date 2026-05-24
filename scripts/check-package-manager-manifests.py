@@ -546,8 +546,13 @@ def assert_apt_repository_metadata(path: Path, temp: Path) -> None:
         for field in release_fields:
             if field not in release_text:
                 raise AssertionError(f"{path.name} Release missed {field!r}")
-    if "This bundle is unsigned" not in readme_text or DEBIAN_AMD64_FILENAME not in readme_text:
-        raise AssertionError(f"{path.name} README missed unsigned publication guidance")
+    if (
+        "Tagged release publication adds native APT signatures" not in readme_text
+        or "InRelease" not in readme_text
+        or "Release.gpg" not in readme_text
+        or DEBIAN_AMD64_FILENAME not in readme_text
+    ):
+        raise AssertionError(f"{path.name} README missed signed publication guidance")
     for label, text in (
         ("README.txt", readme_text),
         ("Packages", packages_text),
@@ -589,9 +594,13 @@ def assert_rpm_repository_metadata(path: Path, temp: Path, generator, output: Pa
     filelists_text = gzip.decompress(contents["repodata/filelists.xml.gz"]).decode("utf-8")
     other_text = gzip.decompress(contents["repodata/other.xml.gz"]).decode("utf-8")
 
-    if "This bundle is unsigned" not in readme_text or RPM_X64_FILENAME not in readme_text:
-        raise AssertionError(f"{path.name} README missed unsigned publication guidance")
-    if ".rpm files before serving" not in readme_text:
+    if (
+        "Tagged release publication adds repodata/repomd.xml.asc" not in readme_text
+        or "RPM package payload signing" not in readme_text
+        or RPM_X64_FILENAME not in readme_text
+    ):
+        raise AssertionError(f"{path.name} README missed signed publication guidance")
+    if ".rpm files beside the unpacked metadata" not in readme_text:
         raise AssertionError(f"{path.name} README missed repository placement guidance")
 
     repomd_root = ET.fromstring(repomd_text)

@@ -69,11 +69,12 @@ SHA-256 values for RPM builds on `x86_64` and `aarch64`. CI and release package
 checks install RPM tooling and run the regression through native `rpmbuild` when
 available. Tagged releases now build unsigned `.rpm` assets and strict
 `.rpm.sha256` sidecars from the generated spec. Tagged releases also upload the
-unsigned APT and RPM repository metadata bundles and create detached `.asc`
-signatures for Linux archives, generated `.deb`/`.rpm` assets, and generated
-APT/RPM metadata ZIPs. Signed APT publication through `InRelease` or
-`Release.gpg`, native RPM package/repository signing, hosted repository setup,
-and package-manager submission remain future work.
+APT and RPM repository metadata bundles, add native APT `InRelease` and
+`Release.gpg` signatures, add RPM `repodata/repomd.xml.asc`, refresh metadata
+ZIP `.sha256` sidecars, and create detached `.asc` signatures for Linux
+archives, generated `.deb`/`.rpm` assets, and generated APT/RPM metadata ZIPs.
+Native RPM package payload signing, hosted repository setup, and
+package-manager submission remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
