@@ -116,12 +116,16 @@ repository site generator then builds
 `conu-<version>-hosted-linux-repository-site.zip` from that signed bundle, its
 strict sidecar, and its detached signature. The site artifact contains the
 public `apt/` and `rpm/` trees, `.nojekyll`, `index.html`,
-`repository.json`, APT/YUM install snippets, and `downloads/` copies of the
-signed source bundle plus sidecars. Tagged publication detached-signs the site
-artifact too, then verifies and extracts the signed site ZIP into a GitHub
-Pages deployment artifact when the release uses the default repository Pages
-base URL. Custom DNS/TLS/cache policy and package-manager submission remain
-future work.
+`repository.json`, `cache-policy.json`, `_headers`, APT/YUM install snippets,
+and `downloads/` copies of the signed source bundle plus sidecars. The cache
+policy files keep install metadata, public keys, and package-manager indexes
+revalidated while allowing versioned package payloads and signed bundle
+downloads to be cached immutably when the static host applies them. Tagged
+publication detached-signs the site artifact too, then verifies and extracts
+the signed site ZIP into a GitHub Pages deployment artifact when the release
+uses the default repository Pages base URL. Custom DNS/TLS endpoint activation,
+package-manager submission, and operator proof that the generated cache policy
+is applied remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
@@ -134,8 +138,8 @@ the Linux GPG public-key asset must not contain signing secrets, npm tokens,
 relay tokens, local paths, conU state, private payloads, private-key material,
 or package-manager repository credentials. Generated hosted repository site
 artifacts and Pages deployment artifacts contain public repository files,
-public metadata, public signatures, public checksums, and install snippets
-only. Users should compare
+public metadata, public cache policy files, public signatures, public checksums,
+and install snippets only. Users should compare
 `conu-linux-gpg-key.asc` against the published full maintainer fingerprint
 before trusting Linux `.asc`, native RPM package, or native repository metadata
 signatures.

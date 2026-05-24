@@ -24,6 +24,54 @@ MAX_SIGNATURE_BYTES = 1024 * 1024
 MAX_SITE_ZIP_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SITE_MEMBERS = 10000
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
+CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
+CACHE_CONTROL_RULES = (
+    {
+        "kind": "mutable-site-metadata",
+        "cacheControl": "no-cache",
+        "paths": (
+            "/README.txt",
+            "/index.html",
+            "/repository.json",
+            "/cache-policy.json",
+            "/_headers",
+            "/install/*",
+            f"/{PUBLIC_KEY_NAME}",
+            f"/{PUBLIC_KEY_NAME}.sha256",
+            f"/apt/{PUBLIC_KEY_NAME}",
+            f"/apt/{PUBLIC_KEY_NAME}.sha256",
+            f"/rpm/{PUBLIC_KEY_NAME}",
+            f"/rpm/{PUBLIC_KEY_NAME}.sha256",
+        ),
+    },
+    {
+        "kind": "repository-metadata",
+        "cacheControl": "public, max-age=300, must-revalidate",
+        "paths": (
+            "/apt/Packages",
+            "/apt/Packages.gz",
+            "/apt/Release",
+            "/apt/InRelease",
+            "/apt/Release.gpg",
+            "/rpm/repodata/*",
+        ),
+    },
+    {
+        "kind": "immutable-release-assets",
+        "cacheControl": "public, max-age=31536000, immutable",
+        "paths": (
+            "/apt/*.deb",
+            "/apt/*.deb.sha256",
+            "/apt/*.deb.asc",
+            "/rpm/*.rpm",
+            "/rpm/*.rpm.sha256",
+            "/rpm/*.rpm.asc",
+            "/downloads/conu-*-hosted-linux-repositories.zip",
+            "/downloads/conu-*-hosted-linux-repositories.zip.sha256",
+            "/downloads/conu-*-hosted-linux-repositories.zip.asc",
+        ),
+    },
+)
 FORBIDDEN_SEGMENTS = {
     ".conu",
     ".git",
@@ -46,6 +94,7 @@ FORBIDDEN_TEXT = (
     "ciphertext_body",
 )
 TEXT_SUFFIXES = (".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256")
+TEXT_MEMBER_NAMES = {"_headers"}
 
 
 def main() -> int:
@@ -204,6 +253,8 @@ def validate_site_members(site_name: str, version: str, members: dict[str, bytes
     required = {
         ".nojekyll",
         "README.txt",
+        "_headers",
+        "cache-policy.json",
         "index.html",
         "repository.json",
         PUBLIC_KEY_NAME,
@@ -229,9 +280,11 @@ def validate_site_members(site_name: str, version: str, members: dict[str, bytes
         raise SystemExit(f"{site_name} is missing Pages member(s): {', '.join(missing)}")
     for name, data in members.items():
         validate_allowed_path(site_name, version, name)
-        if name.endswith(TEXT_SUFFIXES):
+        if is_text_member(name):
             assert_no_forbidden_text(data, f"{site_name}:{name}")
-    validate_repository_json(version, members["repository.json"])
+    base_url = validate_repository_json(version, members["repository.json"])
+    validate_cache_policy_json(version, base_url, members["cache-policy.json"])
+    validate_headers_file(members["_headers"])
     validate_key_and_signature_material(site_name, members)
     validate_downloaded_bundle(version, members)
 
@@ -241,6 +294,8 @@ def validate_allowed_path(site_name: str, version: str, name: str) -> None:
     if name in {
         ".nojekyll",
         "README.txt",
+        "_headers",
+        "cache-policy.json",
         "index.html",
         "repository.json",
         PUBLIC_KEY_NAME,
@@ -261,7 +316,7 @@ def validate_allowed_path(site_name: str, version: str, name: str) -> None:
     raise SystemExit(f"{site_name} contains unexpected Pages member: {name}")
 
 
-def validate_repository_json(version: str, data: bytes) -> None:
+def validate_repository_json(version: str, data: bytes) -> str:
     try:
         repository = json.loads(data.decode("ascii"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -292,6 +347,103 @@ def validate_repository_json(version: str, data: bytes) -> None:
         raise SystemExit("repository.json APT repository URL does not match baseUrl")
     if rpm.get("repositoryUrl") != f"{base_url}/rpm":
         raise SystemExit("repository.json RPM repository URL does not match baseUrl")
+    cache_policy = repository.get("cachePolicy")
+    if not isinstance(cache_policy, dict):
+        raise SystemExit("repository.json cachePolicy metadata is missing")
+    if cache_policy.get("policyUrl") != f"{base_url}/cache-policy.json":
+        raise SystemExit("repository.json cache policy URL does not match baseUrl")
+    if cache_policy.get("headersFileUrl") != f"{base_url}/_headers":
+        raise SystemExit("repository.json cache headers URL does not match baseUrl")
+    if cache_policy.get("hostMustApply") is not True:
+        raise SystemExit("repository.json expected cachePolicy.hostMustApply=true")
+    return base_url
+
+
+def validate_cache_policy_json(version: str, base_url: str, data: bytes) -> None:
+    try:
+        policy = json.loads(data.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit("cache-policy.json is not ASCII JSON") from exc
+    if policy.get("schema") != CACHE_POLICY_SCHEMA:
+        raise SystemExit("cache-policy.json has unexpected schema")
+    if policy.get("version") != version:
+        raise SystemExit("cache-policy.json version does not match site artifact name")
+    if policy.get("baseUrl") != base_url:
+        raise SystemExit("cache-policy.json baseUrl does not match repository.json")
+    if policy.get("headersFile") != "_headers":
+        raise SystemExit("cache-policy.json headersFile must be _headers")
+    if policy.get("hostMustApply") is not True:
+        raise SystemExit("cache-policy.json expected hostMustApply=true")
+    for key, value in {
+        "payloadDisplayed": False,
+        "tokenDisplayed": False,
+        "keyMaterialDisplayed": False,
+    }.items():
+        if policy.get(key) is not value:
+            raise SystemExit(f"cache-policy.json expected {key}=false")
+    actual_rules = []
+    for rule in policy.get("rules", []):
+        if not isinstance(rule, dict):
+            raise SystemExit("cache-policy.json contains non-object cache rule")
+        paths = rule.get("paths")
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise SystemExit("cache-policy.json contains invalid cache rule paths")
+        actual_rules.append(
+            {
+                "kind": rule.get("kind"),
+                "paths": tuple(paths),
+                "cacheControl": rule.get("cacheControl"),
+            }
+        )
+    expected_rules = [
+        {
+            "kind": rule["kind"],
+            "paths": rule["paths"],
+            "cacheControl": rule["cacheControl"],
+        }
+        for rule in CACHE_CONTROL_RULES
+    ]
+    if actual_rules != expected_rules:
+        raise SystemExit("cache-policy.json cache rules do not match the generated repository policy")
+
+
+def validate_headers_file(data: bytes) -> None:
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise SystemExit("_headers is not ASCII") from exc
+    entries = parse_headers_file(text)
+    expected = {
+        path: {"Cache-Control": rule["cacheControl"]}
+        for rule in CACHE_CONTROL_RULES
+        for path in rule["paths"]
+    }
+    if entries != expected:
+        raise SystemExit("_headers cache rules do not match cache-policy.json")
+
+
+def parse_headers_file(text: str) -> dict[str, dict[str, str]]:
+    entries: dict[str, dict[str, str]] = {}
+    current_path: str | None = None
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(" ") or line.startswith("\t"):
+            if current_path is None:
+                raise SystemExit("_headers contains a header before any path")
+            stripped = line.strip()
+            if ":" not in stripped:
+                raise SystemExit("_headers contains a malformed header line")
+            name, value = stripped.split(":", 1)
+            entries[current_path][name.strip()] = value.strip()
+            continue
+        current_path = line.strip()
+        if not current_path.startswith("/"):
+            raise SystemExit("_headers contains a non-absolute path")
+        if current_path in entries:
+            raise SystemExit(f"_headers contains duplicate path: {current_path}")
+        entries[current_path] = {}
+    return entries
 
 
 def validate_key_and_signature_material(site_name: str, members: dict[str, bytes]) -> None:
@@ -340,6 +492,10 @@ def assert_no_forbidden_text(data: bytes, label: str) -> None:
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
             raise SystemExit(f"{label} contains forbidden Pages deployment text: {forbidden}")
+
+
+def is_text_member(name: str) -> bool:
+    return name in TEXT_MEMBER_NAMES or name.endswith(TEXT_SUFFIXES)
 
 
 def sha256_file(path: Path) -> str:

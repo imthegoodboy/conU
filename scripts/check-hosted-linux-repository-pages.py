@@ -23,6 +23,7 @@ HOSTED_BUNDLE = f"conu-{VERSION}-hosted-linux-repositories.zip"
 SITE_BUNDLE = f"conu-{VERSION}-hosted-linux-repository-site.zip"
 PUBLIC_KEY = "conu-linux-gpg-key.asc"
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
+CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
 
 
 def main() -> int:
@@ -97,6 +98,54 @@ def main() -> int:
             unexpected_download / SITE_BUNDLE,
             temp / "unexpected-download-pages",
             "unexpected Pages member",
+        )
+
+        missing_cache_policy = temp / "missing-cache-policy"
+        shutil.copytree(dist, missing_cache_policy)
+        rewrite_site_zip(
+            missing_cache_policy / SITE_BUNDLE,
+            {},
+            removals=("cache-policy.json",),
+        )
+        sign_site(missing_cache_policy / SITE_BUNDLE)
+        expect_failure(
+            "missing cache policy",
+            missing_cache_policy / SITE_BUNDLE,
+            temp / "missing-cache-policy-pages",
+            "missing Pages member",
+        )
+
+        bad_cache_policy = temp / "bad-cache-policy"
+        shutil.copytree(dist, bad_cache_policy)
+        cache_policy = read_site_json_member(bad_cache_policy / SITE_BUNDLE, "cache-policy.json")
+        cache_policy["tokenDisplayed"] = True
+        rewrite_site_zip(
+            bad_cache_policy / SITE_BUNDLE,
+            {
+                "cache-policy.json": json.dumps(cache_policy, indent=2, sort_keys=True).encode("ascii")
+                + b"\n"
+            },
+        )
+        sign_site(bad_cache_policy / SITE_BUNDLE)
+        expect_failure(
+            "cache policy display guard",
+            bad_cache_policy / SITE_BUNDLE,
+            temp / "bad-cache-policy-pages",
+            "cache-policy.json expected tokenDisplayed=false",
+        )
+
+        bad_headers = temp / "bad-headers"
+        shutil.copytree(dist, bad_headers)
+        rewrite_site_zip(
+            bad_headers / SITE_BUNDLE,
+            {"_headers": b"/repository.json\n  Cache-Control: public, max-age=31536000, immutable\n"},
+        )
+        sign_site(bad_headers / SITE_BUNDLE)
+        expect_failure(
+            "bad cache headers",
+            bad_headers / SITE_BUNDLE,
+            temp / "bad-headers-pages",
+            "_headers cache rules do not match cache-policy.json",
         )
 
         insecure = temp / "insecure"
@@ -193,6 +242,8 @@ def assert_pages_output(pages: Path, site: Path) -> None:
         raise AssertionError("Pages output did not match the hosted site ZIP members")
     required = [
         ".nojekyll",
+        "_headers",
+        "cache-policy.json",
         "index.html",
         "repository.json",
         "install/conu.list",
@@ -211,19 +262,47 @@ def assert_pages_output(pages: Path, site: Path) -> None:
     repository = json.loads(extracted["repository.json"].decode("ascii"))
     if repository["baseUrl"] != BASE_URL:
         raise AssertionError("Pages repository.json baseUrl was wrong")
+    if repository["cachePolicy"] != {
+        "policyUrl": f"{BASE_URL}/cache-policy.json",
+        "headersFileUrl": f"{BASE_URL}/_headers",
+        "hostMustApply": True,
+    }:
+        raise AssertionError("Pages repository.json cache policy metadata was wrong")
     if repository["payloadDisplayed"] is not False:
         raise AssertionError("Pages repository.json leaked payload display state")
+    cache_policy = json.loads(extracted["cache-policy.json"].decode("ascii"))
+    if cache_policy["schema"] != CACHE_POLICY_SCHEMA:
+        raise AssertionError("Pages cache-policy.json schema was wrong")
+    if cache_policy["baseUrl"] != BASE_URL or cache_policy["hostMustApply"] is not True:
+        raise AssertionError("Pages cache-policy.json endpoint metadata was wrong")
+    if cache_policy["payloadDisplayed"] is not False or cache_policy["tokenDisplayed"] is not False:
+        raise AssertionError("Pages cache-policy.json leaked display state")
+    headers = extracted["_headers"].decode("ascii")
+    for expected in (
+        "Cache-Control: no-cache",
+        "Cache-Control: public, max-age=300, must-revalidate",
+        "Cache-Control: public, max-age=31536000, immutable",
+    ):
+        if expected not in headers:
+            raise AssertionError(f"Pages _headers missed {expected}")
     checksum = extracted[f"downloads/{HOSTED_BUNDLE}.sha256"].decode("ascii")
     expected_checksum = f"{hashlib.sha256(extracted[f'downloads/{HOSTED_BUNDLE}']).hexdigest()}  {HOSTED_BUNDLE}\n"
     if checksum != expected_checksum:
         raise AssertionError("Pages hosted bundle checksum did not match embedded download")
 
 
-def rewrite_site_zip(path: Path, replacements: dict[str, bytes]) -> None:
+def rewrite_site_zip(
+    path: Path,
+    replacements: dict[str, bytes],
+    *,
+    removals: tuple[str, ...] = (),
+) -> None:
     original_members: dict[str, bytes] = {}
     if path.exists():
         with zipfile.ZipFile(path) as archive:
             original_members = {name: archive.read(name) for name in archive.namelist()}
+    for name in removals:
+        original_members.pop(name, None)
     original_members.update(replacements)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
         for name in sorted(original_members):
@@ -235,8 +314,12 @@ def rewrite_site_zip(path: Path, replacements: dict[str, bytes]) -> None:
 
 
 def read_site_json(path: Path) -> dict:
+    return read_site_json_member(path, "repository.json")
+
+
+def read_site_json_member(path: Path, name: str) -> dict:
     with zipfile.ZipFile(path) as archive:
-        return json.loads(archive.read("repository.json").decode("ascii"))
+        return json.loads(archive.read(name).decode("ascii"))
 
 
 def sign_site(path: Path) -> None:

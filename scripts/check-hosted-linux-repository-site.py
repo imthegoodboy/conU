@@ -23,6 +23,54 @@ HOSTED_BUNDLE = f"conu-{VERSION}-hosted-linux-repositories.zip"
 SITE_BUNDLE = f"conu-{VERSION}-hosted-linux-repository-site.zip"
 PUBLIC_KEY = "conu-linux-gpg-key.asc"
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
+CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
+CACHE_CONTROL_RULES = (
+    {
+        "kind": "mutable-site-metadata",
+        "cacheControl": "no-cache",
+        "paths": (
+            "/README.txt",
+            "/index.html",
+            "/repository.json",
+            "/cache-policy.json",
+            "/_headers",
+            "/install/*",
+            f"/{PUBLIC_KEY}",
+            f"/{PUBLIC_KEY}.sha256",
+            f"/apt/{PUBLIC_KEY}",
+            f"/apt/{PUBLIC_KEY}.sha256",
+            f"/rpm/{PUBLIC_KEY}",
+            f"/rpm/{PUBLIC_KEY}.sha256",
+        ),
+    },
+    {
+        "kind": "repository-metadata",
+        "cacheControl": "public, max-age=300, must-revalidate",
+        "paths": (
+            "/apt/Packages",
+            "/apt/Packages.gz",
+            "/apt/Release",
+            "/apt/InRelease",
+            "/apt/Release.gpg",
+            "/rpm/repodata/*",
+        ),
+    },
+    {
+        "kind": "immutable-release-assets",
+        "cacheControl": "public, max-age=31536000, immutable",
+        "paths": (
+            "/apt/*.deb",
+            "/apt/*.deb.sha256",
+            "/apt/*.deb.asc",
+            "/rpm/*.rpm",
+            "/rpm/*.rpm.sha256",
+            "/rpm/*.rpm.asc",
+            "/downloads/conu-*-hosted-linux-repositories.zip",
+            "/downloads/conu-*-hosted-linux-repositories.zip.sha256",
+            "/downloads/conu-*-hosted-linux-repositories.zip.asc",
+        ),
+    },
+)
 
 
 def main() -> int:
@@ -158,6 +206,8 @@ def assert_site_bundle(site: Path, hosted_bundle: Path) -> None:
         {
             ".nojekyll",
             "README.txt",
+            "_headers",
+            "cache-policy.json",
             "index.html",
             "repository.json",
             "install/README.txt",
@@ -195,9 +245,18 @@ def assert_site_bundle(site: Path, hosted_bundle: Path) -> None:
         raise AssertionError("repository.json RPM URL was wrong")
     if repository["downloads"]["hostedBundleUrl"] != f"{BASE_URL}/downloads/{HOSTED_BUNDLE}":
         raise AssertionError("repository.json hosted bundle URL was wrong")
+    if repository["cachePolicy"] != {
+        "policyUrl": f"{BASE_URL}/cache-policy.json",
+        "headersFileUrl": f"{BASE_URL}/_headers",
+        "hostMustApply": True,
+    }:
+        raise AssertionError("repository.json cache policy metadata was wrong")
     for guard in ("payloadDisplayed", "tokenDisplayed", "keyMaterialDisplayed"):
         if repository[guard] is not False:
             raise AssertionError(f"repository.json expected {guard}=false")
+
+    assert_cache_policy_json(contents["cache-policy.json"])
+    assert_headers_file(contents["_headers"])
 
     apt_source = contents["install/conu.list"].decode("ascii")
     if BASE_URL not in apt_source or "/apt" not in apt_source:
@@ -210,6 +269,8 @@ def assert_site_bundle(site: Path, hosted_bundle: Path) -> None:
     index = contents["index.html"].decode("ascii")
     if "repository.json" not in index or "sudo apt install conu" not in index:
         raise AssertionError("index page missed repository metadata or install commands")
+    if "cache-policy.json" not in index or "_headers" not in index:
+        raise AssertionError("index page missed cache policy metadata")
     yum_repo = contents["install/conu.repo"].decode("ascii")
     if f"baseurl={BASE_URL}/rpm" not in yum_repo or "repo_gpgcheck=1" not in yum_repo:
         raise AssertionError("YUM repo snippet missed signed repository settings")
@@ -229,7 +290,7 @@ def assert_site_bundle(site: Path, hosted_bundle: Path) -> None:
         if contents[name] != hosted_members[name]:
             raise AssertionError(f"site member {name} did not match hosted bundle member")
     for name, data in contents.items():
-        if name.endswith((".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256")):
+        if is_text_member(name):
             text = data.decode("utf-8")
             for forbidden in (
                 "BEGIN PGP PRIVATE KEY BLOCK",
@@ -240,6 +301,80 @@ def assert_site_bundle(site: Path, hosted_bundle: Path) -> None:
             ):
                 if forbidden in text:
                     raise AssertionError(f"{name} contained forbidden text {forbidden!r}")
+
+
+def assert_cache_policy_json(data: bytes) -> None:
+    policy = json.loads(data.decode("ascii"))
+    if policy["schema"] != CACHE_POLICY_SCHEMA:
+        raise AssertionError("cache-policy.json schema was wrong")
+    if policy["version"] != VERSION:
+        raise AssertionError("cache-policy.json version was wrong")
+    if policy["baseUrl"] != BASE_URL:
+        raise AssertionError("cache-policy.json base URL was wrong")
+    if policy["headersFile"] != "_headers":
+        raise AssertionError("cache-policy.json headersFile was wrong")
+    if policy["hostMustApply"] is not True:
+        raise AssertionError("cache-policy.json expected hostMustApply=true")
+    for guard in ("payloadDisplayed", "tokenDisplayed", "keyMaterialDisplayed"):
+        if policy[guard] is not False:
+            raise AssertionError(f"cache-policy.json expected {guard}=false")
+    actual_rules = [
+        {
+            "kind": rule["kind"],
+            "paths": tuple(rule["paths"]),
+            "cacheControl": rule["cacheControl"],
+        }
+        for rule in policy["rules"]
+    ]
+    expected_rules = [
+        {
+            "kind": rule["kind"],
+            "paths": rule["paths"],
+            "cacheControl": rule["cacheControl"],
+        }
+        for rule in CACHE_CONTROL_RULES
+    ]
+    if actual_rules != expected_rules:
+        raise AssertionError("cache-policy.json cache rules were wrong")
+
+
+def assert_headers_file(data: bytes) -> None:
+    entries = parse_headers_file(data.decode("ascii"))
+    expected = {
+        path: {"Cache-Control": rule["cacheControl"]}
+        for rule in CACHE_CONTROL_RULES
+        for path in rule["paths"]
+    }
+    if entries != expected:
+        raise AssertionError(f"_headers had cache entries {entries!r}, expected {expected!r}")
+
+
+def parse_headers_file(text: str) -> dict[str, dict[str, str]]:
+    entries: dict[str, dict[str, str]] = {}
+    current_path: str | None = None
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(" ") or line.startswith("\t"):
+            if current_path is None:
+                raise AssertionError("_headers contained a header before any path")
+            stripped = line.strip()
+            if ":" not in stripped:
+                raise AssertionError(f"_headers contained malformed header line {line!r}")
+            name, value = stripped.split(":", 1)
+            entries[current_path][name.strip()] = value.strip()
+            continue
+        current_path = line.strip()
+        if not current_path.startswith("/"):
+            raise AssertionError(f"_headers path was not absolute: {current_path!r}")
+        if current_path in entries:
+            raise AssertionError(f"_headers duplicated path: {current_path}")
+        entries[current_path] = {}
+    return entries
+
+
+def is_text_member(name: str) -> bool:
+    return name == "_headers" or name.endswith((".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256"))
 
 
 def read_zip_members(path: Path) -> dict[str, bytes]:
