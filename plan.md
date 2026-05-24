@@ -216,8 +216,8 @@ rewriting package metadata by hand.
 
 Completed work:
 
-- Issue #228 is addressed on branch `hosted-linux-repository-bundles`; the
-  branch must be preserved after merge.
+- Issue #228 is addressed by PR #229 on branch
+  `hosted-linux-repository-bundles`; the branch must be preserved after merge.
 - Added `scripts/generate-hosted-linux-repositories.py` to build
   `conu-<version>-hosted-linux-repositories.zip` from already signed Debian
   packages, signed RPM packages, signed APT/RPM repository metadata, detached
