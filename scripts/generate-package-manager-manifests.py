@@ -59,6 +59,16 @@ class ReleaseAsset:
 @dataclass(frozen=True)
 class DebianPackage:
     filename: str
+    architecture: str
+    package_version: str
+    content: bytes
+    sha256: str
+    metadata_text: str
+
+
+@dataclass(frozen=True)
+class AptRepositoryMetadata:
+    filename: str
     content: bytes
     sha256: str
     metadata_text: str
@@ -97,20 +107,26 @@ def main() -> int:
         build_debian_package(version, repo, target, linux_binaries[target])
         for target in DEBIAN_ARCHES
     ]
+    apt_repository_metadata = (
+        build_apt_repository_metadata(version, repo, debian_packages)
+        if args.build_apt_repository_metadata
+        else None
+    )
     rpm_spec = render_rpm_spec(version, repo, assets)
+    safe_texts = [
+        homebrew,
+        scoop,
+        winget,
+        chocolatey_nuspec,
+        chocolatey_install,
+        chocolatey_uninstall,
+        rpm_spec,
+        *[package.metadata_text for package in debian_packages],
+    ]
+    if apt_repository_metadata is not None:
+        safe_texts.append(apt_repository_metadata.metadata_text)
     assert_output_safe(
-        "\n".join(
-            [
-                homebrew,
-                scoop,
-                winget,
-                chocolatey_nuspec,
-                chocolatey_install,
-                chocolatey_uninstall,
-                rpm_spec,
-                *[package.metadata_text for package in debian_packages],
-            ]
-        ),
+        "\n".join(safe_texts),
         dist,
     )
 
@@ -127,6 +143,10 @@ def main() -> int:
         package_path = output_dir / package.filename
         package_path.write_bytes(package.content)
         write_sha256_sidecar(package_path, package.sha256)
+    if apt_repository_metadata is not None:
+        metadata_path = output_dir / apt_repository_metadata.filename
+        metadata_path.write_bytes(apt_repository_metadata.content)
+        write_sha256_sidecar(metadata_path, apt_repository_metadata.sha256)
     rpm_spec_path = output_dir / "conu.spec"
     rpm_spec_path.write_text(rpm_spec, encoding="ascii", newline="\n")
     if args.build_rpm_packages:
@@ -138,6 +158,7 @@ def main() -> int:
             for name in output_filenames(
                 version,
                 include_rpm_packages=args.build_rpm_packages,
+                include_apt_repository_metadata=args.build_apt_repository_metadata,
             )
         )
     )
@@ -160,6 +181,11 @@ def parse_args() -> argparse.Namespace:
         "--build-rpm-packages",
         action="store_true",
         help="build unsigned x86_64 and aarch64 .rpm packages with rpmbuild",
+    )
+    parser.add_argument(
+        "--build-apt-repository-metadata",
+        action="store_true",
+        help="build unsigned deterministic APT repository metadata for generated .deb packages",
     )
     return parser.parse_args()
 
@@ -230,16 +256,36 @@ def rpm_output_filenames(version: str) -> tuple[str, ...]:
     return tuple(outputs)
 
 
-def output_filenames(version: str, *, include_rpm_packages: bool = False) -> tuple[str, ...]:
+def apt_repository_metadata_filename(version: str) -> str:
+    return f"conu-{debian_version(version)}-apt-repository-metadata.zip"
+
+
+def apt_repository_metadata_output_filenames(version: str) -> tuple[str, ...]:
+    filename = apt_repository_metadata_filename(version)
+    return (filename, f"{filename}.sha256")
+
+
+def output_filenames(
+    version: str,
+    *,
+    include_rpm_packages: bool = False,
+    include_apt_repository_metadata: bool = False,
+) -> tuple[str, ...]:
     debian_outputs = []
     for target in DEBIAN_ARCHES:
         filename = debian_filename(version, target)
         debian_outputs.extend([filename, f"{filename}.sha256"])
     rpm_outputs = rpm_output_filenames(version) if include_rpm_packages else ()
+    apt_outputs = (
+        apt_repository_metadata_output_filenames(version)
+        if include_apt_repository_metadata
+        else ()
+    )
     return (
         *STATIC_OUTPUT_FILENAMES,
         chocolatey_filename(version),
         *debian_outputs,
+        *apt_outputs,
         *rpm_outputs,
     )
 
@@ -707,10 +753,104 @@ def build_debian_package(
     )
     return DebianPackage(
         filename=filename,
+        architecture=architecture,
+        package_version=package_version,
         content=content,
         sha256=hashlib.sha256(content).hexdigest(),
         metadata_text="\n".join([control, md5sums, doc_readme, service_example]),
     )
+
+
+def build_apt_repository_metadata(
+    version: str,
+    repo: str,
+    packages: list[DebianPackage],
+) -> AptRepositoryMetadata:
+    packages_text = "".join(render_apt_package_entry(package, repo) for package in packages)
+    packages_bytes = packages_text.encode("ascii")
+    packages_gz = deterministic_gzip(packages_bytes)
+    release_text = render_apt_release(
+        version,
+        {
+            "Packages": packages_bytes,
+            "Packages.gz": packages_gz,
+        },
+    )
+    readme_text = render_apt_repository_readme(version, packages)
+
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, "w", compression=zipfile.ZIP_STORED) as archive:
+        write_deterministic_zip_text(archive, "README.txt", readme_text)
+        write_deterministic_zip_bytes(archive, "Packages", packages_bytes)
+        write_deterministic_zip_bytes(archive, "Packages.gz", packages_gz)
+        write_deterministic_zip_text(archive, "Release", release_text)
+    content = raw.getvalue()
+    return AptRepositoryMetadata(
+        filename=apt_repository_metadata_filename(version),
+        content=content,
+        sha256=hashlib.sha256(content).hexdigest(),
+        metadata_text="\n".join([readme_text, packages_text, release_text]),
+    )
+
+
+def render_apt_package_entry(package: DebianPackage, repo: str) -> str:
+    return f"""Package: conu
+Version: {package.package_version}
+Architecture: {package.architecture}
+Maintainer: imthegoodboy <noreply@github.com>
+Filename: {package.filename}
+Size: {len(package.content)}
+MD5sum: {md5_hex(package.content)}
+SHA1: {sha1_hex(package.content)}
+SHA256: {package.sha256}
+Section: net
+Priority: optional
+Homepage: https://github.com/{repo}
+Description: Agent-native encrypted communication layer
+ conU native Rust CLI, daemon, relay, and MCP adapter.
+
+"""
+
+
+def render_apt_release(version: str, files: dict[str, bytes]) -> str:
+    lines = [
+        "Origin: conU",
+        "Label: conU",
+        "Suite: stable",
+        "Codename: stable",
+        f"Version: {debian_version(version)}",
+        "Architectures: amd64 arm64",
+        "Description: conU generated unsigned APT repository metadata",
+        "Date: Wed, 01 Jan 2020 00:00:00 UTC",
+    ]
+    for title, digest_fn in (
+        ("MD5Sum", md5_hex),
+        ("SHA1", sha1_hex),
+        ("SHA256", lambda data: hashlib.sha256(data).hexdigest()),
+    ):
+        lines.append(f"{title}:")
+        for name, content in files.items():
+            lines.append(f" {digest_fn(content)} {len(content)} {name}")
+    return "\n".join(lines) + "\n"
+
+
+def render_apt_repository_readme(version: str, packages: list[DebianPackage]) -> str:
+    package_list = "\n".join(f"- {package.filename}" for package in packages)
+    return f"""conU {debian_version(version)} unsigned APT repository metadata
+
+This archive contains deterministic Packages, Packages.gz, and Release files
+for the generated conU Debian package assets:
+
+{package_list}
+
+Unpack this archive into the same directory as those .deb files before serving
+that directory as a flat APT repository or importing the metadata into a signed
+repository workflow.
+
+This bundle is unsigned. Production APT publication still requires Release
+signing with InRelease or Release.gpg, repository hosting, and operator-owned
+publishing credentials.
+"""
 
 
 def render_debian_control(version: str, architecture: str, repo: str) -> str:
@@ -777,6 +917,21 @@ def md5_hex(data: bytes) -> str:
     except TypeError:
         digest = hashlib.md5(data)
     return digest.hexdigest()
+
+
+def sha1_hex(data: bytes) -> str:
+    try:
+        digest = hashlib.sha1(data, usedforsecurity=False)
+    except TypeError:
+        digest = hashlib.sha1(data)
+    return digest.hexdigest()
+
+
+def deterministic_gzip(data: bytes) -> bytes:
+    raw = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=SOURCE_EPOCH) as gzip_file:
+        gzip_file.write(data)
+    return raw.getvalue()
 
 
 def build_tar_gz(
@@ -991,10 +1146,14 @@ install -Dm0755 bin/conu-mcp "%{{buildroot}}%{{_bindir}}/conu-mcp"
 
 
 def write_deterministic_zip_text(package: zipfile.ZipFile, name: str, text: str) -> None:
+    write_deterministic_zip_bytes(package, name, text.encode("ascii"))
+
+
+def write_deterministic_zip_bytes(package: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(name, ZIP_SOURCE_TIMESTAMP)
     info.compress_type = zipfile.ZIP_STORED
     info.external_attr = 0o644 << 16
-    package.writestr(info, text.encode("ascii"))
+    package.writestr(info, data)
 
 
 def xml_escape(value: str) -> str:
