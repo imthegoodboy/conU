@@ -5,6 +5,7 @@ verified release assets for a tag:
 
 ```sh
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0
+python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages
 ```
 
 The generator requires the platform archives and strict sibling `.sha256` files
@@ -30,12 +31,18 @@ conu_<version>_amd64.deb.sha256
 conu_<version>_arm64.deb
 conu_<version>_arm64.deb.sha256
 conu.spec
+conu-<rpm-version>-1.x86_64.rpm
+conu-<rpm-version>-1.x86_64.rpm.sha256
+conu-<rpm-version>-1.aarch64.rpm
+conu-<rpm-version>-1.aarch64.rpm.sha256
 ```
 
-The release workflow uploads those files beside the native archives on `v*`
-tagged releases. Homebrew tap, Scoop bucket, winget-pkgs, Chocolatey package,
-Debian repository, and RPM package maintainers can copy, unpack, or build from
-the generated files after reviewing the release.
+The `.rpm` files are generated only when `--build-rpm-packages` is set and
+`rpmbuild` is installed. The release workflow uses that mode and uploads those
+files beside the native archives on `v*` tagged releases. Homebrew tap, Scoop
+bucket, winget-pkgs, Chocolatey package, Debian repository, and RPM package
+maintainers can copy, unpack, or build from the generated files after reviewing
+the release.
 
 `conu.<version>.nupkg` is a deterministic Chocolatey package containing
 `conu.nuspec`, `tools/chocolateyInstall.ps1`, and
@@ -48,8 +55,9 @@ package metadata/docs, and each `.deb` has its own strict `.sha256` sidecar. The
 generated `conu.spec` references the verified Linux release archives and static
 SHA-256 values for RPM builds on `x86_64` and `aarch64`. CI and release package
 checks install RPM tooling and run the regression through native `rpmbuild` when
-available, but conU still does not publish signed `.rpm` assets or configure any
-RPM repository.
+available. Tagged releases now build unsigned `.rpm` assets and strict
+`.rpm.sha256` sidecars from the generated spec; signed RPM publication and RPM
+repository metadata remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary

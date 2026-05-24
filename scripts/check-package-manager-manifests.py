@@ -39,6 +39,8 @@ RPM_ARCHES = {
     "linux-x64": "x86_64",
     "linux-arm64": "aarch64",
 }
+RPM_X64_FILENAME = f"conu-{VERSION}-1.x86_64.rpm"
+RPM_ARM64_FILENAME = f"conu-{VERSION}-1.aarch64.rpm"
 
 
 def load_generator():
@@ -113,7 +115,13 @@ def write_dist(
     return hashes
 
 
-def generate(generator, dist: Path, output: Path) -> None:
+def generate(
+    generator,
+    dist: Path,
+    output: Path,
+    *,
+    build_rpm_packages: bool = False,
+) -> None:
     assets = generator.load_release_assets(
         dist,
         VERSION,
@@ -193,7 +201,10 @@ def generate(generator, dist: Path, output: Path) -> None:
         package_path = output / package.filename
         package_path.write_bytes(package.content)
         generator.write_sha256_sidecar(package_path, package.sha256)
-    (output / RPM_SPEC_FILENAME).write_text(rpm_spec, encoding="ascii", newline="\n")
+    rpm_spec_path = output / RPM_SPEC_FILENAME
+    rpm_spec_path.write_text(rpm_spec, encoding="ascii", newline="\n")
+    if build_rpm_packages:
+        generator.build_rpm_packages(VERSION, dist, rpm_spec_path, output)
 
 
 def expect_failure(description: str, action, expected: str) -> None:
@@ -352,7 +363,7 @@ def assert_dpkg_deb_accepts(path: Path, architecture: str) -> None:
             raise AssertionError(f"{path.name} dpkg-deb contents missed {binary}")
 
 
-def assert_rpmbuild_accepts(spec_path: Path, dist: Path) -> None:
+def assert_rpmbuild_accepts(generator, spec_path: Path, dist: Path) -> None:
     rpmbuild = shutil.which("rpmbuild")
     if rpmbuild is None:
         return
@@ -362,25 +373,13 @@ def assert_rpmbuild_accepts(spec_path: Path, dist: Path) -> None:
             topdir = Path(topdir_text)
             for name in ("BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"):
                 (topdir / name).mkdir()
-            command = [
+            command = generator.rpm_build_command(
                 rpmbuild,
-                "--define",
-                f"_topdir {topdir}",
-                "--define",
-                f"_sourcedir {dist}",
-                "--define",
-                f"_builddir {topdir / 'BUILD'}",
-                "--define",
-                f"_buildrootdir {topdir / 'BUILDROOT'}",
-                "--define",
-                f"_rpmdir {topdir / 'RPMS'}",
-                "--define",
-                f"_srcrpmdir {topdir / 'SRPMS'}",
-                "--target",
+                spec_path,
+                dist,
+                topdir,
                 rpm_arch,
-                "-bb",
-                str(spec_path),
-            ]
+            )
             try:
                 subprocess.run(
                     command,
@@ -399,6 +398,12 @@ def assert_rpmbuild_accepts(spec_path: Path, dist: Path) -> None:
             if len(packages) != 1:
                 raise AssertionError(
                     f"rpmbuild for {target} produced packages {[str(path) for path in packages]!r}"
+                )
+            expected_name = generator.rpm_filename(VERSION, target)
+            if packages[0].name != expected_name:
+                raise AssertionError(
+                    f"rpmbuild for {target} produced {packages[0].name!r}; "
+                    f"expected {expected_name!r}"
                 )
             if rpm is not None:
                 assert_rpm_package_metadata(rpm, packages[0], rpm_arch)
@@ -428,6 +433,17 @@ def assert_rpm_package_metadata(rpm: str, package: Path, rpm_arch: str) -> None:
     for binary in LINUX_BINARIES:
         if f"/usr/bin/{binary}" not in contents:
             raise AssertionError(f"{package.name} rpm contents missed {binary}")
+
+
+def assert_generated_rpm_assets(generator, output: Path) -> None:
+    rpm = shutil.which("rpm")
+    for target, rpm_arch in RPM_ARCHES.items():
+        package = output / generator.rpm_filename(VERSION, target)
+        if not package.exists():
+            raise AssertionError(f"{package.name} was not generated")
+        assert_sha256_sidecar(package)
+        if rpm is not None:
+            assert_rpm_package_metadata(rpm, package, rpm_arch)
 
 
 def assert_sha256_sidecar(path: Path) -> None:
@@ -538,15 +554,34 @@ def main() -> int:
         if "%{_bindir}/conu-mcp" not in rpm_spec:
             raise AssertionError("rpm spec did not install conu-mcp")
         assert_no_forbidden_output(rootless_out / RPM_SPEC_FILENAME, temp)
-        assert_rpmbuild_accepts(rootless_out / RPM_SPEC_FILENAME, rootless_dist)
+        assert_rpmbuild_accepts(generator, rootless_out / RPM_SPEC_FILENAME, rootless_dist)
         if DEBIAN_AMD64_FILENAME not in generator.output_filenames(VERSION):
             raise AssertionError("output filenames did not include Debian amd64 package")
         if f"{DEBIAN_AMD64_FILENAME}.sha256" not in generator.output_filenames(VERSION):
             raise AssertionError("output filenames did not include Debian amd64 checksum")
+        if RPM_X64_FILENAME in generator.output_filenames(VERSION):
+            raise AssertionError("default output filenames should not include RPM packages")
+        if RPM_X64_FILENAME not in generator.output_filenames(VERSION, include_rpm_packages=True):
+            raise AssertionError("RPM package output filenames did not include x86_64 package")
+        if f"{RPM_ARM64_FILENAME}.sha256" not in generator.output_filenames(
+            VERSION,
+            include_rpm_packages=True,
+        ):
+            raise AssertionError("RPM package output filenames did not include aarch64 checksum")
         if generator.debian_version("1.2.3-rc.1+build.5") != "1.2.3~rc.1+build.5":
             raise AssertionError("Debian version conversion did not preserve prerelease ordering")
         if generator.rpm_version("1.2.3-rc.1+build.5") != "1.2.3~rc.1_build.5":
             raise AssertionError("RPM version conversion did not normalize semver build metadata")
+        if (
+            generator.rpm_filename("1.2.3-rc.1+build.5", "linux-x64")
+            != "conu-1.2.3~rc.1_build.5-1.x86_64.rpm"
+        ):
+            raise AssertionError("RPM package filename did not normalize semver metadata")
+
+        if shutil.which("rpmbuild") is not None:
+            rpm_out = temp / "rpm-out"
+            generate(generator, rootless_dist, rpm_out, build_rpm_packages=True)
+            assert_generated_rpm_assets(generator, rpm_out)
 
         repeat_out = temp / "repeat-out"
         generate(generator, rootless_dist, repeat_out)
@@ -576,7 +611,7 @@ def main() -> int:
             architecture="amd64",
             target="linux-x64",
         )
-        assert_rpmbuild_accepts(rooted_out / RPM_SPEC_FILENAME, rooted_dist)
+        assert_rpmbuild_accepts(generator, rooted_out / RPM_SPEC_FILENAME, rooted_dist)
 
         missing_checksum = temp / "missing-checksum"
         missing_checksum.mkdir()
