@@ -46,8 +46,10 @@ The generated Debian packages are deterministic `.deb` archives for `amd64` and
 `arm64`. They embed only the four verified Linux release binaries plus small
 package metadata/docs, and each `.deb` has its own strict `.sha256` sidecar. The
 generated `conu.spec` references the verified Linux release archives and static
-SHA-256 values for RPM builds on `x86_64` and `aarch64`; it does not submit to or
-configure any RPM repository.
+SHA-256 values for RPM builds on `x86_64` and `aarch64`. CI and release package
+checks install RPM tooling and run the regression through native `rpmbuild` when
+available, but conU still does not publish signed `.rpm` assets or configure any
+RPM repository.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
