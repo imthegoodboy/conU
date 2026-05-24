@@ -12,6 +12,8 @@ Use this checklist before publishing any conU build.
 - Run `python scripts/check-release-artifact-smoke-preflight.py`; CI and release package gates use the same regression check to prove archive smoke validation fails closed on missing binary directories, missing binaries, and non-file binary paths before execution.
 - Run `python scripts/check-package-manager-manifests.py`; CI and release package gates use the same regression check to prove generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files plus APT/RPM repository metadata require strict release checksums plus safe Windows and Linux archive layouts, including native Debian package checks with `dpkg-deb`, APT/RPM metadata hash checks, and RPM spec plus optional RPM asset checks with `rpmbuild`/`createrepo_c` when those tools are available.
 - Run `python scripts/check-linux-signing-secrets-preflight-regression.py`; CI and release package gates use the same regression check to prove Linux signing secrets fail closed when missing, malformed, fingerprint-mismatched, or unusable for probe signing.
+- Run `python scripts/set-github-release-secrets-regression.py`; CI and release package gates use the same regression check to prove release secret setup reads local values from the environment, sends them to `gh secret set` through stdin rather than command arguments, and reports only secret names.
+- Run `python scripts/check-github-release-secret-readiness.py --repo <owner/name>` before creating a release tag; it reports only configured or missing secret names.
 - Run `python scripts/check-rpm-package-signing.py`; CI and release package gates use the same regression check to prove generated RPM package payloads can be signed with the fingerprint-pinned Linux GPG key, verified with native RPM tooling, refreshed with strict `.rpm.sha256` sidecars, used to generate RPM repository metadata, and failed closed on missing or mismatched fingerprint secrets.
 - Run `python scripts/check-linux-release-signing.py`; CI and release package gates use the same regression check to prove Linux detached signing selects only Linux archives, generated Debian/RPM packages, and APT/RPM repository metadata, verifies generated `.asc` signatures, and fails closed when signing secrets are missing or the configured key fingerprint mismatches.
 - Run `python scripts/check-linux-repository-signing.py`; CI and release package gates use the same regression check to prove generated APT metadata ZIPs receive valid `InRelease` and `Release.gpg` signatures, generated RPM metadata ZIPs receive valid `repodata/repomd.xml.asc` signatures, `.sha256` sidecars are refreshed, unrelated release assets are not mutated, and missing or mismatched signing fingerprint secrets fail closed.
@@ -182,6 +184,10 @@ conu stop
   `CONU_MACOS_NOTARY_TEAM_ID`, `CONU_MACOS_NOTARY_PASSWORD`,
   `CONU_LINUX_GPG_PRIVATE_KEY_BASE64`, `CONU_LINUX_GPG_PASSPHRASE`,
   `CONU_LINUX_GPG_KEY_ID`, and `CONU_LINUX_GPG_KEY_FINGERPRINT`.
+- After exporting the required values locally, run
+  `python scripts/set-github-release-secrets.py --repo <owner/name> --dry-run`,
+  then rerun without `--dry-run` to configure the repository secrets through
+  GitHub CLI stdin without printing values.
 - Tagged release preflight imports the configured Linux GPG private key into a
   temporary keyring, verifies `CONU_LINUX_GPG_KEY_ID` resolves to
   `CONU_LINUX_GPG_KEY_FINGERPRINT`, and probe-signs a temporary file before

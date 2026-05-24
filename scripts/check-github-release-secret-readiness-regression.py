@@ -51,6 +51,8 @@ def run_audit_tests(module) -> None:
 
 
 def run_gh_payload_tests(module) -> None:
+    helper = sys.modules["github_release_secrets"]
+
     def fake_secret_list(args, **_kwargs):
         if args[1:4] != ["secret", "list", "--repo"]:
             raise AssertionError(f"unexpected gh args: {args!r}")
@@ -61,11 +63,11 @@ def run_gh_payload_tests(module) -> None:
         return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
 
     original_run = subprocess.run
-    module.subprocess.run = fake_secret_list
+    helper.subprocess.run = fake_secret_list
     try:
         names = module.load_secret_names("owner/repo", "gh")
     finally:
-        module.subprocess.run = original_run
+        helper.subprocess.run = original_run
 
     if names != set(module.REQUIRED_RELEASE_SECRETS):
         raise AssertionError("loaded secret names did not match required names")
@@ -76,30 +78,32 @@ def run_gh_payload_tests(module) -> None:
 
 
 def run_error_tests(module) -> None:
+    helper = sys.modules["github_release_secrets"]
+
     def invalid_json(*_args, **_kwargs):
         return SimpleNamespace(returncode=0, stdout="{not-json", stderr="")
 
     original_run = subprocess.run
-    module.subprocess.run = invalid_json
+    helper.subprocess.run = invalid_json
     try:
         assert_raises(
             lambda: module.load_secret_names("owner/repo", "gh"),
             "invalid JSON",
         )
     finally:
-        module.subprocess.run = original_run
+        helper.subprocess.run = original_run
 
     def failed_command(*_args, **_kwargs):
         return SimpleNamespace(returncode=1, stdout="", stderr=SENSITIVE_SENTINEL)
 
-    module.subprocess.run = failed_command
+    helper.subprocess.run = failed_command
     try:
         assert_raises(
             lambda: module.load_secret_names("owner/repo", "gh"),
             "gh secret list failed",
         )
     finally:
-        module.subprocess.run = original_run
+        helper.subprocess.run = original_run
 
 
 def main() -> int:

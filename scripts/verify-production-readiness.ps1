@@ -248,7 +248,7 @@ try {
 
     if (-not $SmokeOnly -and -not $SkipPackages) {
         Invoke-ReadinessStep "python compile" {
-            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/generate-package-manager-manifests.py scripts/check-package-manager-manifests.py scripts/linux_gpg_common.py scripts/check-linux-signing-secrets-preflight.py scripts/check-linux-signing-secrets-preflight-regression.py scripts/check-github-release-secret-readiness.py scripts/check-github-release-secret-readiness-regression.py scripts/sign-rpm-packages.py scripts/check-rpm-package-signing.py scripts/sign-linux-release-assets.py scripts/check-linux-release-signing.py scripts/sign-linux-repository-metadata.py scripts/check-linux-repository-signing.py scripts/export-linux-gpg-public-key.py scripts/check-linux-gpg-public-key-export.py scripts/check-release-artifact-verifier.py scripts/check-release-artifact-smoke-preflight.py scripts/check-npm-launcher-local-smoke-preflight.py scripts/check-npm-publish-preflight.py scripts/check-npm-publish-preflight-regression.py
+            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/generate-package-manager-manifests.py scripts/check-package-manager-manifests.py scripts/linux_gpg_common.py scripts/check-linux-signing-secrets-preflight.py scripts/check-linux-signing-secrets-preflight-regression.py scripts/github_release_secrets.py scripts/check-github-release-secret-readiness.py scripts/check-github-release-secret-readiness-regression.py scripts/set-github-release-secrets.py scripts/set-github-release-secrets-regression.py scripts/sign-rpm-packages.py scripts/check-rpm-package-signing.py scripts/sign-linux-release-assets.py scripts/check-linux-release-signing.py scripts/sign-linux-repository-metadata.py scripts/check-linux-repository-signing.py scripts/export-linux-gpg-public-key.py scripts/check-linux-gpg-public-key-export.py scripts/check-release-artifact-verifier.py scripts/check-release-artifact-smoke-preflight.py scripts/check-npm-launcher-local-smoke-preflight.py scripts/check-npm-publish-preflight.py scripts/check-npm-publish-preflight-regression.py
         }
         Invoke-ReadinessStep "release version consistency" {
             & python scripts/verify-release-versions.py
@@ -267,6 +267,9 @@ try {
         }
         Invoke-ReadinessStep "GitHub release secret readiness regression" {
             & python scripts/check-github-release-secret-readiness-regression.py
+        }
+        Invoke-ReadinessStep "GitHub release secret setup regression" {
+            & python scripts/set-github-release-secrets-regression.py
         }
         Invoke-ReadinessStep "RPM package signing regression" {
             & python scripts/check-rpm-package-signing.py
