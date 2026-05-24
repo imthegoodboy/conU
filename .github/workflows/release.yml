@@ -300,6 +300,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v8.0.1
         with:
           path: dist
@@ -403,6 +404,13 @@ jobs:
           CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
           CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
         run: python scripts/sign-linux-release-assets.py dist --only-update-policies
+      - name: Check release update policy with CLI
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          cargo run -p conu-cli -- update check --policy-file "dist/conu-${VERSION}-update-policy.json" --json
       - name: Prepare hosted Linux repository Pages artifact
         run: python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir linux-repository-site
       - name: Upload hosted Linux repository Pages artifact
@@ -456,7 +464,9 @@ jobs:
           The release update policy records public release asset URLs, strict
           SHA-256 values, signature URLs, npm package versions, and manual
           verification rules with auto-apply disabled, then receives a strict
-          checksum sidecar and detached .asc signature.
+          checksum sidecar and detached .asc signature. Installed clients can
+          validate that policy with conu update check before any manual update
+          decision.
           Linux signing steps first verify that the imported key id resolves
           to the configured maintainer fingerprint.
           Use conu-linux-gpg-key.asc plus the published maintainer fingerprint

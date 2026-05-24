@@ -130,6 +130,7 @@ python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist -
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
 python scripts/generate-release-update-policy.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --repo imthegoodboy/conU
 python scripts/sign-linux-release-assets.py dist --only-update-policies
+conu update check --policy-file dist/conu-0.1.0-update-policy.json --gpg-verify
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
 python scripts/check-github-pages-readiness.py --repo imthegoodboy/conU
 python scripts/check-package-manager-manifests.py
@@ -176,6 +177,11 @@ referenced release assets and strict sidecars, records public asset URLs,
 strict SHA-256 values, signature URLs, npm package versions, and manual
 verification rules with auto-apply disabled, writes a strict `.sha256` sidecar,
 and detached-signs that policy with `--only-update-policies`.
+Installed clients can run
+`conu update check --policy-file <path> [--gpg-verify]` to validate the
+generated update policy, strict checksum sidecar, detached-signature sidecar,
+public release URLs, false display guards, and auto-apply-disabled contract
+without downloading or applying an update.
 The regression check validates generated Debian packages with `dpkg-deb` and
 builds the generated RPM spec with `rpmbuild` when those native tools are
 available, and it opens the APT and RPM metadata bundles to verify package

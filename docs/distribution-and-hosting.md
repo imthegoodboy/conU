@@ -141,6 +141,7 @@ python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist -
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
 python scripts/generate-release-update-policy.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --repo imthegoodboy/conU
 python scripts/sign-linux-release-assets.py dist --only-update-policies
+conu update check --policy-file dist/conu-0.1.0-update-policy.json --gpg-verify
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
 python scripts/check-github-pages-readiness.py --repo imthegoodboy/conU
 python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
@@ -196,8 +197,14 @@ validate the hosted repository bundle, site layout, generated cache policy,
 Pages extraction path, and GitHub Pages repository metadata readiness plus
 fail-closed signature/base-URL/path/state-marker checks. They do not read local
 conU state, tokens, signing material, or package-manager repository
-credentials, and they still do not activate custom DNS/TLS endpoints or submit
-package-manager repository PRs.
+credentials. Installed clients can run
+`conu update check --policy-file <path> [--gpg-verify]` against the generated
+`conu-<version>-update-policy.json` plus its `.sha256` and `.asc` sidecars to
+validate the policy schema, public URLs, strict checksum sidecar, detached
+signature sidecar, false display guards, and auto-apply-disabled contract before
+manual update decisions. The command reports only public release metadata and
+does not download or apply updates. These checks still do not activate custom
+DNS/TLS endpoints or submit package-manager repository PRs.
 
 ## User Install Choices
 
@@ -421,4 +428,4 @@ For the user install story, finish publishing in this order:
 2. Publish `@conu/cli` after the GitHub Release exists.
 3. Put public relay tests behind TLS termination and use `wss://` endpoints.
 4. Add distributed account control planes, remote tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, tenant-node upsert/revoke, account/node suspension plus single-relay account suspension/scoped admin tenant commands, distributed monitoring/dashboards/alerting beyond single-relay threshold reports, distributed hosted mailbox retention policy beyond local/admin-gated audit and purge plus local scheduled purge workflows, and distributed multi-instance session migration before opening a managed relay to everyone.
-5. Submit generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files to the appropriate package-manager repositories, configure any custom DNS/TLS endpoint to apply the generated hosted Linux repository cache policy, then add a client-facing updater command once signed update-policy metadata has been exercised by a real release.
+5. Submit generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files to the appropriate package-manager repositories, configure any custom DNS/TLS endpoint to apply the generated hosted Linux repository cache policy, then exercise `conu update check` against the signed update-policy metadata from a real release before adding automatic network fetch/apply behavior.

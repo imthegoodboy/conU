@@ -187,6 +187,8 @@ version = "0.1.0"
 dependencies = [
  "conu-core",
  "conu-protocol",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
