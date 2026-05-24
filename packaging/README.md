@@ -46,7 +46,7 @@ conu-<version>-macos-x64.zip
 conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus unsigned APT repository metadata are produced from verified release checksums, and npm packages are published with provenance after GitHub Release assets exist. Linux archives currently use SHA-256 files plus GitHub artifact attestations, and generated Debian/RPM packages plus APT metadata use SHA-256 sidecars, until distro/package-manager signing is introduced.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus unsigned APT/RPM repository metadata are produced from verified release checksums, and npm packages are published with provenance after GitHub Release assets exist. Linux archives currently use SHA-256 files plus GitHub artifact attestations, and generated Debian/RPM packages plus APT/RPM metadata use SHA-256 sidecars, until distro/package-manager signing is introduced.
 
 Before tagging, run:
 
@@ -57,7 +57,7 @@ python scripts/verify-release-versions.py
 The CI and release package jobs run the same check before package validation. Branch and PR runs verify that every Cargo/npm manifest uses the same version; `v*` tag runs also require the tag version to match.
 The same package jobs run `python scripts/check-release-artifact-verifier.py` so checksum format, duplicate path, and forbidden state-path regressions fail before platform artifacts are generated.
 They also run `python scripts/check-release-artifact-smoke-preflight.py` so release artifact smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before execution.
-They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager and APT repository metadata regressions fail before package publication paths are used. CI and release package jobs install RPM tooling so the generated `conu.spec` and optional generated `.rpm` release assets are also checked with native `rpmbuild` when package gates run on Ubuntu.
+They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager and APT/RPM repository metadata regressions fail before package publication paths are used. CI and release package jobs install RPM tooling plus `createrepo-c` so the generated `conu.spec`, optional generated `.rpm` release assets, and RPM repository metadata are checked when package gates run on Ubuntu.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
 
@@ -101,13 +101,13 @@ commands.
 
 ## Package-Manager Manifests
 
-Generate Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and unsigned APT
+Generate Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and unsigned APT/RPM
 repository metadata files from the platform archives and strict checksum files:
 
 ```sh
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages
-python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata
+python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata --build-rpm-repository-metadata
 python scripts/check-package-manager-manifests.py
 ```
 
@@ -122,14 +122,16 @@ verified Linux release binaries only where the package format requires binaries.
 `.rpm` packages with strict `.rpm.sha256` sidecars. When
 `--build-apt-repository-metadata` is set, it also builds deterministic
 `Packages`, `Packages.gz`, and `Release` metadata for the generated `.deb`
-assets. Tagged release publication runs both optional modes before uploading
-release assets, so package-manager maintainers can review generated files
-without guessing hashes.
+assets. When `--build-rpm-repository-metadata` is set, it also builds a
+`createrepo_c` `repodata/*` bundle for the generated `.rpm` assets without
+embedding those RPM packages. Tagged release publication runs all optional modes
+before uploading release assets, so package-manager maintainers can review
+generated files without guessing hashes.
 The regression check validates generated Debian packages with `dpkg-deb` and
 builds the generated RPM spec with `rpmbuild` when those native tools are
-available, and it opens the APT metadata bundle to verify package hashes,
-`Packages.gz`, and `Release` hashes. Signed APT/RPM publication and hosted
-repository metadata setup remain future work.
+available, and it opens the APT and RPM metadata bundles to verify package
+hashes, compressed metadata, and repository hashes. Signed APT/RPM publication,
+repository signing, and hosted repository setup remain future work.
 See `packaging/package-managers/README.md`.
 
 Verify a downloaded archive's provenance when `gh` is available:

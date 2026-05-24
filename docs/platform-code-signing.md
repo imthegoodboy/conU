@@ -13,8 +13,9 @@ auto-update or OS package-manager publishing.
   `conu-relay`, and `conu-mcp` binaries and are submitted to Apple notarization
   before checksums and attestations are generated.
 - Linux release tarballs use SHA-256 checksum files plus GitHub artifact
-  attestations for archive provenance. Generated Debian and RPM packages use
-  SHA-256 sidecars until distro-specific package signatures are added.
+  attestations for archive provenance. Generated Debian/RPM packages and
+  unsigned APT/RPM repository metadata use SHA-256 sidecars until
+  distro-specific package signatures are added.
   Detached GPG/minisign signatures and distro repository signing remain future
   work for native `.deb`, `.rpm`, Homebrew, or similar packages.
 - Signing secrets are maintainer-owned repository secrets. The workflow never
