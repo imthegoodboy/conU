@@ -33,6 +33,8 @@ use conu_core::state::{self, InitReport, StateSnapshot};
 use conu_core::streams::{self, StreamEvent, StreamRecord};
 use conu_core::trust::{self, PeerCard, TrustStatus, TrustedPeer};
 use conu_protocol::{AgentCapabilities, OpaquePayload};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 /// A rendered CLI command result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +134,7 @@ where
         "doctor" => render_doctor(&args[1..], home_override),
         "logs" => render_logs(&args[1..], home_override),
         "telemetry" => render_telemetry(&args[1..], home_override),
+        "update" => render_update(&args[1..]),
         "components" => render_components(&args[1..]),
         "start" => render_start(&args[1..], home_override),
         "stop" => render_stop(&args[1..], home_override),
@@ -240,6 +243,7 @@ quick commands
   conu routes sync
   conu logs rotate
   conu telemetry snapshot --json
+  conu update check --policy-file <path>
   conu security audit
   conu security rotate storage --confirm
   conu security rotate identity --confirm-peer-refresh
@@ -6098,6 +6102,753 @@ fn render_telemetry_usage() -> String {
         .to_string()
 }
 
+const UPDATE_POLICY_SCHEMA: &str = "conu.releaseUpdatePolicy.v1";
+const MAX_UPDATE_POLICY_BYTES: u64 = 1024 * 1024;
+const MAX_UPDATE_CHECKSUM_BYTES: u64 = 4096;
+const MAX_UPDATE_SIGNATURE_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateCheckArgs {
+    policy_file: PathBuf,
+    sha256_file: Option<PathBuf>,
+    signature_file: Option<PathBuf>,
+    gpg_verify: bool,
+    json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateCheckReport {
+    policy_file: PathBuf,
+    sha256_file: PathBuf,
+    signature_file: PathBuf,
+    sha256: String,
+    version: String,
+    release_tag: String,
+    channel: String,
+    release_base_url: String,
+    platform_archives: usize,
+    package_manager_assets: usize,
+    linux_package_assets: usize,
+    repository_assets: usize,
+    auto_apply: bool,
+    manual_verification_required: bool,
+    operator_consent_required: bool,
+    gpg_verified: bool,
+}
+
+fn render_update(args: &[String]) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("check") => render_update_check(&args[1..]),
+        Some("--help") | Some("-h") | None => CliOutput::success(render_update_usage()),
+        _ => CliOutput::failure(2, render_update_usage()),
+    }
+}
+
+fn render_update_check(args: &[String]) -> CliOutput {
+    let parsed = match parse_update_check_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match check_release_update_policy(&parsed) {
+        Ok(report) => {
+            if parsed.json {
+                CliOutput::success(render_update_check_json(&report))
+            } else {
+                CliOutput::success(render_update_check_text(&report))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU update check failed\n\n{error}")),
+    }
+}
+
+fn parse_update_check_args(args: &[String]) -> Result<UpdateCheckArgs, CliOutput> {
+    let mut policy_file = None;
+    let mut sha256_file = None;
+    let mut signature_file = None;
+    let mut gpg_verify = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_check_usage()));
+                };
+                policy_file = Some(PathBuf::from(value));
+            }
+            "--sha256-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_check_usage()));
+                };
+                sha256_file = Some(PathBuf::from(value));
+            }
+            "--signature-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_check_usage()));
+                };
+                signature_file = Some(PathBuf::from(value));
+            }
+            "--gpg-verify" => gpg_verify = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(CliOutput::success(render_update_check_usage())),
+            _ => return Err(CliOutput::failure(2, render_update_check_usage())),
+        }
+        index += 1;
+    }
+
+    Ok(UpdateCheckArgs {
+        policy_file: policy_file
+            .ok_or_else(|| CliOutput::failure(2, render_update_check_usage()))?,
+        sha256_file,
+        signature_file,
+        gpg_verify,
+        json,
+    })
+}
+
+fn check_release_update_policy(args: &UpdateCheckArgs) -> Result<UpdateCheckReport, String> {
+    let policy_file = args.policy_file.clone();
+    let policy_name = file_name_string(&policy_file, "release update policy")?;
+    validate_public_asset_name(&policy_name, "policyAsset")?;
+    let sha256_file = args
+        .sha256_file
+        .clone()
+        .unwrap_or_else(|| sidecar_path(&policy_file, ".sha256"));
+    let signature_file = args
+        .signature_file
+        .clone()
+        .unwrap_or_else(|| sidecar_path(&policy_file, ".asc"));
+    let policy_bytes = read_limited_file(
+        &policy_file,
+        MAX_UPDATE_POLICY_BYTES,
+        "release update policy",
+    )?;
+    if !policy_bytes.is_ascii() {
+        return Err("release update policy must be ASCII JSON".to_string());
+    }
+    let sha256 = sha256_hex(&policy_bytes);
+    verify_update_sha256_sidecar(&sha256_file, &policy_name, &sha256)?;
+    verify_update_signature_sidecar(&signature_file)?;
+
+    let policy: Value = serde_json::from_slice(&policy_bytes)
+        .map_err(|error| format!("release update policy JSON is invalid: {error}"))?;
+    let policy_object = policy
+        .as_object()
+        .ok_or_else(|| "release update policy must be a JSON object".to_string())?;
+    let schema = json_string_field(&policy, "schema")?;
+    if schema != UPDATE_POLICY_SCHEMA {
+        return Err(format!(
+            "release update policy schema was {schema}, expected {UPDATE_POLICY_SCHEMA}"
+        ));
+    }
+    let version = json_string_field(&policy, "version")?;
+    if !semver_like(&version) {
+        return Err(format!(
+            "release update policy version is not semver-like: {version}"
+        ));
+    }
+    let release_tag = json_string_field(&policy, "releaseTag")?;
+    if release_tag != format!("v{version}") {
+        return Err(format!(
+            "release update policy tag {release_tag} does not match version {version}"
+        ));
+    }
+    let channel = json_string_field(&policy, "channel")?;
+    if channel != "stable" && channel != "prerelease" {
+        return Err(format!(
+            "release update policy channel is invalid: {channel}"
+        ));
+    }
+    let release_base_url = json_string_field(&policy, "releaseBaseUrl")?;
+    validate_public_https_url(&release_base_url, "releaseBaseUrl")?;
+    validate_policy_asset(&policy, &policy_name, &release_base_url)?;
+
+    let apply = policy
+        .get("apply")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "release update policy is missing apply object".to_string())?;
+    let auto_apply = bool_member(apply, "autoApply", "apply")?;
+    let manual_verification_required = bool_member(apply, "manualVerificationRequired", "apply")?;
+    let operator_consent_required = bool_member(apply, "operatorConsentRequired", "apply")?;
+    if auto_apply {
+        return Err("release update policy must not enable autoApply".to_string());
+    }
+    if !manual_verification_required {
+        return Err("release update policy must require manual verification".to_string());
+    }
+    if !operator_consent_required {
+        return Err("release update policy must require operator consent".to_string());
+    }
+    if bool_member(apply, "downgradeAllowed", "apply")? {
+        return Err("release update policy must not allow downgrades".to_string());
+    }
+
+    let verification = policy
+        .get("verification")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "release update policy is missing verification object".to_string())?;
+    for field in [
+        "strictSha256SidecarsRequired",
+        "linuxDetachedSignaturesRequired",
+        "policyDetachedSignatureRequired",
+        "githubArtifactAttestationsExpectedForPlatformArchives",
+    ] {
+        if !bool_member(verification, field, "verification")? {
+            return Err(format!(
+                "release update policy verification.{field} must be true"
+            ));
+        }
+    }
+
+    for guard in [
+        "payloadDisplayed",
+        "tokenDisplayed",
+        "keyMaterialDisplayed",
+        "ciphertextDisplayed",
+        "contentsDisplayed",
+    ] {
+        if policy_object.get(guard).and_then(Value::as_bool) != Some(false) {
+            return Err(format!("release update policy expected {guard}=false"));
+        }
+    }
+
+    let platform_archives = validate_asset_array(&policy, "platformArchives", &release_base_url)?;
+    let package_manager_assets =
+        validate_asset_array(&policy, "packageManagerAssets", &release_base_url)?;
+    let linux_package_assets =
+        validate_asset_array(&policy, "linuxPackageAssets", &release_base_url)?;
+    let repository_assets = validate_asset_array(&policy, "repositoryAssets", &release_base_url)?;
+    validate_npm_metadata(&policy, &version)?;
+
+    let gpg_verified = if args.gpg_verify {
+        verify_update_signature_with_gpg(&signature_file, &policy_file)?;
+        true
+    } else {
+        false
+    };
+
+    Ok(UpdateCheckReport {
+        policy_file,
+        sha256_file,
+        signature_file,
+        sha256,
+        version,
+        release_tag,
+        channel,
+        release_base_url,
+        platform_archives,
+        package_manager_assets,
+        linux_package_assets,
+        repository_assets,
+        auto_apply,
+        manual_verification_required,
+        operator_consent_required,
+        gpg_verified,
+    })
+}
+
+fn validate_policy_asset(
+    policy: &Value,
+    policy_name: &str,
+    release_base_url: &str,
+) -> Result<(), String> {
+    let asset = policy
+        .get("policyAsset")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "release update policy is missing policyAsset object".to_string())?;
+    let filename = string_member(asset, "filename", "policyAsset")?;
+    if filename != policy_name {
+        return Err(format!(
+            "release update policy policyAsset.filename was {filename}, expected {policy_name}"
+        ));
+    }
+    validate_asset_url(
+        string_member(asset, "url", "policyAsset")?,
+        release_base_url,
+        policy_name,
+        "policyAsset.url",
+    )?;
+    validate_asset_url(
+        string_member(asset, "sha256Url", "policyAsset")?,
+        release_base_url,
+        &format!("{policy_name}.sha256"),
+        "policyAsset.sha256Url",
+    )?;
+    validate_asset_url(
+        string_member(asset, "signatureUrl", "policyAsset")?,
+        release_base_url,
+        &format!("{policy_name}.asc"),
+        "policyAsset.signatureUrl",
+    )?;
+    Ok(())
+}
+
+fn validate_asset_array(
+    policy: &Value,
+    field: &str,
+    release_base_url: &str,
+) -> Result<usize, String> {
+    let assets = policy
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("release update policy is missing {field} array"))?;
+    if assets.is_empty() {
+        return Err(format!("release update policy {field} must not be empty"));
+    }
+    let mut names = HashSet::new();
+    for asset in assets {
+        let object = asset
+            .as_object()
+            .ok_or_else(|| format!("release update policy {field} entries must be objects"))?;
+        let filename = string_member(object, "filename", field)?;
+        validate_public_asset_name(filename, field)?;
+        if !names.insert(filename.to_string()) {
+            return Err(format!(
+                "release update policy {field} duplicated {filename}"
+            ));
+        }
+        let sha256 = string_member(object, "sha256", field)?;
+        if !is_sha256_hex(sha256) {
+            return Err(format!(
+                "release update policy {field}.{filename} has invalid SHA-256"
+            ));
+        }
+        validate_asset_url(
+            string_member(object, "url", field)?,
+            release_base_url,
+            filename,
+            field,
+        )?;
+        if let Some(sha256_url) = object.get("sha256Url").and_then(Value::as_str) {
+            validate_asset_url(
+                sha256_url,
+                release_base_url,
+                &format!("{filename}.sha256"),
+                field,
+            )?;
+        }
+        if let Some(signature_url) = object.get("signatureUrl").and_then(Value::as_str) {
+            validate_asset_url(
+                signature_url,
+                release_base_url,
+                &format!("{filename}.asc"),
+                field,
+            )?;
+        }
+    }
+    Ok(assets.len())
+}
+
+fn validate_npm_metadata(policy: &Value, version: &str) -> Result<(), String> {
+    let npm = policy
+        .get("npm")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "release update policy is missing npm object".to_string())?;
+    let registry = string_member(npm, "registry", "npm")?;
+    validate_public_https_url(registry, "npm.registry")?;
+    let packages = npm
+        .get("packages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "release update policy is missing npm.packages array".to_string())?;
+    if packages.is_empty() {
+        return Err("release update policy npm.packages must not be empty".to_string());
+    }
+    for package in packages {
+        let object = package.as_object().ok_or_else(|| {
+            "release update policy npm.packages entries must be objects".to_string()
+        })?;
+        let name = string_member(object, "name", "npm.packages")?;
+        if !name.starts_with("@conu/") {
+            return Err(format!(
+                "release update policy npm package is outside @conu scope: {name}"
+            ));
+        }
+        let package_version = string_member(object, "version", "npm.packages")?;
+        if package_version != version {
+            return Err(format!(
+                "release update policy npm package {name} has version {package_version}, expected {version}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn render_update_check_json(report: &UpdateCheckReport) -> String {
+    format!(
+        r#"{{
+  "status": "update_policy_valid",
+  "schema": "{}",
+  "version": "{}",
+  "releaseTag": "{}",
+  "channel": "{}",
+  "releaseBaseUrl": "{}",
+  "policyFile": "{}",
+  "sha256File": "{}",
+  "signatureFile": "{}",
+  "sha256": "{}",
+  "sha256SidecarMatched": true,
+  "signatureSidecarPresent": true,
+  "gpgVerified": {},
+  "apply": {{
+    "autoApply": {},
+    "manualVerificationRequired": {},
+    "operatorConsentRequired": {}
+  }},
+  "assetCounts": {{
+    "platformArchives": {},
+    "packageManagerAssets": {},
+    "linuxPackageAssets": {},
+    "repositoryAssets": {}
+  }},
+  "privacy": {{
+    "payloadDisplayed": false,
+    "tokenDisplayed": false,
+    "keyMaterialDisplayed": false,
+    "ciphertextDisplayed": false,
+    "contentsDisplayed": false
+  }}
+}}"#,
+        UPDATE_POLICY_SCHEMA,
+        json_escape(&report.version),
+        json_escape(&report.release_tag),
+        json_escape(&report.channel),
+        json_escape(&report.release_base_url),
+        json_escape(&report.policy_file.display().to_string()),
+        json_escape(&report.sha256_file.display().to_string()),
+        json_escape(&report.signature_file.display().to_string()),
+        report.sha256,
+        report.gpg_verified,
+        report.auto_apply,
+        report.manual_verification_required,
+        report.operator_consent_required,
+        report.platform_archives,
+        report.package_manager_assets,
+        report.linux_package_assets,
+        report.repository_assets
+    )
+}
+
+fn render_update_check_text(report: &UpdateCheckReport) -> String {
+    format!(
+        r"conU update check
+
+status: update policy valid
+schema: {}
+version: {}
+tag: {}
+channel: {}
+release base: {}
+
+policy
+  file             {}
+  sha256           {}
+  sidecar          matched
+  signature        present
+  gpg verified     {}
+
+apply
+  auto apply       {}
+  manual verify    {}
+  operator consent {}
+
+assets
+  platform archives {}
+  package managers  {}
+  linux packages    {}
+  repository assets {}
+
+privacy
+  payload view      contents are not displayed by conU",
+        UPDATE_POLICY_SCHEMA,
+        report.version,
+        report.release_tag,
+        report.channel,
+        report.release_base_url,
+        report.policy_file.display(),
+        report.sha256,
+        yes_no(report.gpg_verified),
+        yes_no(report.auto_apply),
+        yes_no(report.manual_verification_required),
+        yes_no(report.operator_consent_required),
+        report.platform_archives,
+        report.package_manager_assets,
+        report.linux_package_assets,
+        report.repository_assets
+    )
+}
+
+fn render_update_usage() -> String {
+    r"usage:
+  conu update check --policy-file <path> [--sha256-file <path>] [--signature-file <path>] [--gpg-verify] [--json]"
+        .to_string()
+}
+
+fn render_update_check_usage() -> String {
+    render_update_usage()
+}
+
+fn read_limited_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>, String> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "{label} file is not readable at {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!("{label} path is not a file: {}", path.display()));
+    }
+    if metadata.len() > max_bytes {
+        return Err(format!("{label} file is too large: {}", path.display()));
+    }
+    fs::read(path).map_err(|error| format!("{label} file could not be read: {error}"))
+}
+
+fn verify_update_sha256_sidecar(
+    path: &Path,
+    policy_name: &str,
+    actual_sha256: &str,
+) -> Result<(), String> {
+    let bytes = read_limited_file(
+        path,
+        MAX_UPDATE_CHECKSUM_BYTES,
+        "release update policy checksum",
+    )?;
+    if !bytes.is_ascii() {
+        return Err("release update policy checksum sidecar must be ASCII".to_string());
+    }
+    let text = String::from_utf8(bytes).map_err(|error| {
+        format!("release update policy checksum sidecar is invalid UTF-8: {error}")
+    })?;
+    let line = text.trim_end_matches(['\r', '\n']);
+    if line.contains('\n') || line.contains('\r') {
+        return Err("release update policy checksum sidecar must contain one line".to_string());
+    }
+    let parts = line.split_whitespace().collect::<Vec<_>>();
+    if parts.len() != 2 {
+        return Err("release update policy checksum sidecar has invalid format".to_string());
+    }
+    let expected_sha256 = parts[0].to_ascii_lowercase();
+    if !is_sha256_hex(&expected_sha256) {
+        return Err("release update policy checksum sidecar hash is invalid".to_string());
+    }
+    if parts[1] != policy_name {
+        return Err(format!(
+            "release update policy checksum sidecar names {}, expected {policy_name}",
+            parts[1]
+        ));
+    }
+    if expected_sha256 != actual_sha256 {
+        return Err("release update policy checksum did not match policy file".to_string());
+    }
+    Ok(())
+}
+
+fn verify_update_signature_sidecar(path: &Path) -> Result<(), String> {
+    let bytes = read_limited_file(
+        path,
+        MAX_UPDATE_SIGNATURE_BYTES,
+        "release update policy signature",
+    )?;
+    if !bytes.is_ascii() {
+        return Err("release update policy signature must be ASCII armored".to_string());
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|error| format!("release update policy signature is invalid UTF-8: {error}"))?;
+    if !text.contains("BEGIN PGP SIGNATURE") {
+        return Err("release update policy signature is not ASCII-armored PGP".to_string());
+    }
+    Ok(())
+}
+
+fn verify_update_signature_with_gpg(signature: &Path, policy: &Path) -> Result<(), String> {
+    let gpg = env::var("GPG_EXE").unwrap_or_else(|_| "gpg".to_string());
+    let status = Command::new(&gpg)
+        .arg("--verify")
+        .arg(signature)
+        .arg(policy)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| {
+            format!("could not run {gpg} for update policy signature verification: {error}")
+        })?;
+    if !status.success() {
+        return Err("release update policy signature did not verify with gpg".to_string());
+    }
+    Ok(())
+}
+
+fn json_string_field(value: &Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("release update policy is missing string field {field}"))
+}
+
+fn string_member<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    field: &str,
+    context: &str,
+) -> Result<&'a str, String> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| {
+            format!("release update policy {context}.{field} must be a non-empty string")
+        })
+}
+
+fn bool_member(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+    context: &str,
+) -> Result<bool, String> {
+    object
+        .get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("release update policy {context}.{field} must be boolean"))
+}
+
+fn validate_public_https_url(value: &str, label: &str) -> Result<(), String> {
+    if !value.starts_with("https://") {
+        return Err(format!(
+            "release update policy {label} must be an https URL"
+        ));
+    }
+    if value.contains('?') || value.contains('#') {
+        return Err(format!(
+            "release update policy {label} must not include query or fragment"
+        ));
+    }
+    let rest = &value["https://".len()..];
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') {
+        return Err(format!(
+            "release update policy {label} must not include credentials"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_asset_url(
+    url: &str,
+    release_base_url: &str,
+    filename: &str,
+    label: &str,
+) -> Result<(), String> {
+    validate_public_https_url(url, label)?;
+    let expected = format!(
+        "{}/{}",
+        release_base_url.trim_end_matches('/'),
+        percent_encode_asset_filename(filename)
+    );
+    if url != expected {
+        return Err(format!(
+            "release update policy {label} URL was {url}, expected {expected}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_public_asset_name(filename: &str, label: &str) -> Result<(), String> {
+    if filename.is_empty()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains("..")
+        || filename.chars().any(char::is_whitespace)
+    {
+        return Err(format!(
+            "release update policy {label} has unsafe asset name: {filename}"
+        ));
+    }
+    Ok(())
+}
+
+fn percent_encode_asset_filename(filename: &str) -> String {
+    filename
+        .as_bytes()
+        .iter()
+        .map(|byte| match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (*byte as char).to_string()
+            }
+            value => format!("%{value:02X}"),
+        })
+        .collect::<String>()
+}
+
+fn semver_like(version: &str) -> bool {
+    let mut parts = version.splitn(3, '.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+    let Some(patch_and_suffix) = parts.next() else {
+        return false;
+    };
+    if !numeric_identifier(major) || !numeric_identifier(minor) {
+        return false;
+    }
+    let patch_digits = patch_and_suffix
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    if patch_digits.is_empty() || !numeric_identifier(&patch_digits) {
+        return false;
+    }
+    let suffix = &patch_and_suffix[patch_digits.len()..];
+    suffix.is_empty()
+        || suffix.len() > 1
+            && (suffix.starts_with('-') || suffix.starts_with('+'))
+            && suffix[1..]
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || ".-+".contains(character))
+}
+
+fn numeric_identifier(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| format!("{value}{suffix}"))
+        .unwrap_or_else(|| suffix.trim_start_matches('.').to_string());
+    path.with_file_name(name)
+}
+
+fn file_name_string(path: &Path, label: &str) -> Result<String, String> {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| format!("{label} path must include a valid file name"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DoctorBinary {
     name: &'static str,
@@ -6815,6 +7566,7 @@ Usage:
   conu routes probes [--json]
   conu logs rotate [--max-bytes <bytes>] [--keep <count>] [--json]
   conu telemetry snapshot [--json]
+  conu update check --policy-file <path> [--sha256-file <path>] [--signature-file <path>] [--gpg-verify] [--json]
   conu security audit [--json]
   conu security rotate storage --confirm [--json]
   conu security rotate identity --confirm-peer-refresh [--json]
@@ -7234,6 +7986,7 @@ mod tests {
             "watch",
             "doctor",
             "telemetry",
+            "update",
             "stop",
         ] {
             let output = run_with_home([command], Some(home.clone()));
@@ -7242,6 +7995,85 @@ mod tests {
 
         let receipts = run_with_home(["messages", "receipts"], Some(home));
         assert_eq!(receipts.code, 0);
+    }
+
+    #[test]
+    fn update_check_validates_signed_policy_metadata_without_payloads() {
+        let home = temp_home("update-check");
+        let policy = write_update_policy_fixture(&home, false);
+
+        let output = run([
+            "update",
+            "check",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--json",
+        ]);
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(
+            output
+                .stdout
+                .contains("\"status\": \"update_policy_valid\"")
+        );
+        assert!(output.stdout.contains("\"version\": \"0.1.0\""));
+        assert!(output.stdout.contains("\"sha256SidecarMatched\": true"));
+        assert!(output.stdout.contains("\"signatureSidecarPresent\": true"));
+        assert!(output.stdout.contains("\"autoApply\": false"));
+        assert!(
+            output
+                .stdout
+                .contains("\"manualVerificationRequired\": true")
+        );
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("BEGIN PGP SIGNATURE"));
+        assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn update_check_rejects_auto_apply_policy() {
+        let home = temp_home("update-auto-apply");
+        let policy = write_update_policy_fixture(&home, true);
+
+        let output = run([
+            "update",
+            "check",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("must not enable autoApply"));
+        assert!(!output.stderr.contains("BEGIN PGP SIGNATURE"));
+    }
+
+    #[test]
+    fn update_check_rejects_checksum_drift() {
+        let home = temp_home("update-checksum");
+        let policy = write_update_policy_fixture(&home, false);
+        let sidecar = policy.with_file_name(format!(
+            "{}.sha256",
+            policy.file_name().unwrap().to_string_lossy()
+        ));
+        fs::write(
+            &sidecar,
+            format!(
+                "{}  {}\n",
+                "f".repeat(64),
+                policy.file_name().unwrap().to_string_lossy()
+            ),
+        )
+        .expect("sidecar writes");
+
+        let output = run([
+            "update",
+            "check",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("checksum did not match"));
     }
 
     #[test]
@@ -8503,6 +9335,115 @@ mod tests {
             .as_nanos();
 
         std::env::temp_dir().join(format!("conu-cli-test-{label}-{}-{nonce}", process::id()))
+    }
+
+    fn write_update_policy_fixture(directory: &Path, auto_apply: bool) -> PathBuf {
+        fs::create_dir_all(directory).expect("fixture dir creates");
+        let policy = directory.join("conu-0.1.0-update-policy.json");
+        let release_base = "https://github.com/imthegoodboy/conU/releases/download/v0.1.0";
+        let policy_text = format!(
+            r#"{{
+  "apply": {{
+    "autoApply": {auto_apply},
+    "downgradeAllowed": false,
+    "manualVerificationRequired": true,
+    "operatorConsentRequired": true
+  }},
+  "channel": "stable",
+  "ciphertextDisplayed": false,
+  "contentsDisplayed": false,
+  "keyMaterialDisplayed": false,
+  "linuxPackageAssets": [
+    {{
+      "filename": "conu_0.1.0_amd64.deb",
+      "kind": "debian-package",
+      "sha256": "{asset_sha}",
+      "sha256Url": "{release_base}/conu_0.1.0_amd64.deb.sha256",
+      "signatureUrl": "{release_base}/conu_0.1.0_amd64.deb.asc",
+      "target": "linux-x64",
+      "url": "{release_base}/conu_0.1.0_amd64.deb"
+    }}
+  ],
+  "npm": {{
+    "packages": [
+      {{
+        "name": "@conu/cli",
+        "version": "0.1.0"
+      }},
+      {{
+        "name": "@conu/sdk",
+        "version": "0.1.0"
+      }}
+    ],
+    "registry": "https://registry.npmjs.org"
+  }},
+  "packageManagerAssets": [
+    {{
+      "filename": "conu.rb",
+      "kind": "package-manager",
+      "packageManager": "homebrew-formula",
+      "sha256": "{asset_sha}",
+      "url": "{release_base}/conu.rb"
+    }}
+  ],
+  "payloadDisplayed": false,
+  "platformArchives": [
+    {{
+      "filename": "conu-0.1.0-linux-x64.tar.gz",
+      "kind": "platform-archive",
+      "sha256": "{asset_sha}",
+      "sha256Url": "{release_base}/conu-0.1.0-linux-x64.tar.gz.sha256",
+      "signatureUrl": "{release_base}/conu-0.1.0-linux-x64.tar.gz.asc",
+      "target": "linux-x64",
+      "url": "{release_base}/conu-0.1.0-linux-x64.tar.gz"
+    }}
+  ],
+  "policyAsset": {{
+    "cacheControl": "no-cache",
+    "filename": "conu-0.1.0-update-policy.json",
+    "sha256Url": "{release_base}/conu-0.1.0-update-policy.json.sha256",
+    "signatureUrl": "{release_base}/conu-0.1.0-update-policy.json.asc",
+    "url": "{release_base}/conu-0.1.0-update-policy.json"
+  }},
+  "product": "conU",
+  "releaseBaseUrl": "{release_base}",
+  "releaseTag": "v0.1.0",
+  "repositoryAssets": [
+    {{
+      "filename": "conu-linux-gpg-key.asc",
+      "kind": "linux-gpg-public-key",
+      "sha256": "{asset_sha}",
+      "sha256Url": "{release_base}/conu-linux-gpg-key.asc.sha256",
+      "url": "{release_base}/conu-linux-gpg-key.asc"
+    }}
+  ],
+  "schema": "conu.releaseUpdatePolicy.v1",
+  "sourceRepository": "https://github.com/imthegoodboy/conU",
+  "tokenDisplayed": false,
+  "verification": {{
+    "githubArtifactAttestationsExpectedForPlatformArchives": true,
+    "linuxDetachedSignaturesRequired": true,
+    "policyDetachedSignatureRequired": true,
+    "strictSha256SidecarsRequired": true
+  }},
+  "version": "0.1.0"
+}}
+"#,
+            asset_sha = "0".repeat(64)
+        );
+        fs::write(&policy, policy_text).expect("policy writes");
+        let digest = sha256_hex(&fs::read(&policy).expect("policy reads"));
+        fs::write(
+            policy.with_file_name("conu-0.1.0-update-policy.json.sha256"),
+            format!("{digest}  conu-0.1.0-update-policy.json\n"),
+        )
+        .expect("sidecar writes");
+        fs::write(
+            policy.with_file_name("conu-0.1.0-update-policy.json.asc"),
+            "-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n",
+        )
+        .expect("signature writes");
+        policy
     }
 
     fn pairing_code_from_output(output: &str) -> String {
