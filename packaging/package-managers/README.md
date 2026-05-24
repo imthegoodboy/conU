@@ -15,6 +15,8 @@ python scripts/generate-hosted-linux-repositories.py dist --output-dir dist --ve
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-bundles
 python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist --version 0.1.0 --base-url https://packages.example.com/conu
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
+python scripts/generate-release-update-policy.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --repo imthegoodboy/conU
+python scripts/sign-linux-release-assets.py dist --only-update-policies
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
 python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts/check-github-release-assets-published.py --repo imthegoodboy/conU --tag v0.1.0
@@ -57,17 +59,21 @@ conu-<version>-hosted-linux-repositories.zip.asc
 conu-<version>-hosted-linux-repository-site.zip
 conu-<version>-hosted-linux-repository-site.zip.sha256
 conu-<version>-hosted-linux-repository-site.zip.asc
+conu-<version>-update-policy.json
+conu-<version>-update-policy.json.sha256
+conu-<version>-update-policy.json.asc
 ```
 
 Tagged publication refuses to overwrite an existing GitHub Release for the tag,
 then uploads detached `.asc` signatures for Linux archives,
 generated Debian/RPM packages, generated APT/RPM metadata ZIPs, plus
-`conu-linux-gpg-key.asc` and its strict `.sha256` sidecar. Before npm
+`conu-linux-gpg-key.asc`, its strict `.sha256` sidecar, and signed
+`conu-<version>-update-policy.json` metadata. Before npm
 publication, `scripts/check-github-release-assets-published.py` verifies the
 public GitHub Release metadata has the expected archive, checksum, signature,
-package-manager, public-key, hosted repository bundle, and hosted repository
-site asset names with positive uploaded sizes and without duplicates or
-state/secret-looking asset names.
+package-manager, public-key, hosted repository bundle, hosted repository site,
+and update-policy asset names with positive uploaded sizes and without
+duplicates or state/secret-looking asset names.
 
 The `.rpm` files are generated only when `--build-rpm-packages` is set and
 `rpmbuild` is installed. The release workflow uses that mode and uploads those
@@ -121,11 +127,17 @@ and `downloads/` copies of the signed source bundle plus sidecars. The cache
 policy files keep install metadata, public keys, and package-manager indexes
 revalidated while allowing versioned package payloads and signed bundle
 downloads to be cached immutably when the static host applies them. Tagged
-publication detached-signs the site artifact too, then verifies and extracts
-the signed site ZIP into a GitHub Pages deployment artifact when the release
-uses the default repository Pages base URL. Custom DNS/TLS endpoint activation,
-package-manager submission, and operator proof that the generated cache policy
-is applied remain future work.
+publication detached-signs the site artifact too, then generates
+`conu-<version>-update-policy.json`, verifies the referenced release assets and
+strict sidecars, records public asset URLs, SHA-256 values, signature URLs, npm
+package versions, and manual verification rules with auto-apply disabled, writes
+a strict `.sha256` sidecar, and detached-signs that policy with
+`--only-update-policies`. The workflow then verifies and extracts the signed
+site ZIP into a GitHub Pages deployment artifact when the release uses the
+default repository Pages base URL. Custom DNS/TLS endpoint activation,
+package-manager submission, operator proof that the generated cache policy is
+applied, and a client-facing updater command that consumes the signed
+update-policy metadata remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
@@ -137,9 +149,9 @@ RPM repository metadata may contain `createrepo_c` metadata for those generated
 the Linux GPG public-key asset must not contain signing secrets, npm tokens,
 relay tokens, local paths, conU state, private payloads, private-key material,
 or package-manager repository credentials. Generated hosted repository site
-artifacts and Pages deployment artifacts contain public repository files,
-public metadata, public cache policy files, public signatures, public checksums,
-and install snippets only. Users should compare
+artifacts, update-policy metadata, and Pages deployment artifacts contain public
+repository files, public metadata, public cache policy files, public signatures,
+public checksums, and install snippets only. Users should compare
 `conu-linux-gpg-key.asc` against the published full maintainer fingerprint
 before trusting Linux `.asc`, native RPM package, or native repository metadata
 signatures.

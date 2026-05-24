@@ -46,7 +46,7 @@ conu-<version>-macos-x64.zip
 conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets, `CONU_LINUX_GPG_KEY_FINGERPRINT`, and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, the tag preflight imports the Linux GPG key, checks the expected full fingerprint, probe-signs a temporary file, verifies no GitHub Release already exists for the tag, and verifies live GitHub Pages repository metadata when the default hosted Linux repository URL is used, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus APT/RPM repository metadata are produced from verified release checksums, the imported Linux GPG key is checked again against the expected full fingerprint during publication, generated RPM package payloads are signed before RPM repository metadata is generated, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, `conu-linux-gpg-key.asc` is exported with a strict `.sha256` sidecar for signature verification, a signed hosted Linux repository ZIP is generated from those signed assets, a signed hosted Linux repository site ZIP is generated from that bundle plus its sidecars for static HTTPS deployment, the site ZIP is verified and extracted for GitHub Pages deployment when the default repository URL is used, the release publish job refuses to overwrite an existing GitHub Release, npm publication first verifies the public GitHub Release has all expected assets and no duplicate or forbidden state/secret-looking asset names, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures; generated Debian packages use SHA-256 sidecars plus detached signatures; generated RPM packages use native RPM signatures plus refreshed SHA-256 sidecars plus detached signatures; generated APT/RPM metadata ZIPs include native repository signatures, refreshed sidecars, and detached signatures; generated hosted Linux repository ZIPs include signed package/repository trees, refreshed sidecars, and detached signatures; generated hosted Linux repository site ZIPs include public endpoint metadata, install snippets, public repository trees, checked `cache-policy.json` and `_headers` files, and detached signatures.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets, `CONU_LINUX_GPG_KEY_FINGERPRINT`, and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, the tag preflight imports the Linux GPG key, checks the expected full fingerprint, probe-signs a temporary file, verifies no GitHub Release already exists for the tag, and verifies live GitHub Pages repository metadata when the default hosted Linux repository URL is used, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus APT/RPM repository metadata are produced from verified release checksums, the imported Linux GPG key is checked again against the expected full fingerprint during publication, generated RPM package payloads are signed before RPM repository metadata is generated, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, `conu-linux-gpg-key.asc` is exported with a strict `.sha256` sidecar for signature verification, a signed hosted Linux repository ZIP is generated from those signed assets, a signed hosted Linux repository site ZIP is generated from that bundle plus its sidecars for static HTTPS deployment, signed release update-policy metadata is generated from the final public asset set with auto-apply disabled, the site ZIP is verified and extracted for GitHub Pages deployment when the default repository URL is used, the release publish job refuses to overwrite an existing GitHub Release, npm publication first verifies the public GitHub Release has all expected assets and no duplicate or forbidden state/secret-looking asset names, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures; generated Debian packages use SHA-256 sidecars plus detached signatures; generated RPM packages use native RPM signatures plus refreshed SHA-256 sidecars plus detached signatures; generated APT/RPM metadata ZIPs include native repository signatures, refreshed sidecars, and detached signatures; generated hosted Linux repository ZIPs include signed package/repository trees, refreshed sidecars, and detached signatures; generated hosted Linux repository site ZIPs include public endpoint metadata, install snippets, public repository trees, checked `cache-policy.json` and `_headers` files, and detached signatures; generated update-policy JSON includes public release URLs, strict SHA-256 values, signature URLs, npm package versions, a checksum sidecar, and a detached signature.
 
 Before tagging, run:
 
@@ -64,12 +64,13 @@ They also run `python scripts/check-linux-release-signing.py` so fingerprint-pin
 They also run `python scripts/check-linux-repository-signing.py` so fingerprint-pinned native APT/RPM repository metadata signing, verification, and sidecar-refresh regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-hosted-linux-repositories.py` so static hosted APT/YUM bundle regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-hosted-linux-repository-site.py`, `python scripts/check-hosted-linux-repository-pages.py`, and `python scripts/check-github-pages-readiness-regression.py` so static hosted repository site, GitHub Pages extraction, and GitHub Pages metadata readiness regressions fail before tagged package publication paths are used.
+They also run `python scripts/check-release-update-policy.py` so release update-policy metadata regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-github-release-clobber-preflight-regression.py` so existing-release clobber regressions fail before tagged publication paths are used.
 They also run `python scripts/check-github-release-assets-published-regression.py` so GitHub Release asset publication metadata regressions fail before tagged npm publication paths are used.
 They also run `python scripts/check-linux-gpg-public-key-export.py` so fingerprint-pinned Linux public-key export and verification regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
-Tagged npm publish jobs additionally run `python scripts/check-github-release-assets-published.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"` before npm registry access, requiring the uploaded public GitHub Release to contain the expected archives, checksums, signatures, package-manager files, public-key asset, hosted repository bundle, and hosted repository site artifact.
+Tagged npm publish jobs additionally run `python scripts/check-github-release-assets-published.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"` before npm registry access, requiring the uploaded public GitHub Release to contain the expected archives, checksums, signatures, package-manager files, public-key asset, hosted repository bundle, hosted repository site artifact, and signed update-policy metadata.
 
 Validate generated archives before upload:
 
@@ -127,6 +128,8 @@ python scripts/generate-hosted-linux-repositories.py dist --output-dir dist --ve
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-bundles
 python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist --version 0.1.0 --base-url https://packages.example.com/conu
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
+python scripts/generate-release-update-policy.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --repo imthegoodboy/conU
+python scripts/sign-linux-release-assets.py dist --only-update-policies
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
 python scripts/check-github-pages-readiness.py --repo imthegoodboy/conU
 python scripts/check-package-manager-manifests.py
@@ -137,6 +140,7 @@ python scripts/check-hosted-linux-repositories.py
 python scripts/check-hosted-linux-repository-site.py
 python scripts/check-hosted-linux-repository-pages.py
 python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
+python scripts/check-release-update-policy.py
 python scripts/check-github-release-assets-published.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts/check-linux-gpg-public-key-export.py
 ```
@@ -166,7 +170,12 @@ those assets plus a signed `conu-<version>-hosted-linux-repositories.zip` static
 APT/YUM hosting bundle and a signed
 `conu-<version>-hosted-linux-repository-site.zip` static site artifact so
 operators can publish generated repository trees, endpoint metadata, and
-install snippets without rewriting metadata or guessing hashes.
+install snippets without rewriting metadata or guessing hashes. Tagged
+publication then generates `conu-<version>-update-policy.json`, verifies the
+referenced release assets and strict sidecars, records public asset URLs,
+strict SHA-256 values, signature URLs, npm package versions, and manual
+verification rules with auto-apply disabled, writes a strict `.sha256` sidecar,
+and detached-signs that policy with `--only-update-policies`.
 The regression check validates generated Debian packages with `dpkg-deb` and
 builds the generated RPM spec with `rpmbuild` when those native tools are
 available, and it opens the APT and RPM metadata bundles to verify package
