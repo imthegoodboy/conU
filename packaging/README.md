@@ -46,7 +46,7 @@ conu-<version>-macos-x64.zip
 conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus unsigned APT/RPM repository metadata are produced from verified release checksums, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures, and generated Debian/RPM packages plus APT/RPM metadata use SHA-256 sidecars plus detached signatures until distro/package-manager signing is introduced.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus APT/RPM repository metadata are produced from verified release checksums, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures; generated Debian/RPM packages use SHA-256 sidecars plus detached signatures; generated APT/RPM metadata ZIPs include native repository signatures, refreshed sidecars, and detached signatures.
 
 Before tagging, run:
 
@@ -59,6 +59,7 @@ The same package jobs run `python scripts/check-release-artifact-verifier.py` so
 They also run `python scripts/check-release-artifact-smoke-preflight.py` so release artifact smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before execution.
 They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager and APT/RPM repository metadata regressions fail before package publication paths are used. CI and release package jobs install RPM tooling plus `createrepo-c` so the generated `conu.spec`, optional generated `.rpm` release assets, and RPM repository metadata are checked when package gates run on Ubuntu.
 They also run `python scripts/check-linux-release-signing.py` so Linux detached-signing regressions fail before tagged package publication paths are used. CI and release package jobs install `gnupg` for that check.
+They also run `python scripts/check-linux-repository-signing.py` so native APT/RPM repository metadata signing, verification, and sidecar-refresh regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
 
@@ -103,7 +104,7 @@ commands.
 
 ## Package-Manager Manifests
 
-Generate Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and unsigned APT/RPM
+Generate Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and APT/RPM
 repository metadata files from the platform archives and strict checksum files:
 
 ```sh
@@ -112,12 +113,13 @@ python scripts/generate-package-manager-manifests.py dist --output-dir dist --ve
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata --build-rpm-repository-metadata
 python scripts/check-package-manager-manifests.py
 python scripts/check-linux-release-signing.py
+python scripts/check-linux-repository-signing.py
 ```
 
 The generator writes package-native `conu.rb`, `conu.json`,
 `imthegoodboy.conU.yaml`, deterministic `conu.<version>.nupkg`, deterministic
 `conu_<version>_amd64.deb` and `conu_<version>_arm64.deb` packages with strict
-`.sha256` sidecars, optional unsigned `conu-<debian-version>-apt-repository-metadata.zip`
+`.sha256` sidecars, optional `conu-<debian-version>-apt-repository-metadata.zip`
 metadata with a strict `.sha256` sidecar, and `conu.spec` using public GitHub
 Release URLs, static SHA-256 hashes, install helper code, binary mappings, and
 verified Linux release binaries only where the package format requires binaries. When
@@ -128,14 +130,16 @@ verified Linux release binaries only where the package format requires binaries.
 assets. When `--build-rpm-repository-metadata` is set, it also builds a
 `createrepo_c` `repodata/*` bundle for the generated `.rpm` assets without
 embedding those RPM packages. Tagged release publication runs all optional
-modes, signs generated Linux package/metadata assets with detached `.asc`
-signatures, and uploads those assets so package-manager maintainers can review
-generated files without guessing hashes.
+modes, adds native APT `InRelease`/`Release.gpg` and RPM
+`repodata/repomd.xml.asc` signatures, refreshes the metadata ZIP sidecars,
+signs generated Linux package/metadata assets with detached `.asc` signatures,
+and uploads those assets so package-manager maintainers can review generated
+files without guessing hashes.
 The regression check validates generated Debian packages with `dpkg-deb` and
 builds the generated RPM spec with `rpmbuild` when those native tools are
 available, and it opens the APT and RPM metadata bundles to verify package
-hashes, compressed metadata, and repository hashes. Signed APT/RPM publication,
-repository signing, and hosted repository setup remain future work.
+hashes, compressed metadata, and repository hashes. Hosted repository setup,
+package-manager submission, and RPM package payload signing remain future work.
 See `packaging/package-managers/README.md`.
 
 Verify a downloaded archive's provenance when `gh` is available:

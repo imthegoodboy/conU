@@ -26,6 +26,8 @@ jobs:
         run: python scripts/check-package-manager-manifests.py
       - name: Linux release signing regression
         run: python scripts/check-linux-release-signing.py
+      - name: Linux repository signing regression
+        run: python scripts/check-linux-repository-signing.py
       - name: TypeScript SDK check
         run: npm run check --prefix sdk/typescript
       - name: npm launcher check

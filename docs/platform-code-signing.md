@@ -15,9 +15,12 @@ package-manager publishing.
   before checksums and attestations are generated.
 - Linux release tarballs use SHA-256 checksum files, GitHub artifact
   attestations for archive provenance, and armored detached GPG `.asc`
-  signatures. Generated Debian/RPM packages and unsigned APT/RPM repository
-  metadata ZIP bundles use SHA-256 sidecars plus detached `.asc` signatures
-  until distro-specific package and repository signing is added.
+  signatures. Generated Debian/RPM packages use SHA-256 sidecars plus detached
+  `.asc` signatures. Generated APT metadata ZIP bundles add native
+  `InRelease` and `Release.gpg` signatures over `Release`; generated RPM
+  metadata ZIP bundles add `repodata/repomd.xml.asc` over
+  `repodata/repomd.xml`. Both metadata ZIPs refresh their `.sha256` sidecars
+  before detached `.asc` signatures are created over the final ZIPs.
 - Signing secrets are maintainer-owned repository secrets. The workflow never
   prints certificates, private keys, signing passwords, npm tokens, relay
   tokens, local conU state, or payload contents.
@@ -49,7 +52,7 @@ Publication:
 NPM_TOKEN
 ```
 
-Linux detached signatures:
+Linux GPG signatures:
 
 ```txt
 CONU_LINUX_GPG_PRIVATE_KEY_BASE64
@@ -65,7 +68,7 @@ or passwords in the repo.
 
 On tag builds matching `v*`, the release workflow runs a preflight before
 package checks and platform builds. The preflight fails closed unless all
-Windows signing, macOS signing/notarization, Linux detached-signing, and
+Windows signing, macOS signing/notarization, Linux GPG signing, and
 `NPM_TOKEN` publication secrets are configured. `CONU_SIGNING_REQUIRED=1` is
 also set for the release matrix so the platform build scripts keep their local
 fail-closed signing checks.
@@ -75,9 +78,12 @@ absent, which keeps smoke packaging available for maintainers. Those non-tag
 runs do not publish GitHub Releases or npm packages.
 
 Tagged GitHub Release publication imports the Linux GPG private key into a
-temporary `GNUPGHOME`, signs only the Linux archives, generated Debian/RPM
-packages, and generated APT/RPM repository metadata ZIPs, verifies every
-signature before upload, and removes the temporary keyring when the job exits.
+temporary `GNUPGHOME`, first adds and verifies native signatures inside the
+generated APT/RPM repository metadata ZIPs, refreshes their `.sha256` sidecars,
+then signs only the Linux archives, generated Debian/RPM packages, and final
+APT/RPM repository metadata ZIPs with detached `.asc` signatures. Every
+signature is verified before upload, and the temporary keyring is removed when
+the job exits.
 
 The build scripts write signing status into `manifest.toml`:
 
@@ -136,6 +142,17 @@ gpg --verify conu_0.1.0_amd64.deb.asc conu_0.1.0_amd64.deb
 gpg --verify conu-0.1.0-1.x86_64.rpm.asc conu-0.1.0-1.x86_64.rpm
 gpg --verify conu-0.1.0-apt-repository-metadata.zip.asc conu-0.1.0-apt-repository-metadata.zip
 gpg --verify conu-0.1.0-rpm-repository-metadata.zip.asc conu-0.1.0-rpm-repository-metadata.zip
+```
+
+Generated repository metadata ZIPs also carry native repository signatures:
+
+```sh
+unzip -q conu-0.1.0-apt-repository-metadata.zip -d apt-metadata
+gpg --verify apt-metadata/InRelease
+gpg --verify apt-metadata/Release.gpg apt-metadata/Release
+
+unzip -q conu-0.1.0-rpm-repository-metadata.zip -d rpm-metadata
+gpg --verify rpm-metadata/repodata/repomd.xml.asc rpm-metadata/repodata/repomd.xml
 ```
 
 ## References
