@@ -35,6 +35,10 @@ CHOCOLATEY_FILENAME = f"conu.{VERSION}.nupkg"
 RPM_SPEC_FILENAME = "conu.spec"
 DEBIAN_AMD64_FILENAME = f"conu_{VERSION}_amd64.deb"
 DEBIAN_ARM64_FILENAME = f"conu_{VERSION}_arm64.deb"
+RPM_ARCHES = {
+    "linux-x64": "x86_64",
+    "linux-arm64": "aarch64",
+}
 
 
 def load_generator():
@@ -75,6 +79,16 @@ def write_linux_tar_gz(path: Path, target: str, *, rooted: bool) -> str:
             info = tarfile.TarInfo(f"{root}bin/{binary}")
             info.size = len(data)
             info.mode = 0o755
+            info.mtime = 1577836800
+            package.addfile(info, io.BytesIO(data))
+        for name, data in {
+            "README.md": b"# conU\n\nRPM package fixture.\n",
+            "docs/distribution-and-hosting.md": b"# Distribution\n\nRPM docs fixture.\n",
+            "packaging/README.md": b"# Packaging\n\nRPM packaging fixture.\n",
+        }.items():
+            info = tarfile.TarInfo(f"{root}{name}")
+            info.size = len(data)
+            info.mode = 0o644
             info.mtime = 1577836800
             package.addfile(info, io.BytesIO(data))
     return write_checksum(path)
@@ -338,6 +352,84 @@ def assert_dpkg_deb_accepts(path: Path, architecture: str) -> None:
             raise AssertionError(f"{path.name} dpkg-deb contents missed {binary}")
 
 
+def assert_rpmbuild_accepts(spec_path: Path, dist: Path) -> None:
+    rpmbuild = shutil.which("rpmbuild")
+    if rpmbuild is None:
+        return
+    rpm = shutil.which("rpm")
+    for target, rpm_arch in RPM_ARCHES.items():
+        with tempfile.TemporaryDirectory(prefix=f"conu-rpmbuild-{rpm_arch}-") as topdir_text:
+            topdir = Path(topdir_text)
+            for name in ("BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"):
+                (topdir / name).mkdir()
+            command = [
+                rpmbuild,
+                "--define",
+                f"_topdir {topdir}",
+                "--define",
+                f"_sourcedir {dist}",
+                "--define",
+                f"_builddir {topdir / 'BUILD'}",
+                "--define",
+                f"_buildrootdir {topdir / 'BUILDROOT'}",
+                "--define",
+                f"_rpmdir {topdir / 'RPMS'}",
+                "--define",
+                f"_srcrpmdir {topdir / 'SRPMS'}",
+                "--target",
+                rpm_arch,
+                "-bb",
+                str(spec_path),
+            ]
+            try:
+                subprocess.run(
+                    command,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except subprocess.CalledProcessError as exc:
+                raise AssertionError(
+                    f"rpmbuild failed for {target} with output:\n{exc.stdout}"
+                ) from exc
+            packages = sorted((topdir / "RPMS").rglob("conu-*.rpm"))
+            if len(packages) != 1:
+                raise AssertionError(
+                    f"rpmbuild for {target} produced packages {[str(path) for path in packages]!r}"
+                )
+            if rpm is not None:
+                assert_rpm_package_metadata(rpm, packages[0], rpm_arch)
+
+
+def assert_rpm_package_metadata(rpm: str, package: Path, rpm_arch: str) -> None:
+    info = subprocess.run(
+        [rpm, "-qip", str(package)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout
+    if "Name        : conu" not in info or f"Architecture: {rpm_arch}" not in info:
+        raise AssertionError(f"{package.name} had unexpected RPM metadata:\n{info}")
+    contents = subprocess.run(
+        [rpm, "-qlp", str(package)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout
+    for binary in LINUX_BINARIES:
+        if f"/usr/bin/{binary}" not in contents:
+            raise AssertionError(f"{package.name} rpm contents missed {binary}")
+
+
 def assert_sha256_sidecar(path: Path) -> None:
     sidecar = path.with_name(f"{path.name}.sha256")
     expected = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -446,6 +538,7 @@ def main() -> int:
         if "%{_bindir}/conu-mcp" not in rpm_spec:
             raise AssertionError("rpm spec did not install conu-mcp")
         assert_no_forbidden_output(rootless_out / RPM_SPEC_FILENAME, temp)
+        assert_rpmbuild_accepts(rootless_out / RPM_SPEC_FILENAME, rootless_dist)
         if DEBIAN_AMD64_FILENAME not in generator.output_filenames(VERSION):
             raise AssertionError("output filenames did not include Debian amd64 package")
         if f"{DEBIAN_AMD64_FILENAME}.sha256" not in generator.output_filenames(VERSION):
@@ -483,6 +576,7 @@ def main() -> int:
             architecture="amd64",
             target="linux-x64",
         )
+        assert_rpmbuild_accepts(rooted_out / RPM_SPEC_FILENAME, rooted_dist)
 
         missing_checksum = temp / "missing-checksum"
         missing_checksum.mkdir()

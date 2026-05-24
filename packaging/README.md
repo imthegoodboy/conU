@@ -57,7 +57,7 @@ python scripts/verify-release-versions.py
 The CI and release package jobs run the same check before package validation. Branch and PR runs verify that every Cargo/npm manifest uses the same version; `v*` tag runs also require the tag version to match.
 The same package jobs run `python scripts/check-release-artifact-verifier.py` so checksum format, duplicate path, and forbidden state-path regressions fail before platform artifacts are generated.
 They also run `python scripts/check-release-artifact-smoke-preflight.py` so release artifact smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before execution.
-They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager regressions fail before package publication paths are used.
+They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager regressions fail before package publication paths are used. CI and release package jobs install RPM tooling so the generated `conu.spec` is also checked with native `rpmbuild` when package gates run on Ubuntu.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
 
@@ -117,6 +117,10 @@ SHA-256 hashes, install helper code, binary mappings, and verified Linux release
 binaries only where the Debian package format requires binaries. Tagged release
 publication runs the same path before uploading release assets, so
 package-manager maintainers can review generated files without guessing hashes.
+The regression check validates generated Debian packages with `dpkg-deb` and
+builds the generated RPM spec with `rpmbuild` when those native tools are
+available; it still does not publish signed `.rpm` assets or configure an RPM
+repository.
 See `packaging/package-managers/README.md`.
 
 Verify a downloaded archive's provenance when `gh` is available:
