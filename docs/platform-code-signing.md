@@ -82,9 +82,13 @@ or passwords in the repo.
 On tag builds matching `v*`, the release workflow runs a preflight before
 package checks and platform builds. The preflight fails closed unless all
 Windows signing, macOS signing/notarization, Linux GPG signing, and
-`NPM_TOKEN` publication secrets are configured. `CONU_SIGNING_REQUIRED=1` is
-also set for the release matrix so the platform build scripts keep their local
-fail-closed signing checks.
+`NPM_TOKEN` publication secrets are configured. It also imports the configured
+Linux GPG private key into a temporary keyring, verifies that
+`CONU_LINUX_GPG_KEY_ID` resolves to `CONU_LINUX_GPG_KEY_FINGERPRINT`, and
+probe-signs a temporary file with `CONU_LINUX_GPG_PASSPHRASE` so malformed
+keys, mismatched fingerprints, and wrong passphrases fail before builds.
+`CONU_SIGNING_REQUIRED=1` is also set for the release matrix so the platform
+build scripts keep their local fail-closed signing checks.
 
 Manual `workflow_dispatch` builds can still run unsigned when secrets are
 absent, which keeps smoke packaging available for maintainers. Those non-tag
@@ -99,8 +103,8 @@ the generated APT/RPM repository metadata ZIPs and refreshes their `.sha256`
 sidecars. It then signs only the Linux archives, generated Debian/RPM packages,
 and final APT/RPM repository metadata ZIPs with detached `.asc` signatures.
 Every signature is verified before upload, and the temporary keyring is removed
-when the job exits. A missing or mismatched fingerprint fails closed before any
-Linux signing artifact is written.
+when the job exits. A missing or mismatched fingerprint fails closed during tag
+preflight and again before any Linux signing artifact is written.
 
 The same temporary import path exports only the armored Linux GPG public key as
 `conu-linux-gpg-key.asc` with a strict `.sha256` sidecar. The workflow refuses

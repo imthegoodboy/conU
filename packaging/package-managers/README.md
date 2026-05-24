@@ -70,11 +70,14 @@ package metadata/docs, and each `.deb` has its own strict `.sha256` sidecar. The
 generated `conu.spec` references the verified Linux release archives and static
 SHA-256 values for RPM builds on `x86_64` and `aarch64`. CI and release package
 checks install RPM tooling and run the regression through native `rpmbuild` when
-available. Tagged releases build `.rpm` assets and strict `.rpm.sha256`
-sidecars from the generated spec, verify that the imported Linux GPG signing key
-matches `CONU_LINUX_GPG_KEY_FINGERPRINT`, sign the RPM package payloads with
-that key, refresh the `.rpm.sha256` sidecars, then generate RPM repository
-metadata from the signed packages. Tagged releases also upload the APT and RPM
+available. The tag preflight imports the Linux signing key, verifies
+`CONU_LINUX_GPG_KEY_ID` resolves to `CONU_LINUX_GPG_KEY_FINGERPRINT`, and
+probe-signs a temporary file before builds. Tagged releases build `.rpm` assets
+and strict `.rpm.sha256` sidecars from the generated spec, verify that the
+imported Linux GPG signing key matches `CONU_LINUX_GPG_KEY_FINGERPRINT` again,
+sign the RPM package payloads with that key, refresh the `.rpm.sha256` sidecars,
+then generate RPM repository metadata from the signed packages. Tagged releases
+also upload the APT and RPM
 repository metadata bundles, add native APT `InRelease` and `Release.gpg`
 signatures, add RPM `repodata/repomd.xml.asc`, refresh metadata ZIP `.sha256`
 sidecars, export `conu-linux-gpg-key.asc` for signature verification, and
