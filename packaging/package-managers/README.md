@@ -6,7 +6,9 @@ verified release assets for a tag:
 ```sh
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages
-python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata --build-rpm-repository-metadata
+python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata
+python scripts/sign-rpm-packages.py dist
+python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-repository-metadata
 ```
 
 The generator requires the platform archives and strict sibling `.sha256` files
@@ -44,7 +46,8 @@ conu-<rpm-version>-rpm-repository-metadata.zip.sha256
 
 The `.rpm` files are generated only when `--build-rpm-packages` is set and
 `rpmbuild` is installed. The release workflow uses that mode and uploads those
-files beside the native archives on `v*` tagged releases. The APT repository
+files beside the native archives on `v*` tagged releases after signing the
+native RPM package payloads and refreshing the `.rpm.sha256` sidecars. The APT repository
 metadata ZIP is generated only when `--build-apt-repository-metadata` is set;
 it contains deterministic `Packages`, `Packages.gz`, `Release`, and README
 files for the generated `.deb` assets, plus its own strict `.sha256` sidecar.
@@ -67,15 +70,16 @@ package metadata/docs, and each `.deb` has its own strict `.sha256` sidecar. The
 generated `conu.spec` references the verified Linux release archives and static
 SHA-256 values for RPM builds on `x86_64` and `aarch64`. CI and release package
 checks install RPM tooling and run the regression through native `rpmbuild` when
-available. Tagged releases now build unsigned `.rpm` assets and strict
-`.rpm.sha256` sidecars from the generated spec. Tagged releases also upload the
+available. Tagged releases build `.rpm` assets and strict `.rpm.sha256`
+sidecars from the generated spec, sign the RPM package payloads with the Linux
+GPG signing key, refresh the `.rpm.sha256` sidecars, then generate RPM
+repository metadata from the signed packages. Tagged releases also upload the
 APT and RPM repository metadata bundles, add native APT `InRelease` and
 `Release.gpg` signatures, add RPM `repodata/repomd.xml.asc`, refresh metadata
 ZIP `.sha256` sidecars, export `conu-linux-gpg-key.asc` for signature
 verification, and create detached `.asc` signatures for Linux archives,
 generated `.deb`/`.rpm` assets, and generated APT/RPM metadata ZIPs.
-Native RPM package payload signing, hosted repository setup, and
-package-manager submission remain future work.
+Hosted repository setup and package-manager submission remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary

@@ -595,8 +595,8 @@ def assert_rpm_repository_metadata(path: Path, temp: Path, generator, output: Pa
     other_text = gzip.decompress(contents["repodata/other.xml.gz"]).decode("utf-8")
 
     if (
-        "Tagged release publication adds repodata/repomd.xml.asc" not in readme_text
-        or "RPM package payload signing" not in readme_text
+        "Tagged release publication signs the generated .rpm package payloads first" not in readme_text
+        or "generates this metadata from the signed packages" not in readme_text
         or RPM_X64_FILENAME not in readme_text
     ):
         raise AssertionError(f"{path.name} README missed signed publication guidance")

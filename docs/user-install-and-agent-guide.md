@@ -665,7 +665,7 @@ These are not hidden bugs; they are the honest state of the current app:
 
 | Area | Current issue | User impact | Workaround today |
 | --- | --- | --- | --- |
-| Installer | Release artifact scripts exist, tagged release workflow supports Windows Authenticode, macOS notarization, Linux detached `.asc` signatures, native APT/RPM metadata signatures, and a Linux GPG public-key release asset, but one-click OS installers are not published | Users still install from archives or source until package-manager distribution exists | Verify checksums, GitHub attestations, `conu-linux-gpg-key.asc`, and platform signatures before install |
+| Installer | Release artifact scripts exist, tagged release workflow supports Windows Authenticode, macOS notarization, Linux detached `.asc` signatures, native RPM package signatures, native APT/RPM metadata signatures, and a Linux GPG public-key release asset, but one-click OS installers are not published | Users still install from archives or source until package-manager distribution exists | Verify checksums, GitHub attestations, `conu-linux-gpg-key.asc`, and platform signatures before install |
 | npm install | `@conu/cli` template exists but is not published until release assets are attached | `npm install -g @conu/cli` is the target path, not a live package guarantee yet | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
@@ -722,4 +722,4 @@ To make conU genuinely useful over the internet, the next phase should build:
 - Tenant-wide hosted dashboard workflow services beyond the current admin-token-gated single-relay dashboard snapshot, scoped admin-token manifest and audit, local topic policy file, and single-writer hosted tenant registry.
 - Managed direct NAT traversal beyond static candidate metadata, including ICE/STUN/TURN or hosted direct-candidate rendezvous.
 - Browser-native TypeScript protocol support remains future work; the current Node wrapper uses installed binaries and MCP for explicit payload receive, while browser-conditioned imports fail closed through a safe unsupported stub.
-- OS package-manager installers, hosted APT/RPM repository publication, RPM package payload signing, and managed hosted account/key administration after local packaging stabilizes.
+- OS package-manager installers, hosted APT/RPM repository publication, and managed hosted account/key administration after local packaging stabilizes.
