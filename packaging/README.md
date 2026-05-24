@@ -46,7 +46,7 @@ conu-<version>-macos-x64.zip
 conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus unsigned APT/RPM repository metadata are produced from verified release checksums, and npm packages are published with provenance after GitHub Release assets exist. Linux archives currently use SHA-256 files plus GitHub artifact attestations, and generated Debian/RPM packages plus APT/RPM metadata use SHA-256 sidecars, until distro/package-manager signing is introduced.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus unsigned APT/RPM repository metadata are produced from verified release checksums, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures, and generated Debian/RPM packages plus APT/RPM metadata use SHA-256 sidecars plus detached signatures until distro/package-manager signing is introduced.
 
 Before tagging, run:
 
@@ -58,6 +58,7 @@ The CI and release package jobs run the same check before package validation. Br
 The same package jobs run `python scripts/check-release-artifact-verifier.py` so checksum format, duplicate path, and forbidden state-path regressions fail before platform artifacts are generated.
 They also run `python scripts/check-release-artifact-smoke-preflight.py` so release artifact smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before execution.
 They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager and APT/RPM repository metadata regressions fail before package publication paths are used. CI and release package jobs install RPM tooling plus `createrepo-c` so the generated `conu.spec`, optional generated `.rpm` release assets, and RPM repository metadata are checked when package gates run on Ubuntu.
+They also run `python scripts/check-linux-release-signing.py` so Linux detached-signing regressions fail before tagged package publication paths are used. CI and release package jobs install `gnupg` for that check.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
 
@@ -95,7 +96,8 @@ publishing assets.
 When a local `dist/` also contains a `conu-<version>-host` archive, the download
 smoke treats the platform-named npm asset as canonical and skips the host alias.
 Tagged release builds also create GitHub artifact attestations for each platform
-archive and checksum file.
+archive and checksum file, plus detached `.asc` signatures for Linux archives
+and generated Linux package/metadata assets.
 See `docs/platform-code-signing.md` for signing secrets and verification
 commands.
 
@@ -109,6 +111,7 @@ python scripts/generate-package-manager-manifests.py dist --output-dir dist --ve
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata --build-rpm-repository-metadata
 python scripts/check-package-manager-manifests.py
+python scripts/check-linux-release-signing.py
 ```
 
 The generator writes package-native `conu.rb`, `conu.json`,
@@ -124,8 +127,9 @@ verified Linux release binaries only where the package format requires binaries.
 `Packages`, `Packages.gz`, and `Release` metadata for the generated `.deb`
 assets. When `--build-rpm-repository-metadata` is set, it also builds a
 `createrepo_c` `repodata/*` bundle for the generated `.rpm` assets without
-embedding those RPM packages. Tagged release publication runs all optional modes
-before uploading release assets, so package-manager maintainers can review
+embedding those RPM packages. Tagged release publication runs all optional
+modes, signs generated Linux package/metadata assets with detached `.asc`
+signatures, and uploads those assets so package-manager maintainers can review
 generated files without guessing hashes.
 The regression check validates generated Debian packages with `dpkg-deb` and
 builds the generated RPM spec with `rpmbuild` when those native tools are
