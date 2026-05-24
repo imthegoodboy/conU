@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Regression checks for hosted Linux repository Pages preparation."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SITE_CHECKER = ROOT / "scripts" / "check-hosted-linux-repository-site.py"
+PAGES_PREPARER = ROOT / "scripts" / "prepare-hosted-linux-repository-pages.py"
+VERSION = "0.1.0"
+BASE_URL = "https://imthegoodboy.github.io/conU"
+HOSTED_BUNDLE = f"conu-{VERSION}-hosted-linux-repositories.zip"
+SITE_BUNDLE = f"conu-{VERSION}-hosted-linux-repository-site.zip"
+PUBLIC_KEY = "conu-linux-gpg-key.asc"
+ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
+
+
+def main() -> int:
+    site_checker = load_site_checker()
+    bundle_checker = site_checker.load_bundle_checker()
+    with tempfile.TemporaryDirectory(prefix="conu-hosted-linux-pages-") as temp_text:
+        temp = Path(temp_text)
+        dist = temp / "dist"
+        pages = temp / "pages"
+        dist.mkdir()
+        pages.mkdir()
+
+        bundle_checker.write_signed_dist(dist)
+        bundle_checker.run_generator(dist, dist)
+        hosted_bundle = dist / HOSTED_BUNDLE
+        site_checker.write_signature(hosted_bundle)
+        site_checker.run_generator(dist, dist, BASE_URL)
+        site = dist / SITE_BUNDLE
+        site_checker.write_signature(site)
+
+        run_preparer(dist, pages)
+        assert_pages_output(pages, site)
+
+        missing_checksum = temp / "missing-checksum"
+        shutil.copytree(dist, missing_checksum)
+        (missing_checksum / f"{SITE_BUNDLE}.sha256").unlink()
+        expect_failure(
+            "missing site checksum",
+            missing_checksum / SITE_BUNDLE,
+            temp / "missing-checksum-pages",
+            "missing SHA-256 sidecar",
+        )
+
+        missing_signature = temp / "missing-signature"
+        shutil.copytree(dist, missing_signature)
+        (missing_signature / f"{SITE_BUNDLE}.asc").unlink()
+        expect_failure(
+            "missing site signature",
+            missing_signature / SITE_BUNDLE,
+            temp / "missing-signature-pages",
+            "missing detached signature",
+        )
+
+        unsafe = temp / "unsafe"
+        shutil.copytree(dist, unsafe)
+        rewrite_site_zip(unsafe / SITE_BUNDLE, {"../index.html": b"escape\n"})
+        sign_site(unsafe / SITE_BUNDLE)
+        expect_failure(
+            "unsafe site member path",
+            unsafe / SITE_BUNDLE,
+            temp / "unsafe-pages",
+            "unsafe hosted repository site path",
+        )
+
+        forbidden = temp / "forbidden"
+        shutil.copytree(dist, forbidden)
+        rewrite_site_zip(forbidden / SITE_BUNDLE, {"install/README.txt": b"NPM_TOKEN\n"})
+        sign_site(forbidden / SITE_BUNDLE)
+        expect_failure(
+            "forbidden site text",
+            forbidden / SITE_BUNDLE,
+            temp / "forbidden-pages",
+            "forbidden Pages deployment text",
+        )
+
+        unexpected_download = temp / "unexpected-download"
+        shutil.copytree(dist, unexpected_download)
+        rewrite_site_zip(unexpected_download / SITE_BUNDLE, {"downloads/extra.bin": b"not expected\n"})
+        sign_site(unexpected_download / SITE_BUNDLE)
+        expect_failure(
+            "unexpected download member",
+            unexpected_download / SITE_BUNDLE,
+            temp / "unexpected-download-pages",
+            "unexpected Pages member",
+        )
+
+        insecure = temp / "insecure"
+        shutil.copytree(dist, insecure)
+        repository = read_site_json(insecure / SITE_BUNDLE)
+        repository["baseUrl"] = "http://imthegoodboy.github.io/conU"
+        rewrite_site_zip(
+            insecure / SITE_BUNDLE,
+            {"repository.json": json.dumps(repository, indent=2, sort_keys=True).encode("ascii") + b"\n"},
+        )
+        sign_site(insecure / SITE_BUNDLE)
+        expect_failure(
+            "insecure repository URL",
+            insecure / SITE_BUNDLE,
+            temp / "insecure-pages",
+            "absolute https URL",
+        )
+
+        non_empty_output = temp / "non-empty"
+        non_empty_output.mkdir()
+        (non_empty_output / "existing.txt").write_text("existing\n", encoding="ascii")
+        expect_failure(
+            "non-empty output",
+            dist / SITE_BUNDLE,
+            non_empty_output,
+            "must be empty",
+        )
+
+    print("Hosted Linux repository Pages regression checks passed")
+    return 0
+
+
+def load_site_checker():
+    spec = importlib.util.spec_from_file_location(
+        "check_hosted_linux_repository_site",
+        SITE_CHECKER,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load hosted Linux repository site checker")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_preparer(site: Path, output_dir: Path) -> str:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(PAGES_PREPARER),
+            str(site),
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout
+
+
+def expect_failure(description: str, site: Path, output_dir: Path, expected: str) -> None:
+    failed = subprocess.run(
+        [
+            sys.executable,
+            str(PAGES_PREPARER),
+            str(site),
+            "--output-dir",
+            str(output_dir),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if failed.returncode == 0 or expected not in failed.stdout:
+        raise AssertionError(
+            f"{description} failed with {failed.stdout!r}, expected {expected!r}"
+        )
+
+
+def assert_pages_output(pages: Path, site: Path) -> None:
+    with zipfile.ZipFile(site) as archive:
+        site_members = {name: archive.read(name) for name in archive.namelist()}
+    extracted = {
+        str(path.relative_to(pages)).replace("\\", "/"): path.read_bytes()
+        for path in sorted(pages.rglob("*"))
+        if path.is_file()
+    }
+    if extracted != site_members:
+        raise AssertionError("Pages output did not match the hosted site ZIP members")
+    required = [
+        ".nojekyll",
+        "index.html",
+        "repository.json",
+        "install/conu.list",
+        "install/conu.repo",
+        f"apt/{PUBLIC_KEY}",
+        "apt/InRelease",
+        f"rpm/{PUBLIC_KEY}",
+        "rpm/repodata/repomd.xml.asc",
+        f"downloads/{HOSTED_BUNDLE}",
+        f"downloads/{HOSTED_BUNDLE}.sha256",
+        f"downloads/{HOSTED_BUNDLE}.asc",
+    ]
+    for name in required:
+        if name not in extracted:
+            raise AssertionError(f"Pages output missed {name}")
+    repository = json.loads(extracted["repository.json"].decode("ascii"))
+    if repository["baseUrl"] != BASE_URL:
+        raise AssertionError("Pages repository.json baseUrl was wrong")
+    if repository["payloadDisplayed"] is not False:
+        raise AssertionError("Pages repository.json leaked payload display state")
+    checksum = extracted[f"downloads/{HOSTED_BUNDLE}.sha256"].decode("ascii")
+    expected_checksum = f"{hashlib.sha256(extracted[f'downloads/{HOSTED_BUNDLE}']).hexdigest()}  {HOSTED_BUNDLE}\n"
+    if checksum != expected_checksum:
+        raise AssertionError("Pages hosted bundle checksum did not match embedded download")
+
+
+def rewrite_site_zip(path: Path, replacements: dict[str, bytes]) -> None:
+    original_members: dict[str, bytes] = {}
+    if path.exists():
+        with zipfile.ZipFile(path) as archive:
+            original_members = {name: archive.read(name) for name in archive.namelist()}
+    original_members.update(replacements)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name in sorted(original_members):
+            info = zipfile.ZipInfo(name, ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, original_members[name])
+    write_checksum(path)
+
+
+def read_site_json(path: Path) -> dict:
+    with zipfile.ZipFile(path) as archive:
+        return json.loads(archive.read("repository.json").decode("ascii"))
+
+
+def sign_site(path: Path) -> None:
+    path.with_name(f"{path.name}.asc").write_text(
+        "-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n",
+        encoding="ascii",
+        newline="\n",
+    )
+
+
+def write_checksum(path: Path) -> None:
+    path.with_name(f"{path.name}.sha256").write_text(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n",
+        encoding="ascii",
+        newline="\n",
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

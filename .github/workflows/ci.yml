@@ -40,6 +40,8 @@ jobs:
         run: python scripts/check-hosted-linux-repositories.py
       - name: Hosted Linux repository site regression
         run: python scripts/check-hosted-linux-repository-site.py
+      - name: Hosted Linux repository Pages regression
+        run: python scripts/check-hosted-linux-repository-pages.py
       - name: Linux GPG public-key export regression
         run: python scripts/check-linux-gpg-public-key-export.py
       - name: TypeScript SDK check
