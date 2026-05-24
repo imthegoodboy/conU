@@ -21,6 +21,7 @@ Use this checklist before publishing any conU build.
 - Run `python scripts/check-hosted-linux-repository-site.py`; CI and release package gates use the same regression check to prove the hosted Linux repository site artifact contains public APT/YUM repository trees, endpoint metadata, install snippets, signed-bundle downloads, deterministic ZIP metadata, an HTTPS base URL, and fail-closed handling for missing signatures or unsafe bundle paths.
 - Run `python scripts/check-hosted-linux-repository-pages.py`; CI and release package gates use the same regression check to prove the hosted Linux repository site ZIP can be checksum/signature preflighted, safely extracted for GitHub Pages, and rejected when it contains unsafe paths, forbidden state/secret markers, non-HTTPS repository metadata, missing sidecars, or a non-empty deployment directory.
 - Run `python scripts/check-github-pages-readiness.py --repo <owner/name>` before creating a release tag when `CONU_LINUX_REPOSITORY_BASE_URL` is unset; tagged release preflight runs the same live metadata check so default GitHub Pages deployment fails before builds if Pages is not configured for GitHub Actions, HTTPS, the public repository URL, and `main:/` source metadata.
+- Run `python scripts/check-github-release-clobber-preflight.py --repo <owner/name> --tag v<version>` before creating a release tag; tagged release preflight and the GitHub Release publication job run the same metadata-only check so an existing release for the tag fails before any automated asset overwrite can happen.
 - Run `python scripts/check-github-release-assets-published-regression.py`; CI and release package gates use the same regression check to prove the tagged GitHub Release asset publication preflight fails closed on missing, duplicate, draft, tag-mismatched, incomplete, or forbidden state/secret-looking release assets before npm publication can start.
 - Run `python scripts/check-linux-gpg-public-key-export.py`; CI and release package gates use the same regression check to prove the Linux release GPG public key exports as armored public-key material with a strict `.sha256` sidecar, verifies a detached signature from a separate keyring, and fails closed when signing secrets are missing or the imported key fingerprint mismatches.
 - Run `python scripts/verify-npm-package-contents.py`; CI, release package checks, and tagged npm publication use the same verifier to reject missing required files, unexpected state/build/payload paths, oversized files, and bundled dependencies.
@@ -63,6 +64,7 @@ python scripts\check-hosted-linux-repositories.py
 python scripts\check-hosted-linux-repository-site.py
 python scripts\check-hosted-linux-repository-pages.py
 python scripts\check-github-pages-readiness.py --repo imthegoodboy/conU
+python scripts\check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts\check-linux-gpg-public-key-export.py
 python scripts\verify-npm-package-contents.py
 python scripts\check-npm-publish-preflight.py
@@ -90,6 +92,7 @@ python scripts/check-hosted-linux-repositories.py
 python scripts/check-hosted-linux-repository-site.py
 python scripts/check-hosted-linux-repository-pages.py
 python scripts/check-github-pages-readiness.py --repo imthegoodboy/conU
+python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts/check-linux-gpg-public-key-export.py
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings

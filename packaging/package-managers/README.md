@@ -16,6 +16,7 @@ python scripts/sign-linux-release-assets.py dist --only-hosted-repository-bundle
 python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist --version 0.1.0 --base-url https://packages.example.com/conu
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
+python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts/check-github-release-assets-published.py --repo imthegoodboy/conU --tag v0.1.0
 ```
 
@@ -58,7 +59,8 @@ conu-<version>-hosted-linux-repository-site.zip.sha256
 conu-<version>-hosted-linux-repository-site.zip.asc
 ```
 
-Tagged publication also uploads detached `.asc` signatures for Linux archives,
+Tagged publication refuses to overwrite an existing GitHub Release for the tag,
+then uploads detached `.asc` signatures for Linux archives,
 generated Debian/RPM packages, generated APT/RPM metadata ZIPs, plus
 `conu-linux-gpg-key.asc` and its strict `.sha256` sidecar. Before npm
 publication, `scripts/check-github-release-assets-published.py` verifies the
