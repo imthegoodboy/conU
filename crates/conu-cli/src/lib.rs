@@ -7,11 +7,12 @@
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use conu_core::agents::{
     self, AgentPresence, AgentRegistration, LocalAgentRecord, PresenceHeartbeat, SignedAgentCard,
@@ -33,6 +34,7 @@ use conu_core::state::{self, InitReport, StateSnapshot};
 use conu_core::streams::{self, StreamEvent, StreamRecord};
 use conu_core::trust::{self, PeerCard, TrustStatus, TrustedPeer};
 use conu_protocol::{AgentCapabilities, OpaquePayload};
+use native_tls::{HandshakeError, TlsConnector};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -244,6 +246,7 @@ quick commands
   conu logs rotate
   conu telemetry snapshot --json
   conu update check --policy-file <path>
+  conu update check --policy-url <https-url>
   conu security audit
   conu security rotate storage --confirm
   conu security rotate identity --confirm-peer-refresh
@@ -6106,21 +6109,43 @@ const UPDATE_POLICY_SCHEMA: &str = "conu.releaseUpdatePolicy.v1";
 const MAX_UPDATE_POLICY_BYTES: u64 = 1024 * 1024;
 const MAX_UPDATE_CHECKSUM_BYTES: u64 = 4096;
 const MAX_UPDATE_SIGNATURE_BYTES: u64 = 1024 * 1024;
+const MAX_UPDATE_HTTP_HEADER_BYTES: usize = 16 * 1024;
+const MAX_UPDATE_REDIRECTS: usize = 3;
+const UPDATE_DOWNLOAD_TIMEOUT_SECONDS: u64 = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpdateCheckArgs {
-    policy_file: PathBuf,
+    policy_file: Option<PathBuf>,
+    policy_url: Option<String>,
     sha256_file: Option<PathBuf>,
+    sha256_url: Option<String>,
     signature_file: Option<PathBuf>,
+    signature_url: Option<String>,
     gpg_verify: bool,
     json: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateCheckSource {
+    Local,
+    Remote,
+}
+
+impl UpdateCheckSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpdateCheckReport {
-    policy_file: PathBuf,
-    sha256_file: PathBuf,
-    signature_file: PathBuf,
+    source: UpdateCheckSource,
+    policy_location: String,
+    sha256_location: String,
+    signature_location: String,
     sha256: String,
     version: String,
     release_tag: String,
@@ -6134,6 +6159,17 @@ struct UpdateCheckReport {
     manual_verification_required: bool,
     operator_consent_required: bool,
     gpg_verified: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateCheckFiles {
+    policy_file: PathBuf,
+    sha256_file: PathBuf,
+    signature_file: PathBuf,
+    source: UpdateCheckSource,
+    policy_location: String,
+    sha256_location: String,
+    signature_location: String,
 }
 
 fn render_update(args: &[String]) -> CliOutput {
@@ -6164,8 +6200,11 @@ fn render_update_check(args: &[String]) -> CliOutput {
 
 fn parse_update_check_args(args: &[String]) -> Result<UpdateCheckArgs, CliOutput> {
     let mut policy_file = None;
+    let mut policy_url = None;
     let mut sha256_file = None;
+    let mut sha256_url = None;
     let mut signature_file = None;
+    let mut signature_url = None;
     let mut gpg_verify = false;
     let mut json = false;
     let mut index = 0;
@@ -6179,6 +6218,13 @@ fn parse_update_check_args(args: &[String]) -> Result<UpdateCheckArgs, CliOutput
                 };
                 policy_file = Some(PathBuf::from(value));
             }
+            "--policy-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_check_usage()));
+                };
+                policy_url = Some(value.to_string());
+            }
             "--sha256-file" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -6186,12 +6232,26 @@ fn parse_update_check_args(args: &[String]) -> Result<UpdateCheckArgs, CliOutput
                 };
                 sha256_file = Some(PathBuf::from(value));
             }
+            "--sha256-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_check_usage()));
+                };
+                sha256_url = Some(value.to_string());
+            }
             "--signature-file" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
                     return Err(CliOutput::failure(2, render_update_check_usage()));
                 };
                 signature_file = Some(PathBuf::from(value));
+            }
+            "--signature-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_check_usage()));
+                };
+                signature_url = Some(value.to_string());
             }
             "--gpg-verify" => gpg_verify = true,
             "--json" => json = true,
@@ -6201,28 +6261,135 @@ fn parse_update_check_args(args: &[String]) -> Result<UpdateCheckArgs, CliOutput
         index += 1;
     }
 
+    if policy_file.is_some() == policy_url.is_some() {
+        return Err(CliOutput::failure(2, render_update_check_usage()));
+    }
+    if policy_url.is_some() && (sha256_file.is_some() || signature_file.is_some()) {
+        return Err(CliOutput::failure(2, render_update_check_usage()));
+    }
+    if policy_file.is_some() && (sha256_url.is_some() || signature_url.is_some()) {
+        return Err(CliOutput::failure(2, render_update_check_usage()));
+    }
+
     Ok(UpdateCheckArgs {
-        policy_file: policy_file
-            .ok_or_else(|| CliOutput::failure(2, render_update_check_usage()))?,
+        policy_file,
+        policy_url,
         sha256_file,
+        sha256_url,
         signature_file,
+        signature_url,
         gpg_verify,
         json,
     })
 }
 
 fn check_release_update_policy(args: &UpdateCheckArgs) -> Result<UpdateCheckReport, String> {
-    let policy_file = args.policy_file.clone();
+    if let Some(policy_file) = args.policy_file.clone() {
+        let policy_location = policy_file.display().to_string();
+        let sha256_file = args
+            .sha256_file
+            .clone()
+            .unwrap_or_else(|| sidecar_path(&policy_file, ".sha256"));
+        let signature_file = args
+            .signature_file
+            .clone()
+            .unwrap_or_else(|| sidecar_path(&policy_file, ".asc"));
+        let sha256_location = sha256_file.display().to_string();
+        let signature_location = signature_file.display().to_string();
+        return check_release_update_policy_files(
+            UpdateCheckFiles {
+                policy_file,
+                sha256_file,
+                signature_file,
+                source: UpdateCheckSource::Local,
+                policy_location,
+                sha256_location,
+                signature_location,
+            },
+            args.gpg_verify,
+        );
+    }
+
+    check_release_update_policy_remote(args)
+}
+
+fn check_release_update_policy_remote(args: &UpdateCheckArgs) -> Result<UpdateCheckReport, String> {
+    let policy_url = args
+        .policy_url
+        .as_ref()
+        .ok_or_else(|| "release update policy source was not provided".to_string())?;
+    let policy_name = asset_name_from_update_url(policy_url, "policy-url")?;
+    let sha256_url = args
+        .sha256_url
+        .clone()
+        .unwrap_or_else(|| format!("{policy_url}.sha256"));
+    let signature_url = args
+        .signature_url
+        .clone()
+        .unwrap_or_else(|| format!("{policy_url}.asc"));
+    validate_update_sidecar_url(&sha256_url, &format!("{policy_name}.sha256"), "sha256-url")?;
+    validate_update_sidecar_url(
+        &signature_url,
+        &format!("{policy_name}.asc"),
+        "signature-url",
+    )?;
+
+    let policy_bytes =
+        fetch_update_url_bounded(policy_url, MAX_UPDATE_POLICY_BYTES, "release update policy")?;
+    let sha256_bytes = fetch_update_url_bounded(
+        &sha256_url,
+        MAX_UPDATE_CHECKSUM_BYTES,
+        "release update policy checksum",
+    )?;
+    let signature_bytes = fetch_update_url_bounded(
+        &signature_url,
+        MAX_UPDATE_SIGNATURE_BYTES,
+        "release update policy signature",
+    )?;
+
+    let download_dir = UpdateDownloadDir::create()?;
+    let policy_file =
+        write_downloaded_update_file(download_dir.path(), &policy_name, &policy_bytes)?;
+    let sha256_file = write_downloaded_update_file(
+        download_dir.path(),
+        &format!("{policy_name}.sha256"),
+        &sha256_bytes,
+    )?;
+    let signature_file = write_downloaded_update_file(
+        download_dir.path(),
+        &format!("{policy_name}.asc"),
+        &signature_bytes,
+    )?;
+
+    check_release_update_policy_files(
+        UpdateCheckFiles {
+            policy_file,
+            sha256_file,
+            signature_file,
+            source: UpdateCheckSource::Remote,
+            policy_location: policy_url.to_string(),
+            sha256_location: sha256_url,
+            signature_location: signature_url,
+        },
+        args.gpg_verify,
+    )
+}
+
+fn check_release_update_policy_files(
+    files: UpdateCheckFiles,
+    gpg_verify: bool,
+) -> Result<UpdateCheckReport, String> {
+    let UpdateCheckFiles {
+        policy_file,
+        sha256_file,
+        signature_file,
+        source,
+        policy_location,
+        sha256_location,
+        signature_location,
+    } = files;
     let policy_name = file_name_string(&policy_file, "release update policy")?;
     validate_public_asset_name(&policy_name, "policyAsset")?;
-    let sha256_file = args
-        .sha256_file
-        .clone()
-        .unwrap_or_else(|| sidecar_path(&policy_file, ".sha256"));
-    let signature_file = args
-        .signature_file
-        .clone()
-        .unwrap_or_else(|| sidecar_path(&policy_file, ".asc"));
     let policy_bytes = read_limited_file(
         &policy_file,
         MAX_UPDATE_POLICY_BYTES,
@@ -6325,7 +6492,7 @@ fn check_release_update_policy(args: &UpdateCheckArgs) -> Result<UpdateCheckRepo
     let repository_assets = validate_asset_array(&policy, "repositoryAssets", &release_base_url)?;
     validate_npm_metadata(&policy, &version)?;
 
-    let gpg_verified = if args.gpg_verify {
+    let gpg_verified = if gpg_verify {
         verify_update_signature_with_gpg(&signature_file, &policy_file)?;
         true
     } else {
@@ -6333,9 +6500,10 @@ fn check_release_update_policy(args: &UpdateCheckArgs) -> Result<UpdateCheckRepo
     };
 
     Ok(UpdateCheckReport {
-        policy_file,
-        sha256_file,
-        signature_file,
+        source,
+        policy_location,
+        sha256_location,
+        signature_location,
         sha256,
         version,
         release_tag,
@@ -6479,17 +6647,35 @@ fn validate_npm_metadata(policy: &Value, version: &str) -> Result<(), String> {
 }
 
 fn render_update_check_json(report: &UpdateCheckReport) -> String {
+    let location_fields = match report.source {
+        UpdateCheckSource::Local => format!(
+            r#"
+  "policyFile": "{}",
+  "sha256File": "{}",
+  "signatureFile": "{}","#,
+            json_escape(&report.policy_location),
+            json_escape(&report.sha256_location),
+            json_escape(&report.signature_location)
+        ),
+        UpdateCheckSource::Remote => format!(
+            r#"
+  "policyUrl": "{}",
+  "sha256Url": "{}",
+  "signatureUrl": "{}","#,
+            json_escape(&report.policy_location),
+            json_escape(&report.sha256_location),
+            json_escape(&report.signature_location)
+        ),
+    };
     format!(
         r#"{{
   "status": "update_policy_valid",
+  "source": "{}",
   "schema": "{}",
   "version": "{}",
   "releaseTag": "{}",
   "channel": "{}",
-  "releaseBaseUrl": "{}",
-  "policyFile": "{}",
-  "sha256File": "{}",
-  "signatureFile": "{}",
+  "releaseBaseUrl": "{}",{}
   "sha256": "{}",
   "sha256SidecarMatched": true,
   "signatureSidecarPresent": true,
@@ -6513,14 +6699,13 @@ fn render_update_check_json(report: &UpdateCheckReport) -> String {
     "contentsDisplayed": false
   }}
 }}"#,
+        report.source.as_str(),
         UPDATE_POLICY_SCHEMA,
         json_escape(&report.version),
         json_escape(&report.release_tag),
         json_escape(&report.channel),
         json_escape(&report.release_base_url),
-        json_escape(&report.policy_file.display().to_string()),
-        json_escape(&report.sha256_file.display().to_string()),
-        json_escape(&report.signature_file.display().to_string()),
+        location_fields,
         report.sha256,
         report.gpg_verified,
         report.auto_apply,
@@ -6534,10 +6719,15 @@ fn render_update_check_json(report: &UpdateCheckReport) -> String {
 }
 
 fn render_update_check_text(report: &UpdateCheckReport) -> String {
+    let location_label = match report.source {
+        UpdateCheckSource::Local => "file",
+        UpdateCheckSource::Remote => "url",
+    };
     format!(
         r"conU update check
 
 status: update policy valid
+source: {}
 schema: {}
 version: {}
 tag: {}
@@ -6545,7 +6735,7 @@ channel: {}
 release base: {}
 
 policy
-  file             {}
+  {}              {}
   sha256           {}
   sidecar          matched
   signature        present
@@ -6564,12 +6754,14 @@ assets
 
 privacy
   payload view      contents are not displayed by conU",
+        report.source.as_str(),
         UPDATE_POLICY_SCHEMA,
         report.version,
         report.release_tag,
         report.channel,
         report.release_base_url,
-        report.policy_file.display(),
+        location_label,
+        report.policy_location,
         report.sha256,
         yes_no(report.gpg_verified),
         yes_no(report.auto_apply),
@@ -6584,12 +6776,403 @@ privacy
 
 fn render_update_usage() -> String {
     r"usage:
-  conu update check --policy-file <path> [--sha256-file <path>] [--signature-file <path>] [--gpg-verify] [--json]"
+  conu update check --policy-file <path> [--sha256-file <path>] [--signature-file <path>] [--gpg-verify] [--json]
+  conu update check --policy-url <https-url> [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]
+  conu update check --policy-url <https-url> [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]"
         .to_string()
 }
 
 fn render_update_check_usage() -> String {
     render_update_usage()
+}
+
+#[derive(Debug)]
+struct UpdateDownloadDir {
+    path: PathBuf,
+}
+
+impl UpdateDownloadDir {
+    fn create() -> Result<Self, String> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let path =
+            env::temp_dir().join(format!("conu-update-check-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&path).map_err(|error| {
+            format!(
+                "could not create temporary update check directory {}: {error}",
+                path.display()
+            )
+        })?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for UpdateDownloadDir {
+    fn drop(&mut self) {
+        if self
+            .path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.starts_with("conu-update-check-"))
+        {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedUpdateUrl {
+    host: String,
+    port: u16,
+    path_and_query: String,
+}
+
+impl ParsedUpdateUrl {
+    fn authority(&self) -> String {
+        if self.port == 443 {
+            self.host.clone()
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpdateHttpFetch {
+    Body(Vec<u8>),
+    Redirect(String),
+}
+
+fn fetch_update_url_bounded(url: &str, max_bytes: u64, label: &str) -> Result<Vec<u8>, String> {
+    let mut current = url.to_string();
+    for redirect_count in 0..=MAX_UPDATE_REDIRECTS {
+        match fetch_update_url_once(&current, max_bytes, label, redirect_count > 0)? {
+            UpdateHttpFetch::Body(bytes) => return Ok(bytes),
+            UpdateHttpFetch::Redirect(next) => current = next,
+        }
+    }
+
+    Err(format!("{label} download followed too many redirects"))
+}
+
+fn fetch_update_url_once(
+    url: &str,
+    max_bytes: u64,
+    label: &str,
+    allow_query: bool,
+) -> Result<UpdateHttpFetch, String> {
+    let parsed = parse_https_update_url(url, label, allow_query)?;
+    let timeout = Duration::from_secs(UPDATE_DOWNLOAD_TIMEOUT_SECONDS);
+    let stream = connect_update_public_tcp(&parsed.host, parsed.port, timeout, label)?;
+    let connector = TlsConnector::new()
+        .map_err(|error| format!("{label} download could not configure TLS: {error}"))?;
+    let mut stream = match connector.connect(&parsed.host, stream) {
+        Ok(stream) => stream,
+        Err(HandshakeError::Failure(error)) => {
+            return Err(format!("{label} download TLS handshake failed: {error}"));
+        }
+        Err(HandshakeError::WouldBlock(_)) => {
+            return Err(format!("{label} download TLS handshake would block"));
+        }
+    };
+
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: conu-update-check/0.1\r\nAccept: application/octet-stream, application/json;q=0.9, text/plain;q=0.8\r\nConnection: close\r\n\r\n",
+        parsed.path_and_query,
+        parsed.authority()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("{label} download request failed: {error}"))?;
+    let headers = read_update_http_headers(&mut stream, label)?;
+    let status = parse_update_http_status(&headers, label)?;
+    if (300..400).contains(&status) {
+        let location = update_http_header_value(&headers, "location")
+            .ok_or_else(|| format!("{label} download redirect was missing Location header"))?;
+        return Ok(UpdateHttpFetch::Redirect(resolve_update_redirect(
+            &location, &parsed, label,
+        )?));
+    }
+    if status != 200 {
+        return Err(format!("{label} download returned HTTP {status}"));
+    }
+
+    if let Some(length) = update_http_header_value(&headers, "content-length") {
+        let length = length
+            .parse::<u64>()
+            .map_err(|_| format!("{label} download Content-Length was invalid"))?;
+        if length > max_bytes {
+            return Err(format!("{label} download is too large"));
+        }
+    }
+
+    if update_http_header_value(&headers, "transfer-encoding")
+        .is_some_and(|value| value.eq_ignore_ascii_case("chunked"))
+    {
+        read_update_chunked_body(&mut stream, max_bytes, label)
+    } else {
+        read_update_body_to_end(&mut stream, max_bytes, label)
+    }
+    .map(UpdateHttpFetch::Body)
+}
+
+fn read_update_http_headers(stream: &mut impl Read, label: &str) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 1];
+    while bytes.len() < MAX_UPDATE_HTTP_HEADER_BYTES {
+        stream
+            .read_exact(&mut buffer)
+            .map_err(|error| format!("{label} download response header read failed: {error}"))?;
+        bytes.push(buffer[0]);
+        if bytes.ends_with(b"\r\n\r\n") {
+            return String::from_utf8(bytes)
+                .map_err(|_| format!("{label} download response headers were not UTF-8"));
+        }
+    }
+    Err(format!("{label} download response headers were too large"))
+}
+
+fn parse_update_http_status(headers: &str, label: &str) -> Result<u16, String> {
+    let status_line = headers
+        .lines()
+        .next()
+        .ok_or_else(|| format!("{label} download response was empty"))?;
+    let mut parts = status_line.split_whitespace();
+    let protocol = parts
+        .next()
+        .ok_or_else(|| format!("{label} download response was malformed"))?;
+    if !protocol.starts_with("HTTP/") {
+        return Err(format!("{label} download response was not HTTP"));
+    }
+    parts
+        .next()
+        .ok_or_else(|| format!("{label} download response did not include a status code"))?
+        .parse::<u16>()
+        .map_err(|_| format!("{label} download response status code was invalid"))
+}
+
+fn update_http_header_value(headers: &str, header: &str) -> Option<String> {
+    headers.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim().eq_ignore_ascii_case(header) {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn read_update_body_to_end(
+    stream: &mut impl Read,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| format!("{label} download body read failed: {error}"))?;
+        if read == 0 {
+            return Ok(bytes);
+        }
+        if bytes.len() as u64 + read as u64 > max_bytes {
+            return Err(format!("{label} download is too large"));
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn read_update_chunked_body(
+    stream: &mut impl Read,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    loop {
+        let line = read_update_crlf_line(stream, 128, label)?;
+        let chunk_size_text = line
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let chunk_size = u64::from_str_radix(&chunk_size_text, 16)
+            .map_err(|_| format!("{label} download chunk size was invalid"))?;
+        if chunk_size == 0 {
+            loop {
+                if read_update_crlf_line(stream, MAX_UPDATE_HTTP_HEADER_BYTES, label)?.is_empty() {
+                    break;
+                }
+            }
+            return Ok(body);
+        }
+        if body.len() as u64 + chunk_size > max_bytes {
+            return Err(format!("{label} download is too large"));
+        }
+        let chunk_len = usize::try_from(chunk_size)
+            .map_err(|_| format!("{label} download chunk was too large"))?;
+        let mut chunk = vec![0_u8; chunk_len];
+        stream
+            .read_exact(&mut chunk)
+            .map_err(|error| format!("{label} download chunk read failed: {error}"))?;
+        let mut crlf = [0_u8; 2];
+        stream
+            .read_exact(&mut crlf)
+            .map_err(|error| format!("{label} download chunk terminator read failed: {error}"))?;
+        if crlf != *b"\r\n" {
+            return Err(format!("{label} download chunk terminator was invalid"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+}
+
+fn read_update_crlf_line(
+    stream: &mut impl Read,
+    max_bytes: usize,
+    label: &str,
+) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 1];
+    while bytes.len() < max_bytes {
+        stream
+            .read_exact(&mut buffer)
+            .map_err(|error| format!("{label} download line read failed: {error}"))?;
+        bytes.push(buffer[0]);
+        if bytes.ends_with(b"\r\n") {
+            bytes.truncate(bytes.len().saturating_sub(2));
+            return String::from_utf8(bytes)
+                .map_err(|_| format!("{label} download line was not UTF-8"));
+        }
+    }
+    Err(format!("{label} download line was too large"))
+}
+
+fn resolve_update_redirect(
+    location: &str,
+    previous: &ParsedUpdateUrl,
+    label: &str,
+) -> Result<String, String> {
+    if location.starts_with("https://") {
+        parse_https_update_url(location, label, true)?;
+        return Ok(location.to_string());
+    }
+    if location.starts_with('/') && !location.starts_with("//") {
+        let next = format!("https://{}{}", previous.authority(), location);
+        parse_https_update_url(&next, label, true)?;
+        return Ok(next);
+    }
+    Err(format!(
+        "{label} download redirect must stay on an absolute HTTPS URL"
+    ))
+}
+
+fn connect_update_public_tcp(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    label: &str,
+) -> Result<TcpStream, String> {
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("{label} download could not resolve host: {error}"))?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(format!("{label} download host did not resolve"));
+    }
+
+    let mut last_error = None;
+    let mut saw_public_address = false;
+    for address in addresses {
+        if !is_public_ip(address.ip()) {
+            continue;
+        }
+        saw_public_address = true;
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(timeout)).map_err(|error| {
+                    format!("{label} download could not set read timeout: {error}")
+                })?;
+                stream.set_write_timeout(Some(timeout)).map_err(|error| {
+                    format!("{label} download could not set write timeout: {error}")
+                })?;
+                return Ok(stream);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    if !saw_public_address {
+        return Err(format!(
+            "{label} download host resolved only to non-public addresses"
+        ));
+    }
+
+    Err(format!(
+        "{label} download could not connect: {}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "no reachable public address".to_string())
+    ))
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified()
+                || ip.is_multicast())
+        }
+        IpAddr::V6(ip) => !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast()),
+    }
+}
+
+fn asset_name_from_update_url(url: &str, label: &str) -> Result<String, String> {
+    let parsed = parse_https_update_url(url, label, false)?;
+    let path = parsed.path_and_query.split('?').next().unwrap_or_default();
+    let name = path
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("release update policy {label} must end with an asset filename"))?;
+    validate_public_asset_name(name, label)?;
+    Ok(name.to_string())
+}
+
+fn validate_update_sidecar_url(
+    url: &str,
+    expected_filename: &str,
+    label: &str,
+) -> Result<(), String> {
+    let name = asset_name_from_update_url(url, label)?;
+    if name != expected_filename {
+        return Err(format!(
+            "release update policy {label} ended with {name}, expected {expected_filename}"
+        ));
+    }
+    Ok(())
+}
+
+fn write_downloaded_update_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    validate_public_asset_name(name, "downloaded update asset")?;
+    let path = dir.join(name);
+    fs::write(&path, bytes).map_err(|error| {
+        format!(
+            "could not write downloaded release update policy file {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
 }
 
 fn read_limited_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>, String> {
@@ -6719,22 +7302,103 @@ fn bool_member(
 }
 
 fn validate_public_https_url(value: &str, label: &str) -> Result<(), String> {
+    parse_https_update_url(value, label, false).map(|_| ())
+}
+
+fn parse_https_update_url(
+    value: &str,
+    label: &str,
+    allow_query: bool,
+) -> Result<ParsedUpdateUrl, String> {
     if !value.starts_with("https://") {
         return Err(format!(
             "release update policy {label} must be an https URL"
         ));
     }
-    if value.contains('?') || value.contains('#') {
+    if value.contains('#') || (!allow_query && value.contains('?')) {
         return Err(format!(
             "release update policy {label} must not include query or fragment"
         ));
     }
     let rest = &value["https://".len()..];
-    let authority = rest.split('/').next().unwrap_or_default();
+    let (authority, path_and_query) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, format!("/{path}")),
+        None => (rest, "/".to_string()),
+    };
     if authority.is_empty() || authority.contains('@') {
         return Err(format!(
             "release update policy {label} must not include credentials"
         ));
+    }
+    if authority.chars().any(char::is_whitespace)
+        || path_and_query.chars().any(char::is_whitespace)
+        || path_and_query.contains('\\')
+    {
+        return Err(format!("release update policy {label} URL is invalid"));
+    }
+
+    let (host, port) = parse_update_authority(authority, label)?;
+    validate_update_public_host(&host, label)?;
+
+    Ok(ParsedUpdateUrl {
+        host,
+        port,
+        path_and_query,
+    })
+}
+
+fn parse_update_authority(authority: &str, label: &str) -> Result<(String, u16), String> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let (host, port_text) = rest
+            .split_once(']')
+            .ok_or_else(|| format!("release update policy {label} IPv6 host is invalid"))?;
+        let port = if let Some(port_text) = port_text.strip_prefix(':') {
+            port_text
+                .parse::<u16>()
+                .map_err(|_| format!("release update policy {label} port is invalid"))?
+        } else if port_text.is_empty() {
+            443
+        } else {
+            return Err(format!(
+                "release update policy {label} authority is invalid"
+            ));
+        };
+        return Ok((host.to_ascii_lowercase(), port));
+    }
+
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port_text))
+            if !port_text.is_empty() && port_text.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            let port = port_text
+                .parse::<u16>()
+                .map_err(|_| format!("release update policy {label} port is invalid"))?;
+            (host, port)
+        }
+        _ => (authority, 443),
+    };
+    Ok((host.trim().to_ascii_lowercase(), port))
+}
+
+fn validate_update_public_host(host: &str, label: &str) -> Result<(), String> {
+    if host.is_empty()
+        || host.contains('/')
+        || host.contains('\\')
+        || host.chars().any(char::is_whitespace)
+    {
+        return Err(format!("release update policy {label} host is invalid"));
+    }
+    let trimmed = host.trim_matches('.');
+    if trimmed.eq_ignore_ascii_case("localhost")
+        || trimmed.ends_with(".localhost")
+        || trimmed.ends_with(".local")
+    {
+        return Err(format!("release update policy {label} host must be public"));
+    }
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        if !is_public_ip(ip) {
+            return Err(format!("release update policy {label} host must be public"));
+        }
     }
     Ok(())
 }
@@ -8028,6 +8692,87 @@ mod tests {
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
         assert!(!output.stdout.contains("BEGIN PGP SIGNATURE"));
         assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn update_check_validates_downloaded_remote_policy_metadata_without_payloads() {
+        let home = temp_home("update-remote-check");
+        let policy = write_update_policy_fixture(&home, false);
+        let sidecar = sidecar_path(&policy, ".sha256");
+        let signature = sidecar_path(&policy, ".asc");
+        let download = temp_home("update-remote-download");
+        let policy_url = "https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json";
+        let sha256_url = format!("{policy_url}.sha256");
+        let signature_url = format!("{policy_url}.asc");
+        let policy_name = asset_name_from_update_url(policy_url, "policy-url").expect("asset name");
+        let downloaded_policy = write_downloaded_update_file(
+            &download,
+            &policy_name,
+            &fs::read(&policy).expect("policy reads"),
+        )
+        .expect("downloaded policy writes");
+        let downloaded_sidecar = write_downloaded_update_file(
+            &download,
+            &format!("{policy_name}.sha256"),
+            &fs::read(&sidecar).expect("sidecar reads"),
+        )
+        .expect("downloaded sidecar writes");
+        let downloaded_signature = write_downloaded_update_file(
+            &download,
+            &format!("{policy_name}.asc"),
+            &fs::read(&signature).expect("signature reads"),
+        )
+        .expect("downloaded signature writes");
+
+        let report = check_release_update_policy_files(
+            UpdateCheckFiles {
+                policy_file: downloaded_policy,
+                sha256_file: downloaded_sidecar,
+                signature_file: downloaded_signature,
+                source: UpdateCheckSource::Remote,
+                policy_location: policy_url.to_string(),
+                sha256_location: sha256_url,
+                signature_location: signature_url,
+            },
+            false,
+        )
+        .expect("remote policy validates");
+        let rendered = render_update_check_json(&report);
+
+        assert!(rendered.contains("\"source\": \"remote\""));
+        assert!(rendered.contains("\"policyUrl\": \"https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json\""));
+        assert!(rendered.contains("\"sha256SidecarMatched\": true"));
+        assert!(rendered.contains("\"signatureSidecarPresent\": true"));
+        assert!(!rendered.contains(&download.display().to_string()));
+        assert!(!rendered.contains("BEGIN PGP SIGNATURE"));
+        assert!(!rendered.contains("private message contents"));
+    }
+
+    #[test]
+    fn update_check_rejects_unsafe_remote_policy_url() {
+        let output = run([
+            "update",
+            "check",
+            "--policy-url",
+            "https://127.0.0.1/conu-0.1.0-update-policy.json",
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("host must be public"));
+    }
+
+    #[test]
+    fn update_check_rejects_mixed_local_and_remote_sources() {
+        let output = run([
+            "update",
+            "check",
+            "--policy-file",
+            "dist/conu-0.1.0-update-policy.json",
+            "--policy-url",
+            "https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json",
+        ]);
+
+        assert_eq!(output.code, 2);
     }
 
     #[test]
