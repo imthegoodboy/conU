@@ -28,6 +28,8 @@ jobs:
         run: python scripts/check-linux-release-signing.py
       - name: Linux repository signing regression
         run: python scripts/check-linux-repository-signing.py
+      - name: Linux GPG public-key export regression
+        run: python scripts/check-linux-gpg-public-key-export.py
       - name: TypeScript SDK check
         run: npm run check --prefix sdk/typescript
       - name: npm launcher check

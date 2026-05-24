@@ -71,8 +71,9 @@ available. Tagged releases now build unsigned `.rpm` assets and strict
 `.rpm.sha256` sidecars from the generated spec. Tagged releases also upload the
 APT and RPM repository metadata bundles, add native APT `InRelease` and
 `Release.gpg` signatures, add RPM `repodata/repomd.xml.asc`, refresh metadata
-ZIP `.sha256` sidecars, and create detached `.asc` signatures for Linux
-archives, generated `.deb`/`.rpm` assets, and generated APT/RPM metadata ZIPs.
+ZIP `.sha256` sidecars, export `conu-linux-gpg-key.asc` for signature
+verification, and create detached `.asc` signatures for Linux archives,
+generated `.deb`/`.rpm` assets, and generated APT/RPM metadata ZIPs.
 Native RPM package payload signing, hosted repository setup, and
 package-manager submission remain future work.
 
@@ -82,6 +83,7 @@ mappings. Generated Debian packages may embed the verified Linux release
 binaries and minimal package metadata only. Generated APT repository metadata
 may contain hashes and sizes for those generated `.deb` files only. Generated
 RPM repository metadata may contain `createrepo_c` metadata for those generated
-`.rpm` files only. Generated package-manager outputs and detached signatures
-must not contain signing secrets, npm tokens, relay tokens, local paths, conU
-state, private payloads, or package-manager repository credentials.
+`.rpm` files only. Generated package-manager outputs, detached signatures, and
+the Linux GPG public-key asset must not contain signing secrets, npm tokens,
+relay tokens, local paths, conU state, private payloads, private-key material,
+or package-manager repository credentials.
