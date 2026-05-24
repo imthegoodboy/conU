@@ -17,7 +17,7 @@ Why this shape:
 - Rust binaries keep the CLI, daemon, relay, protocol, crypto, and MCP adapter fast and self-contained.
 - GitHub Releases are the source of truth for platform archives and checksums.
 - npm gives agents and developers a familiar install command without making conU a JavaScript runtime.
-- Homebrew, Scoop, winget, Chocolatey, Debian, RPM, APT/RPM repository metadata, a hosted Linux repository bundle, and a hosted Linux repository site artifact are generated from verified release assets and checksums on tagged releases. CI and release package checks also verify the generated APT metadata, build the generated RPM spec, optional RPM release assets, RPM repository metadata, hosted repository bundle, hosted repository site, and GitHub Pages extraction prep with native `rpmbuild`/`createrepo_c` when RPM tools are available, and exercise Linux signing-secret preflight, RPM package signing, detached Linux signing, native repository-metadata signing, hosted bundle/site layout checks, Pages deployment-safety checks, GitHub Pages setting readiness checks, GitHub Release clobber checks, GitHub Release asset publication checks, and Linux public-key export with ephemeral fingerprint-pinned GPG keys. Tagged release preflight imports the Linux signing key, verifies `CONU_LINUX_GPG_KEY_ID` resolves to `CONU_LINUX_GPG_KEY_FINGERPRINT`, probe-signs a temporary file, verifies no GitHub Release already exists for the tag, and when the default Pages URL is used verifies that repository Pages uses GitHub Actions, HTTPS enforcement, public serving, and the expected base URL before builds. Tagged release publication verifies the imported Linux signing key again, exports `conu-linux-gpg-key.asc` plus a strict `.sha256` sidecar, signs generated RPM packages before generating RPM repository metadata, signs Linux archives and generated Debian/RPM packages with detached `.asc` signatures, adds APT `InRelease`/`Release.gpg` and RPM `repodata/repomd.xml.asc` signatures to repository metadata ZIPs, refreshes their `.sha256` sidecars, signs those final ZIPs with detached `.asc` signatures, builds and signs `conu-<version>-hosted-linux-repositories.zip`, then builds and signs `conu-<version>-hosted-linux-repository-site.zip` with static endpoint metadata and install snippets. Before creating the GitHub Release, the publish job re-checks the tag and refuses to overwrite existing release assets. Before npm publication, the workflow verifies the public GitHub Release has every required archive, checksum, signature, package-manager, public-key, hosted repository bundle, and hosted repository site asset, so npm is not touched when release publication is incomplete. When `CONU_LINUX_REPOSITORY_BASE_URL` is not set, the tagged workflow verifies and extracts that signed site ZIP into a static directory and deploys it with GitHub Pages Actions. Submitting generated files to package-manager tap/bucket/repository feeds, custom DNS/TLS/static hosting, and auto-update policy can come after the first signed archive/npm release is stable.
+- Homebrew, Scoop, winget, Chocolatey, Debian, RPM, APT/RPM repository metadata, a hosted Linux repository bundle, and a hosted Linux repository site artifact are generated from verified release assets and checksums on tagged releases. CI and release package checks also verify the generated APT metadata, build the generated RPM spec, optional RPM release assets, RPM repository metadata, hosted repository bundle, hosted repository site, and GitHub Pages extraction prep with native `rpmbuild`/`createrepo_c` when RPM tools are available, and exercise Linux signing-secret preflight, RPM package signing, detached Linux signing, native repository-metadata signing, hosted bundle/site layout checks, Pages deployment-safety checks, GitHub Pages setting readiness checks, GitHub Release clobber checks, GitHub Release asset publication checks, and Linux public-key export with ephemeral fingerprint-pinned GPG keys. Tagged release preflight imports the Linux signing key, verifies `CONU_LINUX_GPG_KEY_ID` resolves to `CONU_LINUX_GPG_KEY_FINGERPRINT`, probe-signs a temporary file, verifies no GitHub Release already exists for the tag, and when the default Pages URL is used verifies that repository Pages uses GitHub Actions, HTTPS enforcement, public serving, and the expected base URL before builds. Tagged release publication verifies the imported Linux signing key again, exports `conu-linux-gpg-key.asc` plus a strict `.sha256` sidecar, signs generated RPM packages before generating RPM repository metadata, signs Linux archives and generated Debian/RPM packages with detached `.asc` signatures, adds APT `InRelease`/`Release.gpg` and RPM `repodata/repomd.xml.asc` signatures to repository metadata ZIPs, refreshes their `.sha256` sidecars, signs those final ZIPs with detached `.asc` signatures, builds and signs `conu-<version>-hosted-linux-repositories.zip`, then builds and signs `conu-<version>-hosted-linux-repository-site.zip` with static endpoint metadata, install snippets, `cache-policy.json`, and `_headers` Cache-Control rules. Before creating the GitHub Release, the publish job re-checks the tag and refuses to overwrite existing release assets. Before npm publication, the workflow verifies the public GitHub Release has every required archive, checksum, signature, package-manager, public-key, hosted repository bundle, and hosted repository site asset, so npm is not touched when release publication is incomplete. When `CONU_LINUX_REPOSITORY_BASE_URL` is not set, the tagged workflow verifies and extracts that signed site ZIP into a static directory and deploys it with GitHub Pages Actions. Submitting generated files to package-manager tap/bucket/repository feeds, custom DNS/TLS/static hosting activation, and auto-update policy can come after the first signed archive/npm release is stable.
 
 The target public command is:
 
@@ -175,9 +175,13 @@ detached `.asc` signatures. Tagged publication then builds a signed
 signatures, public key copies, and strict sidecars. Tagged publication then
 builds a signed `conu-<version>-hosted-linux-repository-site.zip` containing
 those public repository trees plus `.nojekyll`, `index.html`,
-`repository.json`, `install/conu.list`, `install/conu.repo`, and
-`downloads/` copies of the signed hosted bundle, checksum, and signature for
-static HTTPS hosting. Tagged release publication then verifies that site ZIP,
+`repository.json`, `cache-policy.json`, `_headers`, `install/conu.list`,
+`install/conu.repo`, and `downloads/` copies of the signed hosted bundle,
+checksum, and signature for static HTTPS hosting. `cache-policy.json` and
+`_headers` keep install metadata, public keys, and package-manager indexes
+revalidated while allowing versioned package payloads and signed bundle
+downloads to be cached immutably when the operator's static host applies the
+rules. Tagged release publication then verifies that site ZIP,
 prepares an empty static directory for GitHub Pages, verifies the live
 repository Pages setting when the default GitHub Pages base URL is used, and
 deploys it when the repository uses that default endpoint. The regression checks
@@ -186,11 +190,12 @@ validate generated Debian packages with `dpkg-deb`, build the RPM spec with
 the APT and RPM metadata bundles against the actual package hashes, verify
 native RPM package signing with an ephemeral GPG key when RPM signing tools are
 available, verify native repository signatures with an ephemeral GPG key, and
-validate the hosted repository bundle, site layout, Pages extraction path, and
-GitHub Pages repository metadata readiness plus fail-closed signature/base-URL/
-path/state-marker checks. They do not read local conU state, tokens, signing
-material, or package-manager repository credentials, and they still do not
-configure custom DNS/TLS/cache policy or submit package-manager repository PRs.
+validate the hosted repository bundle, site layout, generated cache policy,
+Pages extraction path, and GitHub Pages repository metadata readiness plus
+fail-closed signature/base-URL/path/state-marker checks. They do not read local
+conU state, tokens, signing material, or package-manager repository
+credentials, and they still do not activate custom DNS/TLS endpoints or submit
+package-manager repository PRs.
 
 ## User Install Choices
 
@@ -414,4 +419,4 @@ For the user install story, finish publishing in this order:
 2. Publish `@conu/cli` after the GitHub Release exists.
 3. Put public relay tests behind TLS termination and use `wss://` endpoints.
 4. Add distributed account control planes, remote tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, tenant-node upsert/revoke, account/node suspension plus single-relay account suspension/scoped admin tenant commands, distributed monitoring/dashboards/alerting beyond single-relay threshold reports, distributed hosted mailbox retention policy beyond local/admin-gated audit and purge plus local scheduled purge workflows, and distributed multi-instance session migration before opening a managed relay to everyone.
-5. Submit generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files to the appropriate package-manager repositories, configure any custom DNS/TLS/cache policy for the hosted Linux repository endpoint, then add auto-update policy after npm and signed release archives are stable.
+5. Submit generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files to the appropriate package-manager repositories, configure any custom DNS/TLS endpoint to apply the generated hosted Linux repository cache policy, then add auto-update policy after npm and signed release archives are stable.

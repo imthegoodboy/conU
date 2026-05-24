@@ -21,6 +21,57 @@ MAX_CHECKSUM_BYTES = 4096
 MAX_SIGNATURE_BYTES = 1024 * 1024
 ZIP_SOURCE_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
+CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
+CACHE_CONTROL_RULES = (
+    {
+        "kind": "mutable-site-metadata",
+        "cacheControl": "no-cache",
+        "reason": "Install snippets, endpoint metadata, and trust-anchor files must revalidate before use.",
+        "paths": (
+            "/README.txt",
+            "/index.html",
+            "/repository.json",
+            "/cache-policy.json",
+            "/_headers",
+            "/install/*",
+            f"/{PUBLIC_KEY_NAME}",
+            f"/{PUBLIC_KEY_NAME}.sha256",
+            f"/apt/{PUBLIC_KEY_NAME}",
+            f"/apt/{PUBLIC_KEY_NAME}.sha256",
+            f"/rpm/{PUBLIC_KEY_NAME}",
+            f"/rpm/{PUBLIC_KEY_NAME}.sha256",
+        ),
+    },
+    {
+        "kind": "repository-metadata",
+        "cacheControl": "public, max-age=300, must-revalidate",
+        "reason": "APT and RPM indexes can change on each release and should stay fresh for package managers.",
+        "paths": (
+            "/apt/Packages",
+            "/apt/Packages.gz",
+            "/apt/Release",
+            "/apt/InRelease",
+            "/apt/Release.gpg",
+            "/rpm/repodata/*",
+        ),
+    },
+    {
+        "kind": "immutable-release-assets",
+        "cacheControl": "public, max-age=31536000, immutable",
+        "reason": "Versioned package payloads, sidecars, signatures, and hosted bundles are immutable release assets.",
+        "paths": (
+            "/apt/*.deb",
+            "/apt/*.deb.sha256",
+            "/apt/*.deb.asc",
+            "/rpm/*.rpm",
+            "/rpm/*.rpm.sha256",
+            "/rpm/*.rpm.asc",
+            "/downloads/conu-*-hosted-linux-repositories.zip",
+            "/downloads/conu-*-hosted-linux-repositories.zip.sha256",
+            "/downloads/conu-*-hosted-linux-repositories.zip.asc",
+        ),
+    },
+)
 FORBIDDEN_TEXT = (
     "BEGIN PGP PRIVATE KEY BLOCK",
     "BEGIN PRIVATE KEY",
@@ -232,6 +283,8 @@ def build_site_members(
     members = {name: data for name, data in bundle_members.items()}
     members[".nojekyll"] = b""
     members["README.txt"] = render_site_readme(version, base_url).encode("ascii")
+    members["_headers"] = render_headers_file().encode("ascii")
+    members["cache-policy.json"] = render_cache_policy_json(version, base_url).encode("ascii")
     members["index.html"] = render_index_html(version, base_url).encode("ascii")
     members["repository.json"] = render_repository_json(version, base_url).encode("ascii")
     members["install/README.txt"] = render_install_readme(version, base_url).encode("ascii")
@@ -241,7 +294,7 @@ def build_site_members(
     members[f"downloads/{bundle.name}.sha256"] = bundle.with_name(f"{bundle.name}.sha256").read_bytes()
     members[f"downloads/{bundle.name}.asc"] = signature.read_bytes()
     for name, data in members.items():
-        if name.endswith((".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256")):
+        if is_text_member(name):
             assert_no_forbidden_text(data, name)
     return members
 
@@ -255,9 +308,10 @@ endpoint at:
 {base_url}
 
 It contains public APT and YUM/DNF repository files, public GPG key material,
-public signatures, public checksums, and install snippets only. It does not
-contain signing secrets, npm tokens, relay tokens, conU state, logs, inboxes,
-private payloads, private keys, or package-manager repository credentials.
+public signatures, public checksums, install snippets, and public cache policy
+metadata only. It does not contain signing secrets, npm tokens, relay tokens,
+conU state, logs, inboxes, private payloads, private keys, or package-manager
+repository credentials.
 """
 
 
@@ -301,6 +355,7 @@ def render_index_html(version: str, base_url: str) -> str:
   <pre>{rpm_commands}</pre>
   <p>Verify {PUBLIC_KEY_NAME} against the published maintainer fingerprint before trusting packages.</p>
   <p>Machine-readable metadata is available in repository.json.</p>
+  <p>Static hosting cache policy metadata is available in cache-policy.json and _headers.</p>
 </body>
 </html>
 """
@@ -325,6 +380,11 @@ def render_repository_json(version: str, base_url: str) -> str:
             "hostedBundleUrl": f"{base_url}/downloads/conu-{version}-hosted-linux-repositories.zip",
             "hostedBundleChecksumUrl": f"{base_url}/downloads/conu-{version}-hosted-linux-repositories.zip.sha256",
             "hostedBundleSignatureUrl": f"{base_url}/downloads/conu-{version}-hosted-linux-repositories.zip.asc",
+        },
+        "cachePolicy": {
+            "policyUrl": f"{base_url}/cache-policy.json",
+            "headersFileUrl": f"{base_url}/_headers",
+            "hostMustApply": True,
         },
         "payloadDisplayed": False,
         "tokenDisplayed": False,
@@ -359,7 +419,9 @@ sudo dnf install conu
 
 Before use, compare {PUBLIC_KEY_NAME} with the published maintainer
 fingerprint. Keep this endpoint on HTTPS and serve files without rewriting the
-apt/ or rpm/ paths after extraction.
+apt/ or rpm/ paths after extraction. Apply cache-policy.json or _headers at the
+static host so mutable repository metadata revalidates and versioned package
+payloads can be cached immutably.
 """
 
 
@@ -377,6 +439,44 @@ repo_gpgcheck=1
 gpgkey={base_url}/rpm/{PUBLIC_KEY_NAME}
 metadata_expire=1h
 """
+
+
+def render_cache_policy_json(version: str, base_url: str) -> str:
+    data = {
+        "schema": CACHE_POLICY_SCHEMA,
+        "version": version,
+        "baseUrl": base_url,
+        "headersFile": "_headers",
+        "hostMustApply": True,
+        "rules": [
+            {
+                "kind": rule["kind"],
+                "paths": list(rule["paths"]),
+                "cacheControl": rule["cacheControl"],
+                "reason": rule["reason"],
+            }
+            for rule in CACHE_CONTROL_RULES
+        ],
+        "payloadDisplayed": False,
+        "tokenDisplayed": False,
+        "keyMaterialDisplayed": False,
+    }
+    return json.dumps(data, indent=2, sort_keys=True) + "\n"
+
+
+def render_headers_file() -> str:
+    lines = [
+        "# conU hosted Linux repository cache policy",
+        "# Apply these Cache-Control rules on static hosts that support _headers.",
+        "# For other hosts, translate the same rules from cache-policy.json.",
+    ]
+    for rule in CACHE_CONTROL_RULES:
+        lines.append("")
+        lines.append(f"# {rule['kind']}: {rule['reason']}")
+        for path in rule["paths"]:
+            lines.append(path)
+            lines.append(f"  Cache-Control: {rule['cacheControl']}")
+    return "\n".join(lines) + "\n"
 
 
 def verify_sha256_sidecar(path: Path, label: str) -> str:
@@ -439,6 +539,10 @@ def assert_no_forbidden_text(data: bytes, label: str) -> None:
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
             raise SystemExit(f"{label} contains forbidden release-site text: {forbidden}")
+
+
+def is_text_member(name: str) -> bool:
+    return name == "_headers" or name.endswith((".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256"))
 
 
 def html_escape(value: str) -> str:
