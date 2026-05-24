@@ -26,6 +26,9 @@ DEBIAN_PACKAGE_RE = re.compile(r"^conu_[0-9A-Za-z.+_~-]+_(amd64|arm64)\.deb$")
 RPM_PACKAGE_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-1\.(x86_64|aarch64)\.rpm$")
 APT_METADATA_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-apt-repository-metadata\.zip$")
 RPM_METADATA_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-rpm-repository-metadata\.zip$")
+HOSTED_REPOSITORY_RE = re.compile(
+    r"^conu-[0-9A-Za-z.+_~-]+-hosted-linux-repositories\.zip$"
+)
 
 
 def main() -> int:
@@ -45,7 +48,10 @@ def main() -> int:
         raise SystemExit(f"{args.key_id_env} must not be empty")
     expected_fingerprint = read_expected_fingerprint(os.environ, args.fingerprint_env)
 
-    assets = signable_linux_assets(dist)
+    assets = signable_linux_assets(
+        dist,
+        only_hosted_repository_bundles=args.only_hosted_repository_bundles,
+    )
     if not assets:
         raise SystemExit(f"no signable Linux release assets found in {dist}")
 
@@ -105,6 +111,11 @@ def parse_args() -> argparse.Namespace:
         help="environment variable containing the signing key id or fingerprint",
     )
     add_fingerprint_env_argument(parser)
+    parser.add_argument(
+        "--only-hosted-repository-bundles",
+        action="store_true",
+        help="sign only generated hosted Linux repository bundle ZIPs",
+    )
     return parser.parse_args()
 
 
@@ -128,18 +139,27 @@ def read_secret_key(name: str) -> bytes:
     return decoded
 
 
-def signable_linux_assets(dist: Path) -> tuple[Path, ...]:
+def signable_linux_assets(
+    dist: Path,
+    *,
+    only_hosted_repository_bundles: bool = False,
+) -> tuple[Path, ...]:
     assets = []
     for path in sorted(dist.iterdir(), key=lambda candidate: candidate.name):
         if not path.is_file():
             continue
         name = path.name
+        if only_hosted_repository_bundles:
+            if HOSTED_REPOSITORY_RE.fullmatch(name):
+                assets.append(path)
+            continue
         if (
             LINUX_ARCHIVE_RE.fullmatch(name)
             or DEBIAN_PACKAGE_RE.fullmatch(name)
             or RPM_PACKAGE_RE.fullmatch(name)
             or APT_METADATA_RE.fullmatch(name)
             or RPM_METADATA_RE.fullmatch(name)
+            or HOSTED_REPOSITORY_RE.fullmatch(name)
         ):
             assets.append(path)
     return tuple(assets)

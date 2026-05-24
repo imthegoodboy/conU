@@ -26,6 +26,7 @@ SIGNABLE_FIXTURES = (
     "conu-0.1.0-1.aarch64.rpm",
     "conu-0.1.0-apt-repository-metadata.zip",
     "conu-0.1.0-rpm-repository-metadata.zip",
+    "conu-0.1.0-hosted-linux-repositories.zip",
 )
 UNSIGNED_FIXTURES = (
     "conu-0.1.0-windows-x64.zip",
@@ -116,6 +117,32 @@ def main() -> int:
         )
         if failed.returncode == 0 or "fingerprint mismatch" not in failed.stdout:
             raise AssertionError("signer did not fail closed when the key fingerprint mismatched")
+
+        only_hosted_dist = temp / "only-hosted-dist"
+        only_hosted_dist.mkdir()
+        hosted_bundle = only_hosted_dist / "conu-0.1.0-hosted-linux-repositories.zip"
+        hosted_bundle.write_bytes(b"hosted repository bundle fixture\n")
+        linux_archive = only_hosted_dist / "conu-0.1.0-linux-x64.tar.gz"
+        linux_archive.write_bytes(b"linux archive fixture\n")
+        subprocess.run(
+            [
+                sys.executable,
+                str(SIGNER),
+                str(only_hosted_dist),
+                "--only-hosted-repository-bundles",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+        )
+        hosted_signature = only_hosted_dist / "conu-0.1.0-hosted-linux-repositories.zip.asc"
+        if not hosted_signature.exists():
+            raise AssertionError("hosted repository bundle signature was not generated")
+        run_gpg(gpg, verify_home, ["--verify", str(hosted_signature), str(hosted_bundle)])
+        if linux_archive.with_name(f"{linux_archive.name}.asc").exists():
+            raise AssertionError("only-hosted signing mode signed a Linux archive")
 
     print("Linux release signing regression checks passed")
     return 0

@@ -9,6 +9,10 @@ python scripts/generate-package-manager-manifests.py dist --output-dir dist --ve
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata
 python scripts/sign-rpm-packages.py dist
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-repository-metadata
+python scripts/sign-linux-repository-metadata.py dist
+python scripts/sign-linux-release-assets.py dist
+python scripts/generate-hosted-linux-repositories.py dist --output-dir dist --version 0.1.0
+python scripts/sign-linux-release-assets.py dist --only-hosted-repository-bundles
 ```
 
 The generator requires the platform archives and strict sibling `.sha256` files
@@ -42,6 +46,9 @@ conu-<rpm-version>-1.aarch64.rpm
 conu-<rpm-version>-1.aarch64.rpm.sha256
 conu-<rpm-version>-rpm-repository-metadata.zip
 conu-<rpm-version>-rpm-repository-metadata.zip.sha256
+conu-<version>-hosted-linux-repositories.zip
+conu-<version>-hosted-linux-repositories.zip.sha256
+conu-<version>-hosted-linux-repositories.zip.asc
 ```
 
 The `.rpm` files are generated only when `--build-rpm-packages` is set and
@@ -82,8 +89,12 @@ repository metadata bundles, add native APT `InRelease` and `Release.gpg`
 signatures, add RPM `repodata/repomd.xml.asc`, refresh metadata ZIP `.sha256`
 sidecars, export `conu-linux-gpg-key.asc` for signature verification, and
 create detached `.asc` signatures for Linux archives, generated `.deb`/`.rpm`
-assets, and generated APT/RPM metadata ZIPs.
-Hosted repository setup and package-manager submission remain future work.
+assets, and generated APT/RPM metadata ZIPs. After those signatures exist, the
+hosted repository generator builds `conu-<version>-hosted-linux-repositories.zip`
+with static `apt/` and `rpm/` trees containing the signed packages, native
+repository signatures, package detached signatures, public GPG key, and strict
+sidecars. The final hosted repository ZIP is then detached-signed. Operator
+hosting endpoints and package-manager submission remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
