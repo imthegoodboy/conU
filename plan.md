@@ -217,7 +217,7 @@ operator URLs as explicit external deployments.
 Completed work:
 
 - Issue #232 was opened for hosted Linux repository Pages deployment on branch
-  `linux-repository-pages-deploy`.
+  `linux-repository-pages-deploy`; PR #233 carries the implementation.
 - Added `scripts/prepare-hosted-linux-repository-pages.py` to verify a hosted
   Linux repository site ZIP, its strict `.sha256` sidecar, and its detached
   `.asc` signature before extracting it to an empty static directory.
@@ -275,8 +275,7 @@ Validation:
 
 Next:
 
-- Run broader local production-readiness checks, open a PR for Issue #232,
-  confirm PR CI and Release Artifacts gates, merge if clean, preserve the
+- Confirm PR #233 CI and Release Artifacts gates, merge if clean, preserve the
   branch, then update this section with merge and post-merge validation.
 
 ## Post Phase 15 - Hosted Linux Repository Site Artifact
