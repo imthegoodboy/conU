@@ -74,6 +74,14 @@ class AptRepositoryMetadata:
     metadata_text: str
 
 
+@dataclass(frozen=True)
+class RpmRepositoryMetadata:
+    filename: str
+    content: bytes
+    sha256: str
+    metadata_text: str
+
+
 def main() -> int:
     args = parse_args()
     dist = args.dist.resolve()
@@ -149,8 +157,17 @@ def main() -> int:
         write_sha256_sidecar(metadata_path, apt_repository_metadata.sha256)
     rpm_spec_path = output_dir / "conu.spec"
     rpm_spec_path.write_text(rpm_spec, encoding="ascii", newline="\n")
+    rpm_package_paths: tuple[Path, ...] = ()
     if args.build_rpm_packages:
-        build_rpm_packages(version, dist, rpm_spec_path, output_dir)
+        rpm_package_paths = build_rpm_packages(version, dist, rpm_spec_path, output_dir)
+    elif args.build_rpm_repository_metadata:
+        rpm_package_paths = existing_rpm_package_paths(version, output_dir)
+    if args.build_rpm_repository_metadata:
+        rpm_repository_metadata = build_rpm_repository_metadata(version, rpm_package_paths)
+        assert_output_safe(rpm_repository_metadata.metadata_text, dist)
+        metadata_path = output_dir / rpm_repository_metadata.filename
+        metadata_path.write_bytes(rpm_repository_metadata.content)
+        write_sha256_sidecar(metadata_path, rpm_repository_metadata.sha256)
     print(
         "generated package-manager manifests: "
         + ", ".join(
@@ -159,6 +176,7 @@ def main() -> int:
                 version,
                 include_rpm_packages=args.build_rpm_packages,
                 include_apt_repository_metadata=args.build_apt_repository_metadata,
+                include_rpm_repository_metadata=args.build_rpm_repository_metadata,
             )
         )
     )
@@ -186,6 +204,11 @@ def parse_args() -> argparse.Namespace:
         "--build-apt-repository-metadata",
         action="store_true",
         help="build unsigned deterministic APT repository metadata for generated .deb packages",
+    )
+    parser.add_argument(
+        "--build-rpm-repository-metadata",
+        action="store_true",
+        help="build unsigned RPM/YUM repository metadata for generated .rpm packages",
     )
     return parser.parse_args()
 
@@ -265,11 +288,21 @@ def apt_repository_metadata_output_filenames(version: str) -> tuple[str, ...]:
     return (filename, f"{filename}.sha256")
 
 
+def rpm_repository_metadata_filename(version: str) -> str:
+    return f"conu-{rpm_version(version)}-rpm-repository-metadata.zip"
+
+
+def rpm_repository_metadata_output_filenames(version: str) -> tuple[str, ...]:
+    filename = rpm_repository_metadata_filename(version)
+    return (filename, f"{filename}.sha256")
+
+
 def output_filenames(
     version: str,
     *,
     include_rpm_packages: bool = False,
     include_apt_repository_metadata: bool = False,
+    include_rpm_repository_metadata: bool = False,
 ) -> tuple[str, ...]:
     debian_outputs = []
     for target in DEBIAN_ARCHES:
@@ -281,12 +314,18 @@ def output_filenames(
         if include_apt_repository_metadata
         else ()
     )
+    rpm_repository_outputs = (
+        rpm_repository_metadata_output_filenames(version)
+        if include_rpm_repository_metadata
+        else ()
+    )
     return (
         *STATIC_OUTPUT_FILENAMES,
         chocolatey_filename(version),
         *debian_outputs,
         *apt_outputs,
         *rpm_outputs,
+        *rpm_repository_outputs,
     )
 
 
@@ -994,6 +1033,40 @@ def write_sha256_sidecar(path: Path, digest: str) -> None:
     )
 
 
+def existing_rpm_package_paths(version: str, output_dir: Path) -> tuple[Path, ...]:
+    paths = tuple(output_dir / rpm_filename(version, target) for target in RPM_ARCHES)
+    for path in paths:
+        verify_sha256_sidecar(path, "generated RPM package")
+    return paths
+
+
+def verify_sha256_sidecar(path: Path, label: str) -> str:
+    if not path.exists() or not path.is_file():
+        raise SystemExit(f"missing {label}: {path.name}")
+    sidecar = path.with_name(f"{path.name}.sha256")
+    if not sidecar.exists() or not sidecar.is_file():
+        raise SystemExit(f"missing SHA-256 sidecar for {label}: {path.name}")
+    if sidecar.stat().st_size > MAX_CHECKSUM_BYTES:
+        raise SystemExit(f"SHA-256 sidecar is too large for {label}: {path.name}")
+    try:
+        checksum_text = sidecar.read_text(encoding="ascii")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
+    match = CHECKSUM_RE.fullmatch(checksum_text)
+    if match is None:
+        raise SystemExit(f"SHA-256 sidecar has invalid format for {label}: {path.name}")
+    named_path = match.group(2)
+    if named_path != path.name:
+        raise SystemExit(
+            f"SHA-256 sidecar for {label} {path.name} names wrong file: {named_path}"
+        )
+    expected = match.group(1).lower()
+    actual = sha256_file(path)
+    if expected != actual:
+        raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
+    return expected
+
+
 def build_rpm_packages(
     version: str,
     dist: Path,
@@ -1047,6 +1120,110 @@ def build_rpm_packages(
             write_sha256_sidecar(output_path, sha256_file(output_path))
             outputs.append(output_path)
     return tuple(outputs)
+
+
+def build_rpm_repository_metadata(
+    version: str,
+    package_paths: tuple[Path, ...],
+) -> RpmRepositoryMetadata:
+    createrepo = shutil.which("createrepo_c") or shutil.which("createrepo")
+    if createrepo is None:
+        raise SystemExit(
+            "createrepo_c is required when --build-rpm-repository-metadata is set"
+        )
+    if len(package_paths) != len(RPM_ARCHES):
+        raise SystemExit("RPM repository metadata requires one package per supported RPM arch")
+
+    for package_path in package_paths:
+        verify_sha256_sidecar(package_path, "generated RPM package")
+
+    with tempfile.TemporaryDirectory(prefix="conu-rpm-repository-") as repo_text:
+        repo_dir = Path(repo_text)
+        for package_path in package_paths:
+            repo_package = repo_dir / package_path.name
+            shutil.copyfile(package_path, repo_package)
+            os.utime(repo_package, (SOURCE_EPOCH, SOURCE_EPOCH))
+
+        command = [
+            createrepo,
+            "--checksum",
+            "sha256",
+            "--repomd-checksum",
+            "sha256",
+            "--no-database",
+            "--simple-md-filenames",
+            "--revision",
+            str(SOURCE_EPOCH),
+            "--set-timestamp-to-revision",
+            "--general-compress-type",
+            "gz",
+            str(repo_dir),
+        ]
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except subprocess.CalledProcessError as exc:
+            raise SystemExit(f"createrepo_c failed with output:\n{exc.stdout}") from exc
+
+        repodata_dir = repo_dir / "repodata"
+        if not repodata_dir.is_dir():
+            raise SystemExit("createrepo_c did not create repodata")
+        repodata_files = sorted(path for path in repodata_dir.rglob("*") if path.is_file())
+        if not repodata_files:
+            raise SystemExit("createrepo_c did not create repository metadata files")
+
+        readme_text = render_rpm_repository_readme(version, package_paths)
+        raw = io.BytesIO()
+        metadata_texts = [readme_text]
+        with zipfile.ZipFile(raw, "w", compression=zipfile.ZIP_STORED) as archive:
+            write_deterministic_zip_text(archive, "README.txt", readme_text)
+            for path in repodata_files:
+                relative = path.relative_to(repo_dir).as_posix()
+                data = path.read_bytes()
+                metadata_texts.append(decode_rpm_repository_metadata(relative, data))
+                write_deterministic_zip_bytes(archive, relative, data)
+        content = raw.getvalue()
+        return RpmRepositoryMetadata(
+            filename=rpm_repository_metadata_filename(version),
+            content=content,
+            sha256=hashlib.sha256(content).hexdigest(),
+            metadata_text="\n".join(metadata_texts),
+        )
+
+
+def decode_rpm_repository_metadata(name: str, data: bytes) -> str:
+    text_bytes = data
+    if name.endswith(".gz"):
+        text_bytes = gzip.decompress(data)
+    if name.endswith(".xml") or name.endswith(".xml.gz"):
+        return text_bytes.decode("utf-8")
+    return ""
+
+
+def render_rpm_repository_readme(version: str, package_paths: tuple[Path, ...]) -> str:
+    package_list = "\n".join(f"- {path.name}" for path in package_paths)
+    return f"""conU {rpm_version(version)} unsigned RPM repository metadata
+
+This archive contains repodata generated by createrepo_c for the generated
+conU RPM package assets:
+
+{package_list}
+
+Unpack this archive into the same directory as those .rpm files before serving
+that directory as a YUM/DNF repository or importing the metadata into a signed
+repository workflow.
+
+This bundle is unsigned and does not include the RPM packages. Production RPM
+publication still requires RPM package signing, repository signing if used,
+repository hosting, and operator-owned publishing credentials.
+"""
 
 
 def rpm_build_command(

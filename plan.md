@@ -35,6 +35,63 @@ Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-P
 Latest completed hardening addition: unsigned APT repository metadata generation is complete; PR #207 merged to `main` at `f2f7c993e658b31d4a77c3c45059a12fb2f7c986`, Issue #206 is closed, and branch `apt-repository-metadata` is preserved. Prior completed hardening addition: unsigned RPM release asset generation is complete; PR #205 merged to `main` at `4048a7fab4b454ed28e782b169906fb60d97dce8`, Issue #204 is closed, and branch `rpm-release-assets` is preserved. Prior completed hardening addition: native RPM package build preflight is complete; PR #203 merged to `main` at `98b2ef7a1aba3eb0cc5e6f10fb4e36560105f3d4`, Issue #202 is closed, and branch `rpm-native-build-preflight` is preserved. Prior completed hardening addition: Debian package and RPM spec generation is complete; PR #201 merged to `main` at `4023297af7554bddab1cc6e0d1bb0a4c06e5fc98`, Issue #200 is closed, and branch `linux-package-manager-preflight` is preserved. Prior completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
 ```
 
+## Post Phase 15 - RPM Repository Metadata Bundle
+
+Status: in_progress
+
+Goal:
+
+Generate unsigned RPM/YUM/DNF repository metadata from the verified generated
+conU RPM assets during tagged release publication.
+
+Current work:
+
+- Issue #208 tracks this hardening slice.
+- Branch `rpm-repository-metadata` is intentionally plain-named and must be
+  preserved after merge.
+- Add an explicit `--build-rpm-repository-metadata` generator mode that uses
+  standard RPM repository tooling for generated `.rpm` release assets.
+- Keep the metadata ZIP limited to `README.txt` and `repodata/*`; do not embed
+  `.rpm` package payloads in the repository metadata bundle.
+- Extend package-manager regression coverage to verify RPM repository metadata
+  hashes, package references, payload safety, and deterministic metadata output
+  where native RPM tooling is installed.
+
+Known gaps:
+
+- This does not sign RPM packages or RPM repository metadata.
+- This does not host a YUM/DNF repository, submit package-manager repository
+  PRs, configure package-manager credentials, add detached Linux package
+  signatures, or implement auto-update policy.
+
+Validation:
+
+- `python -m py_compile scripts/generate-package-manager-manifests.py scripts/check-package-manager-manifests.py` passed.
+- `python scripts/check-package-manager-manifests.py` passed on Windows.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-package-manager-manifests.py'` passed.
+- `python scripts/verify-release-versions.py` passed.
+- `python scripts/check-release-artifact-verifier.py` passed.
+- `python scripts/check-release-artifact-smoke-preflight.py` passed.
+- `python scripts/verify-npm-package-contents.py` passed.
+- `python scripts/check-npm-publish-preflight.py` passed.
+- `python scripts/check-npm-publish-preflight-regression.py` passed.
+- `python scripts/check-npm-launcher-local-smoke-preflight.py` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `powershell -ExecutionPolicy Bypass -File scripts/verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed.
+- `git diff --check` passed.
+- `codex review -c sandbox_mode="danger-full-access" --uncommitted` timed out
+  locally after four minutes without findings; a targeted manual review pass was
+  done instead. Native RPM repository metadata generation still needs CI
+  coverage because local WSL lacks passwordless sudo and does not have
+  `rpmbuild`/`createrepo_c` installed.
+
+Next:
+
+- Finish implementation, validate locally and in CI, open/merge the PR, preserve
+  the branch, close Issue #208, and update this section with final commit and
+  workflow evidence.
+
 ## Post Phase 15 - APT Repository Metadata Bundle
 
 Status: completed

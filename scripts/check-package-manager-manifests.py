@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -37,6 +38,7 @@ RPM_SPEC_FILENAME = "conu.spec"
 DEBIAN_AMD64_FILENAME = f"conu_{VERSION}_amd64.deb"
 DEBIAN_ARM64_FILENAME = f"conu_{VERSION}_arm64.deb"
 APT_REPOSITORY_METADATA_FILENAME = f"conu-{VERSION}-apt-repository-metadata.zip"
+RPM_REPOSITORY_METADATA_FILENAME = f"conu-{VERSION}-rpm-repository-metadata.zip"
 RPM_ARCHES = {
     "linux-x64": "x86_64",
     "linux-arm64": "aarch64",
@@ -132,6 +134,7 @@ def generate(
     *,
     build_rpm_packages: bool = False,
     build_apt_repository_metadata: bool = False,
+    build_rpm_repository_metadata: bool = False,
 ) -> None:
     assets = generator.load_release_assets(
         dist,
@@ -224,8 +227,20 @@ def generate(
         generator.write_sha256_sidecar(metadata_path, apt_repository_metadata.sha256)
     rpm_spec_path = output / RPM_SPEC_FILENAME
     rpm_spec_path.write_text(rpm_spec, encoding="ascii", newline="\n")
+    rpm_package_paths = ()
     if build_rpm_packages:
-        generator.build_rpm_packages(VERSION, dist, rpm_spec_path, output)
+        rpm_package_paths = generator.build_rpm_packages(VERSION, dist, rpm_spec_path, output)
+    elif build_rpm_repository_metadata:
+        rpm_package_paths = generator.existing_rpm_package_paths(VERSION, output)
+    if build_rpm_repository_metadata:
+        rpm_repository_metadata = generator.build_rpm_repository_metadata(
+            VERSION,
+            rpm_package_paths,
+        )
+        generator.assert_output_safe(rpm_repository_metadata.metadata_text, dist)
+        metadata_path = output / rpm_repository_metadata.filename
+        metadata_path.write_bytes(rpm_repository_metadata.content)
+        generator.write_sha256_sidecar(metadata_path, rpm_repository_metadata.sha256)
 
 
 def expect_failure(description: str, action, expected: str) -> None:
@@ -542,6 +557,121 @@ def assert_apt_repository_metadata(path: Path, temp: Path) -> None:
     assert_sha256_sidecar(path)
 
 
+def read_rpm_repository_metadata(path: Path) -> dict[str, bytes]:
+    required = [
+        "README.txt",
+        "repodata/filelists.xml.gz",
+        "repodata/other.xml.gz",
+        "repodata/primary.xml.gz",
+        "repodata/repomd.xml",
+    ]
+    with zipfile.ZipFile(path) as package:
+        names = package.namelist()
+        if names != required:
+            raise AssertionError(f"{path.name} had RPM repository members {names!r}")
+        for name in names:
+            if name.endswith(".rpm"):
+                raise AssertionError(f"{path.name} unexpectedly embedded RPM payload {name}")
+            info = package.getinfo(name)
+            if info.date_time != (2020, 1, 1, 0, 0, 0):
+                raise AssertionError(f"{path.name}:{name} was not timestamp-normalized")
+            mode = (info.external_attr >> 16) & 0o777
+            if mode != 0o644:
+                raise AssertionError(f"{path.name}:{name} had mode {oct(mode)}")
+        return {name: package.read(name) for name in names}
+
+
+def assert_rpm_repository_metadata(path: Path, temp: Path, generator, output: Path) -> None:
+    contents = read_rpm_repository_metadata(path)
+    readme_text = contents["README.txt"].decode("ascii")
+    repomd_text = contents["repodata/repomd.xml"].decode("utf-8")
+    primary_text = gzip.decompress(contents["repodata/primary.xml.gz"]).decode("utf-8")
+    filelists_text = gzip.decompress(contents["repodata/filelists.xml.gz"]).decode("utf-8")
+    other_text = gzip.decompress(contents["repodata/other.xml.gz"]).decode("utf-8")
+
+    if "This bundle is unsigned" not in readme_text or RPM_X64_FILENAME not in readme_text:
+        raise AssertionError(f"{path.name} README missed unsigned publication guidance")
+    if ".rpm files before serving" not in readme_text:
+        raise AssertionError(f"{path.name} README missed repository placement guidance")
+
+    repomd_root = ET.fromstring(repomd_text)
+    repo_ns = {"repo": "http://linux.duke.edu/metadata/repo"}
+    expected_metadata = {
+        "primary": "repodata/primary.xml.gz",
+        "filelists": "repodata/filelists.xml.gz",
+        "other": "repodata/other.xml.gz",
+    }
+    seen_metadata: dict[str, str] = {}
+    for data in repomd_root.findall("repo:data", repo_ns):
+        metadata_type = data.attrib.get("type")
+        location = data.find("repo:location", repo_ns)
+        checksum = data.find("repo:checksum", repo_ns)
+        timestamp = data.find("repo:timestamp", repo_ns)
+        if metadata_type not in expected_metadata:
+            continue
+        if location is None or checksum is None or timestamp is None:
+            raise AssertionError(f"{path.name} repomd.xml missed fields for {metadata_type}")
+        href = location.attrib.get("href", "")
+        if href != expected_metadata[metadata_type]:
+            raise AssertionError(f"{path.name} repomd.xml had unexpected {metadata_type} href {href!r}")
+        if checksum.attrib.get("type") != "sha256":
+            raise AssertionError(f"{path.name} repomd.xml did not use sha256 for {metadata_type}")
+        if checksum.text != hashlib.sha256(contents[href]).hexdigest():
+            raise AssertionError(f"{path.name} repomd.xml had wrong checksum for {href}")
+        if timestamp.text != "1577836800":
+            raise AssertionError(f"{path.name} repomd.xml had nondeterministic timestamp for {href}")
+        seen_metadata[metadata_type] = href
+    if seen_metadata != expected_metadata:
+        raise AssertionError(f"{path.name} repomd.xml metadata set was {seen_metadata!r}")
+
+    primary_root = ET.fromstring(primary_text)
+    common_ns = {"common": "http://linux.duke.edu/metadata/common"}
+    packages_by_href: dict[str, ET.Element] = {}
+    for package in primary_root.findall("common:package", common_ns):
+        location = package.find("common:location", common_ns)
+        if location is not None:
+            packages_by_href[location.attrib.get("href", "")] = package
+    if set(packages_by_href) != {RPM_X64_FILENAME, RPM_ARM64_FILENAME}:
+        raise AssertionError(f"{path.name} primary metadata had packages {set(packages_by_href)!r}")
+
+    for filename, rpm_arch in (
+        (RPM_X64_FILENAME, "x86_64"),
+        (RPM_ARM64_FILENAME, "aarch64"),
+    ):
+        rpm_bytes = (output / filename).read_bytes()
+        package = packages_by_href[filename]
+        name = package.findtext("common:name", namespaces=common_ns)
+        arch = package.findtext("common:arch", namespaces=common_ns)
+        checksum = package.find("common:checksum", common_ns)
+        version = package.find("common:version", common_ns)
+        size = package.find("common:size", common_ns)
+        if name != "conu" or arch != rpm_arch:
+            raise AssertionError(f"{path.name} primary metadata missed {filename} name/arch")
+        if checksum is None or checksum.attrib.get("type") != "sha256":
+            raise AssertionError(f"{path.name} primary metadata missed sha256 for {filename}")
+        if checksum.text != hashlib.sha256(rpm_bytes).hexdigest():
+            raise AssertionError(f"{path.name} primary metadata had wrong package checksum")
+        if version is None or version.attrib.get("ver") != VERSION or version.attrib.get("rel") != "1":
+            raise AssertionError(f"{path.name} primary metadata had wrong version for {filename}")
+        if size is None or size.attrib.get("package") != str(len(rpm_bytes)):
+            raise AssertionError(f"{path.name} primary metadata had wrong size for {filename}")
+
+    for binary in LINUX_BINARIES:
+        if f"/usr/bin/{binary}" not in filelists_text:
+            raise AssertionError(f"{path.name} filelists metadata missed {binary}")
+    if primary_text.count("<package type=\"rpm\">") != 2 or other_text.count("pkgid=") != 2:
+        raise AssertionError(f"{path.name} RPM metadata did not describe two packages")
+    for label, text in (
+        ("README.txt", readme_text),
+        ("repomd.xml", repomd_text),
+        ("primary.xml.gz", primary_text),
+        ("filelists.xml.gz", filelists_text),
+        ("other.xml.gz", other_text),
+    ):
+        assert_no_forbidden_text(text, f"{path.name}:{label}", temp)
+    assert_sha256_sidecar(path)
+
+
 def assert_zip_no_forbidden_output(path: Path, temp: Path) -> None:
     for name, text in read_chocolatey_package(path).items():
         assert_no_forbidden_text(text, f"{path.name}:{name}", temp)
@@ -655,6 +785,8 @@ def main() -> int:
             raise AssertionError("default output filenames should not include RPM packages")
         if APT_REPOSITORY_METADATA_FILENAME in generator.output_filenames(VERSION):
             raise AssertionError("default output filenames should not include APT repository metadata")
+        if RPM_REPOSITORY_METADATA_FILENAME in generator.output_filenames(VERSION):
+            raise AssertionError("default output filenames should not include RPM repository metadata")
         if APT_REPOSITORY_METADATA_FILENAME not in generator.output_filenames(
             VERSION,
             include_apt_repository_metadata=True,
@@ -665,6 +797,16 @@ def main() -> int:
             include_apt_repository_metadata=True,
         ):
             raise AssertionError("APT repository output filenames did not include metadata checksum")
+        if RPM_REPOSITORY_METADATA_FILENAME not in generator.output_filenames(
+            VERSION,
+            include_rpm_repository_metadata=True,
+        ):
+            raise AssertionError("RPM repository output filenames did not include metadata bundle")
+        if f"{RPM_REPOSITORY_METADATA_FILENAME}.sha256" not in generator.output_filenames(
+            VERSION,
+            include_rpm_repository_metadata=True,
+        ):
+            raise AssertionError("RPM repository output filenames did not include metadata checksum")
         if RPM_X64_FILENAME not in generator.output_filenames(VERSION, include_rpm_packages=True):
             raise AssertionError("RPM package output filenames did not include x86_64 package")
         if f"{RPM_ARM64_FILENAME}.sha256" not in generator.output_filenames(
@@ -684,8 +826,29 @@ def main() -> int:
 
         if shutil.which("rpmbuild") is not None:
             rpm_out = temp / "rpm-out"
-            generate(generator, rootless_dist, rpm_out, build_rpm_packages=True)
+            generate(
+                generator,
+                rootless_dist,
+                rpm_out,
+                build_rpm_packages=True,
+                build_rpm_repository_metadata=shutil.which("createrepo_c") is not None
+                or shutil.which("createrepo") is not None,
+            )
             assert_generated_rpm_assets(generator, rpm_out)
+            if shutil.which("createrepo_c") is not None or shutil.which("createrepo") is not None:
+                rpm_repository_metadata = rpm_out / RPM_REPOSITORY_METADATA_FILENAME
+                assert_rpm_repository_metadata(
+                    rpm_repository_metadata,
+                    temp,
+                    generator,
+                    rpm_out,
+                )
+                repeated_metadata = generator.build_rpm_repository_metadata(
+                    VERSION,
+                    tuple(rpm_out / generator.rpm_filename(VERSION, target) for target in RPM_ARCHES),
+                )
+                if repeated_metadata.content != rpm_repository_metadata.read_bytes():
+                    raise AssertionError("RPM repository metadata generation was not deterministic")
 
         repeat_out = temp / "repeat-out"
         generate(generator, rootless_dist, repeat_out)

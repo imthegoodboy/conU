@@ -17,7 +17,7 @@ Why this shape:
 - Rust binaries keep the CLI, daemon, relay, protocol, crypto, and MCP adapter fast and self-contained.
 - GitHub Releases are the source of truth for platform archives and checksums.
 - npm gives agents and developers a familiar install command without making conU a JavaScript runtime.
-- Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and unsigned APT repository metadata are generated from verified release assets and checksums on tagged releases. CI and release package checks also verify the generated APT metadata and build the generated RPM spec plus optional unsigned RPM release assets with native `rpmbuild` when RPM tools are available. Submitting those generated files to package-manager tap/bucket/repository feeds, plus detached Linux package signatures, signed APT/RPM publication, and auto-update policy, can come after the first signed archive/npm release is stable.
+- Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and unsigned APT/RPM repository metadata are generated from verified release assets and checksums on tagged releases. CI and release package checks also verify the generated APT metadata and build the generated RPM spec, optional unsigned RPM release assets, and RPM repository metadata with native `rpmbuild`/`createrepo_c` when RPM tools are available. Submitting those generated files to package-manager tap/bucket/repository feeds, plus detached Linux package signatures, signed APT/RPM publication, and auto-update policy, can come after the first signed archive/npm release is stable.
 
 The target public command is:
 
@@ -55,7 +55,7 @@ Each archive must have:
 <asset>.sha256
 ```
 
-The release workflow builds platform-named artifacts and uploads matching checksum files. Tagged release builds run a fail-closed preflight before package checks and platform builds; that preflight requires maintainer-owned signing secrets for Windows Authenticode, macOS Developer ID/notarization, and the repository `NPM_TOKEN` used for npm provenance publication. Linux archives use SHA-256 files plus GitHub artifact attestations, and generated Debian/RPM packages plus unsigned APT metadata use SHA-256 sidecars, until native distro package signing is added. Tagged GitHub Release publication also generates package-native `conu.rb`, `conu.json`, `imthegoodboy.conU.yaml`, `conu.<version>.nupkg`, `conu_<version>_amd64.deb`, `conu_<version>_arm64.deb`, `conu-<debian-version>-apt-repository-metadata.zip`, `conu.spec`, unsigned `conu-<rpm-version>-1.x86_64.rpm`, and unsigned `conu-<rpm-version>-1.aarch64.rpm` files from the verified asset checksums so package-manager metadata and Linux package files are not hand-edited; package gates verify APT metadata and run native `rpmbuild` validation before those tag paths are used.
+The release workflow builds platform-named artifacts and uploads matching checksum files. Tagged release builds run a fail-closed preflight before package checks and platform builds; that preflight requires maintainer-owned signing secrets for Windows Authenticode, macOS Developer ID/notarization, and the repository `NPM_TOKEN` used for npm provenance publication. Linux archives use SHA-256 files plus GitHub artifact attestations, and generated Debian/RPM packages plus unsigned APT/RPM metadata use SHA-256 sidecars, until native distro package signing is added. Tagged GitHub Release publication also generates package-native `conu.rb`, `conu.json`, `imthegoodboy.conU.yaml`, `conu.<version>.nupkg`, `conu_<version>_amd64.deb`, `conu_<version>_arm64.deb`, `conu-<debian-version>-apt-repository-metadata.zip`, `conu.spec`, unsigned `conu-<rpm-version>-1.x86_64.rpm`, unsigned `conu-<rpm-version>-1.aarch64.rpm`, and `conu-<rpm-version>-rpm-repository-metadata.zip` files from the verified asset checksums so package-manager metadata and Linux package files are not hand-edited; package gates verify APT/RPM metadata and run native `rpmbuild` validation before those tag paths are used.
 
 ## Publishing Flow
 
@@ -64,7 +64,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
 5. Configure the repository signing secrets and `NPM_TOKEN` before creating the tag; the tagged release workflow fails before package checks if any required release secret is missing.
-6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, run the package-manager manifest regression, run the npm launcher local-smoke preflight regression, smoke-test the npm launcher local install path with an existing regular-file binary directory, and smoke-test the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, archive-member count/duplicate/state-path preflight, bounded extracted-tree scanning, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, generate Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and unsigned APT repository metadata from those strict checksums, build unsigned RPM release assets with `.rpm.sha256` sidecars, upload the archives, `.sha256` files, and generated package-manager files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, run the npm publish preflight so public package metadata is present and existing `@conu/cli`/`@conu/sdk` versions fail before either package is published, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, run the package-manager manifest regression, run the npm launcher local-smoke preflight regression, smoke-test the npm launcher local install path with an existing regular-file binary directory, and smoke-test the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, archive-member count/duplicate/state-path preflight, bounded extracted-tree scanning, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, generate Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and unsigned APT/RPM repository metadata from those strict checksums, build unsigned RPM release assets with `.rpm.sha256` sidecars, upload the archives, `.sha256` files, and generated package-manager files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, run the npm publish preflight so public package metadata is present and existing `@conu/cli`/`@conu/sdk` versions fail before either package is published, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
 ```sh
@@ -125,7 +125,7 @@ instead of editing hashes by hand:
 ```sh
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages
-python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata
+python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-packages --build-apt-repository-metadata --build-rpm-repository-metadata
 python scripts/check-package-manager-manifests.py
 ```
 
@@ -140,13 +140,17 @@ binaries only where native package formats require binary payloads. With
 packages with `.rpm.sha256` sidecars. With `--build-apt-repository-metadata`,
 it also emits an unsigned `conu-<debian-version>-apt-repository-metadata.zip`
 bundle containing deterministic `Packages`, `Packages.gz`, and `Release` files
-for the generated `.deb` assets, plus a `.sha256` sidecar. The regression check
+for the generated `.deb` assets, plus a `.sha256` sidecar. With
+`--build-rpm-repository-metadata`, it also emits an unsigned
+`conu-<rpm-version>-rpm-repository-metadata.zip` bundle containing `repodata/*`
+generated by `createrepo_c` for the generated `.rpm` assets without embedding
+the RPM packages, plus a `.sha256` sidecar. The regression check
 validates generated Debian packages with `dpkg-deb`, builds the RPM spec with
 `rpmbuild`, checks generated RPM assets when those tools are installed, and
-verifies the APT metadata bundle against the actual `.deb` hashes. It does not
+verifies the APT and RPM metadata bundles against the actual package hashes. It does not
 read local conU state, tokens, signing material, or package-manager repository
 credentials, and it still does not sign `.rpm` assets, sign APT `Release`
-metadata, or configure hosted package repositories.
+metadata, sign RPM repository metadata, or configure hosted package repositories.
 
 ## User Install Choices
 
@@ -370,4 +374,4 @@ For the user install story, finish publishing in this order:
 2. Publish `@conu/cli` after the GitHub Release exists.
 3. Put public relay tests behind TLS termination and use `wss://` endpoints.
 4. Add distributed account control planes, remote tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, tenant-node upsert/revoke, account/node suspension plus single-relay account suspension/scoped admin tenant commands, distributed monitoring/dashboards/alerting beyond single-relay threshold reports, distributed hosted mailbox retention policy beyond local/admin-gated audit and purge plus local scheduled purge workflows, and distributed multi-instance session migration before opening a managed relay to everyone.
-5. Submit generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files to the appropriate package-manager repositories, then add detached Linux package signatures, APT/RPM package signing, hosted repository metadata, and auto-update policy after npm and signed release archives are stable.
+5. Submit generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files to the appropriate package-manager repositories, then add detached Linux package signatures, APT/RPM package and repository signing, hosted repository publication, and auto-update policy after npm and signed release archives are stable.
