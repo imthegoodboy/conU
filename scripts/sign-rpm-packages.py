@@ -14,6 +14,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+from linux_gpg_common import (
+    add_fingerprint_env_argument,
+    read_expected_fingerprint,
+    verify_imported_secret_key_fingerprint,
+)
+
 
 MAX_SIGNING_KEY_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
@@ -44,6 +50,7 @@ def main() -> int:
     key_id = read_required_env(args.key_id_env).strip()
     if not key_id:
         raise SystemExit(f"{args.key_id_env} must not be empty")
+    expected_fingerprint = read_expected_fingerprint(os.environ, args.fingerprint_env)
 
     packages = rpm_package_assets(dist)
     if not packages:
@@ -64,6 +71,7 @@ def main() -> int:
         env["HOME"] = str(home)
 
         run_gpg(gpg, env, ["--import"], input_bytes=signing_key)
+        verify_imported_secret_key_fingerprint(gpg, env, key_id, expected_fingerprint)
         public_key = run_gpg(gpg, env, ["--armor", "--export", key_id])
         if b"BEGIN PGP PUBLIC KEY BLOCK" not in public_key:
             raise SystemExit("imported Linux GPG key did not export an armored public key")
@@ -99,6 +107,7 @@ def parse_args() -> argparse.Namespace:
         default="CONU_LINUX_GPG_KEY_ID",
         help="environment variable containing the signing key id or fingerprint",
     )
+    add_fingerprint_env_argument(parser)
     return parser.parse_args()
 
 

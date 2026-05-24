@@ -46,7 +46,7 @@ conu-<version>-macos-x64.zip
 conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus APT/RPM repository metadata are produced from verified release checksums, generated RPM package payloads are signed before RPM repository metadata is generated, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, `conu-linux-gpg-key.asc` is exported with a strict `.sha256` sidecar for signature verification, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures; generated Debian packages use SHA-256 sidecars plus detached signatures; generated RPM packages use native RPM signatures plus refreshed SHA-256 sidecars plus detached signatures; generated APT/RPM metadata ZIPs include native repository signatures, refreshed sidecars, and detached signatures.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets, `CONU_LINUX_GPG_KEY_FINGERPRINT`, and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus APT/RPM repository metadata are produced from verified release checksums, the imported Linux GPG key is checked against the expected full fingerprint, generated RPM package payloads are signed before RPM repository metadata is generated, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, `conu-linux-gpg-key.asc` is exported with a strict `.sha256` sidecar for signature verification, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures; generated Debian packages use SHA-256 sidecars plus detached signatures; generated RPM packages use native RPM signatures plus refreshed SHA-256 sidecars plus detached signatures; generated APT/RPM metadata ZIPs include native repository signatures, refreshed sidecars, and detached signatures.
 
 Before tagging, run:
 
@@ -58,10 +58,10 @@ The CI and release package jobs run the same check before package validation. Br
 The same package jobs run `python scripts/check-release-artifact-verifier.py` so checksum format, duplicate path, and forbidden state-path regressions fail before platform artifacts are generated.
 They also run `python scripts/check-release-artifact-smoke-preflight.py` so release artifact smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before execution.
 They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager and APT/RPM repository metadata regressions fail before package publication paths are used. CI and release package jobs install RPM tooling plus `createrepo-c` so the generated `conu.spec`, optional generated `.rpm` release assets, and RPM repository metadata are checked when package gates run on Ubuntu.
-They also run `python scripts/check-rpm-package-signing.py` so native RPM package signing, sidecar refresh, and signed-package RPM metadata regressions fail before tagged package publication paths are used.
-They also run `python scripts/check-linux-release-signing.py` so Linux detached-signing regressions fail before tagged package publication paths are used. CI and release package jobs install `gnupg` for that check.
-They also run `python scripts/check-linux-repository-signing.py` so native APT/RPM repository metadata signing, verification, and sidecar-refresh regressions fail before tagged package publication paths are used.
-They also run `python scripts/check-linux-gpg-public-key-export.py` so Linux public-key export and verification regressions fail before tagged package publication paths are used.
+They also run `python scripts/check-rpm-package-signing.py` so native RPM package signing, fingerprint mismatch handling, sidecar refresh, and signed-package RPM metadata regressions fail before tagged package publication paths are used.
+They also run `python scripts/check-linux-release-signing.py` so fingerprint-pinned Linux detached-signing regressions fail before tagged package publication paths are used. CI and release package jobs install `gnupg` for that check.
+They also run `python scripts/check-linux-repository-signing.py` so fingerprint-pinned native APT/RPM repository metadata signing, verification, and sidecar-refresh regressions fail before tagged package publication paths are used.
+They also run `python scripts/check-linux-gpg-public-key-export.py` so fingerprint-pinned Linux public-key export and verification regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
 
@@ -136,8 +136,9 @@ verified Linux release binaries only where the package format requires binaries.
 assets. When `--build-rpm-repository-metadata` is set, it also builds a
 `createrepo_c` `repodata/*` bundle for the generated `.rpm` assets without
 embedding those RPM packages. Tagged release publication builds RPM packages,
-signs those native RPM package payloads, refreshes their `.rpm.sha256`
-sidecars, generates RPM repository metadata from the signed packages, adds
+verifies the imported Linux signing-key fingerprint, signs those native RPM
+package payloads, refreshes their `.rpm.sha256` sidecars, generates RPM
+repository metadata from the signed packages, adds
 native APT `InRelease`/`Release.gpg` and RPM `repodata/repomd.xml.asc`
 signatures, refreshes the metadata ZIP sidecars, exports
 `conu-linux-gpg-key.asc` without private-key material, signs generated Linux

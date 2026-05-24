@@ -24,7 +24,10 @@ package-manager publishing.
   metadata ZIPs refresh their `.sha256` sidecars before detached `.asc`
   signatures are created over the final ZIPs.
   Tagged releases also publish `conu-linux-gpg-key.asc` plus its `.sha256`
-  sidecar so users can verify those Linux signatures from release assets.
+  sidecar so users can verify those Linux signatures from release assets. The
+  release workflow pins the imported Linux GPG private key to the configured
+  full maintainer fingerprint before any Linux public key, RPM package,
+  repository metadata, or detached signature asset is produced.
 - Signing secrets are maintainer-owned repository secrets. The workflow never
   prints certificates, private keys, signing passwords, npm tokens, relay
   tokens, local conU state, or payload contents.
@@ -62,7 +65,13 @@ Linux GPG signatures:
 CONU_LINUX_GPG_PRIVATE_KEY_BASE64
 CONU_LINUX_GPG_PASSPHRASE
 CONU_LINUX_GPG_KEY_ID
+CONU_LINUX_GPG_KEY_FINGERPRINT
 ```
+
+`CONU_LINUX_GPG_KEY_FINGERPRINT` must be the full 40-hex-character primary
+maintainer key fingerprint. `CONU_LINUX_GPG_KEY_ID` should be the same full
+fingerprint or another non-ambiguous key id that resolves to that one primary
+secret key after import.
 
 `CONU_MACOS_NOTARY_PASSWORD` should be an Apple app-specific password or other
 Apple-supported notary credential material. Do not store raw certificate files
@@ -82,14 +91,16 @@ absent, which keeps smoke packaging available for maintainers. Those non-tag
 runs do not publish GitHub Releases or npm packages.
 
 Tagged GitHub Release publication imports the Linux GPG private key into a
-temporary `GNUPGHOME`, signs generated RPM package payloads first, refreshes
-their `.rpm.sha256` sidecars, generates RPM repository metadata from those
-signed RPM packages, then adds and verifies native signatures inside the
-generated APT/RPM repository metadata ZIPs and refreshes their `.sha256`
+temporary `GNUPGHOME`, verifies the imported primary secret-key fingerprint
+against `CONU_LINUX_GPG_KEY_FINGERPRINT`, signs generated RPM package payloads
+first, refreshes their `.rpm.sha256` sidecars, generates RPM repository metadata
+from those signed RPM packages, then adds and verifies native signatures inside
+the generated APT/RPM repository metadata ZIPs and refreshes their `.sha256`
 sidecars. It then signs only the Linux archives, generated Debian/RPM packages,
 and final APT/RPM repository metadata ZIPs with detached `.asc` signatures.
 Every signature is verified before upload, and the temporary keyring is removed
-when the job exits.
+when the job exits. A missing or mismatched fingerprint fails closed before any
+Linux signing artifact is written.
 
 The same temporary import path exports only the armored Linux GPG public key as
 `conu-linux-gpg-key.asc` with a strict `.sha256` sidecar. The workflow refuses
@@ -140,6 +151,8 @@ Linux, before extracting a release tarball:
 
 ```sh
 sha256sum -c conu-linux-gpg-key.asc.sha256
+EXPECTED_CONU_LINUX_GPG_FINGERPRINT=<published-40-hex-maintainer-fingerprint>
+gpg --show-keys --with-colons conu-linux-gpg-key.asc | awk -F: '/^fpr:/ {print $10; exit}' | grep -Fx "$EXPECTED_CONU_LINUX_GPG_FINGERPRINT"
 gpg --import conu-linux-gpg-key.asc
 sha256sum -c conu-0.1.0-linux-x64.tar.gz.sha256
 gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
