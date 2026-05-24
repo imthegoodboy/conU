@@ -13,6 +13,8 @@ python scripts/sign-linux-repository-metadata.py dist
 python scripts/sign-linux-release-assets.py dist
 python scripts/generate-hosted-linux-repositories.py dist --output-dir dist --version 0.1.0
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-bundles
+python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist --version 0.1.0 --base-url https://packages.example.com/conu
+python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
 ```
 
 The generator requires the platform archives and strict sibling `.sha256` files
@@ -49,6 +51,9 @@ conu-<rpm-version>-rpm-repository-metadata.zip.sha256
 conu-<version>-hosted-linux-repositories.zip
 conu-<version>-hosted-linux-repositories.zip.sha256
 conu-<version>-hosted-linux-repositories.zip.asc
+conu-<version>-hosted-linux-repository-site.zip
+conu-<version>-hosted-linux-repository-site.zip.sha256
+conu-<version>-hosted-linux-repository-site.zip.asc
 ```
 
 The `.rpm` files are generated only when `--build-rpm-packages` is set and
@@ -93,8 +98,15 @@ assets, and generated APT/RPM metadata ZIPs. After those signatures exist, the
 hosted repository generator builds `conu-<version>-hosted-linux-repositories.zip`
 with static `apt/` and `rpm/` trees containing the signed packages, native
 repository signatures, package detached signatures, public GPG key, and strict
-sidecars. The final hosted repository ZIP is then detached-signed. Operator
-hosting endpoints and package-manager submission remain future work.
+sidecars. The final hosted repository ZIP is then detached-signed. The hosted
+repository site generator then builds
+`conu-<version>-hosted-linux-repository-site.zip` from that signed bundle, its
+strict sidecar, and its detached signature. The site artifact contains the
+public `apt/` and `rpm/` trees, `.nojekyll`, `index.html`,
+`repository.json`, APT/YUM install snippets, and `downloads/` copies of the
+signed source bundle plus sidecars. Tagged publication detached-signs the site
+artifact too. Real DNS/TLS/static hosting deployment and package-manager
+submission remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
@@ -105,7 +117,9 @@ RPM repository metadata may contain `createrepo_c` metadata for those generated
 `.rpm` files only. Generated package-manager outputs, detached signatures, and
 the Linux GPG public-key asset must not contain signing secrets, npm tokens,
 relay tokens, local paths, conU state, private payloads, private-key material,
-or package-manager repository credentials. Users should compare
+or package-manager repository credentials. Generated hosted repository site
+artifacts contain public repository files, public metadata, public signatures,
+public checksums, and install snippets only. Users should compare
 `conu-linux-gpg-key.asc` against the published full maintainer fingerprint
 before trusting Linux `.asc`, native RPM package, or native repository metadata
 signatures.

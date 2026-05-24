@@ -27,6 +27,7 @@ SIGNABLE_FIXTURES = (
     "conu-0.1.0-apt-repository-metadata.zip",
     "conu-0.1.0-rpm-repository-metadata.zip",
     "conu-0.1.0-hosted-linux-repositories.zip",
+    "conu-0.1.0-hosted-linux-repository-site.zip",
 )
 UNSIGNED_FIXTURES = (
     "conu-0.1.0-windows-x64.zip",
@@ -143,6 +144,32 @@ def main() -> int:
         run_gpg(gpg, verify_home, ["--verify", str(hosted_signature), str(hosted_bundle)])
         if linux_archive.with_name(f"{linux_archive.name}.asc").exists():
             raise AssertionError("only-hosted signing mode signed a Linux archive")
+
+        only_site_dist = temp / "only-site-dist"
+        only_site_dist.mkdir()
+        site_bundle = only_site_dist / "conu-0.1.0-hosted-linux-repository-site.zip"
+        site_bundle.write_bytes(b"hosted repository site fixture\n")
+        hosted_repo_bundle = only_site_dist / "conu-0.1.0-hosted-linux-repositories.zip"
+        hosted_repo_bundle.write_bytes(b"hosted repository bundle fixture\n")
+        subprocess.run(
+            [
+                sys.executable,
+                str(SIGNER),
+                str(only_site_dist),
+                "--only-hosted-repository-sites",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+        )
+        site_signature = only_site_dist / "conu-0.1.0-hosted-linux-repository-site.zip.asc"
+        if not site_signature.exists():
+            raise AssertionError("hosted repository site signature was not generated")
+        run_gpg(gpg, verify_home, ["--verify", str(site_signature), str(site_bundle)])
+        if hosted_repo_bundle.with_name(f"{hosted_repo_bundle.name}.asc").exists():
+            raise AssertionError("only-site signing mode signed a hosted repository bundle")
 
     print("Linux release signing regression checks passed")
     return 0
