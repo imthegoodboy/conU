@@ -6777,7 +6777,6 @@ privacy
 fn render_update_usage() -> String {
     r"usage:
   conu update check --policy-file <path> [--sha256-file <path>] [--signature-file <path>] [--gpg-verify] [--json]
-  conu update check --policy-url <https-url> [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]
   conu update check --policy-url <https-url> [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]"
         .to_string()
 }
@@ -7165,6 +7164,12 @@ fn validate_update_sidecar_url(
 
 fn write_downloaded_update_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     validate_public_asset_name(name, "downloaded update asset")?;
+    fs::create_dir_all(dir).map_err(|error| {
+        format!(
+            "could not create downloaded release update policy directory {}: {error}",
+            dir.display()
+        )
+    })?;
     let path = dir.join(name);
     fs::write(&path, bytes).map_err(|error| {
         format!(
