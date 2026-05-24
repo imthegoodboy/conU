@@ -17,6 +17,9 @@ jobs:
   release-preflight:
     name: Release Tag Preflight
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
     steps:
       - uses: actions/checkout@v6
         if: startsWith(github.ref, 'refs/tags/v')
@@ -74,6 +77,11 @@ jobs:
           CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
           CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
         run: python scripts/check-linux-signing-secrets-preflight.py
+      - name: Validate default GitHub Pages repository settings
+        if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-pages-readiness.py --repo "$GITHUB_REPOSITORY"
       - name: Note unsigned smoke mode
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: echo "Non-tag release workflow run; signing and npm publication secrets are not required."
@@ -104,6 +112,8 @@ jobs:
         run: python scripts/check-github-release-secret-readiness-regression.py
       - name: GitHub release secret setup regression
         run: python scripts/set-github-release-secrets-regression.py
+      - name: GitHub Pages readiness regression
+        run: python scripts/check-github-pages-readiness-regression.py
       - name: RPM package signing regression
         run: python scripts/check-rpm-package-signing.py
       - name: Linux release signing regression
