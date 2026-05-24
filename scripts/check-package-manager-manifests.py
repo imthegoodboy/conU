@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
+import shutil
+import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -23,10 +27,14 @@ TARGETS = {
     "windows-x64": f"conu-{VERSION}-windows-x64.zip",
 }
 WINDOWS_BINARIES = ("conu", "conud", "conu-relay", "conu-mcp")
+LINUX_BINARIES = ("conu", "conud", "conu-relay", "conu-mcp")
 HOMEBREW_FILENAME = "conu.rb"
 SCOOP_FILENAME = "conu.json"
 WINGET_FILENAME = "imthegoodboy.conU.yaml"
 CHOCOLATEY_FILENAME = f"conu.{VERSION}.nupkg"
+RPM_SPEC_FILENAME = "conu.spec"
+DEBIAN_AMD64_FILENAME = f"conu_{VERSION}_amd64.deb"
+DEBIAN_ARM64_FILENAME = f"conu_{VERSION}_arm64.deb"
 
 
 def load_generator():
@@ -59,12 +67,32 @@ def write_windows_zip(path: Path, *, rooted: bool) -> str:
     return write_checksum(path)
 
 
-def write_dist(root: Path, *, rooted_windows: bool = False) -> dict[str, str]:
+def write_linux_tar_gz(path: Path, target: str, *, rooted: bool) -> str:
+    root = f"conu-{VERSION}-{target}/" if rooted else ""
+    with tarfile.open(path, "w:gz") as package:
+        for binary in LINUX_BINARIES:
+            data = f"{binary}-{target}\n".encode("ascii")
+            info = tarfile.TarInfo(f"{root}bin/{binary}")
+            info.size = len(data)
+            info.mode = 0o755
+            info.mtime = 1577836800
+            package.addfile(info, io.BytesIO(data))
+    return write_checksum(path)
+
+
+def write_dist(
+    root: Path,
+    *,
+    rooted_windows: bool = False,
+    rooted_linux: bool = False,
+) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for target, filename in TARGETS.items():
         archive = root / filename
         if target == "windows-x64":
             hashes[target] = write_windows_zip(archive, rooted=rooted_windows)
+        elif target.startswith("linux-"):
+            hashes[target] = write_linux_tar_gz(archive, target, rooted=rooted_linux)
         else:
             archive.write_bytes(f"{target}\n".encode("ascii"))
             hashes[target] = write_checksum(archive)
@@ -82,6 +110,14 @@ def generate(generator, dist: Path, output: Path) -> None:
         dist / assets["windows-x64"].filename,
         VERSION,
     )
+    linux_binaries = {
+        target: generator.extract_linux_binaries(
+            dist / assets[target].filename,
+            VERSION,
+            target,
+        )
+        for target in ("linux-x64", "linux-arm64")
+    }
     output.mkdir(parents=True, exist_ok=True)
     homebrew = generator.render_homebrew_formula(VERSION, "imthegoodboy/conU", assets)
     scoop = generator.render_scoop_manifest(
@@ -105,6 +141,16 @@ def generate(generator, dist: Path, output: Path) -> None:
     chocolatey_uninstall = generator.render_chocolatey_uninstall(
         assets["windows-x64"],
     )
+    debian_packages = [
+        generator.build_debian_package(
+            VERSION,
+            "imthegoodboy/conU",
+            target,
+            linux_binaries[target],
+        )
+        for target in ("linux-x64", "linux-arm64")
+    ]
+    rpm_spec = generator.render_rpm_spec(VERSION, "imthegoodboy/conU", assets)
     generator.assert_output_safe(
         "\n".join(
             [
@@ -114,6 +160,8 @@ def generate(generator, dist: Path, output: Path) -> None:
                 chocolatey_nuspec,
                 chocolatey_install,
                 chocolatey_uninstall,
+                rpm_spec,
+                *[package.metadata_text for package in debian_packages],
             ]
         ),
         dist,
@@ -127,6 +175,11 @@ def generate(generator, dist: Path, output: Path) -> None:
         chocolatey_install,
         chocolatey_uninstall,
     )
+    for package in debian_packages:
+        package_path = output / package.filename
+        package_path.write_bytes(package.content)
+        generator.write_sha256_sidecar(package_path, package.sha256)
+    (output / RPM_SPEC_FILENAME).write_text(rpm_spec, encoding="ascii", newline="\n")
 
 
 def expect_failure(description: str, action, expected: str) -> None:
@@ -176,6 +229,120 @@ def read_chocolatey_package(path: Path) -> dict[str, str]:
             name: package.read(name).decode("ascii")
             for name in names
         }
+
+
+def read_ar_members(path: Path) -> dict[str, bytes]:
+    data = path.read_bytes()
+    if not data.startswith(b"!<arch>\n"):
+        raise AssertionError(f"{path.name} was not an ar archive")
+    offset = 8
+    members: dict[str, bytes] = {}
+    while offset < len(data):
+        header = data[offset : offset + 60]
+        if len(header) != 60 or not header.endswith(b"`\n"):
+            raise AssertionError(f"{path.name} had invalid ar header at {offset}")
+        name = header[:16].decode("ascii").strip()
+        size = int(header[48:58].decode("ascii").strip())
+        offset += 60
+        body = data[offset : offset + size]
+        if len(body) != size:
+            raise AssertionError(f"{path.name} truncated ar member {name}")
+        members[name] = body
+        offset += size + (size % 2)
+    return members
+
+
+def read_tar_gz_members(data: bytes) -> dict[str, tuple[bytes, int]]:
+    members: dict[str, tuple[bytes, int]] = {}
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as package:
+        for member in package.getmembers():
+            if member.isdir():
+                continue
+            handle = package.extractfile(member)
+            if handle is None:
+                raise AssertionError(f"could not read tar member {member.name}")
+            members[member.name] = (handle.read(), member.mode)
+    return members
+
+
+def read_debian_package(path: Path) -> tuple[str, dict[str, tuple[bytes, int]], str]:
+    members = read_ar_members(path)
+    expected = ["debian-binary", "control.tar.gz", "data.tar.gz"]
+    if list(members) != expected:
+        raise AssertionError(f"{path.name} had ar members {list(members)!r}")
+    if members["debian-binary"] != b"2.0\n":
+        raise AssertionError(f"{path.name} had invalid debian-binary marker")
+    control_members = read_tar_gz_members(members["control.tar.gz"])
+    data_members = read_tar_gz_members(members["data.tar.gz"])
+    control = control_members["./control"][0].decode("ascii")
+    md5sums = control_members["./md5sums"][0].decode("ascii")
+    return control, data_members, md5sums
+
+
+def assert_debian_package(
+    path: Path,
+    *,
+    architecture: str,
+    target: str,
+) -> None:
+    control, data_members, md5sums = read_debian_package(path)
+    if f"Architecture: {architecture}" not in control or "Package: conu" not in control:
+        raise AssertionError(f"{path.name} control metadata was missing")
+    if "Description: Agent-native encrypted communication layer" not in control:
+        raise AssertionError(f"{path.name} control description was missing")
+    for binary in LINUX_BINARIES:
+        member_name = f"./usr/bin/{binary}"
+        if member_name not in data_members:
+            raise AssertionError(f"{path.name} missing {member_name}")
+        content, mode = data_members[member_name]
+        if content != f"{binary}-{target}\n".encode("ascii"):
+            raise AssertionError(f"{path.name} embedded wrong content for {binary}")
+        if mode != 0o755:
+            raise AssertionError(f"{path.name} did not preserve executable mode for {binary}")
+        digest = hashlib.md5(content, usedforsecurity=False).hexdigest()
+        if f"{digest}  usr/bin/{binary}" not in md5sums:
+            raise AssertionError(f"{path.name} md5sums was missing {binary}")
+    if "./usr/share/doc/conu/README.Debian" not in data_members:
+        raise AssertionError(f"{path.name} missing README.Debian")
+    if "./usr/share/doc/conu/conud.service.example" not in data_members:
+        raise AssertionError(f"{path.name} missing service example")
+    assert_dpkg_deb_accepts(path, architecture)
+
+
+def assert_dpkg_deb_accepts(path: Path, architecture: str) -> None:
+    dpkg_deb = shutil.which("dpkg-deb")
+    if dpkg_deb is None:
+        return
+    info = subprocess.run(
+        [dpkg_deb, "--info", str(path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout
+    if "Package: conu" not in info or f"Architecture: {architecture}" not in info:
+        raise AssertionError(f"{path.name} was not accepted with expected dpkg-deb metadata")
+    contents = subprocess.run(
+        [dpkg_deb, "--contents", str(path)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout
+    for binary in LINUX_BINARIES:
+        if f"./usr/bin/{binary}" not in contents:
+            raise AssertionError(f"{path.name} dpkg-deb contents missed {binary}")
+
+
+def assert_sha256_sidecar(path: Path) -> None:
+    sidecar = path.with_name(f"{path.name}.sha256")
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    if sidecar.read_text(encoding="ascii") != f"{expected}  {path.name}\n":
+        raise AssertionError(f"{sidecar.name} did not name and hash the generated package")
 
 
 def assert_zip_no_forbidden_output(path: Path, temp: Path) -> None:
@@ -261,15 +428,46 @@ def main() -> int:
         if generator.chocolatey_filename(VERSION) != CHOCOLATEY_FILENAME:
             raise AssertionError("chocolatey package filename did not include package id and version")
 
+        deb_amd64 = rootless_out / DEBIAN_AMD64_FILENAME
+        deb_arm64 = rootless_out / DEBIAN_ARM64_FILENAME
+        assert_debian_package(deb_amd64, architecture="amd64", target="linux-x64")
+        assert_debian_package(deb_arm64, architecture="arm64", target="linux-arm64")
+        assert_sha256_sidecar(deb_amd64)
+        assert_sha256_sidecar(deb_arm64)
+        rpm_spec = (rootless_out / RPM_SPEC_FILENAME).read_text(encoding="ascii")
+        if "Name: conu" not in rpm_spec or "Version: 0.1.0" not in rpm_spec:
+            raise AssertionError("rpm spec package metadata was missing")
+        if TARGETS["linux-x64"] not in rpm_spec or hashes["linux-x64"] not in rpm_spec:
+            raise AssertionError("rpm spec did not include Linux x64 source and checksum")
+        if TARGETS["linux-arm64"] not in rpm_spec or hashes["linux-arm64"] not in rpm_spec:
+            raise AssertionError("rpm spec did not include Linux arm64 source and checksum")
+        if "%ifarch x86_64" not in rpm_spec or "%ifarch aarch64" not in rpm_spec:
+            raise AssertionError("rpm spec did not guard supported Linux architectures")
+        if "%{_bindir}/conu-mcp" not in rpm_spec:
+            raise AssertionError("rpm spec did not install conu-mcp")
+        assert_no_forbidden_output(rootless_out / RPM_SPEC_FILENAME, temp)
+        if DEBIAN_AMD64_FILENAME not in generator.output_filenames(VERSION):
+            raise AssertionError("output filenames did not include Debian amd64 package")
+        if f"{DEBIAN_AMD64_FILENAME}.sha256" not in generator.output_filenames(VERSION):
+            raise AssertionError("output filenames did not include Debian amd64 checksum")
+        if generator.debian_version("1.2.3-rc.1+build.5") != "1.2.3~rc.1+build.5":
+            raise AssertionError("Debian version conversion did not preserve prerelease ordering")
+        if generator.rpm_version("1.2.3-rc.1+build.5") != "1.2.3~rc.1_build.5":
+            raise AssertionError("RPM version conversion did not normalize semver build metadata")
+
         repeat_out = temp / "repeat-out"
         generate(generator, rootless_dist, repeat_out)
         if (rootless_out / CHOCOLATEY_FILENAME).read_bytes() != (repeat_out / CHOCOLATEY_FILENAME).read_bytes():
             raise AssertionError("chocolatey package generation was not deterministic")
+        if (rootless_out / DEBIAN_AMD64_FILENAME).read_bytes() != (repeat_out / DEBIAN_AMD64_FILENAME).read_bytes():
+            raise AssertionError("Debian amd64 package generation was not deterministic")
+        if (rootless_out / DEBIAN_ARM64_FILENAME).read_bytes() != (repeat_out / DEBIAN_ARM64_FILENAME).read_bytes():
+            raise AssertionError("Debian arm64 package generation was not deterministic")
 
         rooted_dist = temp / "rooted-dist"
         rooted_out = temp / "rooted-out"
         rooted_dist.mkdir()
-        write_dist(rooted_dist, rooted_windows=True)
+        write_dist(rooted_dist, rooted_windows=True, rooted_linux=True)
         generate(generator, rooted_dist, rooted_out)
         rooted_scoop = json.loads((rooted_out / SCOOP_FILENAME).read_text(encoding="ascii"))
         if rooted_scoop.get("extract_dir") != f"conu-{VERSION}-windows-x64":
@@ -280,6 +478,11 @@ def main() -> int:
         rooted_chocolatey = read_chocolatey_package(rooted_out / CHOCOLATEY_FILENAME)
         if f"conu-{VERSION}-windows-x64\\bin" not in rooted_chocolatey["tools/chocolateyInstall.ps1"]:
             raise AssertionError("rooted chocolatey script did not use rooted bin path")
+        assert_debian_package(
+            rooted_out / DEBIAN_AMD64_FILENAME,
+            architecture="amd64",
+            target="linux-x64",
+        )
 
         missing_checksum = temp / "missing-checksum"
         missing_checksum.mkdir()
@@ -329,6 +532,28 @@ def main() -> int:
                 f"v{VERSION}",
             ),
             "checksum mismatch",
+        )
+
+        corrupt_linux = temp / "corrupt-linux"
+        corrupt_linux.mkdir()
+        write_dist(corrupt_linux)
+        corrupt_archive = corrupt_linux / TARGETS["linux-x64"]
+        corrupt_archive.write_bytes(b"\x1f\x8bbad")
+        write_checksum(corrupt_archive)
+        corrupt_assets = generator.load_release_assets(
+            corrupt_linux,
+            VERSION,
+            "imthegoodboy/conU",
+            f"v{VERSION}",
+        )
+        expect_failure(
+            "corrupt linux tarball",
+            lambda: generator.extract_linux_binaries(
+                corrupt_linux / corrupt_assets["linux-x64"].filename,
+                VERSION,
+                "linux-x64",
+            ),
+            "linux release asset is not a readable tar.gz",
         )
 
     print("package-manager manifest generation regressions passed")

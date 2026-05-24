@@ -32,7 +32,7 @@ Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-24
 Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/session/mailbox actions, payload-safe local scoped admin-token manifest audit, payload-safe hosted relay readiness preflight, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, guarded hosted fleet account/node audit, guarded hosted fleet account/node credential revoke, hosted fleet tenant account upsert/revoke, hosted fleet tenant-node upsert/revoke, and guarded hosted fleet account/node suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, payload-safe hosted relay readiness preflights, guarded hosted fleet dashboard snapshots with aggregate mailbox retention policy gates and aggregate abuse threshold checks, guarded hosted fleet abuse response plans, guarded hosted fleet mailbox purge orchestration, relay session state storage, payload-safe local/admin-gated relay session-state audit, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, reusable durable mailbox retention policy files, confirm-gated local, admin-gated online, and guarded hosted fleet durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, platform signing/notarization workflow hardening, tagged release preflight hardening, Node LTS package hardening, npm installer download timeout/size hardening, npm download smoke host-archive handling, npm package content verification, release artifact verifier bounds, npm installer strict checksum verification, npm installer extracted binary selection hardening, npm installer extracted-tree traversal bounds, npm installer archive-member preflight hardening, and package-manager manifest generation preflight are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse automation beyond local/admin-gated single-relay snapshots, guarded fleet snapshots, threshold reports, guarded response plans, and readiness preflights, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, fleet credential revoke, fleet tenant account lifecycle, fleet tenant-node lifecycle, and account/node suspension plus single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and remote relay/cross-region mailbox retention orchestration beyond guarded local fleet cleanup.
-Latest completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
+Active hardening addition: Debian package and RPM spec generation is in progress on branch `linux-package-manager-preflight` for Issue #200. Latest completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
 ```
 
 ## Post Phase 15 - Hosted Fleet Tenant Account Lifecycle
@@ -950,7 +950,9 @@ Files changed:
 Validation:
 
 - `python -m py_compile scripts\generate-package-manager-manifests.py scripts\check-package-manager-manifests.py scripts\verify-release-versions.py scripts\verify-release-artifacts.py scripts\verify-npm-package-contents.py` passed.
-- `python scripts\check-package-manager-manifests.py` passed.
+- `python scripts\check-package-manager-manifests.py` passed, including the corrupt
+  Linux tarball fail-closed regression.
+- `wsl.exe sh -lc 'cd /mnt/c/Users/parth/Desktop/conU && python3 scripts/check-package-manager-manifests.py'` passed, exercising the optional `dpkg-deb` native package metadata/content checks under WSL Ubuntu.
 - `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/ci.yml').read_text()); yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('workflow yaml parse ok')"` passed.
 - `python scripts\verify-release-versions.py` passed.
 - `python scripts\check-release-artifact-verifier.py` passed.
@@ -1074,6 +1076,94 @@ Next:
   distributed multi-instance session migration, managed hosted identity/key
   administration, remote/distributed tenant workflows, remote/cross-region
   mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+
+## Post Phase 15 - Linux Package-Manager Artifact Preflight
+
+Status: in_progress
+
+Goal:
+
+Extend release-attached package-manager generation to deterministic Debian
+packages and RPM build metadata so Linux package distribution is derived from
+the same verified release assets and strict `.sha256` files as the existing
+Homebrew/Scoop/winget/Chocolatey path.
+
+Completed work so far:
+
+- Issue #200 tracks Debian package and RPM spec generation hardening, and branch
+  `linux-package-manager-preflight` carries the implementation.
+- Extended `scripts/generate-package-manager-manifests.py` to read rooted or
+  rootless Linux release tarballs, extract only the four expected release
+  binaries, and generate deterministic `conu_<version>_amd64.deb` and
+  `conu_<version>_arm64.deb` packages with strict `.sha256` sidecars.
+- Added generated Debian control metadata, `md5sums`, minimal package docs, and
+  a `/usr/bin/conud` systemd service example without embedding local state,
+  tokens, or package repository credentials.
+- Added generated `conu.spec` RPM build metadata for `x86_64` and `aarch64`
+  that references the verified Linux release archive URLs and SHA-256 values.
+- Extended `scripts/check-package-manager-manifests.py` to assert deterministic
+  Debian packages, package checksums, Debian metadata/binary modes, rooted and
+  rootless Linux tarball handling, RPM source/hash architecture guards, and
+  forbidden-output checks.
+- Updated release/distribution/production-readiness/packaging docs, release
+  notes, repo memory, guardrails, and security checklist with the expanded
+  Homebrew/Scoop/winget/Chocolatey/Debian/RPM policy.
+
+Files changed so far:
+
+- `.github/workflows/release.yml`
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `packaging/package-managers/README.md`
+- `scripts/generate-package-manager-manifests.py`
+- `scripts/check-package-manager-manifests.py`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation so far:
+
+- `python -m py_compile scripts\generate-package-manager-manifests.py scripts\check-package-manager-manifests.py scripts\verify-release-versions.py scripts\verify-release-artifacts.py scripts\verify-npm-package-contents.py` passed.
+- `python scripts\check-package-manager-manifests.py` passed.
+- `python -c "import yaml, pathlib; yaml.safe_load(pathlib.Path('.github/workflows/ci.yml').read_text()); yaml.safe_load(pathlib.Path('.github/workflows/release.yml').read_text()); print('workflow yaml parse ok')"` passed.
+- `python scripts\verify-release-versions.py` passed.
+- `python scripts\check-release-artifact-verifier.py` passed.
+- `python scripts\check-release-artifact-smoke-preflight.py` passed.
+- `python scripts\verify-npm-package-contents.py` passed.
+- `npm run check --prefix packaging/npm/conu-cli` passed.
+- `npm run check --prefix sdk/typescript` passed.
+- `python scripts\check-npm-publish-preflight.py` passed.
+- `python scripts\check-npm-publish-preflight-regression.py` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed.
+- `git diff --check` passed.
+- `codex review -c sandbox_mode="danger-full-access" --uncommitted` first found
+  a corrupt Linux tarball traceback path; the extractor and regression were
+  fixed, and the final rerun reported no actionable correctness, security, or
+  maintainability issues.
+- Local Windows `dpkg-deb` and `rpmbuild` commands are not installed. Debian
+  package validation is covered by deterministic Python parser/regression checks
+  and the WSL `dpkg-deb` check above; RPM validation is currently covered by spec
+  text checks and must be covered by PR CI/release gates plus Linux maintainer
+  tool checks after merge.
+
+Known gaps:
+
+- This generates release-attached Debian packages and RPM build metadata only.
+  It does not submit to package-manager repositories, generate signed apt/yum
+  repository metadata, build native `.rpm` packages, add detached Linux package
+  signatures, configure package-manager credentials, publish npm packages,
+  configure signing/npm secrets, implement managed public relay hosting, or
+  close the known distributed hosted runtime gaps.
+
+Next:
+
+- Finish local validation, review, PR, CI, release workflow smoke, merge without
+  deleting `linux-package-manager-preflight`, then verify `main` and record final
+  run links.
 
 ## Post Phase 15 - npm Publish Conflict Preflight
 
