@@ -35,6 +35,82 @@ Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-P
 Latest completed hardening addition: GitHub Pages readiness preflight is complete; PR #235 merged to `main` at merge commit `7019487232433ad451724b67ae0b15ebe59beaee`, Issue #234 is closed, and branch `github-pages-readiness-preflight` is preserved. Prior completed hardening addition: Hosted Linux repository GitHub Pages deployment prep is complete; PR #233 merged to `main` at merge commit `60a02a47a5399cb3e5043023e369d814b17edc89`, Issue #232 is closed, and branch `linux-repository-pages-deploy` is preserved. Prior completed hardening addition: Hosted Linux repository site artifact generation is complete; PR #231 merged to `main` at merge commit `5b44b9219fa520784cb40e72c75a037877c46c26`, Issue #230 is closed, and branch `hosted-linux-repository-site` is preserved. Prior completed hardening addition: Hosted Linux repository bundle generation is complete; PR #229 merged to `main` at `7a1a03a2d75417f1ec07500ac909817d3957cadc`, Issue #228 is closed, and branch `hosted-linux-repository-bundles` is preserved. Prior completed hardening addition: Linux signing secret preflight is complete; PR #221 merged to `main` at `16445ddd9e5d836d02dbf8edf2dcf6d95befc21d`, Issue #220 is closed, and branch `linux-signing-secret-preflight` is preserved. Prior completed hardening addition: Linux signing key fingerprint policy is complete; PR #219 merged to `main` at `cea2817bba74a297de2912436b03f21b4b3a79e3`, Issue #218 is closed, and branch `linux-gpg-fingerprint-policy` is preserved. Prior completed hardening addition: RPM package payload signing is complete; PR #217 merged to `main` at `d6976db94148a2583bf1fd978b0dba68b45c9b77`, Issue #216 is closed, and branch `rpm-package-payload-signing` is preserved. Prior completed hardening addition: Linux GPG public key release asset is complete; PR #215 merged to `main` at `7f81b682044c8eb5bbdfbe952ef933ecd0295c93`, Issue #214 is closed, and branch `linux-gpg-public-key-release-asset` is preserved. Prior completed hardening addition: signed Linux repository metadata is complete; PR #213 merged to `main` at `ac867bcb3d34ad78acb6d660c3443424b2eb22d7`, Issue #212 is closed, and branch `signed-linux-repository-metadata` is preserved. Prior completed hardening addition: Linux detached release signatures are complete; PR #211 merged to `main` at `a3795510370876f5ef0a27b873f70790f23d3923`, Issue #210 is closed, and branch `linux-detached-signatures` is preserved. Prior completed hardening addition: unsigned RPM repository metadata generation is complete; PR #209 merged to `main` at `9e2a3f475250363997d6006c278c3f4ff2f7b85d`, Issue #208 is closed, and branch `rpm-repository-metadata` is preserved. Prior completed hardening addition: unsigned APT repository metadata generation is complete; PR #207 merged to `main` at `f2f7c993e658b31d4a77c3c45059a12fb2f7c986`, Issue #206 is closed, and branch `apt-repository-metadata` is preserved. Prior completed hardening addition: unsigned RPM release asset generation is complete; PR #205 merged to `main` at `4048a7fab4b454ed28e782b169906fb60d97dce8`, Issue #204 is closed, and branch `rpm-release-assets` is preserved. Prior completed hardening addition: native RPM package build preflight is complete; PR #203 merged to `main` at `98b2ef7a1aba3eb0cc5e6f10fb4e36560105f3d4`, Issue #202 is closed, and branch `rpm-native-build-preflight` is preserved. Prior completed hardening addition: Debian package and RPM spec generation is complete; PR #201 merged to `main` at `4023297af7554bddab1cc6e0d1bb0a4c06e5fc98`, Issue #200 is closed, and branch `linux-package-manager-preflight` is preserved. Prior completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
 ```
 
+## Post Phase 15 - GitHub Release Asset Publication Preflight
+
+Status: in_progress
+
+Goal:
+
+Fail tagged npm publication before npm registry access when the public GitHub
+Release is incomplete, draft-only, tag-mismatched, duplicated, or contains
+state/secret-looking asset names.
+
+Completed work:
+
+- Issue #236 is open on branch `github-release-assets-preflight`; the branch
+  must be preserved after merge.
+- Added `scripts/check-github-release-assets-published.py` to load GitHub
+  Release metadata through `gh api`, paginate the full release asset list by
+  release id, and verify the required platform archives, strict checksum
+  sidecars, Linux detached signatures, generated package-manager assets, Linux
+  public-key asset, hosted Linux repository bundle, and hosted Linux repository
+  site assets before npm publication.
+- Added `scripts/check-github-release-assets-published-regression.py` with
+  fixture coverage for expected asset names, missing assets, duplicate names,
+  draft releases, tag mismatches, bad size/state metadata, forbidden
+  state/secret-looking names, paginated asset loading, and output that omits
+  unrelated release body/download URL fields.
+- Wired the regression into CI package checks, Release Artifacts package checks,
+  and local production-readiness package checks.
+- Wired tagged `npm-publish` to run the live GitHub Release asset publication
+  preflight after npm package-content verification and before npm registry
+  conflict checks or publish commands.
+- Updated release/distribution/production-readiness/packaging docs, repo
+  memory, implementation guardrails, and privacy/security checklist.
+
+Files changed:
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `scripts/check-github-release-assets-published.py`
+- `scripts/check-github-release-assets-published-regression.py`
+- `scripts/verify-production-readiness.ps1`
+- `README.md`
+- `docs/distribution-and-hosting.md`
+- `docs/production-readiness.md`
+- `docs/release-checklist.md`
+- `packaging/README.md`
+- `packaging/package-managers/README.md`
+- `.agents/repo/ABOUT.md`
+- `.agents/skills/conu-builder/references/implementation-guardrails.md`
+- `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
+- `plan.md`
+
+Validation:
+
+- `python -m py_compile scripts/check-github-release-assets-published.py scripts/check-github-release-assets-published-regression.py scripts/github_release_secrets.py` passed.
+- `python scripts/check-github-release-assets-published-regression.py` passed.
+- Workflow YAML parsed with Python/PyYAML for `.github/workflows/ci.yml` and
+  `.github/workflows/release.yml`.
+- `powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed, including the new GitHub Release asset publication regression.
+- `git diff --check` passed.
+
+Known gaps:
+
+- No real `v*` GitHub Release exists in this repository yet, so the live
+  publication preflight has not been exercised against an actual public release.
+  It is wired to run on tagged npm publication after the GitHub Release job.
+- Real signing/notarization/GPG/npm secrets, a real signed tag, npm
+  publication, package-manager repository submissions, custom DNS/TLS/cache
+  policy, auto-update, and managed distributed hosted relay services remain
+  external or future blockers.
+
+Next recommendation:
+
+- Open the PR for Issue #236, run PR CI and the branch Release Artifacts gate,
+  merge only after green checks, preserve the branch, then run post-merge main
+  CI and Release Artifacts verification.
+
 ## Post Phase 15 - GitHub Release Secret Automation
 
 Status: completed
