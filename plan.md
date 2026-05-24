@@ -99,6 +99,9 @@ Validation:
   macOS; CodeRabbit reported success/skipped.
 - Branch `Release Artifacts` workflow_dispatch passed on
   `github-release-clobber-preflight`.
+- Post-merge main CI passed on run `26372693882`.
+- Post-merge main `Release Artifacts` workflow_dispatch passed on run
+  `26372698051`.
 
 Known gaps:
 
@@ -111,9 +114,8 @@ Known gaps:
 
 Next recommendation:
 
-- Run post-merge main CI and main Release Artifacts verification, then continue
-  with real signing/npm secret configuration, a signed `v*` release, npm
-  publication, package-manager repository submissions, custom DNS/TLS/cache
+- Continue with real signing/npm secret configuration, a signed `v*` release,
+  npm publication, package-manager repository submissions, custom DNS/TLS/cache
   policy, auto-update, managed public relay hosting, distributed hosted
   dashboards/accounting/adaptive abuse automation, distributed multi-instance
   session migration, remote/distributed tenant workflows, remote/cross-region
