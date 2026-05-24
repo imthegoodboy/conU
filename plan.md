@@ -32,7 +32,7 @@ Current phase: Phase 14 - Rooms, Pub/Sub, And Multi-Agent Sessions
 Status: completed
 Last updated: 2026-05-24
 Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-Phase-15 relay data-plane, CLI polish, daemon relay hardening, distribution/hosting, Phase 14 local rooms/pub-sub, relay abuse-control, reusable daemon relay-session, same-node relay-session resume, public-bind token-guard, `wss://` relay-client, static scoped relay credential/session-policy, offline scoped relay credential issuance, relay credential manifest upsert/rotate/revoke helpers, account-scoped online hosted relay credential issue/rotate/revoke/audit, scoped hosted admin-token manifest RBAC for credential/tenant/dashboard/session/mailbox actions, payload-safe local scoped admin-token manifest audit, payload-safe hosted relay readiness preflight, admin-gated online hosted relay dashboard snapshots, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, metadata-only hosted tenant registry, admin-gated online hosted tenant lifecycle, local and admin-gated hosted account suspension, guarded hosted fleet account/node audit, guarded hosted fleet account/node credential revoke, hosted fleet tenant account upsert/revoke, hosted fleet tenant-node upsert/revoke, and guarded hosted fleet account/node suspension, live-reloaded hashed relay credential manifest, relay accounting/quotas, metadata-only relay abuse/dashboard counters, payload-safe hosted relay dashboard snapshots, payload-safe hosted relay readiness preflights, guarded hosted fleet dashboard snapshots with aggregate mailbox retention policy gates and aggregate abuse threshold checks, guarded hosted fleet abuse response plans, guarded hosted fleet mailbox purge orchestration, relay session state storage, payload-safe local/admin-gated relay session-state audit, direct route selection guard, authenticated direct QUIC probing and message/stream-chunk delivery for reachable trusted peers, static direct candidate metadata with NAT-unavailable reporting, payload-safe local log rotation, structured telemetry snapshot, identity-key rotation with peer-card refresh, identity archive retirement after peer-card refresh, storage-key rotation/re-encryption migration, storage-key retirement, relay-backed stream-chunk, relay-backed room-event fanout, room topic policy, bounded offline relay mailbox, durable relay mailbox storage, payload-safe durable mailbox retention audit, admin-gated online durable mailbox retention audit, reusable durable mailbox retention policy files, confirm-gated local, admin-gated online, and guarded hosted fleet durable relay mailbox purge, relay-local scheduled durable relay mailbox purge, durable mailbox FIFO reload ordering, bounded relay sync wait handling, Windows DPAPI secret wrapping, macOS Keychain/Linux Secret Service secret storage, non-Windows user-managed secret wrapping, stored relay client credential, signed peer-card, local capability-enforcement, signed remote agent-card, peer-scoped permission-policy, automatic encrypted signed agent-card exchange, TypeScript/JavaScript SDK wrapper, TypeScript explicit addressed-agent receive helper, TypeScript browser boundary hardening, GitHub CI package-validation passes, release publishing workflow hardening, GitHub artifact attestation release hardening, platform signing/notarization workflow hardening, tagged release preflight hardening, Node LTS package hardening, npm installer download timeout/size hardening, npm download smoke host-archive handling, npm package content verification, release artifact verifier bounds, npm installer strict checksum verification, npm installer extracted binary selection hardening, npm installer extracted-tree traversal bounds, npm installer archive-member preflight hardening, and package-manager manifest generation preflight are complete. Public hosted internet readiness remains scoped by the known distributed hosted accounting/dashboards/adaptive abuse automation beyond local/admin-gated single-relay snapshots, guarded fleet snapshots, threshold reports, guarded response plans, and readiness preflights, distributed multi-instance session migration, ICE/STUN/TURN managed direct NAT traversal, managed hosted identity/key administration, remote/distributed tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, fleet credential revoke, fleet tenant account lifecycle, fleet tenant-node lifecycle, and account/node suspension plus single-relay account suspension/scoped admin tokens, tenant-wide hosted dashboard workflow services, and remote relay/cross-region mailbox retention orchestration beyond guarded local fleet cleanup.
-Active hardening addition: winget and Chocolatey package-manager generation is in progress on branch `windows-package-manifest-preflight` for Issue #198. Latest completed hardening addition: package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
+Latest completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
 ```
 
 ## Post Phase 15 - Hosted Fleet Tenant Account Lifecycle
@@ -978,7 +978,7 @@ Next:
 
 ## Post Phase 15 - Windows Package-Manager Manifest Preflight
 
-Status: in_progress
+Status: completed
 
 Goal:
 
@@ -986,10 +986,11 @@ Extend release-attached package-manager generation to winget and Chocolatey so
 Windows package metadata is derived from the same verified release assets and
 strict `.sha256` files as Homebrew and Scoop.
 
-Completed work so far:
+Completed work:
 
-- Issue #198 tracks winget and Chocolatey manifest generation hardening, and
-  branch `windows-package-manifest-preflight` carries the implementation.
+- PR #199 merged to `main` at
+  `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and
+  branch `windows-package-manifest-preflight` is preserved.
 - Extended `scripts/generate-package-manager-manifests.py` to validate release
   tags, generate `imthegoodboy.conU.yaml` winget singleton manifests, and
   generate deterministic `conu.<version>.nupkg` Chocolatey packages
@@ -1003,13 +1004,14 @@ Completed work so far:
 - Kept rooted/rootless Windows archive layout handling for Scoop, winget nested
   portable file mappings, and Chocolatey install-script binary discovery.
 - Extended `scripts/check-package-manager-manifests.py` with rootless/rooted
-  winget and Chocolatey assertions, deterministic Chocolatey ZIP generation,
-  strict tag validation, and forbidden-output checks over ZIP member bodies.
+  winget and Chocolatey assertions, deterministic Chocolatey package
+  generation, strict tag validation, and forbidden-output checks over package
+  member bodies.
 - Updated release/distribution/production-readiness/packaging docs, release
   notes, repo memory, guardrails, and security checklist with the expanded
   Homebrew/Scoop/winget/Chocolatey policy.
 
-Files changed so far:
+Files changed:
 
 - `.github/workflows/release.yml`
 - `README.md`
@@ -1025,7 +1027,7 @@ Files changed so far:
 - `.agents/skills/conu-security-guardian/references/privacy-security-checklist.md`
 - `plan.md`
 
-Validation so far:
+Validation:
 
 - `python -m py_compile scripts\generate-package-manager-manifests.py scripts\check-package-manager-manifests.py scripts\verify-release-versions.py scripts\verify-release-artifacts.py scripts\verify-npm-package-contents.py` passed.
 - `python scripts\check-package-manager-manifests.py` passed.
@@ -1047,6 +1049,14 @@ Validation so far:
 - `codex review --uncommitted` accepted one release-verifier collision finding; fixed by changing Chocolatey output from `.zip` to `conu.<version>.nupkg`.
 - `codex review -c sandbox_mode="danger-full-access" --uncommitted` accepted one Chocolatey shim-uninstall finding; fixed by adding `tools/chocolateyUninstall.ps1`.
 - Final `codex review -c sandbox_mode="danger-full-access" --uncommitted` reported no actionable correctness, security, or maintainability issues.
+- PR #199 CI passed:
+  <https://github.com/imthegoodboy/conU/actions/runs/26348300403>.
+- Branch `Release Artifacts` passed:
+  <https://github.com/imthegoodboy/conU/actions/runs/26348365177>.
+- Post-merge `main` CI passed:
+  <https://github.com/imthegoodboy/conU/actions/runs/26348482406>.
+- Post-merge `main` `Release Artifacts` passed:
+  <https://github.com/imthegoodboy/conU/actions/runs/26348548561>.
 
 Known gaps:
 
@@ -1058,9 +1068,12 @@ Known gaps:
 
 Next:
 
-- Finish local validation, review, PR, CI, release workflow smoke, merge without
-  deleting `windows-package-manifest-preflight`, then verify `main` and record
-  final run links.
+- Continue with signing/npm secret configuration, package-manager repository
+  submission, apt/rpm packaging, detached Linux package signatures, managed
+  public relay hosting, distributed hosted dashboards/adaptive abuse automation,
+  distributed multi-instance session migration, managed hosted identity/key
+  administration, remote/distributed tenant workflows, remote/cross-region
+  mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 
 ## Post Phase 15 - npm Publish Conflict Preflight
 
@@ -6342,4 +6355,5 @@ Add entries here when a phase is completed.
 2026-05-24 - Post Phase 15 release artifact smoke binary preflight completed and merged. PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Added explicit release artifact smoke preflight checks that require the extracted `bin/` directory and every expected binary path to be a regular non-symlink file before chmod or execution. Added `scripts/check-release-artifact-smoke-preflight.py`, wired it into CI package checks, Release Artifacts package checks, and the full production-readiness package gate, and updated README, release/distribution/production-readiness/packaging docs, repo memory, guardrails, security checklist, and plan docs. Local validation passed with Python compile, release artifact smoke preflight regression, workflow YAML parse, release version gate, release artifact verifier regression, npm local-smoke preflight regression, npm package content verification, npm launcher check, TypeScript SDK check, existing `dist` artifact verification, release artifact smoke, npm launcher local smoke, rerun npm launcher download smoke after a transient Windows `EBUSY`, production-readiness `-SkipRust -SkipSmokes`, `git diff --check`, and `codex review --uncommitted`. PR CI, branch `Release Artifacts`, main CI, and main `Release Artifacts` all passed. Next: continue with signing/npm secret configuration, OS package-manager publishing, managed public relay hosting, distributed hosted dashboards/adaptive abuse automation, distributed multi-instance session migration, managed hosted identity/key administration, remote/distributed tenant workflows, remote/cross-region mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-24 - Post Phase 15 npm publish conflict preflight completed and merged. PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Added `scripts/check-npm-publish-preflight.py` for npm package publish metadata, optional token-env, and optional live registry availability checks; added `scripts/check-npm-publish-preflight-regression.py` for duplicate-version, registry-failure, and missing-token behavior; wired both into CI package checks, Release Artifacts package checks, and the production-readiness package gate; wired tagged npm publication to run the registry/token preflight before either package is published; and updated npm package metadata plus README, release/distribution/production-readiness/packaging docs, repo memory, guardrails, security checklist, and plan docs. Local validation passed with Python compile, workflow YAML parse, release version gate, npm package content verification, npm publish metadata preflight, npm publish preflight regression, live npm registry availability for `@conu/cli@0.1.0` plus `@conu/sdk@0.1.0`, npm launcher check, TypeScript SDK check, production-readiness `-SkipRust -SkipSmokes`, `git diff --check`, and `codex review --uncommitted`. PR #195 CI, branch `Release Artifacts`, main CI, and main `Release Artifacts` all passed. Next: continue with signing/npm secret configuration, OS package-manager publishing, managed public relay hosting, distributed hosted dashboards/adaptive abuse automation, distributed multi-instance session migration, managed hosted identity/key administration, remote/distributed tenant workflows, remote/cross-region mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 2026-05-24 - Post Phase 15 package-manager manifest generation completed and merged. PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Added `scripts/generate-package-manager-manifests.py` to generate package-native Homebrew and Scoop manifests from platform release assets plus strict sibling `.sha256` files after recomputing archive hashes, added `scripts/check-package-manager-manifests.py` for rooted/rootless Windows ZIP, Homebrew-compatible license/name/test output, semver prerelease plus build metadata, missing checksum, wrong checksum archive-name, checksum mismatch, and forbidden output regressions, wired the regression into CI, Release Artifacts package checks, and the production-readiness package gate, wired tagged GitHub Release publication to upload generated `conu.rb` and `conu.json` after release asset verification, and updated release/distribution/production-readiness/packaging docs plus repo memory, guardrails, security checklist, and plan docs. Local validation passed with Python compile, package-manager regression, workflow YAML parse, release version gate, release artifact verifier regression, release artifact smoke preflight regression, npm package content verification, npm launcher check, TypeScript SDK check, npm publish preflight, npm publish preflight regression, production-readiness `-SkipRust -SkipSmokes`, `git diff --check`, and `codex review --uncommitted`; PR #197 CI, branch `Release Artifacts`, main CI, and main `Release Artifacts` all passed. Next: continue with signing/npm secret configuration, package-manager repository submission, winget/Chocolatey/apt/rpm packaging, detached Linux package signatures, managed public relay hosting, distributed hosted dashboards/adaptive abuse automation, distributed multi-instance session migration, managed hosted identity/key administration, remote/distributed tenant workflows, remote/cross-region mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
+2026-05-24 - Post Phase 15 Windows package-manager manifest preflight completed and merged. PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Extended package-manager manifest generation to produce winget singleton YAML and deterministic Chocolatey `conu.<version>.nupkg` packages from the verified Windows release ZIP plus strict sibling `.sha256`, added tag validation, rooted/rootless Windows archive handling, Chocolatey install/uninstall scripts with shim cleanup, package body forbidden-output scans, and rootless/rooted/prerelease regression coverage. Updated release/distribution/production-readiness/packaging docs, release notes, repo memory, guardrails, security checklist, and plan docs. Local validation passed with Python compile, package-manager regression, winget validation, Chocolatey noop install checks for rootless/rooted/prerelease packages, workflow YAML parse, release version gate, release artifact verifier/smoke regressions, npm package content verification, npm launcher and TypeScript SDK checks, npm publish preflight checks, production-readiness `-SkipRust -SkipSmokes`, `git diff --check`, and final `codex review -c sandbox_mode="danger-full-access" --uncommitted`; PR #199 CI, branch `Release Artifacts`, post-merge main CI, and post-merge main `Release Artifacts` all passed. Next: continue with signing/npm secret configuration, package-manager repository submission, apt/rpm packaging, detached Linux package signatures, managed public relay hosting, distributed hosted dashboards/adaptive abuse automation, distributed multi-instance session migration, managed hosted identity/key administration, remote/distributed tenant workflows, remote/cross-region mailbox retention orchestration, or ICE/STUN/TURN managed traversal.
 ```
