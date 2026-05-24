@@ -35,6 +35,70 @@ Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-P
 Latest completed hardening addition: Linux signing secret preflight is complete; PR #221 merged to `main` at `16445ddd9e5d836d02dbf8edf2dcf6d95befc21d`, Issue #220 is closed, and branch `linux-signing-secret-preflight` is preserved. Prior completed hardening addition: Linux signing key fingerprint policy is complete; PR #219 merged to `main` at `cea2817bba74a297de2912436b03f21b4b3a79e3`, Issue #218 is closed, and branch `linux-gpg-fingerprint-policy` is preserved. Prior completed hardening addition: RPM package payload signing is complete; PR #217 merged to `main` at `d6976db94148a2583bf1fd978b0dba68b45c9b77`, Issue #216 is closed, and branch `rpm-package-payload-signing` is preserved. Prior completed hardening addition: Linux GPG public key release asset is complete; PR #215 merged to `main` at `7f81b682044c8eb5bbdfbe952ef933ecd0295c93`, Issue #214 is closed, and branch `linux-gpg-public-key-release-asset` is preserved. Prior completed hardening addition: signed Linux repository metadata is complete; PR #213 merged to `main` at `ac867bcb3d34ad78acb6d660c3443424b2eb22d7`, Issue #212 is closed, and branch `signed-linux-repository-metadata` is preserved. Prior completed hardening addition: Linux detached release signatures are complete; PR #211 merged to `main` at `a3795510370876f5ef0a27b873f70790f23d3923`, Issue #210 is closed, and branch `linux-detached-signatures` is preserved. Prior completed hardening addition: unsigned RPM repository metadata generation is complete; PR #209 merged to `main` at `9e2a3f475250363997d6006c278c3f4ff2f7b85d`, Issue #208 is closed, and branch `rpm-repository-metadata` is preserved. Prior completed hardening addition: unsigned APT repository metadata generation is complete; PR #207 merged to `main` at `f2f7c993e658b31d4a77c3c45059a12fb2f7c986`, Issue #206 is closed, and branch `apt-repository-metadata` is preserved. Prior completed hardening addition: unsigned RPM release asset generation is complete; PR #205 merged to `main` at `4048a7fab4b454ed28e782b169906fb60d97dce8`, Issue #204 is closed, and branch `rpm-release-assets` is preserved. Prior completed hardening addition: native RPM package build preflight is complete; PR #203 merged to `main` at `98b2ef7a1aba3eb0cc5e6f10fb4e36560105f3d4`, Issue #202 is closed, and branch `rpm-native-build-preflight` is preserved. Prior completed hardening addition: Debian package and RPM spec generation is complete; PR #201 merged to `main` at `4023297af7554bddab1cc6e0d1bb0a4c06e5fc98`, Issue #200 is closed, and branch `linux-package-manager-preflight` is preserved. Prior completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
 ```
 
+## Post Phase 15 - GitHub Release Secret Automation
+
+Status: completed
+
+Goal:
+
+Make the maintainer-owned release secret blocker visible and easier to clear
+without printing or passing secret values in command arguments.
+
+Completed work:
+
+- Issue #222 was closed by PR #223 on branch
+  `release-secret-readiness-audit`; PR #223 merged to `main` at merge commit
+  `fbe39b8732ceaa5152049c3488b56ec4751d7f70`, and the branch is preserved.
+- Added `scripts/check-github-release-secret-readiness.py` to audit required
+  GitHub repository secret names through GitHub CLI metadata without reading or
+  printing values.
+- Issue #224 was closed by PR #225 on branch `release-secret-setup-tooling`;
+  PR #225 merged to `main` at merge commit
+  `bcf166938fa8d3dc1a544c296d8a2b90ef46f459`, and the branch is preserved.
+- Added `scripts/set-github-release-secrets.py` to read all required release
+  secret values from local environment variables and send them to
+  `gh secret set` over stdin, not command arguments.
+- Shared required release secret metadata in `scripts/github_release_secrets.py`.
+- Wired readiness/setup regressions into CI, Release Artifacts package checks,
+  and local production-readiness package checks.
+
+Files changed:
+
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `scripts/github_release_secrets.py`
+- `scripts/check-github-release-secret-readiness.py`
+- `scripts/check-github-release-secret-readiness-regression.py`
+- `scripts/set-github-release-secrets.py`
+- `scripts/set-github-release-secrets-regression.py`
+- `scripts/verify-production-readiness.ps1`
+- `docs/release-checklist.md`
+- `plan.md`
+
+Known gaps:
+
+- The actual signing certificates, Apple notarization credentials, Linux GPG
+  private key/passphrase/key id/fingerprint, and `NPM_TOKEN` are not present in
+  the repository secrets or local environment on this machine, so a real signed
+  `v*` release remains externally blocked until the maintainer provides them.
+- This does not publish npm packages, submit package-manager repository PRs, or
+  host APT/RPM repositories.
+
+Validation:
+
+- `python -m py_compile scripts/github_release_secrets.py scripts/check-github-release-secret-readiness.py scripts/check-github-release-secret-readiness-regression.py scripts/set-github-release-secrets.py scripts/set-github-release-secrets-regression.py` passed.
+- `python scripts/check-github-release-secret-readiness-regression.py` passed.
+- `python scripts/set-github-release-secrets-regression.py` passed.
+- `python scripts/set-github-release-secrets.py --repo imthegoodboy/conU --dry-run`
+  with fake local environment values passed and printed only secret names.
+- `python scripts/check-github-release-secret-readiness.py --repo imthegoodboy/conU`
+  correctly failed because all 13 required repository secret names are missing.
+- `powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipSmokes` passed.
+- Workflow YAML parsed with Python/PyYAML.
+- `git diff --check` passed.
+- PR #223 CI, PR #225 CI, post-merge main CI, and post-merge Release Artifacts
+  workflow runs passed where applicable.
+
 ## Post Phase 15 - Linux Signing Secret Preflight
 
 Status: completed
