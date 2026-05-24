@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -35,6 +36,7 @@ CHOCOLATEY_FILENAME = f"conu.{VERSION}.nupkg"
 RPM_SPEC_FILENAME = "conu.spec"
 DEBIAN_AMD64_FILENAME = f"conu_{VERSION}_amd64.deb"
 DEBIAN_ARM64_FILENAME = f"conu_{VERSION}_arm64.deb"
+APT_REPOSITORY_METADATA_FILENAME = f"conu-{VERSION}-apt-repository-metadata.zip"
 RPM_ARCHES = {
     "linux-x64": "x86_64",
     "linux-arm64": "aarch64",
@@ -63,6 +65,14 @@ def write_checksum(path: Path, archive_name: str | None = None) -> str:
         encoding="ascii",
     )
     return digest
+
+
+def sha1_hexdigest(data: bytes) -> str:
+    try:
+        digest = hashlib.sha1(data, usedforsecurity=False)
+    except TypeError:
+        digest = hashlib.sha1(data)
+    return digest.hexdigest()
 
 
 def write_windows_zip(path: Path, *, rooted: bool) -> str:
@@ -121,6 +131,7 @@ def generate(
     output: Path,
     *,
     build_rpm_packages: bool = False,
+    build_apt_repository_metadata: bool = False,
 ) -> None:
     assets = generator.load_release_assets(
         dist,
@@ -172,20 +183,26 @@ def generate(
         )
         for target in ("linux-x64", "linux-arm64")
     ]
+    apt_repository_metadata = (
+        generator.build_apt_repository_metadata(VERSION, "imthegoodboy/conU", debian_packages)
+        if build_apt_repository_metadata
+        else None
+    )
     rpm_spec = generator.render_rpm_spec(VERSION, "imthegoodboy/conU", assets)
+    safe_texts = [
+        homebrew,
+        scoop,
+        winget,
+        chocolatey_nuspec,
+        chocolatey_install,
+        chocolatey_uninstall,
+        rpm_spec,
+        *[package.metadata_text for package in debian_packages],
+    ]
+    if apt_repository_metadata is not None:
+        safe_texts.append(apt_repository_metadata.metadata_text)
     generator.assert_output_safe(
-        "\n".join(
-            [
-                homebrew,
-                scoop,
-                winget,
-                chocolatey_nuspec,
-                chocolatey_install,
-                chocolatey_uninstall,
-                rpm_spec,
-                *[package.metadata_text for package in debian_packages],
-            ]
-        ),
+        "\n".join(safe_texts),
         dist,
     )
     (output / HOMEBREW_FILENAME).write_text(homebrew, encoding="ascii", newline="\n")
@@ -201,6 +218,10 @@ def generate(
         package_path = output / package.filename
         package_path.write_bytes(package.content)
         generator.write_sha256_sidecar(package_path, package.sha256)
+    if apt_repository_metadata is not None:
+        metadata_path = output / apt_repository_metadata.filename
+        metadata_path.write_bytes(apt_repository_metadata.content)
+        generator.write_sha256_sidecar(metadata_path, apt_repository_metadata.sha256)
     rpm_spec_path = output / RPM_SPEC_FILENAME
     rpm_spec_path.write_text(rpm_spec, encoding="ascii", newline="\n")
     if build_rpm_packages:
@@ -453,6 +474,74 @@ def assert_sha256_sidecar(path: Path) -> None:
         raise AssertionError(f"{sidecar.name} did not name and hash the generated package")
 
 
+def read_apt_repository_metadata(path: Path) -> dict[str, bytes]:
+    expected = ["README.txt", "Packages", "Packages.gz", "Release"]
+    with zipfile.ZipFile(path) as package:
+        if package.namelist() != expected:
+            raise AssertionError(f"{path.name} had APT metadata members {package.namelist()!r}")
+        for name in expected:
+            info = package.getinfo(name)
+            if info.date_time != (2020, 1, 1, 0, 0, 0):
+                raise AssertionError(f"{path.name}:{name} was not timestamp-normalized")
+            mode = (info.external_attr >> 16) & 0o777
+            if mode != 0o644:
+                raise AssertionError(f"{path.name}:{name} had mode {oct(mode)}")
+        return {name: package.read(name) for name in expected}
+
+
+def assert_apt_repository_metadata(path: Path, temp: Path) -> None:
+    contents = read_apt_repository_metadata(path)
+    packages_bytes = contents["Packages"]
+    packages_text = packages_bytes.decode("ascii")
+    packages_gz = contents["Packages.gz"]
+    release_text = contents["Release"].decode("ascii")
+    readme_text = contents["README.txt"].decode("ascii")
+
+    if gzip.decompress(packages_gz) != packages_bytes:
+        raise AssertionError(f"{path.name} Packages.gz did not decompress to Packages")
+    if packages_text.count("Package: conu\n") != 2:
+        raise AssertionError(f"{path.name} Packages did not contain two conU package entries")
+    for deb_name, architecture in (
+        (DEBIAN_AMD64_FILENAME, "amd64"),
+        (DEBIAN_ARM64_FILENAME, "arm64"),
+    ):
+        deb_bytes = path.with_name(deb_name).read_bytes()
+        expected_fields = [
+            f"Version: {VERSION}",
+            f"Architecture: {architecture}",
+            f"Filename: {deb_name}",
+            f"Size: {len(deb_bytes)}",
+            f"MD5sum: {hashlib.md5(deb_bytes, usedforsecurity=False).hexdigest()}",
+            f"SHA1: {sha1_hexdigest(deb_bytes)}",
+            f"SHA256: {hashlib.sha256(deb_bytes).hexdigest()}",
+            "Homepage: https://github.com/imthegoodboy/conU",
+            "Description: Agent-native encrypted communication layer",
+        ]
+        for field in expected_fields:
+            if field not in packages_text:
+                raise AssertionError(f"{path.name} Packages missed {field!r}")
+    if "Architectures: amd64 arm64" not in release_text:
+        raise AssertionError(f"{path.name} Release missed architectures")
+    for name, content in (("Packages", packages_bytes), ("Packages.gz", packages_gz)):
+        release_fields = [
+            f" {hashlib.md5(content, usedforsecurity=False).hexdigest()} {len(content)} {name}",
+            f" {sha1_hexdigest(content)} {len(content)} {name}",
+            f" {hashlib.sha256(content).hexdigest()} {len(content)} {name}",
+        ]
+        for field in release_fields:
+            if field not in release_text:
+                raise AssertionError(f"{path.name} Release missed {field!r}")
+    if "This bundle is unsigned" not in readme_text or DEBIAN_AMD64_FILENAME not in readme_text:
+        raise AssertionError(f"{path.name} README missed unsigned publication guidance")
+    for label, text in (
+        ("README.txt", readme_text),
+        ("Packages", packages_text),
+        ("Release", release_text),
+    ):
+        assert_no_forbidden_text(text, f"{path.name}:{label}", temp)
+    assert_sha256_sidecar(path)
+
+
 def assert_zip_no_forbidden_output(path: Path, temp: Path) -> None:
     for name, text in read_chocolatey_package(path).items():
         assert_no_forbidden_text(text, f"{path.name}:{name}", temp)
@@ -542,6 +631,9 @@ def main() -> int:
         assert_debian_package(deb_arm64, architecture="arm64", target="linux-arm64")
         assert_sha256_sidecar(deb_amd64)
         assert_sha256_sidecar(deb_arm64)
+        apt_out = temp / "apt-out"
+        generate(generator, rootless_dist, apt_out, build_apt_repository_metadata=True)
+        assert_apt_repository_metadata(apt_out / APT_REPOSITORY_METADATA_FILENAME, temp)
         rpm_spec = (rootless_out / RPM_SPEC_FILENAME).read_text(encoding="ascii")
         if "Name: conu" not in rpm_spec or "Version: 0.1.0" not in rpm_spec:
             raise AssertionError("rpm spec package metadata was missing")
@@ -561,6 +653,18 @@ def main() -> int:
             raise AssertionError("output filenames did not include Debian amd64 checksum")
         if RPM_X64_FILENAME in generator.output_filenames(VERSION):
             raise AssertionError("default output filenames should not include RPM packages")
+        if APT_REPOSITORY_METADATA_FILENAME in generator.output_filenames(VERSION):
+            raise AssertionError("default output filenames should not include APT repository metadata")
+        if APT_REPOSITORY_METADATA_FILENAME not in generator.output_filenames(
+            VERSION,
+            include_apt_repository_metadata=True,
+        ):
+            raise AssertionError("APT repository output filenames did not include metadata bundle")
+        if f"{APT_REPOSITORY_METADATA_FILENAME}.sha256" not in generator.output_filenames(
+            VERSION,
+            include_apt_repository_metadata=True,
+        ):
+            raise AssertionError("APT repository output filenames did not include metadata checksum")
         if RPM_X64_FILENAME not in generator.output_filenames(VERSION, include_rpm_packages=True):
             raise AssertionError("RPM package output filenames did not include x86_64 package")
         if f"{RPM_ARM64_FILENAME}.sha256" not in generator.output_filenames(
@@ -591,6 +695,13 @@ def main() -> int:
             raise AssertionError("Debian amd64 package generation was not deterministic")
         if (rootless_out / DEBIAN_ARM64_FILENAME).read_bytes() != (repeat_out / DEBIAN_ARM64_FILENAME).read_bytes():
             raise AssertionError("Debian arm64 package generation was not deterministic")
+        apt_repeat_out = temp / "apt-repeat-out"
+        generate(generator, rootless_dist, apt_repeat_out, build_apt_repository_metadata=True)
+        if (
+            (apt_out / APT_REPOSITORY_METADATA_FILENAME).read_bytes()
+            != (apt_repeat_out / APT_REPOSITORY_METADATA_FILENAME).read_bytes()
+        ):
+            raise AssertionError("APT repository metadata generation was not deterministic")
 
         rooted_dist = temp / "rooted-dist"
         rooted_out = temp / "rooted-out"
