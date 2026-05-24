@@ -26,6 +26,8 @@ jobs:
         run: python scripts/check-package-manager-manifests.py
       - name: Linux signing secret preflight regression
         run: python scripts/check-linux-signing-secrets-preflight-regression.py
+      - name: GitHub release secret readiness regression
+        run: python scripts/check-github-release-secret-readiness-regression.py
       - name: RPM package signing regression
         run: python scripts/check-rpm-package-signing.py
       - name: Linux release signing regression
