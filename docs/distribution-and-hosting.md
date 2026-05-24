@@ -17,7 +17,7 @@ Why this shape:
 - Rust binaries keep the CLI, daemon, relay, protocol, crypto, and MCP adapter fast and self-contained.
 - GitHub Releases are the source of truth for platform archives and checksums.
 - npm gives agents and developers a familiar install command without making conU a JavaScript runtime.
-- Homebrew and Scoop manifests are generated from verified release assets and checksums on tagged releases. Submitting those generated files to package-manager tap/bucket repositories, plus winget, Chocolatey, apt/rpm packages, detached Linux package signatures, and auto-update policy, can come after the first signed archive/npm release is stable.
+- Homebrew, Scoop, winget, and Chocolatey package-manager files are generated from verified release assets and checksums on tagged releases. Submitting those generated files to package-manager tap/bucket/repository feeds, plus apt/rpm packages, detached Linux package signatures, and auto-update policy, can come after the first signed archive/npm release is stable.
 
 The target public command is:
 
@@ -55,7 +55,7 @@ Each archive must have:
 <asset>.sha256
 ```
 
-The release workflow builds platform-named artifacts and uploads matching checksum files. Tagged release builds run a fail-closed preflight before package checks and platform builds; that preflight requires maintainer-owned signing secrets for Windows Authenticode, macOS Developer ID/notarization, and the repository `NPM_TOKEN` used for npm provenance publication. Linux archives use SHA-256 files plus GitHub artifact attestations until native distro package signing is added. Tagged GitHub Release publication also generates package-native `conu.rb` and `conu.json` manifests from the verified asset checksums so package-manager metadata is not hand-edited.
+The release workflow builds platform-named artifacts and uploads matching checksum files. Tagged release builds run a fail-closed preflight before package checks and platform builds; that preflight requires maintainer-owned signing secrets for Windows Authenticode, macOS Developer ID/notarization, and the repository `NPM_TOKEN` used for npm provenance publication. Linux archives use SHA-256 files plus GitHub artifact attestations until native distro package signing is added. Tagged GitHub Release publication also generates package-native `conu.rb`, `conu.json`, `imthegoodboy.conU.yaml`, and `conu.<version>.nupkg` files from the verified asset checksums so package-manager metadata is not hand-edited.
 
 ## Publishing Flow
 
@@ -64,7 +64,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 3. Run the release validation checklist.
 4. Tag the release, for example `v0.1.0`.
 5. Configure the repository signing secrets and `NPM_TOKEN` before creating the tag; the tagged release workflow fails before package checks if any required release secret is missing.
-6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, run the package-manager manifest regression, run the npm launcher local-smoke preflight regression, smoke-test the npm launcher local install path with an existing regular-file binary directory, and smoke-test the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, archive-member count/duplicate/state-path preflight, bounded extracted-tree scanning, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, generate Homebrew and Scoop manifests from those strict checksums, upload the archives, `.sha256` files, and generated package-manager manifests to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, run the npm publish preflight so public package metadata is present and existing `@conu/cli`/`@conu/sdk` versions fail before either package is published, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, run the package-manager manifest regression, run the npm launcher local-smoke preflight regression, smoke-test the npm launcher local install path with an existing regular-file binary directory, and smoke-test the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, archive-member count/duplicate/state-path preflight, bounded extracted-tree scanning, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, generate Homebrew, Scoop, winget, and Chocolatey package-manager files from those strict checksums, upload the archives, `.sha256` files, and generated package-manager files to the GitHub Release, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, run the npm publish preflight so public package metadata is present and existing `@conu/cli`/`@conu/sdk` versions fail before either package is published, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available.
 7. Test from a clean shell:
 
 ```sh
@@ -128,8 +128,9 @@ python scripts/check-package-manager-manifests.py
 ```
 
 The generator requires every supported platform archive plus a strict sibling
-`.sha256` file naming the archive. It emits package-native `conu.rb` and
-`conu.json` manifests with public GitHub Release URLs, static SHA-256 hashes, and
+`.sha256` file naming the archive. It emits package-native `conu.rb`,
+`conu.json`, `imthegoodboy.conU.yaml`, and `conu.<version>.nupkg` files with
+public GitHub Release URLs, static SHA-256 hashes, install helper code, and
 binary mappings only. It does not read archive payloads, local conU state,
 tokens, signing material, or package-manager repository credentials.
 
@@ -355,4 +356,4 @@ For the user install story, finish publishing in this order:
 2. Publish `@conu/cli` after the GitHub Release exists.
 3. Put public relay tests behind TLS termination and use `wss://` endpoints.
 4. Add distributed account control planes, remote tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, tenant-node upsert/revoke, account/node suspension plus single-relay account suspension/scoped admin tenant commands, distributed monitoring/dashboards/alerting beyond single-relay threshold reports, distributed hosted mailbox retention policy beyond local/admin-gated audit and purge plus local scheduled purge workflows, and distributed multi-instance session migration before opening a managed relay to everyone.
-5. Submit generated Homebrew/Scoop manifests to the appropriate tap/bucket, then add winget, Chocolatey, apt/rpm packages, detached Linux package signatures, and auto-update policy after npm and signed release archives are stable.
+5. Submit generated Homebrew/Scoop/winget/Chocolatey files to the appropriate package-manager repositories, then add apt/rpm packages, detached Linux package signatures, and auto-update policy after npm and signed release archives are stable.

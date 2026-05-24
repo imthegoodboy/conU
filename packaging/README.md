@@ -46,7 +46,7 @@ conu-<version>-macos-x64.zip
 conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop manifests are produced from verified release checksums, and npm packages are published with provenance after GitHub Release assets exist. Linux archives currently use SHA-256 files plus GitHub artifact attestations until distro/package-manager signing is introduced.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, generated Homebrew/Scoop/winget/Chocolatey package-manager files are produced from verified release checksums, and npm packages are published with provenance after GitHub Release assets exist. Linux archives currently use SHA-256 files plus GitHub artifact attestations until distro/package-manager signing is introduced.
 
 Before tagging, run:
 
@@ -57,7 +57,7 @@ python scripts/verify-release-versions.py
 The CI and release package jobs run the same check before package validation. Branch and PR runs verify that every Cargo/npm manifest uses the same version; `v*` tag runs also require the tag version to match.
 The same package jobs run `python scripts/check-release-artifact-verifier.py` so checksum format, duplicate path, and forbidden state-path regressions fail before platform artifacts are generated.
 They also run `python scripts/check-release-artifact-smoke-preflight.py` so release artifact smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before execution.
-They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop manifest regressions fail before package publication paths are used.
+They also run `python scripts/check-package-manager-manifests.py` so generated Homebrew/Scoop/winget/Chocolatey manifest regressions fail before package publication paths are used.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
 
@@ -101,19 +101,20 @@ commands.
 
 ## Package-Manager Manifests
 
-Generate Homebrew and Scoop manifests from the platform archives and strict
-checksum files:
+Generate Homebrew, Scoop, winget, and Chocolatey package-manager files from the
+platform archives and strict checksum files:
 
 ```sh
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0
 python scripts/check-package-manager-manifests.py
 ```
 
-The generator writes package-native `conu.rb` and `conu.json` manifests using public
-GitHub Release URLs, static SHA-256 hashes, and binary mappings only. Tagged
-release publication runs the same path before uploading release assets, so tap
-and bucket maintainers can review generated package-manager files without
-guessing hashes or reading archive contents. See
+The generator writes package-native `conu.rb`, `conu.json`,
+`imthegoodboy.conU.yaml`, and deterministic `conu.<version>.nupkg` files using
+public GitHub Release URLs, static SHA-256 hashes, install helper code, and
+binary mappings only. Tagged release publication runs the same path before
+uploading release assets, so package-manager maintainers can review generated
+files without guessing hashes or reading archive contents. See
 `packaging/package-managers/README.md`.
 
 Verify a downloaded archive's provenance when `gh` is available:

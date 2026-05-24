@@ -23,13 +23,21 @@ It writes:
 ```txt
 conu.rb
 conu.json
+imthegoodboy.conU.yaml
+conu.<version>.nupkg
 ```
 
 The release workflow uploads those files beside the native archives on `v*`
-tagged releases. Homebrew tap and Scoop bucket maintainers can copy the
-generated files into their package repositories after reviewing the release.
+tagged releases. Homebrew tap, Scoop bucket, winget-pkgs, and Chocolatey package
+maintainers can copy or unpack the generated files into their package
+repositories after reviewing the release.
 
-The manifests contain only public GitHub Release URLs, static SHA-256 hashes,
-package metadata, and binary mappings. They must not contain signing secrets,
-npm tokens, relay tokens, local paths, conU state, payloads, or generated
-release artifact contents.
+`conu.<version>.nupkg` is a deterministic Chocolatey package containing
+`conu.nuspec`, `tools/chocolateyInstall.ps1`, and
+`tools/chocolateyUninstall.ps1`; it intentionally references the verified
+Windows release ZIP and checksum instead of embedding the binaries.
+
+The generated files contain only public GitHub Release URLs, static SHA-256
+hashes, package metadata, install helper code, and binary mappings. They must
+not contain signing secrets, npm tokens, relay tokens, local paths, conU state,
+payloads, or generated release artifact contents.
