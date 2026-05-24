@@ -46,7 +46,7 @@ conu-<version>-macos-x64.zip
 conu-<version>-macos-arm64.zip
 ```
 
-Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets, `CONU_LINUX_GPG_KEY_FINGERPRINT`, and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, the tag preflight imports the Linux GPG key, checks the expected full fingerprint, and probe-signs a temporary file, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus APT/RPM repository metadata are produced from verified release checksums, the imported Linux GPG key is checked again against the expected full fingerprint during publication, generated RPM package payloads are signed before RPM repository metadata is generated, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, `conu-linux-gpg-key.asc` is exported with a strict `.sha256` sidecar for signature verification, a signed hosted Linux repository ZIP is generated from those signed assets, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures; generated Debian packages use SHA-256 sidecars plus detached signatures; generated RPM packages use native RPM signatures plus refreshed SHA-256 sidecars plus detached signatures; generated APT/RPM metadata ZIPs include native repository signatures, refreshed sidecars, and detached signatures; generated hosted Linux repository ZIPs include signed package/repository trees, refreshed sidecars, and detached signatures.
+Each archive should have a sibling `.sha256` file. The build scripts create checksum files automatically. Tagged release builds require maintainer signing secrets, `CONU_LINUX_GPG_KEY_FINGERPRINT`, and `NPM_TOKEN`: Windows binaries are Authenticode-signed before packaging, macOS binaries are Developer ID-signed and submitted to Apple notarization in ZIP archives, the tag preflight imports the Linux GPG key, checks the expected full fingerprint, and probe-signs a temporary file, generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM package-manager files plus APT/RPM repository metadata are produced from verified release checksums, the imported Linux GPG key is checked again against the expected full fingerprint during publication, generated RPM package payloads are signed before RPM repository metadata is generated, Linux archives plus generated Debian/RPM packages and APT/RPM metadata ZIPs receive detached `.asc` signatures, `conu-linux-gpg-key.asc` is exported with a strict `.sha256` sidecar for signature verification, a signed hosted Linux repository ZIP is generated from those signed assets, a signed hosted Linux repository site ZIP is generated from that bundle plus its sidecars for static HTTPS deployment, and npm packages are published with provenance after GitHub Release assets exist. Linux archives use SHA-256 files plus GitHub artifact attestations plus detached signatures; generated Debian packages use SHA-256 sidecars plus detached signatures; generated RPM packages use native RPM signatures plus refreshed SHA-256 sidecars plus detached signatures; generated APT/RPM metadata ZIPs include native repository signatures, refreshed sidecars, and detached signatures; generated hosted Linux repository ZIPs include signed package/repository trees, refreshed sidecars, and detached signatures; generated hosted Linux repository site ZIPs include public endpoint metadata, install snippets, public repository trees, and detached signatures.
 
 Before tagging, run:
 
@@ -63,6 +63,7 @@ They also run `python scripts/check-rpm-package-signing.py` so native RPM packag
 They also run `python scripts/check-linux-release-signing.py` so fingerprint-pinned Linux detached-signing regressions fail before tagged package publication paths are used. CI and release package jobs install `gnupg` for that check.
 They also run `python scripts/check-linux-repository-signing.py` so fingerprint-pinned native APT/RPM repository metadata signing, verification, and sidecar-refresh regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-hosted-linux-repositories.py` so static hosted APT/YUM bundle regressions fail before tagged package publication paths are used.
+They also run `python scripts/check-hosted-linux-repository-site.py` so static hosted repository site regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-linux-gpg-public-key-export.py` so fingerprint-pinned Linux public-key export and verification regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-npm-launcher-local-smoke-preflight.py` so npm launcher local-smoke fixtures fail on missing binary directories, missing binaries, or non-file binary paths before an install attempt.
 They also run `python scripts/check-npm-publish-preflight.py` and `python scripts/check-npm-publish-preflight-regression.py` so npm publication metadata and fail-closed duplicate-version/token/registry behavior are checked before tagged publish jobs.
@@ -121,11 +122,14 @@ python scripts/sign-linux-repository-metadata.py dist
 python scripts/sign-linux-release-assets.py dist
 python scripts/generate-hosted-linux-repositories.py dist --output-dir dist --version 0.1.0
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-bundles
+python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist --version 0.1.0 --base-url https://packages.example.com/conu
+python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
 python scripts/check-package-manager-manifests.py
 python scripts/check-rpm-package-signing.py
 python scripts/check-linux-release-signing.py
 python scripts/check-linux-repository-signing.py
 python scripts/check-hosted-linux-repositories.py
+python scripts/check-hosted-linux-repository-site.py
 python scripts/check-linux-gpg-public-key-export.py
 ```
 
@@ -151,8 +155,10 @@ signatures, refreshes the metadata ZIP sidecars, exports
 `conu-linux-gpg-key.asc` without private-key material, signs generated Linux
 package/metadata assets with detached `.asc` signatures, and uploads
 those assets plus a signed `conu-<version>-hosted-linux-repositories.zip` static
-APT/YUM hosting bundle so operators can publish the generated repository trees
-without rewriting metadata or guessing hashes.
+APT/YUM hosting bundle and a signed
+`conu-<version>-hosted-linux-repository-site.zip` static site artifact so
+operators can publish generated repository trees, endpoint metadata, and
+install snippets without rewriting metadata or guessing hashes.
 The regression check validates generated Debian packages with `dpkg-deb` and
 builds the generated RPM spec with `rpmbuild` when those native tools are
 available, and it opens the APT and RPM metadata bundles to verify package
@@ -162,7 +168,11 @@ throwaway RPM database when RPM signing tools are available. The hosted
 repository regression validates the flat APT tree, RPM `repodata/` tree,
 embedded package signatures, public key copies, sidecars, deterministic ZIP
 layout, and fail-closed handling for missing signatures or unsafe metadata
-paths. Operator hosting setup and package-manager submission remain future work.
+paths. The hosted repository site regression validates the public site layout,
+HTTPS base URL requirement, install snippets, `repository.json`, deterministic
+ZIP metadata, download copies, and fail-closed handling for missing signatures
+or unsafe bundle members. Actual DNS/TLS/static hosting deployment and
+package-manager submission remain future work.
 See `packaging/package-managers/README.md`.
 
 Verify a downloaded archive's provenance when `gh` is available:

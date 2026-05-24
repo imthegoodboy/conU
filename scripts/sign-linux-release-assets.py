@@ -29,6 +29,9 @@ RPM_METADATA_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-rpm-repository-metadata\.
 HOSTED_REPOSITORY_RE = re.compile(
     r"^conu-[0-9A-Za-z.+_~-]+-hosted-linux-repositories\.zip$"
 )
+HOSTED_REPOSITORY_SITE_RE = re.compile(
+    r"^conu-[0-9A-Za-z.+_~-]+-hosted-linux-repository-site\.zip$"
+)
 
 
 def main() -> int:
@@ -51,6 +54,7 @@ def main() -> int:
     assets = signable_linux_assets(
         dist,
         only_hosted_repository_bundles=args.only_hosted_repository_bundles,
+        only_hosted_repository_sites=args.only_hosted_repository_sites,
     )
     if not assets:
         raise SystemExit(f"no signable Linux release assets found in {dist}")
@@ -116,6 +120,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="sign only generated hosted Linux repository bundle ZIPs",
     )
+    parser.add_argument(
+        "--only-hosted-repository-sites",
+        action="store_true",
+        help="sign only generated hosted Linux repository site ZIPs",
+    )
     return parser.parse_args()
 
 
@@ -143,7 +152,12 @@ def signable_linux_assets(
     dist: Path,
     *,
     only_hosted_repository_bundles: bool = False,
+    only_hosted_repository_sites: bool = False,
 ) -> tuple[Path, ...]:
+    if only_hosted_repository_bundles and only_hosted_repository_sites:
+        raise SystemExit(
+            "choose only one hosted Linux repository signing filter at a time"
+        )
     assets = []
     for path in sorted(dist.iterdir(), key=lambda candidate: candidate.name):
         if not path.is_file():
@@ -153,6 +167,10 @@ def signable_linux_assets(
             if HOSTED_REPOSITORY_RE.fullmatch(name):
                 assets.append(path)
             continue
+        if only_hosted_repository_sites:
+            if HOSTED_REPOSITORY_SITE_RE.fullmatch(name):
+                assets.append(path)
+            continue
         if (
             LINUX_ARCHIVE_RE.fullmatch(name)
             or DEBIAN_PACKAGE_RE.fullmatch(name)
@@ -160,6 +178,7 @@ def signable_linux_assets(
             or APT_METADATA_RE.fullmatch(name)
             or RPM_METADATA_RE.fullmatch(name)
             or HOSTED_REPOSITORY_RE.fullmatch(name)
+            or HOSTED_REPOSITORY_SITE_RE.fullmatch(name)
         ):
             assets.append(path)
     return tuple(assets)
