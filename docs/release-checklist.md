@@ -13,6 +13,7 @@ Use this checklist before publishing any conU build.
 - Run `python scripts/check-package-manager-manifests.py`; CI and release package gates use the same regression check to prove generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files plus APT/RPM repository metadata require strict release checksums plus safe Windows and Linux archive layouts, including native Debian package checks with `dpkg-deb`, APT/RPM metadata hash checks, and RPM spec plus optional RPM asset checks with `rpmbuild`/`createrepo_c` when those tools are available.
 - Run `python scripts/check-linux-release-signing.py`; CI and release package gates use the same regression check to prove Linux detached signing selects only Linux archives, generated Debian/RPM packages, and APT/RPM repository metadata, verifies generated `.asc` signatures, and fails closed when signing secrets are missing.
 - Run `python scripts/check-linux-repository-signing.py`; CI and release package gates use the same regression check to prove generated APT metadata ZIPs receive valid `InRelease` and `Release.gpg` signatures, generated RPM metadata ZIPs receive valid `repodata/repomd.xml.asc` signatures, `.sha256` sidecars are refreshed, unrelated release assets are not mutated, and missing signing secrets fail closed.
+- Run `python scripts/check-linux-gpg-public-key-export.py`; CI and release package gates use the same regression check to prove the Linux release GPG public key exports as armored public-key material with a strict `.sha256` sidecar, verifies a detached signature from a separate keyring, and fails closed when signing secrets are missing.
 - Run `python scripts/verify-npm-package-contents.py`; CI, release package checks, and tagged npm publication use the same verifier to reject missing required files, unexpected state/build/payload paths, oversized files, and bundled dependencies.
 - Run `python scripts/check-npm-publish-preflight.py`; CI and release package checks validate publish metadata for `@conu/cli` and `@conu/sdk`, and tagged npm publication reruns it with `--registry-check --require-token-env NODE_AUTH_TOKEN` before any package is published.
 - Run `python scripts/check-npm-publish-preflight-regression.py`; CI and release package checks use the same regression check to prove existing npm versions, registry failures, and missing publish tokens fail closed.
@@ -47,6 +48,7 @@ python scripts\check-release-artifact-smoke-preflight.py
 python scripts\check-package-manager-manifests.py
 python scripts\check-linux-release-signing.py
 python scripts\check-linux-repository-signing.py
+python scripts\check-linux-gpg-public-key-export.py
 python scripts\verify-npm-package-contents.py
 python scripts\check-npm-publish-preflight.py
 python scripts\check-npm-publish-preflight-regression.py
@@ -68,6 +70,7 @@ python scripts/check-release-artifact-smoke-preflight.py
 python scripts/check-package-manager-manifests.py
 python scripts/check-linux-release-signing.py
 python scripts/check-linux-repository-signing.py
+python scripts/check-linux-gpg-public-key-export.py
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -152,6 +155,7 @@ conu stop
 - `scripts/verify-release-artifacts.py dist` passes for every archive, streams archive verification without loading every file body, requires strict `<sha256>  <archive-name>` checksum files, bounds archive/member/manifest sizes and member counts, and rejects duplicate paths, local conU state, logs, private key files, inboxes, route registries, telemetry dumps, node modules, vendored package binaries, and payload-bearing paths.
 - `scripts/generate-package-manager-manifests.py dist --output-dir dist --version <version> --tag v<version>` generates package-native `conu.rb`, `conu.json`, `imthegoodboy.conU.yaml`, `conu.<version>.nupkg`, `conu_<version>_amd64.deb`, `conu_<version>_arm64.deb`, `.deb.sha256` sidecars, and `conu.spec` files from platform release assets and strict checksum files; with `--build-rpm-packages`, it also generates unsigned `conu-<rpm-version>-1.x86_64.rpm`, `conu-<rpm-version>-1.aarch64.rpm`, and `.rpm.sha256` sidecars; with `--build-apt-repository-metadata`, it also generates `conu-<debian-version>-apt-repository-metadata.zip` and a `.sha256` sidecar containing deterministic `Packages`, `Packages.gz`, and `Release` files for the generated `.deb` assets; with `--build-rpm-repository-metadata`, it also generates `conu-<rpm-version>-rpm-repository-metadata.zip` and a `.sha256` sidecar containing `createrepo_c` `repodata/*` files for the generated `.rpm` assets without embedding those RPM packages. `scripts/check-package-manager-manifests.py` passes in CI/release package checks, including native `rpmbuild -bb` validation for generated RPM build metadata and RPM release assets when RPM tooling is installed plus APT/RPM metadata hash checks.
 - `scripts/sign-linux-repository-metadata.py dist` adds native APT `InRelease` and `Release.gpg` signatures, adds RPM `repodata/repomd.xml.asc`, verifies them, and refreshes the metadata ZIP `.sha256` sidecars before detached ZIP signatures are generated. `scripts/check-linux-repository-signing.py` passes in CI/release package checks.
+- `scripts/export-linux-gpg-public-key.py dist` exports `conu-linux-gpg-key.asc` plus a strict `.sha256` sidecar from the configured Linux GPG signing key without writing private-key material. `scripts/check-linux-gpg-public-key-export.py` passes in CI/release package checks.
 - `scripts/sign-linux-release-assets.py dist` creates armored detached `.asc` signatures for Linux archives, generated Debian/RPM packages, and generated APT/RPM repository metadata ZIPs only, then verifies each signature before upload. `scripts/check-linux-release-signing.py` passes in CI/release package checks.
 - `scripts/check-release-artifact-smoke-preflight.py` passes in CI/release package checks, and `scripts/smoke-release-artifacts.py dist`, `scripts/smoke-npm-launcher-local.py dist`, and `scripts/smoke-npm-launcher-download.py dist` pass on each release build runner before attestation/upload.
 - Windows install script copies binaries to a current-user install directory.
@@ -197,6 +201,8 @@ spctl -a -vv -t exec bin/conu
 - Linux release tarballs use SHA-256 checksum files, GitHub artifact attestations, and detached `.asc` signatures. Generated Debian/RPM packages use SHA-256 sidecars and detached `.asc` signatures. Generated APT/RPM metadata ZIPs include native repository signatures plus refreshed SHA-256 sidecars and detached `.asc` signatures:
 
 ```sh
+sha256sum -c conu-linux-gpg-key.asc.sha256
+gpg --import conu-linux-gpg-key.asc
 sha256sum -c conu-0.1.0-linux-x64.tar.gz.sha256
 gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 gpg --verify conu-0.1.0-linux-x64.tar.gz.asc conu-0.1.0-linux-x64.tar.gz
@@ -211,7 +217,7 @@ gpg --verify conu-0.1.0-linux-x64.tar.gz.asc conu-0.1.0-linux-x64.tar.gz
 - CI and release package jobs run `scripts/verify-release-versions.py` before npm package checks, so package versions must match each other and `v*` tag names before release assets can be built or published.
 - CI and release package jobs run `scripts/check-release-artifact-verifier.py` before artifact builds, so release archive verification regressions fail before platform artifacts are generated.
 - CI and release package jobs run `scripts/check-release-artifact-smoke-preflight.py` before artifact builds, so release artifact smoke preflight regressions fail before platform artifacts are generated.
-- CI and release package jobs install RPM tooling plus `createrepo-c` and `gnupg`, run `scripts/check-package-manager-manifests.py`, `scripts/check-linux-release-signing.py`, and `scripts/check-linux-repository-signing.py` before artifact builds, so generated package-manager manifest, APT/RPM metadata, RPM spec build, optional RPM asset, Linux detached-signing, and native Linux repository-signing regressions fail before tag publication paths are used.
+- CI and release package jobs install RPM tooling plus `createrepo-c` and `gnupg`, run `scripts/check-package-manager-manifests.py`, `scripts/check-linux-release-signing.py`, `scripts/check-linux-repository-signing.py`, and `scripts/check-linux-gpg-public-key-export.py` before artifact builds, so generated package-manager manifest, APT/RPM metadata, RPM spec build, optional RPM asset, Linux detached-signing, native Linux repository-signing, and Linux public-key export regressions fail before tag publication paths are used.
 - CI, release package checks, and tagged npm publication run `scripts/verify-npm-package-contents.py` so `@conu/cli` and `@conu/sdk` package dry-runs fail closed on missing required files, unexpected files, forbidden state/build/payload paths, oversized files, or bundled dependencies.
 - CI and release package checks run `scripts/check-npm-publish-preflight.py` and `scripts/check-npm-publish-preflight-regression.py`; tagged npm publication reruns the preflight with `--registry-check --require-token-env NODE_AUTH_TOKEN` before publishing either package, so an already-published `@conu/cli` or `@conu/sdk` version fails before a partial publish starts.
 - npm package checks, content dry-runs, and publication jobs run on Node 24 LTS, and package `engines` accept supported Node LTS lines only. Revisit the range when the next Node LTS line is promoted.
@@ -221,7 +227,7 @@ gpg --verify conu-0.1.0-linux-x64.tar.gz.asc conu-0.1.0-linux-x64.tar.gz
 - PR body lists validation commands.
 - The `Release Artifacts` workflow is green for the release tag, including archive verification, archive install smoke, npm launcher local install smoke, and npm launcher download install smoke with bounded download behavior.
 - GitHub Release has platform-named archives plus matching `.sha256` files before npm publishing.
-- GitHub Release has generated `conu.rb`, `conu.json`, `imthegoodboy.conU.yaml`, `conu.<version>.nupkg`, `conu_<version>_amd64.deb`, `conu_<version>_arm64.deb`, `.deb.sha256` sidecars, `conu-<debian-version>-apt-repository-metadata.zip` containing `InRelease` and `Release.gpg` plus its refreshed `.sha256` sidecar, `conu.spec`, unsigned `conu-<rpm-version>-1.x86_64.rpm`, unsigned `conu-<rpm-version>-1.aarch64.rpm`, `.rpm.sha256` sidecars, `conu-<rpm-version>-rpm-repository-metadata.zip` containing `repodata/repomd.xml.asc` plus its refreshed `.sha256` sidecar, and detached `.asc` signatures for Linux archives, generated Debian/RPM packages, and APT/RPM repository metadata ZIPs derived from the same strict release checksums before package-manager submission.
+- GitHub Release has generated `conu.rb`, `conu.json`, `imthegoodboy.conU.yaml`, `conu.<version>.nupkg`, `conu_<version>_amd64.deb`, `conu_<version>_arm64.deb`, `.deb.sha256` sidecars, `conu-<debian-version>-apt-repository-metadata.zip` containing `InRelease` and `Release.gpg` plus its refreshed `.sha256` sidecar, `conu.spec`, unsigned `conu-<rpm-version>-1.x86_64.rpm`, unsigned `conu-<rpm-version>-1.aarch64.rpm`, `.rpm.sha256` sidecars, `conu-<rpm-version>-rpm-repository-metadata.zip` containing `repodata/repomd.xml.asc` plus its refreshed `.sha256` sidecar, `conu-linux-gpg-key.asc` plus its `.sha256` sidecar, and detached `.asc` signatures for Linux archives, generated Debian/RPM packages, and APT/RPM repository metadata ZIPs derived from the same strict release checksums before package-manager submission.
 - GitHub artifact attestations exist for every platform archive and checksum file generated by the release workflow.
 - Verify a downloaded archive's provenance before install when `gh` is available:
 

@@ -21,6 +21,8 @@ package-manager publishing.
   metadata ZIP bundles add `repodata/repomd.xml.asc` over
   `repodata/repomd.xml`. Both metadata ZIPs refresh their `.sha256` sidecars
   before detached `.asc` signatures are created over the final ZIPs.
+  Tagged releases also publish `conu-linux-gpg-key.asc` plus its `.sha256`
+  sidecar so users can verify those Linux signatures from release assets.
 - Signing secrets are maintainer-owned repository secrets. The workflow never
   prints certificates, private keys, signing passwords, npm tokens, relay
   tokens, local conU state, or payload contents.
@@ -85,6 +87,10 @@ APT/RPM repository metadata ZIPs with detached `.asc` signatures. Every
 signature is verified before upload, and the temporary keyring is removed when
 the job exits.
 
+The same temporary import path exports only the armored Linux GPG public key as
+`conu-linux-gpg-key.asc` with a strict `.sha256` sidecar. The workflow refuses
+to write private-key material as that public-key asset.
+
 The build scripts write signing status into `manifest.toml`:
 
 ```toml
@@ -129,6 +135,8 @@ release job to inspect Apple validation output.
 Linux, before extracting a release tarball:
 
 ```sh
+sha256sum -c conu-linux-gpg-key.asc.sha256
+gpg --import conu-linux-gpg-key.asc
 sha256sum -c conu-0.1.0-linux-x64.tar.gz.sha256
 gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 gpg --verify conu-0.1.0-linux-x64.tar.gz.asc conu-0.1.0-linux-x64.tar.gz
