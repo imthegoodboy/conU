@@ -32,6 +32,7 @@ jobs:
           CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
           CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
           CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -eu
@@ -48,6 +49,7 @@ jobs:
             CONU_LINUX_GPG_PRIVATE_KEY_BASE64 \
             CONU_LINUX_GPG_PASSPHRASE \
             CONU_LINUX_GPG_KEY_ID \
+            CONU_LINUX_GPG_KEY_FINGERPRINT \
             NPM_TOKEN; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then
@@ -273,6 +275,7 @@ jobs:
           CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
           CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
           CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
         run: python scripts/sign-rpm-packages.py dist
       - name: Generate RPM repository metadata
         env:
@@ -287,18 +290,21 @@ jobs:
           CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
           CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
           CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
         run: python scripts/export-linux-gpg-public-key.py dist
       - name: Sign Linux repository metadata
         env:
           CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
           CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
           CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
         run: python scripts/sign-linux-repository-metadata.py dist
       - name: Sign Linux release assets
         env:
           CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
           CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
           CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
         run: python scripts/sign-linux-release-assets.py dist
       - name: Publish release assets
         env:
@@ -329,9 +335,11 @@ jobs:
           includes InRelease and Release.gpg signatures; RPM repository
           metadata is generated from the signed RPM packages and includes
           repodata/repomd.xml.asc. The metadata ZIPs also receive detached .asc
-          signatures before upload. Use conu-linux-gpg-key.asc to verify Linux
-          .asc, native RPM package, InRelease, Release.gpg, and repomd.xml.asc
-          signatures.
+          signatures before upload. Linux signing steps first verify that the
+          imported key id resolves to the configured maintainer fingerprint.
+          Use conu-linux-gpg-key.asc plus the published maintainer fingerprint
+          to verify Linux .asc, native RPM package, InRelease, Release.gpg, and
+          repomd.xml.asc signatures.
 
           Installers, npm launchers, and package-manager submissions must use
           the matching .sha256-derived hashes and Linux .asc signatures.

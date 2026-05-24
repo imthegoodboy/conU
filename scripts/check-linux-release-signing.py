@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SIGNER = ROOT / "scripts" / "sign-linux-release-assets.py"
 PASSPHRASE = "conu-linux-signing-regression-passphrase"
 USER_ID = "conU Linux Signing Regression <noreply@github.com>"
+WRONG_FINGERPRINT = "F" * 40
 SIGNABLE_FIXTURES = (
     "conu-0.1.0-linux-x64.tar.gz",
     "conu-0.1.0-linux-arm64.tar.gz",
@@ -61,6 +62,7 @@ def main() -> int:
         env["CONU_LINUX_GPG_PRIVATE_KEY_BASE64"] = base64.b64encode(private_key).decode("ascii")
         env["CONU_LINUX_GPG_PASSPHRASE"] = PASSPHRASE
         env["CONU_LINUX_GPG_KEY_ID"] = key_id
+        env["CONU_LINUX_GPG_KEY_FINGERPRINT"] = key_id
         subprocess.run(
             [sys.executable, str(SIGNER), str(dist)],
             check=True,
@@ -90,6 +92,7 @@ def main() -> int:
             "CONU_LINUX_GPG_PRIVATE_KEY_BASE64",
             "CONU_LINUX_GPG_PASSPHRASE",
             "CONU_LINUX_GPG_KEY_ID",
+            "CONU_LINUX_GPG_KEY_FINGERPRINT",
         ):
             missing_env.pop(name, None)
         failed = subprocess.run(
@@ -101,6 +104,18 @@ def main() -> int:
         )
         if failed.returncode == 0 or "missing required environment variable" not in failed.stdout:
             raise AssertionError("signer did not fail closed when signing secrets were missing")
+
+        mismatch_env = env.copy()
+        mismatch_env["CONU_LINUX_GPG_KEY_FINGERPRINT"] = WRONG_FINGERPRINT
+        failed = subprocess.run(
+            [sys.executable, str(SIGNER), str(dist)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=mismatch_env,
+        )
+        if failed.returncode == 0 or "fingerprint mismatch" not in failed.stdout:
+            raise AssertionError("signer did not fail closed when the key fingerprint mismatched")
 
     print("Linux release signing regression checks passed")
     return 0

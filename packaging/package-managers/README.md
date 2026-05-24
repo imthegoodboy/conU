@@ -71,14 +71,15 @@ generated `conu.spec` references the verified Linux release archives and static
 SHA-256 values for RPM builds on `x86_64` and `aarch64`. CI and release package
 checks install RPM tooling and run the regression through native `rpmbuild` when
 available. Tagged releases build `.rpm` assets and strict `.rpm.sha256`
-sidecars from the generated spec, sign the RPM package payloads with the Linux
-GPG signing key, refresh the `.rpm.sha256` sidecars, then generate RPM
-repository metadata from the signed packages. Tagged releases also upload the
-APT and RPM repository metadata bundles, add native APT `InRelease` and
-`Release.gpg` signatures, add RPM `repodata/repomd.xml.asc`, refresh metadata
-ZIP `.sha256` sidecars, export `conu-linux-gpg-key.asc` for signature
-verification, and create detached `.asc` signatures for Linux archives,
-generated `.deb`/`.rpm` assets, and generated APT/RPM metadata ZIPs.
+sidecars from the generated spec, verify that the imported Linux GPG signing key
+matches `CONU_LINUX_GPG_KEY_FINGERPRINT`, sign the RPM package payloads with
+that key, refresh the `.rpm.sha256` sidecars, then generate RPM repository
+metadata from the signed packages. Tagged releases also upload the APT and RPM
+repository metadata bundles, add native APT `InRelease` and `Release.gpg`
+signatures, add RPM `repodata/repomd.xml.asc`, refresh metadata ZIP `.sha256`
+sidecars, export `conu-linux-gpg-key.asc` for signature verification, and
+create detached `.asc` signatures for Linux archives, generated `.deb`/`.rpm`
+assets, and generated APT/RPM metadata ZIPs.
 Hosted repository setup and package-manager submission remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
@@ -90,4 +91,7 @@ RPM repository metadata may contain `createrepo_c` metadata for those generated
 `.rpm` files only. Generated package-manager outputs, detached signatures, and
 the Linux GPG public-key asset must not contain signing secrets, npm tokens,
 relay tokens, local paths, conU state, private payloads, private-key material,
-or package-manager repository credentials.
+or package-manager repository credentials. Users should compare
+`conu-linux-gpg-key.asc` against the published full maintainer fingerprint
+before trusting Linux `.asc`, native RPM package, or native repository metadata
+signatures.

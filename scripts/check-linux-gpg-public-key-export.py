@@ -18,6 +18,7 @@ EXPORTER = ROOT / "scripts" / "export-linux-gpg-public-key.py"
 PASSPHRASE = "conu-linux-public-key-regression-passphrase"
 USER_ID = "conU Linux Public Key Regression <noreply@github.com>"
 PUBLIC_KEY_ASSET = "conu-linux-gpg-key.asc"
+WRONG_FINGERPRINT = "F" * 40
 
 
 def main() -> int:
@@ -42,6 +43,7 @@ def main() -> int:
         env["CONU_LINUX_GPG_PRIVATE_KEY_BASE64"] = base64.b64encode(private_key).decode("ascii")
         env["CONU_LINUX_GPG_PASSPHRASE"] = PASSPHRASE
         env["CONU_LINUX_GPG_KEY_ID"] = key_id
+        env["CONU_LINUX_GPG_KEY_FINGERPRINT"] = key_id
         subprocess.run(
             [sys.executable, str(EXPORTER), str(dist)],
             check=True,
@@ -89,6 +91,7 @@ def main() -> int:
             "CONU_LINUX_GPG_PRIVATE_KEY_BASE64",
             "CONU_LINUX_GPG_PASSPHRASE",
             "CONU_LINUX_GPG_KEY_ID",
+            "CONU_LINUX_GPG_KEY_FINGERPRINT",
         ):
             missing_env.pop(name, None)
         failed = subprocess.run(
@@ -100,6 +103,20 @@ def main() -> int:
         )
         if failed.returncode == 0 or "missing required environment variable" not in failed.stdout:
             raise AssertionError("public-key exporter did not fail closed with missing secrets")
+
+        mismatch_env = env.copy()
+        mismatch_env["CONU_LINUX_GPG_KEY_FINGERPRINT"] = WRONG_FINGERPRINT
+        failed = subprocess.run(
+            [sys.executable, str(EXPORTER), str(dist)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=mismatch_env,
+        )
+        if failed.returncode == 0 or "fingerprint mismatch" not in failed.stdout:
+            raise AssertionError(
+                "public-key exporter did not fail closed when the key fingerprint mismatched"
+            )
 
     print("Linux GPG public-key export regression checks passed")
     return 0
