@@ -28,6 +28,7 @@ SIGNABLE_FIXTURES = (
     "conu-0.1.0-rpm-repository-metadata.zip",
     "conu-0.1.0-hosted-linux-repositories.zip",
     "conu-0.1.0-hosted-linux-repository-site.zip",
+    "conu-0.1.0-update-policy.json",
 )
 UNSIGNED_FIXTURES = (
     "conu-0.1.0-windows-x64.zip",
@@ -170,6 +171,32 @@ def main() -> int:
         run_gpg(gpg, verify_home, ["--verify", str(site_signature), str(site_bundle)])
         if hosted_repo_bundle.with_name(f"{hosted_repo_bundle.name}.asc").exists():
             raise AssertionError("only-site signing mode signed a hosted repository bundle")
+
+        only_policy_dist = temp / "only-policy-dist"
+        only_policy_dist.mkdir()
+        update_policy = only_policy_dist / "conu-0.1.0-update-policy.json"
+        update_policy.write_text('{"schema":"conu.releaseUpdatePolicy.v1"}\n', encoding="ascii")
+        hosted_site = only_policy_dist / "conu-0.1.0-hosted-linux-repository-site.zip"
+        hosted_site.write_bytes(b"hosted repository site fixture\n")
+        subprocess.run(
+            [
+                sys.executable,
+                str(SIGNER),
+                str(only_policy_dist),
+                "--only-update-policies",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+        )
+        policy_signature = only_policy_dist / "conu-0.1.0-update-policy.json.asc"
+        if not policy_signature.exists():
+            raise AssertionError("update policy signature was not generated")
+        run_gpg(gpg, verify_home, ["--verify", str(policy_signature), str(update_policy)])
+        if hosted_site.with_name(f"{hosted_site.name}.asc").exists():
+            raise AssertionError("only-policy signing mode signed a hosted repository site")
 
     print("Linux release signing regression checks passed")
     return 0

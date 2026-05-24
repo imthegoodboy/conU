@@ -32,6 +32,7 @@ HOSTED_REPOSITORY_RE = re.compile(
 HOSTED_REPOSITORY_SITE_RE = re.compile(
     r"^conu-[0-9A-Za-z.+_~-]+-hosted-linux-repository-site\.zip$"
 )
+UPDATE_POLICY_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-update-policy\.json$")
 
 
 def main() -> int:
@@ -55,6 +56,7 @@ def main() -> int:
         dist,
         only_hosted_repository_bundles=args.only_hosted_repository_bundles,
         only_hosted_repository_sites=args.only_hosted_repository_sites,
+        only_update_policies=args.only_update_policies,
     )
     if not assets:
         raise SystemExit(f"no signable Linux release assets found in {dist}")
@@ -125,6 +127,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="sign only generated hosted Linux repository site ZIPs",
     )
+    parser.add_argument(
+        "--only-update-policies",
+        action="store_true",
+        help="sign only generated release update policy JSON files",
+    )
     return parser.parse_args()
 
 
@@ -153,10 +160,19 @@ def signable_linux_assets(
     *,
     only_hosted_repository_bundles: bool = False,
     only_hosted_repository_sites: bool = False,
+    only_update_policies: bool = False,
 ) -> tuple[Path, ...]:
-    if only_hosted_repository_bundles and only_hosted_repository_sites:
+    filter_count = sum(
+        int(value)
+        for value in (
+            only_hosted_repository_bundles,
+            only_hosted_repository_sites,
+            only_update_policies,
+        )
+    )
+    if filter_count > 1:
         raise SystemExit(
-            "choose only one hosted Linux repository signing filter at a time"
+            "choose only one Linux release asset signing filter at a time"
         )
     assets = []
     for path in sorted(dist.iterdir(), key=lambda candidate: candidate.name):
@@ -171,6 +187,10 @@ def signable_linux_assets(
             if HOSTED_REPOSITORY_SITE_RE.fullmatch(name):
                 assets.append(path)
             continue
+        if only_update_policies:
+            if UPDATE_POLICY_RE.fullmatch(name):
+                assets.append(path)
+            continue
         if (
             LINUX_ARCHIVE_RE.fullmatch(name)
             or DEBIAN_PACKAGE_RE.fullmatch(name)
@@ -179,6 +199,7 @@ def signable_linux_assets(
             or RPM_METADATA_RE.fullmatch(name)
             or HOSTED_REPOSITORY_RE.fullmatch(name)
             or HOSTED_REPOSITORY_SITE_RE.fullmatch(name)
+            or UPDATE_POLICY_RE.fullmatch(name)
         ):
             assets.append(path)
     return tuple(assets)
