@@ -600,7 +600,7 @@ def assert_rpm_repository_metadata(path: Path, temp: Path, generator, output: Pa
         or RPM_X64_FILENAME not in readme_text
     ):
         raise AssertionError(f"{path.name} README missed signed publication guidance")
-    if ".rpm files beside the unpacked metadata" not in readme_text:
+    if "signed .rpm files beside the unpacked metadata" not in readme_text:
         raise AssertionError(f"{path.name} README missed repository placement guidance")
 
     repomd_root = ET.fromstring(repomd_text)
