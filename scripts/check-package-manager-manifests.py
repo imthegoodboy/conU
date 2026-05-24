@@ -25,6 +25,8 @@ TARGETS = {
 WINDOWS_BINARIES = ("conu", "conud", "conu-relay", "conu-mcp")
 HOMEBREW_FILENAME = "conu.rb"
 SCOOP_FILENAME = "conu.json"
+WINGET_FILENAME = "imthegoodboy.conU.yaml"
+CHOCOLATEY_FILENAME = f"conu.{VERSION}.nupkg"
 
 
 def load_generator():
@@ -88,9 +90,43 @@ def generate(generator, dist: Path, output: Path) -> None:
         assets["windows-x64"],
         windows_extract_dir,
     )
-    generator.assert_output_safe(homebrew + "\n" + scoop, dist)
+    winget = generator.render_winget_manifest(
+        VERSION,
+        "imthegoodboy/conU",
+        assets["windows-x64"],
+        windows_extract_dir,
+    )
+    chocolatey_nuspec = generator.render_chocolatey_nuspec(VERSION, "imthegoodboy/conU")
+    chocolatey_install = generator.render_chocolatey_install(
+        VERSION,
+        assets["windows-x64"],
+        windows_extract_dir,
+    )
+    chocolatey_uninstall = generator.render_chocolatey_uninstall(
+        assets["windows-x64"],
+    )
+    generator.assert_output_safe(
+        "\n".join(
+            [
+                homebrew,
+                scoop,
+                winget,
+                chocolatey_nuspec,
+                chocolatey_install,
+                chocolatey_uninstall,
+            ]
+        ),
+        dist,
+    )
     (output / HOMEBREW_FILENAME).write_text(homebrew, encoding="ascii", newline="\n")
     (output / SCOOP_FILENAME).write_text(scoop, encoding="ascii", newline="\n")
+    (output / WINGET_FILENAME).write_text(winget, encoding="ascii", newline="\n")
+    generator.write_chocolatey_package(
+        output / CHOCOLATEY_FILENAME,
+        chocolatey_nuspec,
+        chocolatey_install,
+        chocolatey_uninstall,
+    )
 
 
 def expect_failure(description: str, action, expected: str) -> None:
@@ -108,6 +144,10 @@ def expect_failure(description: str, action, expected: str) -> None:
 
 def assert_no_forbidden_output(path: Path, temp: Path) -> None:
     text = path.read_text(encoding="ascii")
+    assert_no_forbidden_text(text, path.name, temp)
+
+
+def assert_no_forbidden_text(text: str, label: str, temp: Path) -> None:
     forbidden = [
         str(temp).replace("\\", "/"),
         "NPM_TOKEN",
@@ -119,13 +159,36 @@ def assert_no_forbidden_output(path: Path, temp: Path) -> None:
     normalized = text.replace("\\", "/")
     for literal in forbidden:
         if literal and literal in normalized:
-            raise AssertionError(f"{path.name} contained forbidden literal {literal!r}")
+            raise AssertionError(f"{label} contained forbidden literal {literal!r}")
+
+
+def read_chocolatey_package(path: Path) -> dict[str, str]:
+    with zipfile.ZipFile(path) as package:
+        names = sorted(package.namelist())
+        expected = [
+            "conu.nuspec",
+            "tools/chocolateyInstall.ps1",
+            "tools/chocolateyUninstall.ps1",
+        ]
+        if names != expected:
+            raise AssertionError(f"chocolatey package had entries {names!r}")
+        return {
+            name: package.read(name).decode("ascii")
+            for name in names
+        }
+
+
+def assert_zip_no_forbidden_output(path: Path, temp: Path) -> None:
+    for name, text in read_chocolatey_package(path).items():
+        assert_no_forbidden_text(text, f"{path.name}:{name}", temp)
 
 
 def main() -> int:
     generator = load_generator()
     if generator.validate_version("1.2.3-rc.1+build.5") != "1.2.3-rc.1+build.5":
         raise AssertionError("package-manager generator rejected semver prerelease plus build metadata")
+    if generator.validate_tag("v1.2.3-rc.1+build.5") != "v1.2.3-rc.1+build.5":
+        raise AssertionError("package-manager generator rejected semver release tag")
     with tempfile.TemporaryDirectory(prefix="conu-package-manifest-") as temp_text:
         temp = Path(temp_text)
 
@@ -157,6 +220,52 @@ def main() -> int:
             raise AssertionError("scoop manifest did not expose conu")
         assert_no_forbidden_output(rootless_out / SCOOP_FILENAME, temp)
 
+        winget = (rootless_out / WINGET_FILENAME).read_text(encoding="ascii")
+        if "PackageIdentifier: imthegoodboy.conU" not in winget:
+            raise AssertionError("winget manifest package identifier was missing")
+        if "InstallerType: zip" not in winget or "NestedInstallerType: portable" not in winget:
+            raise AssertionError("winget manifest did not describe a portable zip installer")
+        if f"InstallerSha256: {hashes['windows-x64']}" not in winget:
+            raise AssertionError("winget manifest did not use the Windows release hash")
+        if TARGETS["windows-x64"] not in winget:
+            raise AssertionError("winget manifest did not include the Windows release URL")
+        if "RelativeFilePath: bin/conu.exe" not in winget:
+            raise AssertionError("rootless winget manifest did not map conu.exe")
+        if "PortableCommandAlias: conu-mcp" not in winget:
+            raise AssertionError("winget manifest did not expose conu-mcp")
+        assert_no_forbidden_output(rootless_out / WINGET_FILENAME, temp)
+
+        chocolatey = read_chocolatey_package(rootless_out / CHOCOLATEY_FILENAME)
+        nuspec = chocolatey["conu.nuspec"]
+        install_script = chocolatey["tools/chocolateyInstall.ps1"]
+        uninstall_script = chocolatey["tools/chocolateyUninstall.ps1"]
+        if "<id>conu</id>" not in nuspec or "<version>0.1.0</version>" not in nuspec:
+            raise AssertionError("chocolatey nuspec package metadata was missing")
+        if TARGETS["windows-x64"] not in install_script or hashes["windows-x64"] not in install_script:
+            raise AssertionError("chocolatey install script did not include the Windows asset and hash")
+        if "Install-ChocolateyZipPackage @packageArgs" not in install_script:
+            raise AssertionError("chocolatey install script did not use the Chocolatey ZIP helper")
+        if "ChecksumType64 = 'sha256'" not in install_script:
+            raise AssertionError("chocolatey install script did not require SHA-256 checksums")
+        if "Install-BinFile -Name $binary -Path $binaryPath" not in install_script:
+            raise AssertionError("chocolatey install script did not expose command shims")
+        if "conu-0.1.0-windows-x64\\bin" not in install_script:
+            raise AssertionError("chocolatey install script did not keep rooted archive fallback")
+        if "Uninstall-BinFile -Name $binary" not in uninstall_script:
+            raise AssertionError("chocolatey uninstall script did not remove command shims")
+        if f"Uninstall-ChocolateyZipPackage $packageName '{TARGETS['windows-x64']}'" not in uninstall_script:
+            raise AssertionError("chocolatey uninstall script did not clean extracted zip files")
+        assert_zip_no_forbidden_output(rootless_out / CHOCOLATEY_FILENAME, temp)
+        if (rootless_out / "conu-chocolatey.zip").exists():
+            raise AssertionError("chocolatey output should not use a .zip release-archive name")
+        if generator.chocolatey_filename(VERSION) != CHOCOLATEY_FILENAME:
+            raise AssertionError("chocolatey package filename did not include package id and version")
+
+        repeat_out = temp / "repeat-out"
+        generate(generator, rootless_dist, repeat_out)
+        if (rootless_out / CHOCOLATEY_FILENAME).read_bytes() != (repeat_out / CHOCOLATEY_FILENAME).read_bytes():
+            raise AssertionError("chocolatey package generation was not deterministic")
+
         rooted_dist = temp / "rooted-dist"
         rooted_out = temp / "rooted-out"
         rooted_dist.mkdir()
@@ -165,6 +274,12 @@ def main() -> int:
         rooted_scoop = json.loads((rooted_out / SCOOP_FILENAME).read_text(encoding="ascii"))
         if rooted_scoop.get("extract_dir") != f"conu-{VERSION}-windows-x64":
             raise AssertionError("rooted Windows archive should set extract_dir")
+        rooted_winget = (rooted_out / WINGET_FILENAME).read_text(encoding="ascii")
+        if f"RelativeFilePath: conu-{VERSION}-windows-x64/bin/conu.exe" not in rooted_winget:
+            raise AssertionError("rooted winget manifest did not map rooted conu.exe")
+        rooted_chocolatey = read_chocolatey_package(rooted_out / CHOCOLATEY_FILENAME)
+        if f"conu-{VERSION}-windows-x64\\bin" not in rooted_chocolatey["tools/chocolateyInstall.ps1"]:
+            raise AssertionError("rooted chocolatey script did not use rooted bin path")
 
         missing_checksum = temp / "missing-checksum"
         missing_checksum.mkdir()
