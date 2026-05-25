@@ -137,7 +137,7 @@ jobs:
         run: python scripts/check-hosted-linux-repository-pages.py
       - name: Release update policy regression
         run: python scripts/check-release-update-policy.py
-      - name: Release update download gate regression
+      - name: Release update download/apply gate regression
         run: python scripts/check-release-update-download-gate.py
       - name: Linux GPG public-key export regression
         run: python scripts/check-linux-gpg-public-key-export.py
@@ -467,9 +467,10 @@ jobs:
           SHA-256 values, signature URLs, npm package versions, and manual
           verification rules with auto-apply disabled, then receives a strict
           checksum sidecar and detached .asc signature. Installed clients can
-          validate that policy with conu update check, and can fetch one
-          selected platform archive plus sidecars with conu update download,
-          before any manual update decision.
+          validate that policy with conu update check, fetch one selected
+          platform archive plus sidecars with conu update download, and dry-run
+          the verified archive with conu update apply before any manual update
+          decision.
           Linux signing steps first verify that the imported key id resolves
           to the configured maintainer fingerprint.
           Use conu-linux-gpg-key.asc plus the published maintainer fingerprint
@@ -497,7 +498,8 @@ jobs:
           KEY_DIR="$RUNNER_TEMP/conu-release-key"
           GNUPG_HOME="$RUNNER_TEMP/conu-release-gnupg"
           DOWNLOAD_DIR="$RUNNER_TEMP/conu-update-download"
-          rm -rf "$KEY_DIR" "$GNUPG_HOME" "$DOWNLOAD_DIR"
+          APPLY_INSTALL_DIR="$RUNNER_TEMP/conu-update-apply-bin"
+          rm -rf "$KEY_DIR" "$GNUPG_HOME" "$DOWNLOAD_DIR" "$APPLY_INSTALL_DIR"
           mkdir -p "$KEY_DIR" "$GNUPG_HOME"
           chmod 700 "$GNUPG_HOME"
           gh release download "$TAG_NAME" --repo "$GH_REPO" --pattern conu-linux-gpg-key.asc --dir "$KEY_DIR"
@@ -510,15 +512,16 @@ jobs:
             exit 1
           fi
           for attempt in 1 2 3 4 5 6; do
-            rm -rf "$DOWNLOAD_DIR"
+            rm -rf "$DOWNLOAD_DIR" "$APPLY_INSTALL_DIR"
             mkdir -p "$DOWNLOAD_DIR"
             if cargo run -p conu-cli -- update check --policy-url "$POLICY_URL" --gpg-verify --json &&
-               cargo run -p conu-cli -- update download --policy-url "$POLICY_URL" --output-dir "$DOWNLOAD_DIR" --target linux-x64 --gpg-verify --json; then
-              echo "Published release update policy and linux-x64 artifact verified."
+               cargo run -p conu-cli -- update download --policy-url "$POLICY_URL" --output-dir "$DOWNLOAD_DIR" --target linux-x64 --gpg-verify --json &&
+               cargo run -p conu-cli -- update apply --policy-url "$POLICY_URL" --artifact-file "$DOWNLOAD_DIR/conu-${VERSION}-linux-x64.tar.gz" --install-dir "$APPLY_INSTALL_DIR" --target linux-x64 --gpg-verify --dry-run --json; then
+              echo "Published release update policy, linux-x64 artifact, and dry-run apply verified."
               exit 0
             fi
             if [ "$attempt" = "6" ]; then
-              echo "::error::Published release update policy/artifact verification failed after $attempt attempts."
+              echo "::error::Published release update policy/artifact/apply verification failed after $attempt attempts."
               exit 1
             fi
             sleep 10

@@ -50,7 +50,7 @@ jobs:
         run: python scripts/check-hosted-linux-repository-pages.py
       - name: Release update policy regression
         run: python scripts/check-release-update-policy.py
-      - name: Release update download gate regression
+      - name: Release update download/apply gate regression
         run: python scripts/check-release-update-download-gate.py
       - name: Linux GPG public-key export regression
         run: python scripts/check-linux-gpg-public-key-export.py

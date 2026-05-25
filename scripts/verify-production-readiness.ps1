@@ -303,7 +303,7 @@ try {
         Invoke-ReadinessStep "release update policy regression" {
             & python scripts/check-release-update-policy.py
         }
-        Invoke-ReadinessStep "release update download gate regression" {
+        Invoke-ReadinessStep "release update download/apply gate regression" {
             & python scripts/check-release-update-download-gate.py
         }
         Invoke-ReadinessStep "linux GPG public-key export regression" {
