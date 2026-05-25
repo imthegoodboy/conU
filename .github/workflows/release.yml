@@ -34,6 +34,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/check-github-actions-permissions.py --repo "$GITHUB_REPOSITORY"
+      - name: Validate GitHub workflow permissions
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python scripts/check-github-workflow-permissions.py
       - name: Check tagged release secrets
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -172,6 +175,8 @@ jobs:
         run: python scripts/check-github-main-protection-regression.py
       - name: GitHub Actions permissions regression
         run: python scripts/check-github-actions-permissions-regression.py
+      - name: GitHub workflow permissions regression
+        run: python scripts/check-github-workflow-permissions-regression.py
       - name: GitHub Pages readiness regression
         run: python scripts/check-github-pages-readiness-regression.py
       - name: GitHub Release asset publication regression
