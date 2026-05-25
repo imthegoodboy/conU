@@ -92,6 +92,19 @@ Its text and JSON reports include only environment variable names, booleans, and
 sanitized failure categories; they do not print certificates, private keys,
 passwords, tokens, or signing material.
 
+To run the same value checks during GitHub secret setup, export all required
+release secret values and run:
+
+```sh
+python scripts/set-github-release-secrets.py --repo <owner/name> --dry-run --preflight-values --require-openssl
+```
+
+That helper also runs the Linux GPG signing-secret preflight, suppresses
+preflight stdout/stderr to avoid leaking secret material from subprocesses, and
+sends values to `gh secret set` through stdin when rerun without `--dry-run`.
+Run the standalone preflight scripts directly when a setup failure needs a
+sanitized diagnostic report.
+
 ## Workflow Behavior
 
 On tag builds matching `v*`, the release workflow runs a preflight before

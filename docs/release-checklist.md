@@ -225,12 +225,13 @@ conu stop
   `CONU_LINUX_GPG_PRIVATE_KEY_BASE64`, `CONU_LINUX_GPG_PASSPHRASE`,
   `CONU_LINUX_GPG_KEY_ID`, and `CONU_LINUX_GPG_KEY_FINGERPRINT`.
 - After exporting the required values locally, run
-  `python scripts/check-platform-signing-secrets-preflight.py --require-openssl --json`
-  to validate the Windows PFX and macOS P12 values before uploading them.
-- After that preflight passes, run
-  `python scripts/set-github-release-secrets.py --repo <owner/name> --dry-run`,
-  then rerun without `--dry-run` to configure the repository secrets through
-  GitHub CLI stdin without printing values.
+  `python scripts/set-github-release-secrets.py --repo <owner/name> --dry-run --preflight-values --require-openssl`
+  to validate Windows/macOS PKCS#12 values and Linux GPG signing values before
+  any GitHub writes.
+- After that dry run passes, rerun without `--dry-run` to configure the
+  repository secrets through GitHub CLI stdin without printing values. If the
+  combined preflight fails, run the individual platform or Linux signing
+  preflight script directly for a sanitized diagnostic report.
 - Tagged release preflight imports the configured Linux GPG private key into a
   temporary keyring, verifies `CONU_LINUX_GPG_KEY_ID` resolves to
   `CONU_LINUX_GPG_KEY_FINGERPRINT`, and probe-signs a temporary file before
