@@ -108,6 +108,56 @@ def run_secret_set_tests(module) -> None:
         module.subprocess.run = original_run
 
 
+def run_value_preflight_tests(module) -> None:
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    original_run = subprocess.run
+    module.subprocess.run = fake_run
+    try:
+        module.run_value_preflights(require_openssl=True, python_executable="python")
+    finally:
+        module.subprocess.run = original_run
+
+    if len(calls) != 2:
+        raise AssertionError(f"expected two value preflight calls, got {len(calls)}")
+    rendered = "\n".join(" ".join(args) for args, _kwargs in calls)
+    if "check-platform-signing-secrets-preflight.py" not in rendered:
+        raise AssertionError("platform signing secret value preflight was not called")
+    if "--require-openssl" not in rendered:
+        raise AssertionError("OpenSSL requirement was not passed to platform preflight")
+    if "check-linux-signing-secrets-preflight.py" not in rendered:
+        raise AssertionError("Linux signing secret preflight was not called")
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("secret value was passed in value preflight arguments")
+    for _args, kwargs in calls:
+        if kwargs.get("stdout") != subprocess.DEVNULL:
+            raise AssertionError("value preflight stdout must be suppressed")
+        if kwargs.get("stderr") != subprocess.DEVNULL:
+            raise AssertionError("value preflight stderr must be suppressed")
+
+    def failed_run(_args, **_kwargs):
+        return SimpleNamespace(returncode=7, stdout=SENSITIVE_SENTINEL, stderr=SENSITIVE_SENTINEL)
+
+    module.subprocess.run = failed_run
+    try:
+        try:
+            module.run_value_preflights(require_openssl=False, python_executable="python")
+        except ValueError as exc:
+            rendered_error = str(exc)
+            if "failed with exit code 7" not in rendered_error:
+                raise AssertionError(f"unexpected preflight failure error: {rendered_error}")
+            if SENSITIVE_SENTINEL in rendered_error:
+                raise AssertionError("preflight failure leaked subprocess output")
+        else:
+            raise AssertionError("failing value preflight unexpectedly succeeded")
+    finally:
+        module.subprocess.run = original_run
+
+
 def run_dry_run_tests(module) -> None:
     original = with_required_env(module, SENSITIVE_SENTINEL)
     try:
@@ -158,6 +208,7 @@ def main() -> int:
     module = load_module()
     run_env_collection_tests(module)
     run_secret_set_tests(module)
+    run_value_preflight_tests(module)
     run_dry_run_tests(module)
     run_missing_report_tests(module)
     print("GitHub release secret setup regression checks passed")

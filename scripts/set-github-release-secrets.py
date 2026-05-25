@@ -12,6 +12,9 @@ from pathlib import Path
 from github_release_secrets import REQUIRED_RELEASE_SECRETS, find_gh, infer_repo
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
 def collect_env_values(names: tuple[str, ...]) -> tuple[dict[str, str], tuple[str, ...]]:
     values: dict[str, str] = {}
     missing: list[str] = []
@@ -36,6 +39,38 @@ def set_secret(gh: str, repo: str, name: str, value: str) -> None:
     )
     if result.returncode != 0:
         raise ValueError(f"gh secret set {name} failed with exit code {result.returncode}")
+
+
+def run_value_preflights(*, require_openssl: bool, python_executable: str = sys.executable) -> None:
+    platform_command = [
+        python_executable,
+        str(SCRIPT_DIR / "check-platform-signing-secrets-preflight.py"),
+    ]
+    if require_openssl:
+        platform_command.append("--require-openssl")
+
+    preflights: list[tuple[str, list[str]]] = [
+        (
+            "platform signing secret value preflight",
+            platform_command,
+        ),
+        (
+            "Linux signing secret preflight",
+            [
+                python_executable,
+                str(SCRIPT_DIR / "check-linux-signing-secrets-preflight.py"),
+            ],
+        ),
+    ]
+    for name, command in preflights:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"{name} failed with exit code {result.returncode}")
 
 
 def print_secret_names(label: str, names: tuple[str, ...], stream) -> None:
@@ -76,6 +111,16 @@ def parse_args() -> argparse.Namespace:
         help="validate local environment values and print secret names without writing them",
     )
     parser.add_argument(
+        "--preflight-values",
+        action="store_true",
+        help="run local signing secret value preflights before dry-run output or GitHub writes",
+    )
+    parser.add_argument(
+        "--require-openssl",
+        action="store_true",
+        help="require OpenSSL-backed Windows/macOS PKCS#12 parsing when --preflight-values is used",
+    )
+    parser.add_argument(
         "--gh",
         default="",
         help=argparse.SUPPRESS,
@@ -88,6 +133,8 @@ def main() -> int:
     try:
         repo_root = Path(__file__).resolve().parents[1]
         os.chdir(repo_root)
+        if args.require_openssl and not args.preflight_values:
+            raise ValueError("--require-openssl requires --preflight-values")
 
         values, missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
         if missing:
@@ -97,6 +144,9 @@ def main() -> int:
                 sys.stderr,
             )
             return 1
+
+        if args.preflight_values:
+            run_value_preflights(require_openssl=args.require_openssl)
 
         gh = args.gh or find_gh()
         repo = args.repo.strip() or infer_repo(gh)

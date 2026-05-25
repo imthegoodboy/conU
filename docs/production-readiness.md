@@ -117,6 +117,11 @@ secret or variable values.
 Add `-CheckPlatformSigningSecrets` after exporting local Windows/macOS signing
 environment variables and installing OpenSSL to validate those certificate
 values before storing them as GitHub secrets or cutting a tag.
+For repository setup, run
+`python scripts/set-github-release-secrets.py --repo <owner/name> --dry-run --preflight-values --require-openssl`
+after exporting all release secret values; it runs Windows/macOS and Linux GPG
+value preflights before any upload, then sends values to GitHub CLI through
+stdin when rerun without `--dry-run`.
 Add `-CheckLinuxRepositoryEndpoint -LinuxRepositoryBaseUrl <https-url>` after a
 custom hosted repository site is published to prove endpoint metadata and live
 Cache-Control headers match the generated policy.
