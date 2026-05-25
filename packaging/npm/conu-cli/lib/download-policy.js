@@ -33,6 +33,19 @@ function validateUnverifiedDownloadBase(rawUrl) {
   return parsed;
 }
 
+function validateDownloadRedirect(fromRawUrl, toRawUrl) {
+  const from = validateDownloadUrl(fromRawUrl);
+  const to = validateDownloadUrl(toRawUrl);
+  const fromLoopback = isLoopbackHost(from.hostname);
+  const toLoopback = isLoopbackHost(to.hostname);
+  if (fromLoopback !== toLoopback) {
+    throw new Error(
+      `download redirect must not cross public and loopback boundaries: ${formatDownloadUrlForError(fromRawUrl)} -> ${formatDownloadUrlForError(toRawUrl)}`
+    );
+  }
+  return to;
+}
+
 function formatDownloadUrlForError(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
@@ -57,6 +70,7 @@ function isLoopbackHost(hostname) {
 module.exports = {
   formatDownloadUrlForError,
   isLoopbackHost,
+  validateDownloadRedirect,
   validateDownloadUrl,
   validateUnverifiedDownloadBase
 };

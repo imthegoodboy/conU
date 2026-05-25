@@ -18,6 +18,7 @@ const {
 } = require("../lib/download-limits");
 const {
   formatDownloadUrlForError,
+  validateDownloadRedirect,
   validateDownloadUrl,
   validateUnverifiedDownloadBase
 } = require("../lib/download-policy");
@@ -299,10 +300,14 @@ function request(url, onError, handler, redirects = 0) {
       redirects < 5
     ) {
       response.resume();
-      request(new URL(response.headers.location, url).toString(), onError, handler, redirects + 1).on(
-        "error",
-        onError
-      );
+      const redirectUrl = new URL(response.headers.location, url).toString();
+      try {
+        validateDownloadRedirect(url, redirectUrl);
+      } catch (error) {
+        onError(error);
+        return;
+      }
+      request(redirectUrl, onError, handler, redirects + 1).on("error", onError);
       return;
     }
     handler(response);

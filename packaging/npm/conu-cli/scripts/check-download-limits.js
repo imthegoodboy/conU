@@ -25,6 +25,7 @@ async function main() {
   expectInvalidLimit("CONU_NPM_DOWNLOAD_TIMEOUT_MS", "1.5");
   expectContentLengthParsing();
   await expectUnverifiedPublicBaseFailure();
+  await expectLoopbackRedirectToPublicFailure();
   await expectArchiveLimitFailure();
   await expectChecksumLimitFailure();
   await expectChecksumArchiveNameFailure();
@@ -91,6 +92,21 @@ async function expectUnverifiedPublicBaseFailure() {
   });
   expectFailedWith(result, "only allowed for loopback testing downloads");
   expectNoSecretDisplay(result);
+}
+
+async function expectLoopbackRedirectToPublicFailure() {
+  await withServer((_request, response) => {
+    response.writeHead(302, { Location: "https://example.com/conu.zip?token=secret" });
+    response.end();
+  }, async (baseUrl) => {
+    const result = await runInstall({
+      CONU_NPM_ALLOW_UNVERIFIED: "1",
+      CONU_NPM_DIST_BASE: `${baseUrl}/release?token=secret`,
+      CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
+    });
+    expectFailedWith(result, "download redirect must not cross public and loopback boundaries");
+    expectNoSecretDisplay(result);
+  });
 }
 
 async function expectChecksumLimitFailure() {
