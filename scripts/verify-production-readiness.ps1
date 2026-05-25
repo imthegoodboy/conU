@@ -17,6 +17,7 @@ param(
     [switch]$CheckLinuxRepositoryEndpoint,
     [string]$LinuxRepositoryBaseUrl = $env:CONU_LINUX_REPOSITORY_BASE_URL,
     [string]$GitHubRepo = $env:GH_REPO,
+    [string]$ReleaseSecretEnvFile = $env:CONU_RELEASE_SECRET_ENV_FILE,
     [string]$ReleaseTag = $env:CONU_RELEASE_TAG,
     [string]$TaggedReleaseCiHead = $env:CONU_RELEASE_CI_HEAD,
     [string]$TaggedReleaseTargetHead = $env:CONU_RELEASE_TARGET_HEAD,
@@ -381,6 +382,12 @@ try {
         }
         Invoke-ReadinessStep "GitHub release secret readiness" {
             & python @secretReadinessArgs
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ReleaseSecretEnvFile)) {
+        Invoke-ReadinessStep "release secret env-file validation" {
+            & python scripts/set-github-release-secrets.py --env-file $ReleaseSecretEnvFile --check-env-file
         }
     }
 
