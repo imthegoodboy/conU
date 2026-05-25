@@ -152,6 +152,9 @@ def expected_release_asset_names(version: str) -> tuple[str, ...]:
     update_policy = f"conu-{version}-update-policy.json"
     names.extend([update_policy, f"{update_policy}.sha256", f"{update_policy}.asc"])
 
+    submissions = f"conu-{version}-package-manager-submissions.zip"
+    names.extend([submissions, f"{submissions}.sha256", f"{submissions}.asc"])
+
     duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
     if duplicates:
         raise ValueError(f"internal expected asset list contains duplicate(s): {', '.join(duplicates)}")

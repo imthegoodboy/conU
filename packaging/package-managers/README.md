@@ -11,6 +11,8 @@ python scripts/sign-rpm-packages.py dist
 python scripts/generate-package-manager-manifests.py dist --output-dir dist --version 0.1.0 --tag v0.1.0 --build-rpm-repository-metadata
 python scripts/sign-linux-repository-metadata.py dist
 python scripts/sign-linux-release-assets.py dist
+python scripts/prepare-package-manager-submissions.py dist --output-dir dist --version 0.1.0 --require-rpm-assets --require-repository-metadata --require-linux-signatures
+python scripts/sign-linux-release-assets.py dist --only-package-manager-submissions
 python scripts/generate-hosted-linux-repositories.py dist --output-dir dist --version 0.1.0
 python scripts/sign-linux-release-assets.py dist --only-hosted-repository-bundles
 python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist --version 0.1.0 --base-url https://packages.example.com/conu
@@ -60,6 +62,9 @@ conu-<rpm-version>-1.aarch64.rpm
 conu-<rpm-version>-1.aarch64.rpm.sha256
 conu-<rpm-version>-rpm-repository-metadata.zip
 conu-<rpm-version>-rpm-repository-metadata.zip.sha256
+conu-<version>-package-manager-submissions.zip
+conu-<version>-package-manager-submissions.zip.sha256
+conu-<version>-package-manager-submissions.zip.asc
 conu-<version>-hosted-linux-repositories.zip
 conu-<version>-hosted-linux-repositories.zip.sha256
 conu-<version>-hosted-linux-repositories.zip.asc
@@ -72,7 +77,8 @@ conu-<version>-update-policy.json.asc
 ```
 
 Tagged publication refuses to overwrite an existing GitHub Release for the tag,
-then uploads detached `.asc` signatures for Linux archives,
+then uploads the signed `conu-<version>-package-manager-submissions.zip`
+handoff bundle plus detached `.asc` signatures for Linux archives,
 generated Debian/RPM packages, generated APT/RPM metadata ZIPs, plus
 `conu-linux-gpg-key.asc`, its strict `.sha256` sidecar, and signed
 `conu-<version>-update-policy.json` metadata. Before npm
@@ -81,6 +87,24 @@ public GitHub Release metadata has the expected archive, checksum, signature,
 package-manager, public-key, hosted repository bundle, hosted repository site,
 and update-policy asset names with positive uploaded sizes and without
 duplicates or state/secret-looking asset names.
+
+The package-manager submission bundle lays out generated files under
+repository-ready paths:
+
+```txt
+homebrew-tap/Formula/conu.rb
+scoop-bucket/bucket/conu.json
+winget-pkgs/manifests/i/imthegoodboy/conU/<version>/imthegoodboy.conU.yaml
+chocolatey/conu.<version>.nupkg
+debian/
+apt/
+rpm/
+linux-signing/
+```
+
+It is still a handoff artifact: maintainers must review and submit the files to
+the external package-manager repositories, but they no longer need to assemble
+paths, hashes, signatures, or Linux public-key files by hand.
 
 The `.rpm` files are generated only when `--build-rpm-packages` is set and
 `rpmbuild` is installed. The release workflow uses that mode and uploads those
@@ -170,8 +194,8 @@ that verified directory to an S3-compatible bucket/prefix with per-object
 `Cache-Control` from `cache-policy.json`, then runs
 `scripts/check-hosted-linux-repository-endpoint.py` against the live URL before
 npm publication. DNS records, certificates, CDN invalidation, non-S3 custom
-hosts, package-manager submission, and unattended automatic update apply
-behavior remain future work.
+hosts, external package-manager repository PRs/submissions, and unattended
+automatic update apply behavior remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
@@ -179,7 +203,8 @@ mappings. Generated Debian packages may embed the verified Linux release
 binaries and minimal package metadata only. Generated APT repository metadata
 may contain hashes and sizes for those generated `.deb` files only. Generated
 RPM repository metadata may contain `createrepo_c` metadata for those generated
-`.rpm` files only. Generated package-manager outputs, detached signatures, and
+`.rpm` files only. Generated package-manager outputs, package-manager
+submission bundles, detached signatures, and
 the Linux GPG public-key asset must not contain signing secrets, npm tokens,
 relay tokens, local paths, conU state, private payloads, private-key material,
 or package-manager repository credentials. Generated hosted repository site
