@@ -18,7 +18,8 @@ const {
 } = require("../lib/download-limits");
 const {
   formatDownloadUrlForError,
-  validateDownloadUrl
+  validateDownloadUrl,
+  validateUnverifiedDownloadBase
 } = require("../lib/download-policy");
 const {
   BINARIES,
@@ -61,6 +62,10 @@ async function main() {
   if (localBinaryDir) {
     installFromLocalDir(localBinaryDir);
     return;
+  }
+
+  if (allowUnverified) {
+    validateUnverifiedDownloadBase(releaseBase);
   }
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conu-npm-"));

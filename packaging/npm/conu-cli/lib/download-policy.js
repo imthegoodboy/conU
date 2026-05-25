@@ -23,6 +23,16 @@ function validateDownloadUrl(rawUrl) {
   throw new Error(`unsupported download URL protocol: ${parsed.protocol}`);
 }
 
+function validateUnverifiedDownloadBase(rawUrl) {
+  const parsed = validateDownloadUrl(rawUrl);
+  if (!isLoopbackHost(parsed.hostname)) {
+    throw new Error(
+      `CONU_NPM_ALLOW_UNVERIFIED=1 is only allowed for loopback testing downloads: ${formatDownloadUrlForError(rawUrl)}`
+    );
+  }
+  return parsed;
+}
+
 function formatDownloadUrlForError(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
@@ -47,5 +57,6 @@ function isLoopbackHost(hostname) {
 module.exports = {
   formatDownloadUrlForError,
   isLoopbackHost,
-  validateDownloadUrl
+  validateDownloadUrl,
+  validateUnverifiedDownloadBase
 };

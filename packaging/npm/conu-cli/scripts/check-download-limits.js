@@ -24,6 +24,7 @@ async function main() {
   expectInvalidLimit("CONU_NPM_MAX_CHECKSUM_BYTES", "-1");
   expectInvalidLimit("CONU_NPM_DOWNLOAD_TIMEOUT_MS", "1.5");
   expectContentLengthParsing();
+  await expectUnverifiedPublicBaseFailure();
   await expectArchiveLimitFailure();
   await expectChecksumLimitFailure();
   await expectChecksumArchiveNameFailure();
@@ -81,6 +82,15 @@ async function expectArchiveLimitFailure() {
     expectFailedWith(result, "archive download exceeded maximum size");
     expectNoSecretDisplay(result);
   });
+}
+
+async function expectUnverifiedPublicBaseFailure() {
+  const result = await runInstall({
+    CONU_NPM_ALLOW_UNVERIFIED: "1",
+    CONU_NPM_DIST_BASE: "https://example.com/conu?token=secret"
+  });
+  expectFailedWith(result, "only allowed for loopback testing downloads");
+  expectNoSecretDisplay(result);
 }
 
 async function expectChecksumLimitFailure() {
