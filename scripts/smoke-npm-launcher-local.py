@@ -57,7 +57,7 @@ def main() -> int:
 
             extract_dir = temp_root / archive_stem(archive)
             extract_archive(archive, extract_dir)
-            bin_dir = find_package_root(extract_dir) / "bin"
+            bin_dir = find_package_root(archive, extract_dir) / "bin"
             verify_archive_binaries(archive, bin_dir)
 
             prefix = temp_root / f"{archive_stem(archive)}-npm"
@@ -97,37 +97,86 @@ def read_manifest_target(archive: Path) -> str:
 
 
 def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:
+    expected_root = expected_archive_root(archive)
     if archive.suffix == ".zip":
         with zipfile.ZipFile(archive) as package:
+            found: bytes | None = None
+            root_style: str | None = None
             for member in package.infolist():
                 if member.filename.endswith("/"):
                     continue
-                if normalize_member(member.filename) == normalized_name:
-                    return package.read(member)
-        return None
+                normalized, member_style = normalize_member(member.filename, expected_root)
+                root_style = update_archive_root_style(
+                    archive.name, member.filename, root_style, member_style
+                )
+                if normalized == normalized_name:
+                    if found is not None:
+                        raise SystemExit(
+                            f"{archive.name} contains duplicate archive path: {normalized_name}"
+                        )
+                    found = package.read(member)
+            return found
 
     if archive.name.endswith(".tar.gz"):
         with tarfile.open(archive, "r:gz") as package:
+            found: bytes | None = None
+            root_style: str | None = None
             for member in package.getmembers():
                 if not member.isfile():
                     continue
-                if normalize_member(member.name) == normalized_name:
+                normalized, member_style = normalize_member(member.name, expected_root)
+                root_style = update_archive_root_style(
+                    archive.name, member.name, root_style, member_style
+                )
+                if normalized == normalized_name:
+                    if found is not None:
+                        raise SystemExit(
+                            f"{archive.name} contains duplicate archive path: {normalized_name}"
+                        )
                     file_object = package.extractfile(member)
-                    return file_object.read() if file_object is not None else None
-        return None
+                    found = file_object.read() if file_object is not None else None
+            return found
 
     raise SystemExit(f"unsupported release archive {archive.name}")
 
 
-def normalize_member(name: str) -> str:
+def expected_archive_root(archive: Path) -> str:
+    return archive_stem(archive)
+
+
+def normalize_member(name: str, expected_root: str) -> tuple[str, str | None]:
     normalized = name.replace("\\", "/")
     path = PurePosixPath(normalized)
     parts = [part for part in path.parts if part not in {"", ".", "/"}]
     if path.is_absolute() or ".." in parts:
         raise SystemExit(f"unsafe archive path: {name}")
-    if parts and parts[0].startswith("conu-"):
-        parts = parts[1:]
-    return "/".join(parts)
+    root_style = None
+    if parts:
+        if parts[0] == expected_root:
+            root_style = "rooted"
+            parts = parts[1:]
+        elif parts[0].startswith("conu-"):
+            raise SystemExit(
+                f"unexpected archive root: {parts[0]} (expected {expected_root})"
+            )
+        else:
+            root_style = "rootless"
+    return "/".join(parts), root_style
+
+
+def update_archive_root_style(
+    archive_name: str,
+    raw_name: str,
+    current: str | None,
+    member_style: str | None,
+) -> str | None:
+    if member_style is None:
+        return current
+    if current is not None and current != member_style:
+        raise SystemExit(
+            f"{archive_name} mixes rooted and rootless archive paths: {raw_name}"
+        )
+    return member_style
 
 
 def target_is_current_platform(target: str) -> bool:
@@ -220,15 +269,34 @@ def safe_extract_path(destination: Path, member_name: str) -> Path:
     return output_path
 
 
-def find_package_root(extract_dir: Path) -> Path:
-    candidates = [
-        path
+def find_package_root(archive: Path, extract_dir: Path) -> Path:
+    expected_root = expected_archive_root(archive)
+    rootless_manifest = extract_dir / "manifest.toml"
+    rooted_dir = extract_dir / expected_root
+    rooted_manifest = rooted_dir / "manifest.toml"
+    has_rootless = rootless_manifest.is_file()
+    has_rooted = rooted_manifest.is_file()
+
+    if has_rootless and has_rooted:
+        raise SystemExit(f"{archive.name} mixes rooted and rootless archive paths")
+    if has_rooted:
+        return rooted_dir
+    if has_rootless:
+        return extract_dir
+
+    unexpected_roots = sorted(
+        path.name
         for path in extract_dir.iterdir()
         if path.is_dir() and path.name.startswith("conu-")
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
-    return extract_dir
+    )
+    if unexpected_roots:
+        raise SystemExit(
+            f"{archive.name} contains unexpected archive root: "
+            f"{unexpected_roots[0]} (expected {expected_root})"
+        )
+    raise SystemExit(
+        f"{archive.name} missing manifest.toml at expected release root {expected_root}"
+    )
 
 
 def verify_archive_binaries(archive: Path, bin_dir: Path) -> None:
