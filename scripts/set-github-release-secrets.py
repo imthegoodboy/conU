@@ -20,6 +20,7 @@ def render_env_template(names: tuple[str, ...]) -> str:
     lines = [
         "# conU release secret values",
         "# Fill these values locally, keep this file ignored, then run:",
+        "# python scripts/set-github-release-secrets.py --env-file .env.release --check-env-file",
         "# python scripts/set-github-release-secrets.py --repo <owner/name> --env-file .env.release --env-file-only --dry-run --preflight-values --require-openssl",
         "",
     ]
@@ -209,6 +210,14 @@ def parse_args() -> argparse.Namespace:
         help="require all release secret values to come from --env-file, ignoring local environment values",
     )
     parser.add_argument(
+        "--check-env-file",
+        action="store_true",
+        help=(
+            "validate --env-file contains every required release secret name with "
+            "a non-empty value, then exit without GitHub CLI access"
+        ),
+    )
+    parser.add_argument(
         "--print-env-template",
         action="store_true",
         help="print an empty release-secret env-file template and exit",
@@ -241,14 +250,24 @@ def main() -> int:
     try:
         repo_root = Path(__file__).resolve().parents[1]
         os.chdir(repo_root)
-        if args.require_openssl and not args.preflight_values:
-            raise ValueError("--require-openssl requires --preflight-values")
         if args.print_env_template and args.write_env_template:
             raise ValueError("--print-env-template and --write-env-template are mutually exclusive")
         if (args.print_env_template or args.write_env_template) and (
-            args.dry_run or args.env_file or args.env_file_only or args.preflight_values
+            args.dry_run
+            or args.env_file
+            or args.env_file_only
+            or args.check_env_file
+            or args.preflight_values
+            or args.require_openssl
         ):
             raise ValueError("env template generation cannot be combined with setup options")
+        if args.check_env_file:
+            if not args.env_file:
+                raise ValueError("--check-env-file requires --env-file")
+            if args.dry_run or args.env_file_only or args.preflight_values or args.require_openssl:
+                raise ValueError("--check-env-file cannot be combined with setup options")
+        if args.require_openssl and not args.preflight_values:
+            raise ValueError("--require-openssl requires --preflight-values")
         if args.env_file_only and not args.env_file:
             raise ValueError("--env-file-only requires --env-file")
         if args.print_env_template:
@@ -257,6 +276,25 @@ def main() -> int:
         if args.write_env_template:
             write_env_template(Path(args.write_env_template).expanduser(), REQUIRED_RELEASE_SECRETS)
             print(f"GitHub release secret env template written: {args.write_env_template}")
+            return 0
+        if args.check_env_file:
+            values = load_env_file_values(
+                Path(args.env_file).expanduser(), REQUIRED_RELEASE_SECRETS
+            )
+            missing = missing_required_values(values, REQUIRED_RELEASE_SECRETS)
+            if missing:
+                print_secret_names(
+                    "GitHub release secret env file check failed: missing required env-file values:",
+                    missing,
+                    sys.stderr,
+                )
+                return 1
+            print(
+                "GitHub release secret env file check passed: "
+                f"{len(REQUIRED_RELEASE_SECRETS)} required secret names have non-empty values"
+            )
+            for name in REQUIRED_RELEASE_SECRETS:
+                print(f"present: {name}")
             return 0
 
         if args.env_file_only:
@@ -283,7 +321,12 @@ def main() -> int:
         repo = args.repo.strip() or infer_repo(gh)
         configured = configure_release_secrets(repo, gh, values, args.dry_run)
     except (OSError, ValueError) as exc:
-        print(f"GitHub release secret setup failed: {exc}", file=sys.stderr)
+        action = (
+            "GitHub release secret env file check failed"
+            if getattr(args, "check_env_file", False)
+            else "GitHub release secret setup failed"
+        )
+        print(f"{action}: {exc}", file=sys.stderr)
         return 1
 
     action = "would configure" if args.dry_run else "configured"
