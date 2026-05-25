@@ -96,7 +96,12 @@ Validation:
   passed, including the release update download gate regression and package
   readiness checks.
 - `git diff --check` passed.
-- GitHub PR checks and branch `Release Artifacts` are pending.
+- PR #251 CI passed at commit `9094161d7c09be8eedbe47247de3861f379585c1`
+  across package checks and Rust tests on Ubuntu, macOS, and Windows:
+  https://github.com/imthegoodboy/conU/actions/runs/26377219064
+- Branch `Release Artifacts` run `26377332371` passed at commit
+  `9094161d7c09be8eedbe47247de3861f379585c1`:
+  https://github.com/imthegoodboy/conU/actions/runs/26377332371
 
 Known gaps:
 
