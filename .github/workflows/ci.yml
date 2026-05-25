@@ -48,6 +48,8 @@ jobs:
         run: python scripts/check-hosted-linux-repository-site.py
       - name: Hosted Linux repository Pages regression
         run: python scripts/check-hosted-linux-repository-pages.py
+      - name: Hosted Linux repository endpoint regression
+        run: python scripts/check-hosted-linux-repository-endpoint-regression.py
       - name: Release update policy regression
         run: python scripts/check-release-update-policy.py
       - name: Release update download/apply gate regression
