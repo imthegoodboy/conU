@@ -63,7 +63,7 @@ They also run `python scripts/check-rpm-package-signing.py` so native RPM packag
 They also run `python scripts/check-linux-release-signing.py` so fingerprint-pinned Linux detached-signing regressions fail before tagged package publication paths are used. CI and release package jobs install `gnupg` for that check.
 They also run `python scripts/check-linux-repository-signing.py` so fingerprint-pinned native APT/RPM repository metadata signing, verification, and sidecar-refresh regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-hosted-linux-repositories.py` so static hosted APT/YUM bundle regressions fail before tagged package publication paths are used.
-They also run `python scripts/check-hosted-linux-repository-site.py`, `python scripts/check-hosted-linux-repository-pages.py`, `python scripts/check-hosted-linux-repository-endpoint-regression.py`, and `python scripts/check-github-pages-readiness-regression.py` so static hosted repository site, GitHub Pages extraction, live endpoint cache-header, and GitHub Pages metadata readiness regressions fail before tagged package publication paths are used.
+They also run `python scripts/check-hosted-linux-repository-site.py`, `python scripts/check-hosted-linux-repository-pages.py`, `python scripts/check-hosted-linux-repository-endpoint-regression.py`, `python scripts/check-hosted-linux-repository-s3-publication.py`, and `python scripts/check-github-pages-readiness-regression.py` so static hosted repository site, GitHub Pages extraction, custom S3 publication, live endpoint cache-header, and GitHub Pages metadata readiness regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-release-update-policy.py` so release update-policy metadata regressions fail before tagged package publication paths are used.
 They also run `python scripts/check-release-update-download-gate.py` so tagged GitHub Release publication cannot lose the post-upload public update check/download/apply dry-run GPG verification gate before npm publication.
 They also run `python scripts/check-github-release-clobber-preflight-regression.py` so existing-release clobber regressions fail before tagged publication paths are used.
@@ -136,6 +136,7 @@ conu update check --policy-url https://github.com/imthegoodboy/conU/releases/dow
 conu update download --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --output-dir dist/update-downloads --target linux-x64 --gpg-verify
 conu update apply --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --artifact-file dist/update-downloads/conu-0.1.0-linux-x64.tar.gz --install-dir /usr/local/bin --target linux-x64 --gpg-verify --dry-run
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
+python scripts/publish-hosted-linux-repository-s3.py dist/hosted-linux-repository-site --base-url https://packages.example.com/conu --bucket <bucket> --prefix <prefix> --dry-run
 python scripts/check-hosted-linux-repository-endpoint.py --base-url https://packages.example.com/conu --expected-version 0.1.0
 python scripts/check-github-pages-readiness.py --repo imthegoodboy/conU
 python scripts/check-package-manager-manifests.py
@@ -222,10 +223,15 @@ Pages regression validates strict site ZIP sidecars, detached signature
 presence, safe extraction to an empty deployment directory, non-HTTPS metadata
 rejection, cache policy rejection, forbidden local-state/secret marker
 rejection, and separate repository Pages metadata readiness before GitHub Pages
-upload. The endpoint readiness check can be run after a custom HTTPS endpoint is
-published to prove `repository.json`, `cache-policy.json`, `_headers`, and live
-`Cache-Control` headers match the generated cache policy. Custom DNS/TLS
-publication automation and package-manager submission remain future work.
+upload. The S3 publication regression validates that every extracted site file
+gets exactly one generated cache rule and that publication passes per-object
+cache metadata to the AWS CLI without exposing credentials. The S3 publication
+script can publish a verified extracted site to the supported S3-compatible
+static host path, and the endpoint readiness check can be run after publication
+to prove `repository.json`, `cache-policy.json`, `_headers`, and live
+`Cache-Control` headers match the generated cache policy. DNS records,
+certificates, CDN invalidation, non-S3 custom hosts, package-manager submission,
+and unattended automatic update apply behavior remain future work.
 See `packaging/package-managers/README.md`.
 
 Verify a downloaded archive's provenance when `gh` is available:

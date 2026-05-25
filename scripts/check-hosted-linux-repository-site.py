@@ -29,6 +29,7 @@ CACHE_CONTROL_RULES = (
         "kind": "mutable-site-metadata",
         "cacheControl": "no-cache",
         "paths": (
+            "/.nojekyll",
             "/README.txt",
             "/index.html",
             "/repository.json",
@@ -37,8 +38,10 @@ CACHE_CONTROL_RULES = (
             "/install/*",
             f"/{PUBLIC_KEY}",
             f"/{PUBLIC_KEY}.sha256",
+            "/apt/README.txt",
             f"/apt/{PUBLIC_KEY}",
             f"/apt/{PUBLIC_KEY}.sha256",
+            "/rpm/README.txt",
             f"/rpm/{PUBLIC_KEY}",
             f"/rpm/{PUBLIC_KEY}.sha256",
         ),
