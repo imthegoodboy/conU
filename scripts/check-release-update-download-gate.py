@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression check for tagged release update-download verification gate."""
+"""Regression check for tagged release update-download/apply verification gate."""
 
 from __future__ import annotations
 
@@ -24,10 +24,14 @@ def main() -> int:
         'gpg --batch --yes --import "$KEY_DIR/conu-linux-gpg-key.asc"',
         'CONU_LINUX_GPG_KEY_FINGERPRINT',
         'Published Linux GPG public key fingerprint mismatch',
+        'APPLY_INSTALL_DIR="$RUNNER_TEMP/conu-update-apply-bin"',
+        'rm -rf "$KEY_DIR" "$GNUPG_HOME" "$DOWNLOAD_DIR" "$APPLY_INSTALL_DIR"',
+        'rm -rf "$DOWNLOAD_DIR" "$APPLY_INSTALL_DIR"',
         'cargo run -p conu-cli -- update check --policy-url "$POLICY_URL" --gpg-verify --json',
         'cargo run -p conu-cli -- update download --policy-url "$POLICY_URL" --output-dir "$DOWNLOAD_DIR" --target linux-x64 --gpg-verify --json',
+        'cargo run -p conu-cli -- update apply --policy-url "$POLICY_URL" --artifact-file "$DOWNLOAD_DIR/conu-${VERSION}-linux-x64.tar.gz" --install-dir "$APPLY_INSTALL_DIR" --target linux-x64 --gpg-verify --dry-run --json',
         "for attempt in 1 2 3 4 5 6; do",
-        "Published release update policy and linux-x64 artifact verified.",
+        "Published release update policy, linux-x64 artifact, and dry-run apply verified.",
     )
     for fragment in required_fragments:
         if fragment not in gate:
@@ -37,10 +41,11 @@ def main() -> int:
     if release_notes_index == -1:
         raise AssertionError("release notes are missing installed-client update text")
     release_notes = text[release_notes_index:gate_index]
-    if "conu update download" not in release_notes:
-        raise AssertionError("release notes do not mention conu update download")
+    for fragment in ("conu update download", "conu update apply"):
+        if fragment not in release_notes:
+            raise AssertionError(f"release notes do not mention {fragment}")
 
-    print("release update download gate regression check passed")
+    print("release update download/apply gate regression check passed")
     return 0
 
 

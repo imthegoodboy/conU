@@ -20,6 +20,7 @@ python scripts/sign-linux-release-assets.py dist --only-update-policies
 conu update check --policy-file dist/conu-0.1.0-update-policy.json --gpg-verify
 conu update check --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --gpg-verify
 conu update download --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --output-dir dist/update-downloads --target linux-x64 --gpg-verify
+conu update apply --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --artifact-file dist/update-downloads/conu-0.1.0-linux-x64.tar.gz --install-dir /usr/local/bin --target linux-x64 --gpg-verify --dry-run
 python scripts/check-release-update-download-gate.py
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
 python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
