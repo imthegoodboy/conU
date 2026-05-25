@@ -35,10 +35,75 @@ Note: Phase 14 and Phase 15 are complete for the current local-first app. Post-P
 Latest completed hardening addition: Platform signing secret value preflight is complete; PR #265 merged to `main` at merge commit `b5bcd6db7e3b7a5538931bf27e4b9dcef05e3584`, Issue #264 is closed, and branch `platform-signing-secret-value-preflight` is preserved. Prior completed hardening addition: Tagged release readiness audit is complete; PR #263 merged to `main` at merge commit `09ed3f556d5edbf3d555455192b5da8487158e85`, Issue #262 is closed, and branch `tagged-release-readiness-audit` is preserved. Prior completed hardening addition: Verified package-manager submission bundle is complete; PR #261 merged to `main` at merge commit `0579593bf50cdc31b10db9819d979776014207ce`, Issue #260 is closed, and branch `package-manager-submission-bundle` is preserved. Prior completed hardening addition: Custom S3-compatible hosted Linux repository publication is complete; PR #259 merged to `main` at merge commit `04f4f8eccc3fb441c5057b5fdbc61353bda4591b`, Issue #258 is closed, and branch `custom-linux-repository-s3-publication` is preserved. Prior completed hardening addition: Hosted Linux repository endpoint readiness is complete; PR #257 merged to `main` at merge commit `d94e03e8977a4733e2afaddfe55ef0b6864a36fd`, Issue #256 is closed, and branch `hosted-linux-repository-endpoint-readiness` is preserved. Prior completed hardening addition: Tagged public release update apply dry-run gate is complete; PR #255 merged to `main` at merge commit `5d303b32112689e000525a77a78f2258a99a9bf5`, Issue #254 is closed, and branch `published-update-apply-gate` is preserved. Prior completed hardening addition: Manual release update apply is complete; PR #253 merged to `main` at merge commit `75063c66519c5c04c20d1a5a4662198f17cefde0`, Issue #252 is closed, and branch `manual-update-apply` is preserved. Prior completed hardening addition: Tagged public release update download gate is complete; PR #251 merged to `main` at merge commit `cd1281d5d020ab5e60b082dffba9813df6b8bba2`, Issue #250 is closed, and branch `published-update-download-gate` is preserved. Prior completed hardening addition: Verified release update artifact download is complete; PR #249 merged to `main` at merge commit `4c797fcaeede2502928dda15ca0f5f418db245ac`, Issue #248 is closed, and branch `verified-update-artifact-download` is preserved. Prior completed hardening addition: Remote release update policy HTTPS checks are complete; PR #247 merged to `main` at merge commit `0aee3926c05c45e2f1b168f0fb03808c6dd23a4d`, Issue #246 is closed, and branch `release-update-remote-check` is preserved. Prior completed hardening addition: Installed release update policy checks are complete; PR #245 merged to `main` at merge commit `69d18e56683f6f106da28901f3543d5f932246c4`, Issue #244 is closed, and branch `release-update-client-check` is preserved. Prior completed hardening addition: Release update policy metadata is complete; PR #243 merged to `main` at merge commit `0d8973400230a9386f92a53bce25667e46adecd4`, Issue #242 is closed, and branch `release-update-policy-metadata` is preserved. Prior completed hardening addition: Hosted Linux repository cache policy artifacts are complete; PR #241 merged to `main` at merge commit `2f667a3a3af007ac25acb25fc7b5337a4aaea285`, Issue #240 is closed, and branch `hosted-linux-repository-cache-policy` is preserved. Prior completed hardening addition: GitHub Release clobber safety preflight is complete; PR #239 merged to `main` at merge commit `0a197a42f6181828d0cc481c60a037fddeb1a7b1`, Issue #238 is closed, and branch `github-release-clobber-preflight` is preserved. Prior completed hardening addition: GitHub Release asset publication preflight is complete; PR #237 merged to `main` at merge commit `0c5c2838a4a297454c99470af626e1a34f8ac46a`, Issue #236 is closed, and branch `github-release-assets-preflight` is preserved. Prior completed hardening addition: GitHub Pages readiness preflight is complete; PR #235 merged to `main` at merge commit `7019487232433ad451724b67ae0b15ebe59beaee`, Issue #234 is closed, and branch `github-pages-readiness-preflight` is preserved. Prior completed hardening addition: Hosted Linux repository GitHub Pages deployment prep is complete; PR #233 merged to `main` at merge commit `60a02a47a5399cb3e5043023e369d814b17edc89`, Issue #232 is closed, and branch `linux-repository-pages-deploy` is preserved. Prior completed hardening addition: Hosted Linux repository site artifact generation is complete; PR #231 merged to `main` at merge commit `5b44b9219fa520784cb40e72c75a037877c46c26`, Issue #230 is closed, and branch `hosted-linux-repository-site` is preserved. Prior completed hardening addition: Hosted Linux repository bundle generation is complete; PR #229 merged to `main` at `7a1a03a2d75417f1ec07500ac909817d3957cadc`, Issue #228 is closed, and branch `hosted-linux-repository-bundles` is preserved. Prior completed hardening addition: Linux signing secret preflight is complete; PR #221 merged to `main` at `16445ddd9e5d836d02dbf8edf2dcf6d95befc21d`, Issue #220 is closed, and branch `linux-signing-secret-preflight` is preserved. Prior completed hardening addition: Linux signing key fingerprint policy is complete; PR #219 merged to `main` at `cea2817bba74a297de2912436b03f21b4b3a79e3`, Issue #218 is closed, and branch `linux-gpg-fingerprint-policy` is preserved. Prior completed hardening addition: RPM package payload signing is complete; PR #217 merged to `main` at `d6976db94148a2583bf1fd978b0dba68b45c9b77`, Issue #216 is closed, and branch `rpm-package-payload-signing` is preserved. Prior completed hardening addition: Linux GPG public key release asset is complete; PR #215 merged to `main` at `7f81b682044c8eb5bbdfbe952ef933ecd0295c93`, Issue #214 is closed, and branch `linux-gpg-public-key-release-asset` is preserved. Prior completed hardening addition: signed Linux repository metadata is complete; PR #213 merged to `main` at `ac867bcb3d34ad78acb6d660c3443424b2eb22d7`, Issue #212 is closed, and branch `signed-linux-repository-metadata` is preserved. Prior completed hardening addition: Linux detached release signatures are complete; PR #211 merged to `main` at `a3795510370876f5ef0a27b873f70790f23d3923`, Issue #210 is closed, and branch `linux-detached-signatures` is preserved. Prior completed hardening addition: unsigned RPM repository metadata generation is complete; PR #209 merged to `main` at `9e2a3f475250363997d6006c278c3f4ff2f7b85d`, Issue #208 is closed, and branch `rpm-repository-metadata` is preserved. Prior completed hardening addition: unsigned APT repository metadata generation is complete; PR #207 merged to `main` at `f2f7c993e658b31d4a77c3c45059a12fb2f7c986`, Issue #206 is closed, and branch `apt-repository-metadata` is preserved. Prior completed hardening addition: unsigned RPM release asset generation is complete; PR #205 merged to `main` at `4048a7fab4b454ed28e782b169906fb60d97dce8`, Issue #204 is closed, and branch `rpm-release-assets` is preserved. Prior completed hardening addition: native RPM package build preflight is complete; PR #203 merged to `main` at `98b2ef7a1aba3eb0cc5e6f10fb4e36560105f3d4`, Issue #202 is closed, and branch `rpm-native-build-preflight` is preserved. Prior completed hardening addition: Debian package and RPM spec generation is complete; PR #201 merged to `main` at `4023297af7554bddab1cc6e0d1bb0a4c06e5fc98`, Issue #200 is closed, and branch `linux-package-manager-preflight` is preserved. Prior completed hardening addition: winget and Chocolatey package-manager generation is complete; PR #199 merged to `main` at `e9230e129b5c2ebb1b0f24cc7db0f7b0b79c3176`, Issue #198 is closed, and branch `windows-package-manifest-preflight` is preserved. Prior package-manager manifest generation preflight is complete; PR #197 merged to `main` at `4f4e25dd46bbbce3d00d0227ccdb8edeb80c6f9d`, Issue #196 is closed, and branch `package-manager-manifest-preflight` is preserved. Prior npm publish conflict preflight hardening is complete; PR #195 merged to `main` at `14f73b65808ff204b1e23f3ee1980c1b7c89dcb1`, Issue #194 is closed, and branch `npm-publish-conflict-preflight` is preserved. Prior release artifact smoke binary preflight hardening is complete; PR #193 merged to `main` at `321359293396bd6b95d69c63f1d544afed707c91`, Issue #192 is closed, and branch `release-artifact-smoke-binary-preflight` is preserved. Prior npm launcher local smoke binary preflight hardening is complete in PR #191 on branch `npm-smoke-local-binary-preflight`; PR #191 merged to `main` at `cfa5ba0a9e66a04196987d23919d8b965a832b4d`, Issue #190 is closed, and the branch is preserved. Prior npm installer local binary directory preflight hardening is complete in PR #189 on branch `npm-installer-local-binary-dir-guard`; PR #189 merged to `main` at `0ca33f50bdf82b2e6d44a576f67c6e3fa643f473`, and Issue #188 is closed.
 ```
 
-Current latest hardening addition: Tagged release CI readiness is complete; PR
-#269 merged to `main` at merge commit
-`49b78057ce8be3f116324b8b9b8ac1a4bd57f165`, Issue #268 is closed, and branch
-`tagged-release-ci-readiness` is preserved.
+Current latest hardening addition: Release tag default-branch gate is complete;
+PR #271 merged to `main` at merge commit
+`55812c419b64a39ac6edabfb4b8a6d2d7b00e901`, Issue #270 is closed, and branch
+`release-tag-default-branch-gate` is preserved.
+
+## Post Phase 15 - Release Tag Default-Branch Gate
+
+Status: completed
+
+Goal:
+
+Fail production `v*` tag preparation before package checks and platform builds
+when the tag target commit does not match the repository default branch head.
+
+Completed work:
+
+- Issue #270 is closed. PR #271 merged to `main` at merge commit
+  `55812c419b64a39ac6edabfb4b8a6d2d7b00e901`, and branch
+  `release-tag-default-branch-gate` is preserved.
+- Added release-branch readiness metadata to
+  `scripts/check-tagged-release-readiness.py`, including payload-safe branch
+  name, release target SHA, branch head SHA, readiness state, and issue text.
+- Added `--require-default-branch-head`, optional `--release-branch`, and
+  optional `--release-target-head` to the tagged-release readiness audit.
+- Extended `--ci-only` release workflow mode so tagged releases now require
+  both a successful target-commit `CI` run and a default-branch head match
+  before secret and signing checks run.
+- Added `-RequireTaggedReleaseDefaultBranchHead`, optional
+  `-TaggedReleaseTargetHead`, and optional `-TaggedReleaseBranch` to
+  `scripts/verify-production-readiness.ps1`.
+- Extended tagged-release readiness regression coverage for skipped branch
+  checks, successful branch metadata, mismatched target/branch SHAs, invalid
+  target SHAs, missing branch SHAs, and no sentinel leakage.
+- Updated README, release/distribution/production readiness docs, repo memory,
+  implementation guardrails, security checklist, and this plan.
+
+Validation:
+
+- `python -m py_compile scripts/check-tagged-release-readiness.py scripts/check-tagged-release-readiness-regression.py`
+  passed.
+- `python scripts/check-tagged-release-readiness-regression.py` passed.
+- Workflow YAML parse passed for `.github/workflows/ci.yml` and
+  `.github/workflows/release.yml`.
+- `git diff --check` passed.
+- `python scripts/check-tagged-release-readiness.py --repo imthegoodboy/conU --tag v0.1.0 --ci-only --ci-head d189528c7c2743558b4bfa76b5f0c147682babf1 --require-default-branch-head --json`
+  passed against live GitHub metadata for the latest green `main` commit before
+  this change.
+- `python scripts/check-tagged-release-readiness.py --repo imthegoodboy/conU --tag v0.1.0 --npm-registry-check --require-ci --require-default-branch-head --ci-head d189528c7c2743558b4bfa76b5f0c147682babf1 --json`
+  correctly reported CI, default-branch, Pages, npm registry, and
+  release-clobber readiness while failing overall because live release secrets
+  are still missing.
+- `powershell -ExecutionPolicy Bypass -File scripts\verify-production-readiness.ps1 -SkipRust -SkipSmokes`
+  passed locally.
+- PR #271 CI passed for Packages, Rust on Ubuntu, Rust on macOS, Rust on
+  Windows, and CodeRabbit.
+
+Known gaps:
+
+- The live repository still requires maintainer-owned Windows, macOS, Linux GPG,
+  and npm token secrets before a production `v*` tag can pass.
+- The default-branch gate proves the tag target equals the current default
+  branch head; release operators still need to bump versions and create tags
+  from the intended reviewed `main` state.
+
+Next recommendation:
+
+- Configure the real release secrets, rerun
+  `python scripts/check-tagged-release-readiness.py --repo imthegoodboy/conU --tag v<version> --npm-registry-check --require-ci --require-default-branch-head`,
+  and create the production tag only after every live gate reports ready.
 
 ## Post Phase 15 - Tagged Release CI Readiness
 
