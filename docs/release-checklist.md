@@ -246,6 +246,9 @@ conu stop
   `python scripts/set-github-release-secrets.py --env-file .env.release --check-env-file`
   after filling the file to validate every required name has a non-empty value
   before any GitHub lookup, upload, or value preflight.
+- Add `-ReleaseSecretEnvFile .env.release` to
+  `scripts\verify-production-readiness.ps1` when the filled file should be
+  validated as part of the local readiness gate.
 - Add `--env-file-only` when using the generated file so missing file entries
   fail even if stale release secret variables are exported in the shell.
 - After that dry run passes, rerun without `--dry-run` to configure the

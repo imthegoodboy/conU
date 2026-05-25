@@ -149,6 +149,9 @@ the command writes empty values only and refuses to overwrite an existing file.
 Run `python scripts/set-github-release-secrets.py --env-file .env.release --check-env-file`
 after filling it to validate completeness locally before any GitHub lookup,
 upload, or signing-value preflight.
+The production-readiness wrapper can run the same local check with
+`-ReleaseSecretEnvFile .env.release`, or from `CONU_RELEASE_SECRET_ENV_FILE`,
+when a maintainer wants the filled file included in the readiness gate.
 Add `--env-file-only` when using the generated file to require every value to
 come from that file instead of falling back to exported shell variables.
 Add `-CheckLinuxRepositoryEndpoint -LinuxRepositoryBaseUrl <https-url>` after a
