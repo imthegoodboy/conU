@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 from github_release_secrets import (
     REQUIRED_RELEASE_SECRETS,
@@ -51,6 +51,7 @@ NPM_MANIFESTS = (
     Path("sdk/typescript/package.json"),
 )
 DEFAULT_CI_WORKFLOW = "CI"
+DEFAULT_RELEASE_BRANCH = "main"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
@@ -121,6 +122,28 @@ class CiReadiness:
 
 
 @dataclass(frozen=True)
+class ReleaseBranchReadiness:
+    checked: bool
+    required: bool
+    ready: bool
+    branch: str
+    target_sha: str
+    branch_sha: str
+    issues: tuple[str, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "checked": self.checked,
+            "required": self.required,
+            "ready": self.ready,
+            "branch": self.branch,
+            "targetSha": self.target_sha,
+            "branchSha": self.branch_sha,
+            "issues": list(self.issues),
+        }
+
+
+@dataclass(frozen=True)
 class TaggedReleaseReadiness:
     repo: str
     tag: str
@@ -131,6 +154,7 @@ class TaggedReleaseReadiness:
     release_clobber: Any
     npm_registry: NpmRegistryReadiness
     ci: CiReadiness
+    release_branch: ReleaseBranchReadiness
     issues: tuple[str, ...]
 
     def as_json(self) -> dict[str, Any]:
@@ -145,6 +169,7 @@ class TaggedReleaseReadiness:
             "releaseClobber": self.release_clobber.as_json(),
             "npmRegistry": self.npm_registry.as_json(),
             "ci": self.ci.as_json(),
+            "releaseBranch": self.release_branch.as_json(),
             "issues": list(self.issues),
             "payloadDisplayed": False,
             "tokenDisplayed": False,
@@ -472,6 +497,43 @@ def load_ci_runs(repo: str, gh: str, workflow: str, head_sha: str) -> list[Any]:
     return payload
 
 
+def load_default_branch(repo: str, gh: str) -> str:
+    payload = run_gh_json(
+        gh,
+        ["repo", "view", repo, "--json", "defaultBranchRef"],
+        "gh repo view default branch",
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("gh repo view returned an unexpected default branch payload")
+    default_branch = payload.get("defaultBranchRef")
+    if not isinstance(default_branch, dict):
+        raise ValueError("gh repo view did not return defaultBranchRef")
+    name = default_branch.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("gh repo view did not return a default branch name")
+    return name.strip()
+
+
+def load_branch_head(repo: str, gh: str, branch: str) -> str:
+    normalized_branch = branch.strip()
+    if not normalized_branch:
+        raise ValueError("release branch name is required")
+    payload = run_gh_json(
+        gh,
+        ["api", f"repos/{repo}/branches/{quote(normalized_branch, safe='')}"],
+        "gh api branch",
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("gh api branch returned an unexpected payload")
+    commit = payload.get("commit")
+    if not isinstance(commit, dict):
+        raise ValueError("gh api branch did not return commit metadata")
+    sha = commit.get("sha")
+    if not isinstance(sha, str) or not sha.strip():
+        raise ValueError("gh api branch did not return a commit SHA")
+    return sha.strip()
+
+
 def audit_ci_readiness(
     *,
     required: bool,
@@ -576,12 +638,56 @@ def audit_ci_readiness(
     )
 
 
+def audit_release_branch_readiness(
+    *,
+    required: bool,
+    branch: str,
+    target_sha: str,
+    branch_sha: str,
+) -> ReleaseBranchReadiness:
+    normalized_branch = branch.strip() or DEFAULT_RELEASE_BRANCH
+    normalized_target = target_sha.strip()
+    normalized_branch_sha = branch_sha.strip()
+    if not required:
+        return ReleaseBranchReadiness(
+            checked=False,
+            required=False,
+            ready=True,
+            branch=normalized_branch,
+            target_sha=normalized_target,
+            branch_sha=normalized_branch_sha,
+            issues=(),
+        )
+
+    issues: list[str] = []
+    if not SHA_RE.fullmatch(normalized_target):
+        issues.append("release target SHA is missing or invalid")
+    if not SHA_RE.fullmatch(normalized_branch_sha):
+        issues.append(f"release branch {normalized_branch} head SHA is missing or invalid")
+    if not issues and normalized_target.lower() != normalized_branch_sha.lower():
+        issues.append(
+            "release target "
+            f"{normalized_target[:12]} does not match {normalized_branch} head "
+            f"{normalized_branch_sha[:12]}"
+        )
+    return ReleaseBranchReadiness(
+        checked=True,
+        required=True,
+        ready=not issues,
+        branch=normalized_branch,
+        target_sha=normalized_target,
+        branch_sha=normalized_branch_sha,
+        issues=tuple(issues),
+    )
+
+
 def combine_issues(
     release_secrets: Any,
     linux_repository: LinuxRepositoryReadiness,
     release_clobber: Any,
     npm_registry: NpmRegistryReadiness,
     ci: CiReadiness,
+    release_branch: ReleaseBranchReadiness,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     for name in release_secrets.missing:
@@ -598,6 +704,8 @@ def combine_issues(
         issues.append(f"npm registry readiness: {issue}")
     for issue in ci.issues:
         issues.append(f"CI readiness: {issue}")
+    for issue in release_branch.issues:
+        issues.append(f"release branch readiness: {issue}")
     return tuple(issues)
 
 
@@ -616,6 +724,10 @@ def audit_tagged_release_readiness(
     ci_workflow: str = DEFAULT_CI_WORKFLOW,
     ci_head_sha: str = "",
     ci_runs_payload: list[Any] | None = None,
+    release_branch_required: bool = False,
+    release_branch: str = DEFAULT_RELEASE_BRANCH,
+    release_target_sha: str = "",
+    release_branch_sha: str = "",
 ) -> TaggedReleaseReadiness:
     release_secrets = audit_secret_names(repo, secret_names)
     linux_repository = audit_linux_repository(repo, variable_values, secret_names, pages_payload)
@@ -631,7 +743,20 @@ def audit_tagged_release_readiness(
         head_sha=ci_head_sha,
         runs_payload=ci_runs_payload,
     )
-    issues = combine_issues(release_secrets, linux_repository, release_clobber, npm_registry, ci)
+    branch_readiness = audit_release_branch_readiness(
+        required=release_branch_required,
+        branch=release_branch,
+        target_sha=release_target_sha,
+        branch_sha=release_branch_sha,
+    )
+    issues = combine_issues(
+        release_secrets,
+        linux_repository,
+        release_clobber,
+        npm_registry,
+        ci,
+        branch_readiness,
+    )
     return TaggedReleaseReadiness(
         repo=repo,
         tag=tag,
@@ -642,6 +767,7 @@ def audit_tagged_release_readiness(
         release_clobber=release_clobber,
         npm_registry=npm_registry,
         ci=ci,
+        release_branch=branch_readiness,
         issues=issues,
     )
 
@@ -650,9 +776,11 @@ def print_text_report(report: TaggedReleaseReadiness) -> None:
     if report.ready:
         npm_note = " with npm registry check" if report.npm_registry.checked else ""
         ci_note = " and CI check" if report.ci.checked else ""
+        branch_note = " and release branch check" if report.release_branch.checked else ""
         print(
             "Tagged release readiness passed"
-            f"{npm_note}{ci_note}: {report.repo}@{report.tag} ({report.linux_repository.mode})"
+            f"{npm_note}{ci_note}{branch_note}: "
+            f"{report.repo}@{report.tag} ({report.linux_repository.mode})"
         )
         return
 
@@ -699,7 +827,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ci-only",
         action="store_true",
-        help="only check the tag target CI workflow status and skip release secret/repository checks",
+        help="only check tag target CI/default-branch status and skip release secret/repository checks",
+    )
+    parser.add_argument(
+        "--require-default-branch-head",
+        action="store_true",
+        help="fail unless the release target commit matches the repository default branch head",
+    )
+    parser.add_argument(
+        "--release-branch",
+        default="",
+        help="release branch name to compare against; defaults to the repository default branch",
+    )
+    parser.add_argument(
+        "--release-target-head",
+        default="",
+        help="commit SHA to compare against the release branch head; defaults to --ci-head or current git HEAD",
     )
     parser.add_argument("--json", action="store_true", help="print a machine-readable report")
     parser.add_argument("--gh", default="", help=argparse.SUPPRESS)
@@ -716,7 +859,15 @@ def main() -> int:
         gh = args.gh or find_gh()
         repo = args.repo.strip() or infer_repo(gh)
         if args.ci_only:
-            ci_head_sha = args.ci_head.strip() or resolve_git_head()
+            release_target_sha = args.release_target_head.strip()
+            ci_head_sha = args.ci_head.strip() or release_target_sha or resolve_git_head()
+            release_target_sha = release_target_sha or ci_head_sha
+            if (
+                args.ci_head.strip()
+                and args.release_target_head.strip()
+                and args.ci_head.strip().lower() != args.release_target_head.strip().lower()
+            ):
+                raise ValueError("CI head and release target head must match")
             ci_runs_payload = load_ci_runs(repo, gh, args.ci_workflow, ci_head_sha)
             ci_report = audit_ci_readiness(
                 required=True,
@@ -724,6 +875,18 @@ def main() -> int:
                 head_sha=ci_head_sha,
                 runs_payload=ci_runs_payload,
             )
+            release_branch = ""
+            release_branch_sha = ""
+            if args.require_default_branch_head:
+                release_branch = args.release_branch.strip() or load_default_branch(repo, gh)
+                release_branch_sha = load_branch_head(repo, gh, release_branch)
+            branch_report = audit_release_branch_readiness(
+                required=args.require_default_branch_head,
+                branch=release_branch,
+                target_sha=release_target_sha,
+                branch_sha=release_branch_sha,
+            )
+            ready = ci_report.ready and branch_report.ready
             if args.json:
                 payload = ci_report.as_json()
                 payload.update(
@@ -731,6 +894,8 @@ def main() -> int:
                         "schema": "conu.githubTaggedReleaseCiReadiness.v1",
                         "repo": repo,
                         "tag": tag,
+                        "ready": ready,
+                        "releaseBranch": branch_report.as_json(),
                         "payloadDisplayed": False,
                         "tokenDisplayed": False,
                         "tokenHashDisplayed": False,
@@ -739,7 +904,7 @@ def main() -> int:
                     }
                 )
                 print(json.dumps(payload, indent=2, sort_keys=True))
-            elif ci_report.ready:
+            elif ready:
                 print(
                     "Tagged release CI readiness passed: "
                     f"{repo}@{tag} {ci_report.workflow} {ci_report.head_sha[:12]}"
@@ -748,15 +913,35 @@ def main() -> int:
                 print(f"Tagged release CI readiness failed for {repo}@{tag}", file=sys.stderr)
                 for issue in ci_report.issues:
                     print(f"issue: {issue}", file=sys.stderr)
-            return 0 if ci_report.ready else 1
+                for issue in branch_report.issues:
+                    print(f"issue: {issue}", file=sys.stderr)
+            return 0 if ready else 1
 
         secret_names = load_secret_names(repo, gh)
         variable_values = load_variable_values(repo, gh)
         ci_head_sha = args.ci_head.strip()
+        release_target_sha = args.release_target_head.strip()
+        if (
+            args.require_ci
+            and args.require_default_branch_head
+            and ci_head_sha
+            and release_target_sha
+            and ci_head_sha.lower() != release_target_sha.lower()
+        ):
+            raise ValueError("CI head and release target head must match")
+        resolved_head = ""
+        if args.require_ci or args.require_default_branch_head:
+            resolved_head = ci_head_sha or release_target_sha or resolve_git_head()
         ci_runs_payload = None
         if args.require_ci:
-            ci_head_sha = ci_head_sha or resolve_git_head()
+            ci_head_sha = ci_head_sha or resolved_head
             ci_runs_payload = load_ci_runs(repo, gh, args.ci_workflow, ci_head_sha)
+        release_branch = ""
+        release_branch_sha = ""
+        if args.require_default_branch_head:
+            release_target_sha = release_target_sha or ci_head_sha or resolved_head
+            release_branch = args.release_branch.strip() or load_default_branch(repo, gh)
+            release_branch_sha = load_branch_head(repo, gh, release_branch)
         release_module = load_script_module(
             "check-github-release-clobber-preflight.py",
             "check_github_release_clobber_loader_for_tagged_release",
@@ -783,6 +968,10 @@ def main() -> int:
             ci_workflow=args.ci_workflow,
             ci_head_sha=ci_head_sha,
             ci_runs_payload=ci_runs_payload,
+            release_branch_required=args.require_default_branch_head,
+            release_branch=release_branch,
+            release_target_sha=release_target_sha,
+            release_branch_sha=release_branch_sha,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Tagged release readiness failed: {exc}", file=sys.stderr)

@@ -111,6 +111,8 @@ def run_ready_pages_tests(module) -> None:
         raise AssertionError("npm registry should be skipped by default")
     if parsed["ci"]["checked"] is not False:
         raise AssertionError("CI check should be skipped by default")
+    if parsed["releaseBranch"]["checked"] is not False:
+        raise AssertionError("release branch check should be skipped by default")
 
 
 def run_ci_readiness_tests(module) -> None:
@@ -215,6 +217,77 @@ def run_ci_readiness_tests(module) -> None:
         raise AssertionError("invalid CI head SHA should fail readiness")
     if SENSITIVE_SENTINEL in json.dumps(invalid.as_json()):
         raise AssertionError("invalid CI readiness report leaked sensitive text")
+
+
+def run_release_branch_readiness_tests(module) -> None:
+    report = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        ci_required=True,
+        ci_head_sha="a" * 40,
+        ci_runs_payload=ci_success_payload(module),
+        release_branch_required=True,
+        release_branch="main",
+        release_target_sha="a" * 40,
+        release_branch_sha="a" * 40,
+    )
+    if not report.ready:
+        raise AssertionError(f"expected release branch readiness to pass: {report.issues!r}")
+    parsed = assert_safe_report(report)
+    if parsed["releaseBranch"]["checked"] is not True:
+        raise AssertionError("release branch readiness should be checked when required")
+    if parsed["releaseBranch"]["ready"] is not True:
+        raise AssertionError("matching branch head should be ready")
+    if parsed["releaseBranch"]["branchSha"] != "a" * 40:
+        raise AssertionError("branch SHA should be reported as metadata")
+
+    mismatch = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        release_branch_required=True,
+        release_branch="main",
+        release_target_sha="b" * 40,
+        release_branch_sha="c" * 40,
+    )
+    if mismatch.ready:
+        raise AssertionError("mismatched release target and branch head should fail")
+    parsed_mismatch = assert_safe_report(mismatch)
+    if "does not match main head" not in json.dumps(parsed_mismatch):
+        raise AssertionError("release branch mismatch issue was not reported")
+
+    invalid = module.audit_release_branch_readiness(
+        required=True,
+        branch="main",
+        target_sha="not-a-sha",
+        branch_sha="d" * 40,
+    )
+    if invalid.ready:
+        raise AssertionError("invalid release target SHA should fail")
+    if SENSITIVE_SENTINEL in json.dumps(invalid.as_json()):
+        raise AssertionError("invalid release branch report leaked sensitive text")
+
+    missing_branch = module.audit_release_branch_readiness(
+        required=True,
+        branch="main",
+        target_sha="e" * 40,
+        branch_sha="",
+    )
+    if missing_branch.ready:
+        raise AssertionError("missing release branch SHA should fail")
+    if "head SHA is missing or invalid" not in json.dumps(missing_branch.as_json()):
+        raise AssertionError("missing release branch SHA issue was not reported")
 
 
 def run_missing_secret_tests(module) -> None:
@@ -374,6 +447,7 @@ def main() -> int:
     run_tag_validation_tests(module)
     run_ready_pages_tests(module)
     run_ci_readiness_tests(module)
+    run_release_branch_readiness_tests(module)
     run_missing_secret_tests(module)
     run_custom_repository_tests(module)
     run_safe_failure_tests(module)
