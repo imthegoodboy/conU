@@ -146,6 +146,8 @@ required release secret names and reports only names plus line numbers on
 errors. Generate that file from the authoritative secret list with
 `python scripts/set-github-release-secrets.py --write-env-template .env.release`;
 the command writes empty values only and refuses to overwrite an existing file.
+Add `--env-file-only` when using the generated file to require every value to
+come from that file instead of falling back to exported shell variables.
 Add `-CheckLinuxRepositoryEndpoint -LinuxRepositoryBaseUrl <https-url>` after a
 custom hosted repository site is published to prove endpoint metadata and live
 Cache-Control headers match the generated policy.

@@ -283,6 +283,18 @@ def run_dry_run_tests(module) -> None:
 
 
 def run_env_file_main_tests(module) -> None:
+    def call_main(argv: list[str]) -> tuple[int, str]:
+        original_argv = sys.argv
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        sys.argv = argv
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                exit_code = module.main()
+        finally:
+            sys.argv = original_argv
+        return exit_code, stdout.getvalue() + stderr.getvalue()
+
     original = {name: os.environ.get(name) for name in module.REQUIRED_RELEASE_SECRETS}
     try:
         for name in module.REQUIRED_RELEASE_SECRETS:
@@ -291,30 +303,101 @@ def run_env_file_main_tests(module) -> None:
             env_file = Path(temp_dir) / ".env.release"
             write_required_env_file(env_file, module, SENSITIVE_SENTINEL)
 
-            original_argv = sys.argv
-            stdout = io.StringIO()
-            stderr = io.StringIO()
-            sys.argv = [
-                "set-github-release-secrets.py",
-                "--repo",
-                "owner/repo",
-                "--gh",
-                "gh",
-                "--env-file",
-                str(env_file),
-                "--dry-run",
-            ]
-            try:
-                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    exit_code = module.main()
-            finally:
-                sys.argv = original_argv
-
-            rendered = stdout.getvalue() + stderr.getvalue()
+            exit_code, rendered = call_main(
+                [
+                    "set-github-release-secrets.py",
+                    "--repo",
+                    "owner/repo",
+                    "--gh",
+                    "gh",
+                    "--env-file",
+                    str(env_file),
+                    "--dry-run",
+                ]
+            )
             if exit_code != 0:
                 raise AssertionError(f"expected env-file dry run to pass: {rendered}")
             if SENSITIVE_SENTINEL in rendered:
                 raise AssertionError("env-file dry-run output leaked a secret value")
+
+            exit_code, rendered = call_main(
+                [
+                    "set-github-release-secrets.py",
+                    "--repo",
+                    "owner/repo",
+                    "--gh",
+                    "gh",
+                    "--env-file",
+                    str(env_file),
+                    "--env-file-only",
+                    "--dry-run",
+                ]
+            )
+            if exit_code != 0:
+                raise AssertionError(f"expected env-file-only dry run to pass: {rendered}")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("env-file-only dry-run output leaked a secret value")
+
+            exit_code, rendered = call_main(
+                [
+                    "set-github-release-secrets.py",
+                    "--env-file-only",
+                    "--dry-run",
+                ]
+            )
+            if exit_code == 0 or "--env-file-only requires --env-file" not in rendered:
+                raise AssertionError(f"expected env-file-only without env-file to fail: {rendered}")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("env-file-only argument error leaked a secret value")
+
+            original_with_env = with_required_env(module, SENSITIVE_SENTINEL)
+            try:
+                missing_name = module.REQUIRED_RELEASE_SECRETS[0]
+                partial_env_file = Path(temp_dir) / "partial.env"
+                partial_lines = [
+                    f"{name}={SENSITIVE_SENTINEL}"
+                    for name in module.REQUIRED_RELEASE_SECRETS
+                    if name != missing_name
+                ]
+                partial_env_file.write_text("\n".join(partial_lines) + "\n", encoding="utf-8")
+                exit_code, rendered = call_main(
+                    [
+                        "set-github-release-secrets.py",
+                        "--repo",
+                        "owner/repo",
+                        "--gh",
+                        "gh",
+                        "--env-file",
+                        str(partial_env_file),
+                        "--env-file-only",
+                        "--dry-run",
+                    ]
+                )
+                if exit_code == 0:
+                    raise AssertionError("env-file-only should fail when the env file is incomplete")
+                if missing_name not in rendered:
+                    raise AssertionError("env-file-only missing-value report omitted the missing key")
+                if SENSITIVE_SENTINEL in rendered:
+                    raise AssertionError("env-file-only missing-value report leaked a secret value")
+
+                exit_code, rendered = call_main(
+                    [
+                        "set-github-release-secrets.py",
+                        "--repo",
+                        "owner/repo",
+                        "--gh",
+                        "gh",
+                        "--env-file",
+                        str(partial_env_file),
+                        "--dry-run",
+                    ]
+                )
+                if exit_code != 0:
+                    raise AssertionError("normal env-file mode should allow environment fallback")
+                if SENSITIVE_SENTINEL in rendered:
+                    raise AssertionError("normal env-file fallback output leaked a secret value")
+            finally:
+                restore_env(original_with_env)
     finally:
         restore_env(original)
 
@@ -384,6 +467,10 @@ def run_env_template_main_tests(module) -> None:
         ),
         (
             ["set-github-release-secrets.py", "--print-env-template", "--dry-run"],
+            "cannot be combined",
+        ),
+        (
+            ["set-github-release-secrets.py", "--print-env-template", "--env-file-only"],
             "cannot be combined",
         ),
         (
