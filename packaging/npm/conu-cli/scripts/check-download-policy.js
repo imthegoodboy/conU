@@ -2,6 +2,7 @@
 
 const {
   formatDownloadUrlForError,
+  validateDownloadRedirect,
   validateDownloadUrl,
   validateUnverifiedDownloadBase
 } = require("../lib/download-policy");
@@ -22,6 +23,32 @@ function main() {
   expectUnverifiedFail("https://github.com/imthegoodboy/conU/releases/download/v0.1.0", "loopback");
   expectUnverifiedFail("http://example.com/releases", "download URL must use HTTPS");
   expectUnverifiedFail("https://user:pass@localhost/releases", "embedded credentials");
+  expectRedirectPass(
+    "https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu.zip",
+    "https://objects.githubusercontent.com/github-production-release-asset/conu.zip"
+  );
+  expectRedirectPass("http://127.0.0.1:50123/conu.zip", "http://localhost:50124/conu.zip");
+  expectRedirectPass("https://localhost/conu.zip", "http://127.0.0.1:50123/conu.zip");
+  expectRedirectFail(
+    "https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu.zip",
+    "http://127.0.0.1:50123/conu.zip?token=secret",
+    "public and loopback"
+  );
+  expectRedirectFail(
+    "http://127.0.0.1:50123/conu.zip",
+    "https://example.com/conu.zip?token=secret",
+    "public and loopback"
+  );
+  expectRedirectFail(
+    "https://example.com/conu.zip",
+    "http://example.com/conu.zip",
+    "download URL must use HTTPS"
+  );
+  expectRedirectFail(
+    "https://example.com/conu.zip",
+    "https://user:pass@example.com/conu.zip",
+    "embedded credentials"
+  );
   expectDisplayUrl("https://example.com/conu.zip?token=secret#fragment", "https://example.com/conu.zip");
   console.log("download URL policy check passed");
 }
@@ -56,6 +83,22 @@ function expectUnverifiedFail(url, expectedMessage) {
     throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`expected unverified download policy failure: ${expectedMessage}`);
+}
+
+function expectRedirectPass(fromUrl, toUrl) {
+  validateDownloadRedirect(fromUrl, toUrl);
+}
+
+function expectRedirectFail(fromUrl, toUrl, expectedMessage) {
+  try {
+    validateDownloadRedirect(fromUrl, toUrl);
+  } catch (error) {
+    if (error.message.includes(expectedMessage)) {
+      return;
+    }
+    throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
+  }
+  throw new Error(`expected download redirect policy failure: ${expectedMessage}`);
 }
 
 function expectDisplayUrl(url, expected) {
