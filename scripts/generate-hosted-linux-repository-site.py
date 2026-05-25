@@ -28,6 +28,7 @@ CACHE_CONTROL_RULES = (
         "cacheControl": "no-cache",
         "reason": "Install snippets, endpoint metadata, and trust-anchor files must revalidate before use.",
         "paths": (
+            "/.nojekyll",
             "/README.txt",
             "/index.html",
             "/repository.json",
@@ -36,8 +37,10 @@ CACHE_CONTROL_RULES = (
             "/install/*",
             f"/{PUBLIC_KEY_NAME}",
             f"/{PUBLIC_KEY_NAME}.sha256",
+            "/apt/README.txt",
             f"/apt/{PUBLIC_KEY_NAME}",
             f"/apt/{PUBLIC_KEY_NAME}.sha256",
+            "/rpm/README.txt",
             f"/rpm/{PUBLIC_KEY_NAME}",
             f"/rpm/{PUBLIC_KEY_NAME}.sha256",
         ),

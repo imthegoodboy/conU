@@ -23,6 +23,7 @@ conu update download --policy-url https://github.com/imthegoodboy/conU/releases/
 conu update apply --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --artifact-file dist/update-downloads/conu-0.1.0-linux-x64.tar.gz --install-dir /usr/local/bin --target linux-x64 --gpg-verify --dry-run
 python scripts/check-release-update-download-gate.py
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
+python scripts/publish-hosted-linux-repository-s3.py dist/hosted-linux-repository-site --base-url https://packages.example.com/conu --bucket <bucket> --prefix <prefix> --dry-run
 python scripts/check-hosted-linux-repository-endpoint.py --base-url https://packages.example.com/conu --expected-version 0.1.0
 python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts/check-github-release-assets-published.py --repo imthegoodboy/conU --tag v0.1.0
@@ -162,13 +163,14 @@ public `conu update check --policy-url --gpg-verify`, public `conu update
 download --policy-url --target linux-x64 --gpg-verify`, and public `conu update
 apply --policy-url --target linux-x64 --gpg-verify --dry-run` before npm
 publication.
-The workflow then verifies and extracts the signed
-site ZIP into a GitHub Pages deployment artifact when the release uses the
-default repository Pages base URL. After a custom HTTPS endpoint is published,
-operators can run `scripts/check-hosted-linux-repository-endpoint.py` against
-that URL to prove endpoint metadata, `_headers`, `cache-policy.json`, and live
-`Cache-Control` headers match the generated policy. Custom DNS/TLS publication
-automation, package-manager submission, and unattended automatic update apply
+The workflow then verifies and extracts the signed site ZIP into a GitHub Pages
+deployment artifact when the release uses the default repository Pages base URL.
+When a custom repository base URL is configured, the supported path publishes
+that verified directory to an S3-compatible bucket/prefix with per-object
+`Cache-Control` from `cache-policy.json`, then runs
+`scripts/check-hosted-linux-repository-endpoint.py` against the live URL before
+npm publication. DNS records, certificates, CDN invalidation, non-S3 custom
+hosts, package-manager submission, and unattended automatic update apply
 behavior remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
