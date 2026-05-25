@@ -104,6 +104,7 @@ Instead of exporting values into the shell, maintainers may place the required
 
 ```sh
 python scripts/set-github-release-secrets.py --write-env-template .env.release
+python scripts/set-github-release-secrets.py --env-file .env.release --check-env-file
 python scripts/set-github-release-secrets.py --repo <owner/name> --env-file .env.release --env-file-only --dry-run --preflight-values --require-openssl
 ```
 
@@ -111,9 +112,12 @@ The template command writes only comments plus required secret names with empty
 values and refuses to overwrite an existing file. The env-file parser accepts
 only the required release secret names, rejects malformed, duplicate, or
 unsupported keys, and reports only names plus line numbers. Add
+`--check-env-file` to verify the filled file has every required name with a
+non-empty value before any GitHub lookup, upload, or value preflight. Add
 `--env-file-only` for the generated file path so stale exported environment
-variables cannot fill missing template entries. It must not be committed; the
-repository ignores `.env` and `.env.*` files by default.
+variables cannot fill missing template entries during dry-run or upload. It
+must not be committed; the repository ignores `.env` and `.env.*` files by
+default.
 
 That helper also runs the Linux GPG signing-secret preflight, suppresses
 preflight stdout/stderr to avoid leaking secret material from subprocesses, and

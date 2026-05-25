@@ -67,6 +67,8 @@ def run_env_template_tests(module) -> None:
     template = module.render_env_template(module.REQUIRED_RELEASE_SECRETS)
     if SENSITIVE_SENTINEL in template:
         raise AssertionError("env template leaked a secret value")
+    if "--check-env-file" not in template:
+        raise AssertionError("env template omitted local validation command")
     for name in module.REQUIRED_RELEASE_SECRETS:
         if f"{name}=" not in template:
             raise AssertionError(f"env template omitted {name}")
@@ -338,6 +340,36 @@ def run_env_file_main_tests(module) -> None:
             if SENSITIVE_SENTINEL in rendered:
                 raise AssertionError("env-file-only dry-run output leaked a secret value")
 
+            original_find_gh = module.find_gh
+            original_infer_repo = module.infer_repo
+            original_preflights = module.run_value_preflights
+
+            def forbidden_call(*_args, **_kwargs):
+                raise AssertionError("env-file check unexpectedly used setup dependency")
+
+            module.find_gh = forbidden_call
+            module.infer_repo = forbidden_call
+            module.run_value_preflights = forbidden_call
+            try:
+                exit_code, rendered = call_main(
+                    [
+                        "set-github-release-secrets.py",
+                        "--env-file",
+                        str(env_file),
+                        "--check-env-file",
+                    ]
+                )
+            finally:
+                module.find_gh = original_find_gh
+                module.infer_repo = original_infer_repo
+                module.run_value_preflights = original_preflights
+            if exit_code != 0:
+                raise AssertionError(f"expected env-file check to pass: {rendered}")
+            if "present: NPM_TOKEN" not in rendered:
+                raise AssertionError("env-file check output omitted checked secret names")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("env-file check output leaked a secret value")
+
             exit_code, rendered = call_main(
                 [
                     "set-github-release-secrets.py",
@@ -349,6 +381,31 @@ def run_env_file_main_tests(module) -> None:
                 raise AssertionError(f"expected env-file-only without env-file to fail: {rendered}")
             if SENSITIVE_SENTINEL in rendered:
                 raise AssertionError("env-file-only argument error leaked a secret value")
+
+            exit_code, rendered = call_main(
+                [
+                    "set-github-release-secrets.py",
+                    "--check-env-file",
+                ]
+            )
+            if exit_code == 0 or "--check-env-file requires --env-file" not in rendered:
+                raise AssertionError(f"expected check-env-file without env-file to fail: {rendered}")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("check-env-file argument error leaked a secret value")
+
+            exit_code, rendered = call_main(
+                [
+                    "set-github-release-secrets.py",
+                    "--env-file",
+                    str(env_file),
+                    "--check-env-file",
+                    "--preflight-values",
+                ]
+            )
+            if exit_code == 0 or "cannot be combined" not in rendered:
+                raise AssertionError(f"expected check-env-file setup combination to fail: {rendered}")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("check-env-file combination error leaked a secret value")
 
             original_with_env = with_required_env(module, SENSITIVE_SENTINEL)
             try:
@@ -379,6 +436,21 @@ def run_env_file_main_tests(module) -> None:
                     raise AssertionError("env-file-only missing-value report omitted the missing key")
                 if SENSITIVE_SENTINEL in rendered:
                     raise AssertionError("env-file-only missing-value report leaked a secret value")
+
+                exit_code, rendered = call_main(
+                    [
+                        "set-github-release-secrets.py",
+                        "--env-file",
+                        str(partial_env_file),
+                        "--check-env-file",
+                    ]
+                )
+                if exit_code == 0:
+                    raise AssertionError("env-file check should fail when the file is incomplete")
+                if missing_name not in rendered:
+                    raise AssertionError("env-file check missing-value report omitted the missing key")
+                if SENSITIVE_SENTINEL in rendered:
+                    raise AssertionError("env-file check missing-value report leaked a secret value")
 
                 exit_code, rendered = call_main(
                     [
@@ -471,6 +543,14 @@ def run_env_template_main_tests(module) -> None:
         ),
         (
             ["set-github-release-secrets.py", "--print-env-template", "--env-file-only"],
+            "cannot be combined",
+        ),
+        (
+            ["set-github-release-secrets.py", "--print-env-template", "--check-env-file"],
+            "cannot be combined",
+        ),
+        (
+            ["set-github-release-secrets.py", "--print-env-template", "--require-openssl"],
             "cannot be combined",
         ),
         (
