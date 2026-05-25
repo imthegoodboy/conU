@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import tempfile
+import zipfile
 from pathlib import Path
 
 
@@ -40,6 +41,56 @@ def main() -> int:
             "directory named as binary",
         )
 
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-test.zip"
+        write_zip(archive, {"conu-0.1.0-test/manifest.toml": 'target = "host"\n'})
+        target = smoke.read_manifest_target(archive)
+        if target != "host":
+            raise SystemExit(f"rooted manifest target: expected host, got {target}")
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-test.zip"
+        write_zip(archive, {"conu-9.9.9-test/manifest.toml": 'target = "host"\n'})
+        expect_action_failure(
+            lambda: smoke.read_manifest_target(archive),
+            "unexpected archive root",
+            "unexpected manifest root",
+        )
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-mixed.zip"
+        write_zip(
+            archive,
+            {
+                "manifest.toml": 'target = "host"\n',
+                "conu-0.1.0-mixed/bin/conu": "placeholder",
+            },
+        )
+        expect_action_failure(
+            lambda: smoke.read_manifest_target(archive),
+            "mixes rooted and rootless",
+            "mixed manifest root style",
+        )
+
+    with fixture_dir() as root:
+        archive = Path("conu-0.1.0-test.zip")
+        expected_root = root / "conu-0.1.0-test"
+        expected_root.mkdir()
+        expected_root.joinpath("manifest.toml").write_text('target = "host"\n', encoding="utf-8")
+        resolved = smoke.find_package_root(archive, root)
+        if resolved != expected_root:
+            raise SystemExit(f"rooted package root: expected {expected_root}, got {resolved}")
+
+    with fixture_dir() as root:
+        wrong_root = root / "conu-9.9.9-test"
+        wrong_root.mkdir()
+        wrong_root.joinpath("manifest.toml").write_text('target = "host"\n', encoding="utf-8")
+        expect_action_failure(
+            lambda: smoke.find_package_root(Path("conu-0.1.0-test.zip"), root),
+            "unexpected archive root",
+            "unexpected extracted root",
+        )
+
     print("npm launcher local smoke preflight check passed")
     return 0
 
@@ -72,9 +123,25 @@ def write_binaries(bin_dir: Path, smoke, skip: str | None = None) -> None:
         bin_dir.joinpath(f"{name}{suffix}").write_text(name, encoding="utf-8")
 
 
+def write_zip(path: Path, members: dict[str, bytes | str]) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as package:
+        for name, content in members.items():
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            package.writestr(name, content)
+
+
 def expect_failure(smoke, bin_dir: Path, expected: str, label: str) -> None:
+    expect_action_failure(
+        lambda: smoke.verify_archive_binaries(Path("fixture.zip"), bin_dir),
+        expected,
+        label,
+    )
+
+
+def expect_action_failure(action, expected: str, label: str) -> None:
     try:
-        smoke.verify_archive_binaries(Path("fixture.zip"), bin_dir)
+        action()
     except SystemExit as exc:
         message = str(exc)
         if expected in message:
