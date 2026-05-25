@@ -6,6 +6,7 @@ param(
     [switch]$SkipSmokes,
     [switch]$CheckGitHubReleaseSecrets,
     [switch]$CheckGitHubBranchProtection,
+    [switch]$CheckGitHubActionsPermissions,
     [switch]$CheckPlatformSigningSecrets,
     [switch]$CheckGitHubPages,
     [switch]$CheckTaggedReleaseReadiness,
@@ -21,6 +22,7 @@ param(
     [string]$GitHubBranchProtectionBranch = "main",
     [switch]$RequireGitHubBranchPrReviews,
     [switch]$RequireGitHubBranchAdminEnforcement,
+    [switch]$RequireGitHubActionsShaPinning,
     [switch]$NpmRegistryCheck
 )
 
@@ -264,7 +266,7 @@ try {
 
     if (-not $SmokeOnly -and -not $SkipPackages) {
         Invoke-ReadinessStep "python compile" {
-            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/generate-package-manager-manifests.py scripts/check-package-manager-manifests.py scripts/prepare-package-manager-submissions.py scripts/check-package-manager-submissions.py scripts/generate-hosted-linux-repositories.py scripts/check-hosted-linux-repositories.py scripts/generate-hosted-linux-repository-site.py scripts/check-hosted-linux-repository-site.py scripts/prepare-hosted-linux-repository-pages.py scripts/check-hosted-linux-repository-pages.py scripts/check-hosted-linux-repository-endpoint.py scripts/check-hosted-linux-repository-endpoint-regression.py scripts/publish-hosted-linux-repository-s3.py scripts/check-hosted-linux-repository-s3-publication.py scripts/generate-release-update-policy.py scripts/check-release-update-policy.py scripts/check-release-update-download-gate.py scripts/linux_gpg_common.py scripts/check-linux-signing-secrets-preflight.py scripts/check-linux-signing-secrets-preflight-regression.py scripts/check-platform-signing-secrets-preflight.py scripts/check-platform-signing-secrets-preflight-regression.py scripts/github_release_secrets.py scripts/check-github-release-secret-readiness.py scripts/check-github-release-secret-readiness-regression.py scripts/check-github-main-protection.py scripts/check-github-main-protection-regression.py scripts/check-github-pages-readiness.py scripts/check-github-pages-readiness-regression.py scripts/check-tagged-release-readiness.py scripts/check-tagged-release-readiness-regression.py scripts/check-github-release-assets-published.py scripts/check-github-release-assets-published-regression.py scripts/check-github-release-clobber-preflight.py scripts/check-github-release-clobber-preflight-regression.py scripts/set-github-release-secrets.py scripts/set-github-release-secrets-regression.py scripts/sign-rpm-packages.py scripts/check-rpm-package-signing.py scripts/sign-linux-release-assets.py scripts/check-linux-release-signing.py scripts/sign-linux-repository-metadata.py scripts/check-linux-repository-signing.py scripts/export-linux-gpg-public-key.py scripts/check-linux-gpg-public-key-export.py scripts/check-release-artifact-verifier.py scripts/check-release-artifact-smoke-preflight.py scripts/check-npm-launcher-local-smoke-preflight.py scripts/check-npm-publish-preflight.py scripts/check-npm-publish-preflight-regression.py
+            & python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py scripts/verify-release-versions.py scripts/verify-release-artifacts.py scripts/verify-npm-package-contents.py scripts/generate-package-manager-manifests.py scripts/check-package-manager-manifests.py scripts/prepare-package-manager-submissions.py scripts/check-package-manager-submissions.py scripts/generate-hosted-linux-repositories.py scripts/check-hosted-linux-repositories.py scripts/generate-hosted-linux-repository-site.py scripts/check-hosted-linux-repository-site.py scripts/prepare-hosted-linux-repository-pages.py scripts/check-hosted-linux-repository-pages.py scripts/check-hosted-linux-repository-endpoint.py scripts/check-hosted-linux-repository-endpoint-regression.py scripts/publish-hosted-linux-repository-s3.py scripts/check-hosted-linux-repository-s3-publication.py scripts/generate-release-update-policy.py scripts/check-release-update-policy.py scripts/check-release-update-download-gate.py scripts/linux_gpg_common.py scripts/check-linux-signing-secrets-preflight.py scripts/check-linux-signing-secrets-preflight-regression.py scripts/check-platform-signing-secrets-preflight.py scripts/check-platform-signing-secrets-preflight-regression.py scripts/github_release_secrets.py scripts/check-github-release-secret-readiness.py scripts/check-github-release-secret-readiness-regression.py scripts/check-github-main-protection.py scripts/check-github-main-protection-regression.py scripts/check-github-actions-permissions.py scripts/check-github-actions-permissions-regression.py scripts/check-github-pages-readiness.py scripts/check-github-pages-readiness-regression.py scripts/check-tagged-release-readiness.py scripts/check-tagged-release-readiness-regression.py scripts/check-github-release-assets-published.py scripts/check-github-release-assets-published-regression.py scripts/check-github-release-clobber-preflight.py scripts/check-github-release-clobber-preflight-regression.py scripts/set-github-release-secrets.py scripts/set-github-release-secrets-regression.py scripts/sign-rpm-packages.py scripts/check-rpm-package-signing.py scripts/sign-linux-release-assets.py scripts/check-linux-release-signing.py scripts/sign-linux-repository-metadata.py scripts/check-linux-repository-signing.py scripts/export-linux-gpg-public-key.py scripts/check-linux-gpg-public-key-export.py scripts/check-release-artifact-verifier.py scripts/check-release-artifact-smoke-preflight.py scripts/check-npm-launcher-local-smoke-preflight.py scripts/check-npm-publish-preflight.py scripts/check-npm-publish-preflight-regression.py
         }
         Invoke-ReadinessStep "release version consistency" {
             & python scripts/verify-release-versions.py
@@ -295,6 +297,9 @@ try {
         }
         Invoke-ReadinessStep "GitHub main branch protection regression" {
             & python scripts/check-github-main-protection-regression.py
+        }
+        Invoke-ReadinessStep "GitHub Actions permissions regression" {
+            & python scripts/check-github-actions-permissions-regression.py
         }
         Invoke-ReadinessStep "GitHub Pages readiness regression" {
             & python scripts/check-github-pages-readiness-regression.py
@@ -387,6 +392,19 @@ try {
         }
         Invoke-ReadinessStep "GitHub main branch protection readiness" {
             & python @branchProtectionArgs
+        }
+    }
+
+    if ($CheckGitHubActionsPermissions) {
+        $actionsPermissionsArgs = @("scripts/check-github-actions-permissions.py")
+        if (-not [string]::IsNullOrWhiteSpace($GitHubRepo)) {
+            $actionsPermissionsArgs += @("--repo", $GitHubRepo)
+        }
+        if ($RequireGitHubActionsShaPinning) {
+            $actionsPermissionsArgs += @("--require-sha-pinning")
+        }
+        Invoke-ReadinessStep "GitHub Actions permissions readiness" {
+            & python @actionsPermissionsArgs
         }
     }
 
