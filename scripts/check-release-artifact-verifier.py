@@ -15,7 +15,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIER_PATH = ROOT / "scripts" / "verify-release-artifacts.py"
-PREFIX = "conu-0.1.0-test"
 REQUIRED_FILES = {
     "manifest.toml": b'payload_contents_included = false\n',
     "bin/conu": b"placeholder",
@@ -50,10 +49,22 @@ def write_checksum(path: Path, archive_name: str | None = None, hash_text: str |
     path.with_name(f"{path.name}.sha256").write_text(f"{digest}  {name}\n", encoding="ascii")
 
 
-def write_zip(path: Path, extra: dict[str, bytes] | None = None) -> None:
+def archive_prefix(path: Path) -> str:
+    if path.name.endswith(".tar.gz"):
+        return path.name[: -len(".tar.gz")]
+    return path.stem
+
+
+def write_zip(
+    path: Path,
+    extra: dict[str, bytes] | None = None,
+    *,
+    prefix: str | None = None,
+) -> None:
+    prefix = prefix or archive_prefix(path)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as package:
         for name, content in REQUIRED_FILES.items():
-            package.writestr(f"{PREFIX}/{name}", content)
+            package.writestr(f"{prefix}/{name}", content)
         for name, content in (extra or {}).items():
             package.writestr(name, content)
     write_checksum(path)
@@ -119,11 +130,12 @@ def corrupt_zip_member_data(path: Path, member_name: str) -> None:
     raise AssertionError(f"zip member not found for corruption: {member_name}")
 
 
-def write_tar(path: Path) -> None:
+def write_tar(path: Path, *, prefix: str | None = None) -> None:
+    prefix = prefix or archive_prefix(path)
     with tarfile.open(path, "w:gz") as package:
         for name, content in REQUIRED_FILES.items():
             data = io.BytesIO(content)
-            info = tarfile.TarInfo(f"{PREFIX}/{name}")
+            info = tarfile.TarInfo(f"{prefix}/{name}")
             info.size = len(content)
             package.addfile(info, data)
     write_checksum(path)
@@ -195,7 +207,7 @@ def main() -> int:
         )
 
         duplicate = root / "conu-0.1.0-duplicate.zip"
-        write_zip(duplicate, {"manifest.toml": b"duplicate"})
+        write_zip(duplicate, {f"{archive_prefix(duplicate)}/./manifest.toml": b"duplicate"})
         expect_failure(
             "duplicate normalized path",
             lambda: verifier.archive_members(duplicate),
@@ -204,7 +216,7 @@ def main() -> int:
 
         encrypted = root / "conu-0.1.0-encrypted.zip"
         write_zip(encrypted)
-        mark_zip_member_encrypted(encrypted, f"{PREFIX}/bin/conu")
+        mark_zip_member_encrypted(encrypted, f"{archive_prefix(encrypted)}/bin/conu")
         expect_failure(
             "encrypted zip member",
             lambda: verifier.archive_members(encrypted),
@@ -213,7 +225,7 @@ def main() -> int:
 
         corrupt_member = root / "conu-0.1.0-corrupt-member.zip"
         write_zip(corrupt_member)
-        corrupt_zip_member_data(corrupt_member, f"{PREFIX}/bin/conu")
+        corrupt_zip_member_data(corrupt_member, f"{archive_prefix(corrupt_member)}/bin/conu")
         expect_failure(
             "corrupt zip member",
             lambda: verifier.archive_members(corrupt_member),
@@ -221,7 +233,7 @@ def main() -> int:
         )
 
         forbidden = root / "conu-0.1.0-forbidden.zip"
-        write_zip(forbidden, {f"{PREFIX}/.conu/node.toml": b"state"})
+        write_zip(forbidden, {f"{archive_prefix(forbidden)}/.conu/node.toml": b"state"})
         expect_failure(
             "forbidden state path",
             lambda: verify_archive(verifier, forbidden),
@@ -229,15 +241,31 @@ def main() -> int:
         )
 
         forbidden_dir = root / "conu-0.1.0-forbidden-dir.zip"
-        write_zip(forbidden_dir, {f"{PREFIX}/security/": b""})
+        write_zip(forbidden_dir, {f"{archive_prefix(forbidden_dir)}/security/": b""})
         expect_failure(
             "forbidden state directory",
             lambda: verify_archive(verifier, forbidden_dir),
             "forbidden state path",
         )
 
+        wrong_root = root / "conu-0.1.0-wrong-root.zip"
+        write_zip(wrong_root, prefix="conu-9.9.9-test")
+        expect_failure(
+            "unexpected archive root",
+            lambda: verifier.archive_members(wrong_root),
+            "unexpected archive root",
+        )
+
+        mixed_root = root / "conu-0.1.0-mixed-root.zip"
+        write_zip(mixed_root, {"bin/conu": b"rootless duplicate"})
+        expect_failure(
+            "mixed rooted and rootless archive paths",
+            lambda: verifier.archive_members(mixed_root),
+            "mixes rooted and rootless",
+        )
+
         data_dir = root / "conu-0.1.0-data-dir.zip"
-        write_zip(data_dir, {f"{PREFIX}/docs/": b"payload"})
+        write_zip(data_dir, {f"{archive_prefix(data_dir)}/docs/": b"payload"})
         expect_failure(
             "data-bearing directory",
             lambda: verifier.archive_members(data_dir),

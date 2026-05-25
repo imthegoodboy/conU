@@ -7372,7 +7372,7 @@ fn stage_update_zip_archive(
     let mut archive = zip::ZipArchive::new(reader)
         .map_err(|error| format!("release update ZIP archive is invalid: {error}"))?;
     let staging_dir = UpdateDownloadDir::create()?;
-    let mut scan = UpdateArchiveScan::new(target)?;
+    let mut scan = UpdateArchiveScan::new(target, archive_name)?;
 
     for index in 0..archive.len() {
         let mut file = archive
@@ -7421,7 +7421,7 @@ fn stage_update_tar_gz_archive(
     let decoder = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(decoder);
     let staging_dir = UpdateDownloadDir::create()?;
-    let mut scan = UpdateArchiveScan::new(target)?;
+    let mut scan = UpdateArchiveScan::new(target, archive_name)?;
     let entries = archive
         .entries()
         .map_err(|error| format!("release update tar archive is invalid: {error}"))?;
@@ -7478,6 +7478,8 @@ fn stage_update_tar_gz_archive(
 
 struct UpdateArchiveScan {
     target: String,
+    expected_root: String,
+    root_style: Option<UpdateArchiveRootStyle>,
     expected_binaries: Vec<(String, String)>,
     paths: HashSet<String>,
     binaries: Vec<StagedUpdateBinary>,
@@ -7487,15 +7489,24 @@ struct UpdateArchiveScan {
     unpacked_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateArchiveRootStyle {
+    Rooted,
+    Rootless,
+}
+
 impl UpdateArchiveScan {
-    fn new(target: &str) -> Result<Self, String> {
+    fn new(target: &str, archive_name: &str) -> Result<Self, String> {
         let suffix = update_binary_suffix_for_target(target)?;
+        let expected_root = expected_update_archive_root(archive_name)?;
         let expected_binaries = UPDATE_BINARY_NAMES
             .iter()
             .map(|name| ((*name).to_string(), format!("bin/{}{}", name, suffix)))
             .collect();
         Ok(Self {
             target: target.to_string(),
+            expected_root,
+            root_style: None,
             expected_binaries,
             paths: HashSet::new(),
             binaries: Vec::new(),
@@ -7524,7 +7535,11 @@ impl UpdateArchiveScan {
                 "release update archive member is too large: {raw_name}"
             ));
         }
-        let normalized = normalize_update_archive_member(raw_name)?;
+        let (normalized, root_style) =
+            normalize_update_archive_member(raw_name, &self.expected_root)?;
+        if let Some(root_style) = root_style {
+            self.record_root_style(archive_name, raw_name, root_style)?;
+        }
         if normalized.is_empty() {
             return Ok(normalized);
         }
@@ -7546,6 +7561,24 @@ impl UpdateArchiveScan {
             self.reject_unexpected_binary_path(&normalized)?;
         }
         Ok(normalized)
+    }
+
+    fn record_root_style(
+        &mut self,
+        archive_name: &str,
+        raw_name: &str,
+        root_style: UpdateArchiveRootStyle,
+    ) -> Result<(), String> {
+        if let Some(existing) = self.root_style {
+            if existing != root_style {
+                return Err(format!(
+                    "release update archive {archive_name} mixes rooted and rootless members: {raw_name}"
+                ));
+            }
+        } else {
+            self.root_style = Some(root_style);
+        }
+        Ok(())
     }
 
     fn reject_unexpected_binary_path(&self, normalized: &str) -> Result<(), String> {
@@ -7647,7 +7680,21 @@ impl UpdateArchiveScan {
     }
 }
 
-fn normalize_update_archive_member(name: &str) -> Result<String, String> {
+fn expected_update_archive_root(archive_name: &str) -> Result<String, String> {
+    let root = archive_name
+        .strip_suffix(".tar.gz")
+        .or_else(|| archive_name.strip_suffix(".zip"))
+        .ok_or_else(|| {
+            format!("release update artifact {archive_name} must be a .tar.gz or .zip archive")
+        })?;
+    validate_public_asset_name(root, "release update archive root")?;
+    Ok(root.to_string())
+}
+
+fn normalize_update_archive_member(
+    name: &str,
+    expected_root: &str,
+) -> Result<(String, Option<UpdateArchiveRootStyle>), String> {
     let normalized = name.replace('\\', "/");
     if normalized.contains(':') || normalized.contains('\0') {
         return Err(format!(
@@ -7680,10 +7727,23 @@ fn normalize_update_archive_member(name: &str) -> Result<String, String> {
             }
         }
     }
-    if parts.first().is_some_and(|part| part.starts_with("conu-")) {
+    let root_style = if let Some(first) = parts.first() {
+        if first == expected_root {
+            Some(UpdateArchiveRootStyle::Rooted)
+        } else if first.starts_with("conu-") {
+            return Err(format!(
+                "release update archive contains unexpected root {first}; expected {expected_root}"
+            ));
+        } else {
+            Some(UpdateArchiveRootStyle::Rootless)
+        }
+    } else {
+        None
+    };
+    if root_style == Some(UpdateArchiveRootStyle::Rooted) {
         parts.remove(0);
     }
-    Ok(parts.join("/"))
+    Ok((parts.join("/"), root_style))
 }
 
 fn read_update_archive_member_limited<R: Read>(
@@ -10880,6 +10940,69 @@ mod tests {
     }
 
     #[test]
+    fn update_apply_rejects_unexpected_archive_root_before_install() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let wrong_root = format!("conu-9.9.9-{target}");
+        let archive_bytes = update_archive_fixture_bytes_with_root(&target, &wrong_root, false);
+        let archive_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-wrong-root");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
+        let install_dir = home.join("install-bin");
+
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--dry-run",
+            "--json",
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("unexpected root"));
+        assert!(!output.stderr.contains("fixture binary bytes"));
+        assert!(!install_dir.exists());
+    }
+
+    #[test]
+    fn update_apply_rejects_mixed_rooted_and_rootless_archive_before_install() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let archive_bytes = update_archive_fixture_bytes_with_mixed_root(&target);
+        let archive_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-mixed-root");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
+        let install_dir = home.join("install-bin");
+
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--dry-run",
+            "--json",
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("mixes rooted and rootless"));
+        assert!(!output.stderr.contains("fixture binary bytes"));
+        assert!(!install_dir.exists());
+    }
+
+    #[test]
     fn update_apply_requires_dry_run_or_confirm() {
         let output = run([
             "update",
@@ -12353,9 +12476,17 @@ mod tests {
     }
 
     fn update_archive_fixture_bytes(target: &str, unsafe_member: bool) -> Vec<u8> {
+        let root = format!("conu-0.1.0-{target}");
+        update_archive_fixture_bytes_with_root(target, &root, unsafe_member)
+    }
+
+    fn update_archive_fixture_bytes_with_root(
+        target: &str,
+        root: &str,
+        unsafe_member: bool,
+    ) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut builder = tar::Builder::new(encoder);
-        let root = format!("conu-0.1.0-{target}");
         let manifest = format!(
             "version = \"0.1.0\"\ntarget = \"{target}\"\npayload_contents_included = false\n"
         );
@@ -12376,6 +12507,30 @@ mod tests {
         if unsafe_member {
             append_update_archive_fixture_file(&mut builder, "../bin/conu", b"escape", 0o755);
         }
+        builder.finish().expect("tar builder finishes");
+        let encoder = builder.into_inner().expect("tar encoder returns");
+        encoder.finish().expect("gzip finishes")
+    }
+
+    fn update_archive_fixture_bytes_with_mixed_root(target: &str) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let root = format!("conu-0.1.0-{target}");
+        let manifest = format!(
+            "version = \"0.1.0\"\ntarget = \"{target}\"\npayload_contents_included = false\n"
+        );
+        append_update_archive_fixture_file(
+            &mut builder,
+            &format!("{root}/manifest.toml"),
+            manifest.as_bytes(),
+            0o644,
+        );
+        append_update_archive_fixture_file(
+            &mut builder,
+            &format!("bin/{}", update_binary_filename("conu")),
+            &update_archive_binary_bytes("conu"),
+            0o755,
+        );
         builder.finish().expect("tar builder finishes");
         let encoder = builder.into_inner().expect("tar encoder returns");
         encoder.finish().expect("gzip finishes")
