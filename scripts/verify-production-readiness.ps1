@@ -9,11 +9,14 @@ param(
     [switch]$CheckGitHubPages,
     [switch]$CheckTaggedReleaseReadiness,
     [switch]$RequireTaggedReleaseCi,
+    [switch]$RequireTaggedReleaseDefaultBranchHead,
     [switch]$CheckLinuxRepositoryEndpoint,
     [string]$LinuxRepositoryBaseUrl = $env:CONU_LINUX_REPOSITORY_BASE_URL,
     [string]$GitHubRepo = $env:GH_REPO,
     [string]$ReleaseTag = $env:CONU_RELEASE_TAG,
     [string]$TaggedReleaseCiHead = $env:CONU_RELEASE_CI_HEAD,
+    [string]$TaggedReleaseTargetHead = $env:CONU_RELEASE_TARGET_HEAD,
+    [string]$TaggedReleaseBranch = $env:CONU_RELEASE_BRANCH,
     [switch]$NpmRegistryCheck
 )
 
@@ -395,6 +398,15 @@ try {
             $taggedReadinessArgs += @("--require-ci")
             if (-not [string]::IsNullOrWhiteSpace($TaggedReleaseCiHead)) {
                 $taggedReadinessArgs += @("--ci-head", $TaggedReleaseCiHead)
+            }
+        }
+        if ($RequireTaggedReleaseDefaultBranchHead) {
+            $taggedReadinessArgs += @("--require-default-branch-head")
+            if (-not [string]::IsNullOrWhiteSpace($TaggedReleaseTargetHead)) {
+                $taggedReadinessArgs += @("--release-target-head", $TaggedReleaseTargetHead)
+            }
+            if (-not [string]::IsNullOrWhiteSpace($TaggedReleaseBranch)) {
+                $taggedReadinessArgs += @("--release-branch", $TaggedReleaseBranch)
             }
         }
         Invoke-ReadinessStep "tagged release readiness" {
