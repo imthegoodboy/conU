@@ -51,6 +51,21 @@ def release_payload() -> dict[str, object]:
     }
 
 
+def ci_success_payload(module) -> list[dict[str, object]]:
+    return [
+        {
+            "workflowName": module.DEFAULT_CI_WORKFLOW,
+            "headSha": "a" * 40,
+            "databaseId": 123,
+            "status": "completed",
+            "conclusion": "success",
+            "event": "push",
+            "createdAt": "2026-05-25T00:00:00Z",
+            "displayTitle": SENSITIVE_SENTINEL,
+        }
+    ]
+
+
 def all_release_secrets(module) -> set[str]:
     return set(module.REQUIRED_RELEASE_SECRETS)
 
@@ -94,6 +109,112 @@ def run_ready_pages_tests(module) -> None:
         raise AssertionError("expected github-pages repository mode")
     if parsed["npmRegistry"]["checked"] is not False:
         raise AssertionError("npm registry should be skipped by default")
+    if parsed["ci"]["checked"] is not False:
+        raise AssertionError("CI check should be skipped by default")
+
+
+def run_ci_readiness_tests(module) -> None:
+    report = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        ci_required=True,
+        ci_head_sha="a" * 40,
+        ci_runs_payload=ci_success_payload(module),
+    )
+    if not report.ready:
+        raise AssertionError(f"expected CI readiness to pass: {report.issues!r}")
+    parsed = assert_safe_report(report)
+    if parsed["ci"]["checked"] is not True:
+        raise AssertionError("CI readiness should be checked when required")
+    if parsed["ci"]["ready"] is not True:
+        raise AssertionError("successful CI run should be ready")
+    if parsed["ci"]["runId"] != 123:
+        raise AssertionError("CI run id should be reported as metadata")
+
+    missing = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        ci_required=True,
+        ci_head_sha="b" * 40,
+        ci_runs_payload=ci_success_payload(module),
+    )
+    if missing.ready:
+        raise AssertionError("missing CI run should fail readiness")
+    parsed_missing = assert_safe_report(missing)
+    if "no CI workflow run found" not in json.dumps(parsed_missing):
+        raise AssertionError("missing CI run issue was not reported")
+
+    failed = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        ci_required=True,
+        ci_head_sha="c" * 40,
+        ci_runs_payload=[
+            {
+                "workflowName": module.DEFAULT_CI_WORKFLOW,
+                "headSha": "c" * 40,
+                "databaseId": 456,
+                "status": "completed",
+                "conclusion": "failure",
+                "event": "push",
+                "createdAt": "2026-05-25T00:00:00Z",
+                "url": f"https://example.invalid/{SENSITIVE_SENTINEL}",
+            }
+        ],
+    )
+    if failed.ready:
+        raise AssertionError("failed CI run should fail readiness")
+    parsed_failed = assert_safe_report(failed)
+    if "concluded failure" not in json.dumps(parsed_failed):
+        raise AssertionError("failed CI conclusion was not reported")
+
+    running = module.audit_ci_readiness(
+        required=True,
+        workflow=module.DEFAULT_CI_WORKFLOW,
+        head_sha="d" * 40,
+        runs_payload=[
+            {
+                "workflowName": module.DEFAULT_CI_WORKFLOW,
+                "headSha": "d" * 40,
+                "databaseId": 789,
+                "status": "in_progress",
+                "conclusion": "",
+            }
+        ],
+    )
+    if running.ready:
+        raise AssertionError("running CI run should fail readiness")
+    if "in_progress" not in json.dumps(running.as_json()):
+        raise AssertionError("running CI status was not reported")
+
+    invalid = module.audit_ci_readiness(
+        required=True,
+        workflow=module.DEFAULT_CI_WORKFLOW,
+        head_sha="not-a-sha",
+        runs_payload=[],
+    )
+    if invalid.ready:
+        raise AssertionError("invalid CI head SHA should fail readiness")
+    if SENSITIVE_SENTINEL in json.dumps(invalid.as_json()):
+        raise AssertionError("invalid CI readiness report leaked sensitive text")
 
 
 def run_missing_secret_tests(module) -> None:
@@ -252,6 +373,7 @@ def main() -> int:
     module = load_module()
     run_tag_validation_tests(module)
     run_ready_pages_tests(module)
+    run_ci_readiness_tests(module)
     run_missing_secret_tests(module)
     run_custom_repository_tests(module)
     run_safe_failure_tests(module)
