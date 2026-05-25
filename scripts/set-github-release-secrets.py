@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Mapping
 
 from github_release_secrets import REQUIRED_RELEASE_SECRETS, find_gh, infer_repo
 
@@ -27,6 +28,54 @@ def collect_env_values(names: tuple[str, ...]) -> tuple[dict[str, str], tuple[st
     return values, tuple(missing)
 
 
+def load_env_file_values(path: Path, names: tuple[str, ...]) -> dict[str, str]:
+    allowed = set(names)
+    values: dict[str, str] = {}
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ValueError(f"env file is not readable: {path}") from exc
+    if not path.is_file():
+        raise ValueError(f"env file is not a regular file: {path}")
+    if stat.st_size > 128 * 1024:
+        raise ValueError(f"env file is too large: {path}")
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"env file must be UTF-8 text: {path}") from exc
+    except OSError as exc:
+        raise ValueError(f"env file is not readable: {path}") from exc
+
+    for line_number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            raise ValueError(f"env file line {line_number} is not KEY=VALUE")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in allowed:
+            raise ValueError(f"env file line {line_number} uses an unsupported key")
+        if key in values:
+            raise ValueError(f"env file line {line_number} duplicates key: {key}")
+        value = value.strip()
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in ("'", '"')
+        ):
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def missing_required_values(values: Mapping[str, str], names: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(name for name in names if not values.get(name))
+
+
 def set_secret(gh: str, repo: str, name: str, value: str) -> None:
     result = subprocess.run(
         [gh, "secret", "set", name, "--repo", repo],
@@ -41,7 +90,12 @@ def set_secret(gh: str, repo: str, name: str, value: str) -> None:
         raise ValueError(f"gh secret set {name} failed with exit code {result.returncode}")
 
 
-def run_value_preflights(*, require_openssl: bool, python_executable: str = sys.executable) -> None:
+def run_value_preflights(
+    *,
+    require_openssl: bool,
+    values: Mapping[str, str] | None = None,
+    python_executable: str = sys.executable,
+) -> None:
     platform_command = [
         python_executable,
         str(SCRIPT_DIR / "check-platform-signing-secrets-preflight.py"),
@@ -62,10 +116,15 @@ def run_value_preflights(*, require_openssl: bool, python_executable: str = sys.
             ],
         ),
     ]
+    env = None
+    if values is not None:
+        env = os.environ.copy()
+        env.update(values)
     for name, command in preflights:
         result = subprocess.run(
             command,
             check=False,
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -85,9 +144,9 @@ def configure_release_secrets(
     values: dict[str, str],
     dry_run: bool,
 ) -> tuple[str, ...]:
-    missing = tuple(name for name in REQUIRED_RELEASE_SECRETS if name not in values)
+    missing = missing_required_values(values, REQUIRED_RELEASE_SECRETS)
     if missing:
-        raise ValueError("missing local environment values: " + ", ".join(missing))
+        raise ValueError("missing local release secret values: " + ", ".join(missing))
 
     names = tuple(name for name in REQUIRED_RELEASE_SECRETS if name in values)
     if dry_run:
@@ -109,6 +168,14 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="validate local environment values and print secret names without writing them",
+    )
+    parser.add_argument(
+        "--env-file",
+        default="",
+        help=(
+            "optional UTF-8 KEY=VALUE file containing release secret values; "
+            "supported keys are the required release secret names only"
+        ),
     )
     parser.add_argument(
         "--preflight-values",
@@ -136,17 +203,22 @@ def main() -> int:
         if args.require_openssl and not args.preflight_values:
             raise ValueError("--require-openssl requires --preflight-values")
 
-        values, missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
+        values, _missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
+        if args.env_file:
+            values.update(
+                load_env_file_values(Path(args.env_file).expanduser(), REQUIRED_RELEASE_SECRETS)
+            )
+        missing = missing_required_values(values, REQUIRED_RELEASE_SECRETS)
         if missing:
             print_secret_names(
-                "GitHub release secret setup failed: missing local environment values:",
+                "GitHub release secret setup failed: missing local release secret values:",
                 missing,
                 sys.stderr,
             )
             return 1
 
         if args.preflight_values:
-            run_value_preflights(require_openssl=args.require_openssl)
+            run_value_preflights(require_openssl=args.require_openssl, values=values)
 
         gh = args.gh or find_gh()
         repo = args.repo.strip() or infer_repo(gh)
