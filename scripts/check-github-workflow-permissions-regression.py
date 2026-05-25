@@ -63,6 +63,7 @@ jobs:
       actions: read
       contents: read
       pages: read
+      security-events: read
     runs-on: ubuntu-latest
     steps:
       - run: echo preflight

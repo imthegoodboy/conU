@@ -19,6 +19,7 @@ Use this checklist before publishing any conU build.
 - Run `python scripts/check-github-main-protection.py --repo <owner/name>` before creating a release tag or marking the repository production-ready; it reports whether the default branch has strict required CI checks, force pushes disabled, and branch deletion disabled without printing tokens, logs, or branch-protection API bodies.
 - Run `python scripts/check-github-actions-permissions.py --repo <owner/name>` before creating a release tag or marking the repository production-ready; it verifies Actions are enabled, repository Actions admission is restricted to selected actions, the default workflow token is read-only, Actions cannot approve pull requests, GitHub-owned actions are allowed, and only the expected `dtolnay/rust-toolchain@stable` marketplace pattern is allowed.
 - Run `python scripts/check-github-workflow-permissions.py` before creating a release tag or marking the repository production-ready; it verifies every workflow declares explicit read-only top-level permissions, rejects unsafe trigger surfaces, and allows write scopes only on the known release jobs that publish attestations, GitHub Releases, Pages, or npm provenance.
+- Run `python scripts/check-github-repository-security.py --repo <owner/name>` before creating a release tag or marking the repository production-ready; it verifies Dependabot vulnerability alerts and security updates, secret scanning, push protection, and zero open Dependabot or secret-scanning alerts without printing alert bodies, tokens, repository secrets, logs, or payloads.
 - Run `python scripts/check-tagged-release-readiness.py --repo <owner/name> --tag v<version> --npm-registry-check --require-ci --require-default-branch-head` before creating a release tag; it combines live release-secret names, default Pages or custom S3 repository settings, GitHub Release clobber status, package version/tag consistency, optional npm registry conflict checks, the target commit's latest `CI` workflow status, and default branch head matching without printing secret values, release notes, asset URLs, logs, or variable values.
 - Run `python scripts/check-rpm-package-signing.py`; CI and release package gates use the same regression check to prove generated RPM package payloads can be signed with the fingerprint-pinned Linux GPG key, verified with native RPM tooling, refreshed with strict `.rpm.sha256` sidecars, used to generate RPM repository metadata, and failed closed on missing or mismatched fingerprint secrets.
 - Run `python scripts/check-linux-release-signing.py`; CI and release package gates use the same regression check to prove Linux detached signing selects Linux archives, generated Debian/RPM packages, APT/RPM repository metadata, hosted repository bundles/sites, and update-policy JSON files, verifies generated `.asc` signatures, supports hosted-bundle/site-only and update-policy-only signing, and fails closed when signing secrets are missing or the configured key fingerprint mismatches.
@@ -78,6 +79,7 @@ python scripts\check-hosted-linux-repository-pages.py
 python scripts\check-hosted-linux-repository-endpoint-regression.py
 python scripts\check-hosted-linux-repository-s3-publication.py
 python scripts\check-github-pages-readiness.py --repo imthegoodboy/conU
+python scripts\check-github-repository-security.py --repo imthegoodboy/conU
 python scripts\check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts\check-release-update-policy.py
 python scripts\check-release-update-download-gate.py
@@ -114,6 +116,7 @@ python scripts/check-hosted-linux-repository-pages.py
 python scripts/check-hosted-linux-repository-endpoint-regression.py
 python scripts/check-hosted-linux-repository-s3-publication.py
 python scripts/check-github-pages-readiness.py --repo imthegoodboy/conU
+python scripts/check-github-repository-security.py --repo imthegoodboy/conU
 python scripts/check-github-release-clobber-preflight.py --repo imthegoodboy/conU --tag v0.1.0
 python scripts/check-release-update-policy.py
 python scripts/check-linux-gpg-public-key-export.py

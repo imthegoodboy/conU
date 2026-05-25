@@ -24,6 +24,7 @@ ALLOWED_PERMISSION_KEYS = (
     "contents",
     "id-token",
     "pages",
+    "security-events",
 )
 TOP_LEVEL_PERMISSIONS = {
     "contents": "read",
@@ -33,6 +34,7 @@ EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
         "actions": "read",
         "contents": "read",
         "pages": "read",
+        "security-events": "read",
     },
     ("release.yml", "build"): {
         "contents": "read",
