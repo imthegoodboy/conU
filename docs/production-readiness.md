@@ -143,7 +143,9 @@ stdin when rerun without `--dry-run`.
 Use `--env-file .env.release` instead of exported shell values when the
 maintainer wants a local ignored `KEY=VALUE` file; the parser accepts only the
 required release secret names and reports only names plus line numbers on
-errors.
+errors. Generate that file from the authoritative secret list with
+`python scripts/set-github-release-secrets.py --write-env-template .env.release`;
+the command writes empty values only and refuses to overwrite an existing file.
 Add `-CheckLinuxRepositoryEndpoint -LinuxRepositoryBaseUrl <https-url>` after a
 custom hosted repository site is published to prove endpoint metadata and live
 Cache-Control headers match the generated policy.
