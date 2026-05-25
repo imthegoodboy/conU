@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,8 @@ NPM_MANIFESTS = (
     Path("packaging/npm/conu-cli/package.json"),
     Path("sdk/typescript/package.json"),
 )
+DEFAULT_CI_WORKFLOW = "CI"
+SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,36 @@ class NpmRegistryReadiness:
 
 
 @dataclass(frozen=True)
+class CiReadiness:
+    checked: bool
+    required: bool
+    ready: bool
+    workflow: str
+    head_sha: str
+    run_id: int | None
+    status: str
+    conclusion: str
+    event: str
+    created_at: str
+    issues: tuple[str, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "checked": self.checked,
+            "required": self.required,
+            "ready": self.ready,
+            "workflow": self.workflow,
+            "headSha": self.head_sha,
+            "runId": self.run_id,
+            "status": self.status,
+            "conclusion": self.conclusion,
+            "event": self.event,
+            "createdAt": self.created_at,
+            "issues": list(self.issues),
+        }
+
+
+@dataclass(frozen=True)
 class TaggedReleaseReadiness:
     repo: str
     tag: str
@@ -97,6 +130,7 @@ class TaggedReleaseReadiness:
     linux_repository: LinuxRepositoryReadiness
     release_clobber: Any
     npm_registry: NpmRegistryReadiness
+    ci: CiReadiness
     issues: tuple[str, ...]
 
     def as_json(self) -> dict[str, Any]:
@@ -110,6 +144,7 @@ class TaggedReleaseReadiness:
             "linuxRepository": self.linux_repository.as_json(),
             "releaseClobber": self.release_clobber.as_json(),
             "npmRegistry": self.npm_registry.as_json(),
+            "ci": self.ci.as_json(),
             "issues": list(self.issues),
             "payloadDisplayed": False,
             "tokenDisplayed": False,
@@ -396,11 +431,157 @@ def audit_npm_registry(*, registry_check: bool, npm: str = "") -> NpmRegistryRea
     )
 
 
+def resolve_git_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=False,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"git rev-parse HEAD failed with exit code {result.returncode}")
+    head_sha = result.stdout.strip()
+    if not head_sha:
+        raise ValueError("git rev-parse HEAD did not return a commit SHA")
+    return head_sha
+
+
+def load_ci_runs(repo: str, gh: str, workflow: str, head_sha: str) -> list[Any]:
+    payload = run_gh_json(
+        gh,
+        [
+            "run",
+            "list",
+            "--repo",
+            repo,
+            "--workflow",
+            workflow,
+            "--commit",
+            head_sha,
+            "--json",
+            "databaseId,headSha,conclusion,status,workflowName,event,createdAt",
+            "--limit",
+            "10",
+        ],
+        "gh run list",
+    )
+    if not isinstance(payload, list):
+        raise ValueError("gh run list returned an unexpected payload")
+    return payload
+
+
+def audit_ci_readiness(
+    *,
+    required: bool,
+    workflow: str,
+    head_sha: str,
+    runs_payload: list[Any] | None,
+) -> CiReadiness:
+    normalized_workflow = workflow.strip() or DEFAULT_CI_WORKFLOW
+    normalized_head = head_sha.strip()
+    if not required:
+        return CiReadiness(
+            checked=False,
+            required=False,
+            ready=True,
+            workflow=normalized_workflow,
+            head_sha=normalized_head,
+            run_id=None,
+            status="",
+            conclusion="",
+            event="",
+            created_at="",
+            issues=(),
+        )
+
+    if not SHA_RE.fullmatch(normalized_head):
+        return CiReadiness(
+            checked=True,
+            required=True,
+            ready=False,
+            workflow=normalized_workflow,
+            head_sha=normalized_head,
+            run_id=None,
+            status="",
+            conclusion="",
+            event="",
+            created_at="",
+            issues=("CI head SHA is missing or invalid",),
+        )
+
+    short_sha = normalized_head[:12]
+    runs = runs_payload or []
+    latest: dict[str, Any] | None = None
+    for item in runs:
+        if not isinstance(item, dict):
+            continue
+        item_workflow = item.get("workflowName")
+        item_head = item.get("headSha")
+        if not isinstance(item_workflow, str) or item_workflow != normalized_workflow:
+            continue
+        if not isinstance(item_head, str) or item_head.lower() != normalized_head.lower():
+            continue
+        latest = item
+        break
+
+    if latest is None:
+        return CiReadiness(
+            checked=True,
+            required=True,
+            ready=False,
+            workflow=normalized_workflow,
+            head_sha=normalized_head,
+            run_id=None,
+            status="",
+            conclusion="",
+            event="",
+            created_at="",
+            issues=(f"no {normalized_workflow} workflow run found for {short_sha}",),
+        )
+
+    status = latest.get("status")
+    conclusion = latest.get("conclusion")
+    event = latest.get("event")
+    created_at = latest.get("createdAt")
+    run_id = latest.get("databaseId")
+    status_value = status if isinstance(status, str) else ""
+    conclusion_value = conclusion if isinstance(conclusion, str) else ""
+    event_value = event if isinstance(event, str) else ""
+    created_at_value = created_at if isinstance(created_at, str) else ""
+    run_id_value = run_id if isinstance(run_id, int) else None
+    ready = status_value.lower() == "completed" and conclusion_value.lower() == "success"
+    issues: tuple[str, ...] = ()
+    if not ready:
+        if status_value.lower() != "completed":
+            issues = (f"{normalized_workflow} workflow run for {short_sha} is {status_value or 'unknown'}",)
+        else:
+            issues = (
+                f"{normalized_workflow} workflow run for {short_sha} concluded "
+                f"{conclusion_value or 'unknown'}",
+            )
+    return CiReadiness(
+        checked=True,
+        required=True,
+        ready=ready,
+        workflow=normalized_workflow,
+        head_sha=normalized_head,
+        run_id=run_id_value,
+        status=status_value,
+        conclusion=conclusion_value,
+        event=event_value,
+        created_at=created_at_value,
+        issues=issues,
+    )
+
+
 def combine_issues(
     release_secrets: Any,
     linux_repository: LinuxRepositoryReadiness,
     release_clobber: Any,
     npm_registry: NpmRegistryReadiness,
+    ci: CiReadiness,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     for name in release_secrets.missing:
@@ -415,6 +596,8 @@ def combine_issues(
         issues.append(f"GitHub Release readiness: {issue}")
     for issue in npm_registry.issues:
         issues.append(f"npm registry readiness: {issue}")
+    for issue in ci.issues:
+        issues.append(f"CI readiness: {issue}")
     return tuple(issues)
 
 
@@ -429,6 +612,10 @@ def audit_tagged_release_readiness(
     release_payload: dict[str, Any] | None,
     npm_registry_check: bool,
     npm: str = "",
+    ci_required: bool = False,
+    ci_workflow: str = DEFAULT_CI_WORKFLOW,
+    ci_head_sha: str = "",
+    ci_runs_payload: list[Any] | None = None,
 ) -> TaggedReleaseReadiness:
     release_secrets = audit_secret_names(repo, secret_names)
     linux_repository = audit_linux_repository(repo, variable_values, secret_names, pages_payload)
@@ -438,7 +625,13 @@ def audit_tagged_release_readiness(
     )
     release_clobber = clobber_module.audit_release_clobber(repo, tag, release_payload)
     npm_registry = audit_npm_registry(registry_check=npm_registry_check, npm=npm)
-    issues = combine_issues(release_secrets, linux_repository, release_clobber, npm_registry)
+    ci = audit_ci_readiness(
+        required=ci_required,
+        workflow=ci_workflow,
+        head_sha=ci_head_sha,
+        runs_payload=ci_runs_payload,
+    )
+    issues = combine_issues(release_secrets, linux_repository, release_clobber, npm_registry, ci)
     return TaggedReleaseReadiness(
         repo=repo,
         tag=tag,
@@ -448,6 +641,7 @@ def audit_tagged_release_readiness(
         linux_repository=linux_repository,
         release_clobber=release_clobber,
         npm_registry=npm_registry,
+        ci=ci,
         issues=issues,
     )
 
@@ -455,9 +649,10 @@ def audit_tagged_release_readiness(
 def print_text_report(report: TaggedReleaseReadiness) -> None:
     if report.ready:
         npm_note = " with npm registry check" if report.npm_registry.checked else ""
+        ci_note = " and CI check" if report.ci.checked else ""
         print(
             "Tagged release readiness passed"
-            f"{npm_note}: {report.repo}@{report.tag} ({report.linux_repository.mode})"
+            f"{npm_note}{ci_note}: {report.repo}@{report.tag} ({report.linux_repository.mode})"
         )
         return
 
@@ -486,6 +681,26 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="query npm and fail if any configured package version already exists",
     )
+    parser.add_argument(
+        "--require-ci",
+        action="store_true",
+        help="fail unless the tag target commit has a successful CI workflow run",
+    )
+    parser.add_argument(
+        "--ci-head",
+        default="",
+        help="commit SHA to require CI for; defaults to the current git HEAD when --require-ci is used",
+    )
+    parser.add_argument(
+        "--ci-workflow",
+        default=DEFAULT_CI_WORKFLOW,
+        help="GitHub Actions workflow name to require when --require-ci is used",
+    )
+    parser.add_argument(
+        "--ci-only",
+        action="store_true",
+        help="only check the tag target CI workflow status and skip release secret/repository checks",
+    )
     parser.add_argument("--json", action="store_true", help="print a machine-readable report")
     parser.add_argument("--gh", default="", help=argparse.SUPPRESS)
     parser.add_argument("--npm", default="", help=argparse.SUPPRESS)
@@ -500,8 +715,48 @@ def main() -> int:
         tag = validate_tag_for_version(args.tag or default_tag(version), version)
         gh = args.gh or find_gh()
         repo = args.repo.strip() or infer_repo(gh)
+        if args.ci_only:
+            ci_head_sha = args.ci_head.strip() or resolve_git_head()
+            ci_runs_payload = load_ci_runs(repo, gh, args.ci_workflow, ci_head_sha)
+            ci_report = audit_ci_readiness(
+                required=True,
+                workflow=args.ci_workflow,
+                head_sha=ci_head_sha,
+                runs_payload=ci_runs_payload,
+            )
+            if args.json:
+                payload = ci_report.as_json()
+                payload.update(
+                    {
+                        "schema": "conu.githubTaggedReleaseCiReadiness.v1",
+                        "repo": repo,
+                        "tag": tag,
+                        "payloadDisplayed": False,
+                        "tokenDisplayed": False,
+                        "tokenHashDisplayed": False,
+                        "keyMaterialDisplayed": False,
+                        "contentsDisplayed": False,
+                    }
+                )
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            elif ci_report.ready:
+                print(
+                    "Tagged release CI readiness passed: "
+                    f"{repo}@{tag} {ci_report.workflow} {ci_report.head_sha[:12]}"
+                )
+            else:
+                print(f"Tagged release CI readiness failed for {repo}@{tag}", file=sys.stderr)
+                for issue in ci_report.issues:
+                    print(f"issue: {issue}", file=sys.stderr)
+            return 0 if ci_report.ready else 1
+
         secret_names = load_secret_names(repo, gh)
         variable_values = load_variable_values(repo, gh)
+        ci_head_sha = args.ci_head.strip()
+        ci_runs_payload = None
+        if args.require_ci:
+            ci_head_sha = ci_head_sha or resolve_git_head()
+            ci_runs_payload = load_ci_runs(repo, gh, args.ci_workflow, ci_head_sha)
         release_module = load_script_module(
             "check-github-release-clobber-preflight.py",
             "check_github_release_clobber_loader_for_tagged_release",
@@ -524,6 +779,10 @@ def main() -> int:
             release_payload=release_payload,
             npm_registry_check=args.npm_registry_check,
             npm=args.npm,
+            ci_required=args.require_ci,
+            ci_workflow=args.ci_workflow,
+            ci_head_sha=ci_head_sha,
+            ci_runs_payload=ci_runs_payload,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Tagged release readiness failed: {exc}", file=sys.stderr)

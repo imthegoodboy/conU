@@ -8,10 +8,12 @@ param(
     [switch]$CheckPlatformSigningSecrets,
     [switch]$CheckGitHubPages,
     [switch]$CheckTaggedReleaseReadiness,
+    [switch]$RequireTaggedReleaseCi,
     [switch]$CheckLinuxRepositoryEndpoint,
     [string]$LinuxRepositoryBaseUrl = $env:CONU_LINUX_REPOSITORY_BASE_URL,
     [string]$GitHubRepo = $env:GH_REPO,
     [string]$ReleaseTag = $env:CONU_RELEASE_TAG,
+    [string]$TaggedReleaseCiHead = $env:CONU_RELEASE_CI_HEAD,
     [switch]$NpmRegistryCheck
 )
 
@@ -388,6 +390,12 @@ try {
         }
         if ($NpmRegistryCheck) {
             $taggedReadinessArgs += @("--npm-registry-check")
+        }
+        if ($RequireTaggedReleaseCi) {
+            $taggedReadinessArgs += @("--require-ci")
+            if (-not [string]::IsNullOrWhiteSpace($TaggedReleaseCiHead)) {
+                $taggedReadinessArgs += @("--ci-head", $TaggedReleaseCiHead)
+            }
         }
         Invoke-ReadinessStep "tagged release readiness" {
             & python @taggedReadinessArgs
