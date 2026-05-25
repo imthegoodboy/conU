@@ -20,7 +20,7 @@ def render_env_template(names: tuple[str, ...]) -> str:
     lines = [
         "# conU release secret values",
         "# Fill these values locally, keep this file ignored, then run:",
-        "# python scripts/set-github-release-secrets.py --repo <owner/name> --env-file .env.release --dry-run --preflight-values --require-openssl",
+        "# python scripts/set-github-release-secrets.py --repo <owner/name> --env-file .env.release --env-file-only --dry-run --preflight-values --require-openssl",
         "",
     ]
     lines.extend(f"{name}=" for name in names)
@@ -204,6 +204,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--env-file-only",
+        action="store_true",
+        help="require all release secret values to come from --env-file, ignoring local environment values",
+    )
+    parser.add_argument(
         "--print-env-template",
         action="store_true",
         help="print an empty release-secret env-file template and exit",
@@ -241,9 +246,11 @@ def main() -> int:
         if args.print_env_template and args.write_env_template:
             raise ValueError("--print-env-template and --write-env-template are mutually exclusive")
         if (args.print_env_template or args.write_env_template) and (
-            args.dry_run or args.env_file or args.preflight_values
+            args.dry_run or args.env_file or args.env_file_only or args.preflight_values
         ):
             raise ValueError("env template generation cannot be combined with setup options")
+        if args.env_file_only and not args.env_file:
+            raise ValueError("--env-file-only requires --env-file")
         if args.print_env_template:
             print(render_env_template(REQUIRED_RELEASE_SECRETS), end="")
             return 0
@@ -252,7 +259,10 @@ def main() -> int:
             print(f"GitHub release secret env template written: {args.write_env_template}")
             return 0
 
-        values, _missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
+        if args.env_file_only:
+            values = {}
+        else:
+            values, _missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
         if args.env_file:
             values.update(
                 load_env_file_values(Path(args.env_file).expanduser(), REQUIRED_RELEASE_SECRETS)
