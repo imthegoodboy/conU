@@ -132,6 +132,7 @@ python scripts/generate-release-update-policy.py dist --output-dir dist --versio
 python scripts/sign-linux-release-assets.py dist --only-update-policies
 conu update check --policy-file dist/conu-0.1.0-update-policy.json --gpg-verify
 conu update check --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --gpg-verify
+conu update download --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --output-dir dist/update-downloads --target linux-x64 --gpg-verify
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
 python scripts/check-github-pages-readiness.py --repo imthegoodboy/conU
 python scripts/check-package-manager-manifests.py
@@ -185,7 +186,12 @@ public release URLs, false display guards, and auto-apply-disabled contract
 before publication. After publication, `conu update check --policy-url
 <https-url> [--gpg-verify]` fetches only the public policy JSON and sidecars
 with TLS, size, timeout, redirect, and public-host limits and performs the same
-validation without downloading update archives or applying an update.
+validation without applying an update. Operators can then run `conu update
+download --policy-url <https-url> --output-dir <dir> [--target <target>]
+[--gpg-verify]` to revalidate the policy, fetch one selected public platform
+archive plus strict `.sha256` and detached `.asc` sidecars, verify the archive
+SHA-256 and optional GPG signature, and write the files without clobbering
+existing output; this still does not apply the update.
 The regression check validates generated Debian packages with `dpkg-deb` and
 builds the generated RPM spec with `rpmbuild` when those native tools are
 available, and it opens the APT and RPM metadata bundles to verify package

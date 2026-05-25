@@ -207,10 +207,15 @@ publication. Remote mode fetches only the policy JSON, strict checksum sidecar,
 and detached signature sidecar with TLS, size, timeout, redirect, and
 public-host limits. Both modes validate the policy schema, public URLs, strict
 checksum sidecar, detached signature sidecar, false display guards, and
-auto-apply-disabled contract before manual update decisions. The command
-reports only public release metadata and does not download update archives or
-apply updates. These checks still do not activate custom DNS/TLS endpoints or
-submit package-manager repository PRs.
+auto-apply-disabled contract before manual update decisions. Operators can then
+run `conu update download --policy-url <https-url> --output-dir <dir>
+[--target <target>] [--gpg-verify]` to revalidate the policy, download one
+selected public platform archive plus `.sha256` and `.asc` sidecars, verify the
+archive SHA-256 and optional GPG signature, and write the files without
+clobbering existing output. The update commands report only public release
+metadata and selected artifact paths; they do not apply updates. These checks
+still do not activate custom DNS/TLS endpoints or submit package-manager
+repository PRs.
 
 ## User Install Choices
 
@@ -434,4 +439,4 @@ For the user install story, finish publishing in this order:
 2. Publish `@conu/cli` after the GitHub Release exists.
 3. Put public relay tests behind TLS termination and use `wss://` endpoints.
 4. Add distributed account control planes, remote tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, tenant-node upsert/revoke, account/node suspension plus single-relay account suspension/scoped admin tenant commands, distributed monitoring/dashboards/alerting beyond single-relay threshold reports, distributed hosted mailbox retention policy beyond local/admin-gated audit and purge plus local scheduled purge workflows, and distributed multi-instance session migration before opening a managed relay to everyone.
-5. Submit generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files to the appropriate package-manager repositories, configure any custom DNS/TLS endpoint to apply the generated hosted Linux repository cache policy, then exercise `conu update check --policy-url <https-url>` against the signed update-policy metadata from a real release before adding automatic update artifact download/apply behavior.
+5. Submit generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM files to the appropriate package-manager repositories, configure any custom DNS/TLS endpoint to apply the generated hosted Linux repository cache policy, then exercise `conu update check --policy-url <https-url>` and `conu update download --policy-url <https-url> --output-dir <dir> --target <target>` against a real signed release before adding automatic update apply behavior.

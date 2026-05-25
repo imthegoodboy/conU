@@ -247,6 +247,7 @@ quick commands
   conu telemetry snapshot --json
   conu update check --policy-file <path>
   conu update check --policy-url <https-url>
+  conu update download --policy-url <https-url> --output-dir <dir>
   conu security audit
   conu security rotate storage --confirm
   conu security rotate identity --confirm-peer-refresh
@@ -6109,6 +6110,7 @@ const UPDATE_POLICY_SCHEMA: &str = "conu.releaseUpdatePolicy.v1";
 const MAX_UPDATE_POLICY_BYTES: u64 = 1024 * 1024;
 const MAX_UPDATE_CHECKSUM_BYTES: u64 = 4096;
 const MAX_UPDATE_SIGNATURE_BYTES: u64 = 1024 * 1024;
+const MAX_UPDATE_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_UPDATE_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_UPDATE_REDIRECTS: usize = 3;
 const UPDATE_DOWNLOAD_TIMEOUT_SECONDS: u64 = 20;
@@ -6172,9 +6174,55 @@ struct UpdateCheckFiles {
     signature_location: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateDownloadArgs {
+    check: UpdateCheckArgs,
+    target: Option<String>,
+    output_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ValidatedUpdatePolicy {
+    report: UpdateCheckReport,
+    policy: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateArtifactAsset {
+    filename: String,
+    target: String,
+    url: String,
+    sha256: String,
+    sha256_url: String,
+    signature_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateArtifactFiles {
+    artifact_file: PathBuf,
+    sha256_file: PathBuf,
+    signature_file: PathBuf,
+    bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateArtifactDownloadReport {
+    policy: UpdateCheckReport,
+    target: String,
+    filename: String,
+    url: String,
+    artifact_file: PathBuf,
+    sha256_file: PathBuf,
+    signature_file: PathBuf,
+    bytes: usize,
+    sha256: String,
+    gpg_verified: bool,
+}
+
 fn render_update(args: &[String]) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("check") => render_update_check(&args[1..]),
+        Some("download") => render_update_download(&args[1..]),
         Some("--help") | Some("-h") | None => CliOutput::success(render_update_usage()),
         _ => CliOutput::failure(2, render_update_usage()),
     }
@@ -6195,6 +6243,24 @@ fn render_update_check(args: &[String]) -> CliOutput {
             }
         }
         Err(error) => CliOutput::failure(1, format!("conU update check failed\n\n{error}")),
+    }
+}
+
+fn render_update_download(args: &[String]) -> CliOutput {
+    let parsed = match parse_update_download_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match download_release_update_artifact(&parsed) {
+        Ok(report) => {
+            if parsed.check.json {
+                CliOutput::success(render_update_download_json(&report))
+            } else {
+                CliOutput::success(render_update_download_text(&report))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU update download failed\n\n{error}")),
     }
 }
 
@@ -6283,7 +6349,123 @@ fn parse_update_check_args(args: &[String]) -> Result<UpdateCheckArgs, CliOutput
     })
 }
 
+fn parse_update_download_args(args: &[String]) -> Result<UpdateDownloadArgs, CliOutput> {
+    let mut policy_file = None;
+    let mut policy_url = None;
+    let mut sha256_file = None;
+    let mut sha256_url = None;
+    let mut signature_file = None;
+    let mut signature_url = None;
+    let mut target = None;
+    let mut output_dir = None;
+    let mut gpg_verify = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_download_usage()));
+                };
+                policy_file = Some(PathBuf::from(value));
+            }
+            "--policy-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_download_usage()));
+                };
+                policy_url = Some(value.to_string());
+            }
+            "--sha256-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_download_usage()));
+                };
+                sha256_file = Some(PathBuf::from(value));
+            }
+            "--sha256-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_download_usage()));
+                };
+                sha256_url = Some(value.to_string());
+            }
+            "--signature-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_download_usage()));
+                };
+                signature_file = Some(PathBuf::from(value));
+            }
+            "--signature-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_download_usage()));
+                };
+                signature_url = Some(value.to_string());
+            }
+            "--target" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_download_usage()));
+                };
+                target = Some(value.to_string());
+            }
+            "--output-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_download_usage()));
+                };
+                output_dir = Some(PathBuf::from(value));
+            }
+            "--gpg-verify" => gpg_verify = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(CliOutput::success(render_update_download_usage())),
+            _ => return Err(CliOutput::failure(2, render_update_download_usage())),
+        }
+        index += 1;
+    }
+
+    if policy_file.is_some() == policy_url.is_some() {
+        return Err(CliOutput::failure(2, render_update_download_usage()));
+    }
+    if policy_url.is_some() && (sha256_file.is_some() || signature_file.is_some()) {
+        return Err(CliOutput::failure(2, render_update_download_usage()));
+    }
+    if policy_file.is_some() && (sha256_url.is_some() || signature_url.is_some()) {
+        return Err(CliOutput::failure(2, render_update_download_usage()));
+    }
+    let Some(output_dir) = output_dir else {
+        return Err(CliOutput::failure(2, render_update_download_usage()));
+    };
+    if let Some(target) = target.as_deref() {
+        validate_public_asset_name(target, "download target")
+            .map_err(|_| CliOutput::failure(2, render_update_download_usage()))?;
+    }
+
+    Ok(UpdateDownloadArgs {
+        check: UpdateCheckArgs {
+            policy_file,
+            policy_url,
+            sha256_file,
+            sha256_url,
+            signature_file,
+            signature_url,
+            gpg_verify,
+            json,
+        },
+        target,
+        output_dir,
+    })
+}
+
 fn check_release_update_policy(args: &UpdateCheckArgs) -> Result<UpdateCheckReport, String> {
+    validate_release_update_policy(args).map(|validated| validated.report)
+}
+
+fn validate_release_update_policy(args: &UpdateCheckArgs) -> Result<ValidatedUpdatePolicy, String> {
     if let Some(policy_file) = args.policy_file.clone() {
         let policy_location = policy_file.display().to_string();
         let sha256_file = args
@@ -6296,7 +6478,7 @@ fn check_release_update_policy(args: &UpdateCheckArgs) -> Result<UpdateCheckRepo
             .unwrap_or_else(|| sidecar_path(&policy_file, ".asc"));
         let sha256_location = sha256_file.display().to_string();
         let signature_location = signature_file.display().to_string();
-        return check_release_update_policy_files(
+        return validate_release_update_policy_files(
             UpdateCheckFiles {
                 policy_file,
                 sha256_file,
@@ -6313,7 +6495,9 @@ fn check_release_update_policy(args: &UpdateCheckArgs) -> Result<UpdateCheckRepo
     check_release_update_policy_remote(args)
 }
 
-fn check_release_update_policy_remote(args: &UpdateCheckArgs) -> Result<UpdateCheckReport, String> {
+fn check_release_update_policy_remote(
+    args: &UpdateCheckArgs,
+) -> Result<ValidatedUpdatePolicy, String> {
     let policy_url = args
         .policy_url
         .as_ref()
@@ -6361,7 +6545,7 @@ fn check_release_update_policy_remote(args: &UpdateCheckArgs) -> Result<UpdateCh
         &signature_bytes,
     )?;
 
-    check_release_update_policy_files(
+    validate_release_update_policy_files(
         UpdateCheckFiles {
             policy_file,
             sha256_file,
@@ -6375,10 +6559,18 @@ fn check_release_update_policy_remote(args: &UpdateCheckArgs) -> Result<UpdateCh
     )
 }
 
+#[cfg(test)]
 fn check_release_update_policy_files(
     files: UpdateCheckFiles,
     gpg_verify: bool,
 ) -> Result<UpdateCheckReport, String> {
+    validate_release_update_policy_files(files, gpg_verify).map(|validated| validated.report)
+}
+
+fn validate_release_update_policy_files(
+    files: UpdateCheckFiles,
+    gpg_verify: bool,
+) -> Result<ValidatedUpdatePolicy, String> {
     let UpdateCheckFiles {
         policy_file,
         sha256_file,
@@ -6499,24 +6691,27 @@ fn check_release_update_policy_files(
         false
     };
 
-    Ok(UpdateCheckReport {
-        source,
-        policy_location,
-        sha256_location,
-        signature_location,
-        sha256,
-        version,
-        release_tag,
-        channel,
-        release_base_url,
-        platform_archives,
-        package_manager_assets,
-        linux_package_assets,
-        repository_assets,
-        auto_apply,
-        manual_verification_required,
-        operator_consent_required,
-        gpg_verified,
+    Ok(ValidatedUpdatePolicy {
+        report: UpdateCheckReport {
+            source,
+            policy_location,
+            sha256_location,
+            signature_location,
+            sha256,
+            version,
+            release_tag,
+            channel,
+            release_base_url,
+            platform_archives,
+            package_manager_assets,
+            linux_package_assets,
+            repository_assets,
+            auto_apply,
+            manual_verification_required,
+            operator_consent_required,
+            gpg_verified,
+        },
+        policy,
     })
 }
 
@@ -6644,6 +6839,248 @@ fn validate_npm_metadata(policy: &Value, version: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn download_release_update_artifact(
+    args: &UpdateDownloadArgs,
+) -> Result<UpdateArtifactDownloadReport, String> {
+    let validated = validate_release_update_policy(&args.check)?;
+    let target = match args.target.clone() {
+        Some(target) => target,
+        None => default_update_target()
+            .ok_or_else(|| {
+                "release update artifact target could not be detected; pass --target".to_string()
+            })?
+            .to_string(),
+    };
+    let asset = select_update_platform_archive(&validated.policy, &target)?;
+    let artifact_bytes = fetch_update_url_bounded(
+        &asset.url,
+        MAX_UPDATE_ARTIFACT_BYTES,
+        "release update artifact",
+    )?;
+    let sha256_bytes = fetch_update_url_bounded(
+        &asset.sha256_url,
+        MAX_UPDATE_CHECKSUM_BYTES,
+        "release update artifact checksum",
+    )?;
+    let signature_bytes = fetch_update_url_bounded(
+        &asset.signature_url,
+        MAX_UPDATE_SIGNATURE_BYTES,
+        "release update artifact signature",
+    )?;
+    let files = write_verified_update_artifact_files(
+        &asset,
+        &artifact_bytes,
+        &sha256_bytes,
+        &signature_bytes,
+        &args.output_dir,
+        args.check.gpg_verify,
+    )?;
+
+    Ok(UpdateArtifactDownloadReport {
+        policy: validated.report,
+        target: asset.target,
+        filename: asset.filename,
+        url: asset.url,
+        artifact_file: files.artifact_file,
+        sha256_file: files.sha256_file,
+        signature_file: files.signature_file,
+        bytes: files.bytes,
+        sha256: asset.sha256,
+        gpg_verified: args.check.gpg_verify,
+    })
+}
+
+fn select_update_platform_archive(
+    policy: &Value,
+    target: &str,
+) -> Result<UpdateArtifactAsset, String> {
+    let assets = policy
+        .get("platformArchives")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "release update policy is missing platformArchives array".to_string())?;
+    let mut selected = None;
+
+    for asset in assets {
+        let object = asset.as_object().ok_or_else(|| {
+            "release update policy platformArchives entries must be objects".to_string()
+        })?;
+        if string_member(object, "target", "platformArchives")? != target {
+            continue;
+        }
+        if selected.is_some() {
+            return Err(format!(
+                "release update policy has multiple platform archives for target {target}"
+            ));
+        }
+        let filename = string_member(object, "filename", "platformArchives")?.to_string();
+        validate_public_asset_name(&filename, "platformArchives")?;
+        let sha256 = string_member(object, "sha256", "platformArchives")?.to_ascii_lowercase();
+        if !is_sha256_hex(&sha256) {
+            return Err(format!(
+                "release update policy platformArchives.{filename} has invalid SHA-256"
+            ));
+        }
+        let url = string_member(object, "url", "platformArchives")?.to_string();
+        let sha256_url = string_member(object, "sha256Url", "platformArchives")?.to_string();
+        let signature_url = string_member(object, "signatureUrl", "platformArchives")?.to_string();
+        validate_update_sidecar_url(
+            &sha256_url,
+            &format!("{filename}.sha256"),
+            "artifact sha256Url",
+        )?;
+        validate_update_sidecar_url(
+            &signature_url,
+            &format!("{filename}.asc"),
+            "artifact signatureUrl",
+        )?;
+        selected = Some(UpdateArtifactAsset {
+            filename,
+            target: target.to_string(),
+            url,
+            sha256,
+            sha256_url,
+            signature_url,
+        });
+    }
+
+    selected
+        .ok_or_else(|| format!("release update policy has no platform archive for target {target}"))
+}
+
+fn write_verified_update_artifact_files(
+    asset: &UpdateArtifactAsset,
+    artifact_bytes: &[u8],
+    sha256_bytes: &[u8],
+    signature_bytes: &[u8],
+    output_dir: &Path,
+    gpg_verify: bool,
+) -> Result<UpdateArtifactFiles, String> {
+    let actual_sha256 = sha256_hex(artifact_bytes);
+    if actual_sha256 != asset.sha256 {
+        return Err("release update artifact SHA-256 did not match policy".to_string());
+    }
+    verify_update_sha256_sidecar_bytes(
+        sha256_bytes,
+        &asset.filename,
+        &actual_sha256,
+        "release update artifact",
+    )?;
+    verify_update_signature_sidecar_bytes(signature_bytes, "release update artifact signature")?;
+
+    let verify_dir = UpdateDownloadDir::create()?;
+    let verify_artifact =
+        write_downloaded_update_file(verify_dir.path(), &asset.filename, artifact_bytes)?;
+    let verify_sha256 = write_downloaded_update_file(
+        verify_dir.path(),
+        &format!("{}.sha256", asset.filename),
+        sha256_bytes,
+    )?;
+    let verify_signature = write_downloaded_update_file(
+        verify_dir.path(),
+        &format!("{}.asc", asset.filename),
+        signature_bytes,
+    )?;
+    verify_update_sha256_sidecar(&verify_sha256, &asset.filename, &actual_sha256)?;
+    verify_update_signature_sidecar(&verify_signature)?;
+    if gpg_verify {
+        verify_detached_signature_with_gpg(
+            &verify_signature,
+            &verify_artifact,
+            "release update artifact",
+        )?;
+    }
+
+    let sha256_name = format!("{}.sha256", asset.filename);
+    let signature_name = format!("{}.asc", asset.filename);
+    ensure_update_output_files_available(
+        output_dir,
+        &[
+            asset.filename.as_str(),
+            sha256_name.as_str(),
+            signature_name.as_str(),
+        ],
+    )?;
+
+    let artifact_file =
+        write_update_output_file(output_dir, &asset.filename, artifact_bytes, "artifact")?;
+    let sha256_file = write_update_output_file(output_dir, &sha256_name, sha256_bytes, "checksum")?;
+    let signature_file =
+        write_update_output_file(output_dir, &signature_name, signature_bytes, "signature")?;
+
+    Ok(UpdateArtifactFiles {
+        artifact_file,
+        sha256_file,
+        signature_file,
+        bytes: artifact_bytes.len(),
+    })
+}
+
+fn ensure_update_output_files_available(dir: &Path, names: &[&str]) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|error| {
+        format!(
+            "could not create release update artifact output directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    let mut seen = HashSet::new();
+    for name in names {
+        validate_public_asset_name(name, "downloaded update asset")?;
+        if !seen.insert(*name) {
+            return Err(format!(
+                "release update artifact output names overlap: {name}"
+            ));
+        }
+        let path = dir.join(name);
+        if path.exists() {
+            return Err(format!(
+                "release update artifact output already exists: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_update_output_file(
+    dir: &Path,
+    name: &str,
+    bytes: &[u8],
+    label: &str,
+) -> Result<PathBuf, String> {
+    validate_public_asset_name(name, "downloaded update asset")?;
+    fs::create_dir_all(dir).map_err(|error| {
+        format!(
+            "could not create release update artifact output directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    let path = dir.join(name);
+    if path.exists() {
+        return Err(format!(
+            "release update artifact {label} output already exists: {}",
+            path.display()
+        ));
+    }
+    fs::write(&path, bytes).map_err(|error| {
+        format!(
+            "could not write release update artifact {label} {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(path)
+}
+
+fn default_update_target() -> Option<&'static str> {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        ("macos", "x86_64") => Some("macos-x64"),
+        ("macos", "aarch64") => Some("macos-arm64"),
+        ("windows", "x86_64") => Some("windows-x64"),
+        _ => None,
+    }
 }
 
 fn render_update_check_json(report: &UpdateCheckReport) -> String {
@@ -6774,14 +7211,98 @@ privacy
     )
 }
 
+fn render_update_download_json(report: &UpdateArtifactDownloadReport) -> String {
+    format!(
+        r#"{{
+  "status": "update_artifact_downloaded",
+  "source": "{}",
+  "version": "{}",
+  "releaseTag": "{}",
+  "target": "{}",
+  "filename": "{}",
+  "url": "{}",
+  "artifactFile": "{}",
+  "sha256File": "{}",
+  "signatureFile": "{}",
+  "bytes": {},
+  "sha256": "{}",
+  "sha256SidecarMatched": true,
+  "signatureSidecarPresent": true,
+  "gpgVerified": {},
+  "updateApplied": false,
+  "privacy": {{
+    "payloadDisplayed": false,
+    "tokenDisplayed": false,
+    "keyMaterialDisplayed": false,
+    "ciphertextDisplayed": false,
+    "contentsDisplayed": false
+  }}
+}}"#,
+        report.policy.source.as_str(),
+        json_escape(&report.policy.version),
+        json_escape(&report.policy.release_tag),
+        json_escape(&report.target),
+        json_escape(&report.filename),
+        json_escape(&report.url),
+        json_escape(&report.artifact_file.display().to_string()),
+        json_escape(&report.sha256_file.display().to_string()),
+        json_escape(&report.signature_file.display().to_string()),
+        report.bytes,
+        report.sha256,
+        report.gpg_verified
+    )
+}
+
+fn render_update_download_text(report: &UpdateArtifactDownloadReport) -> String {
+    format!(
+        r"conU update download
+
+status: artifact downloaded
+source: {}
+version: {}
+tag: {}
+target: {}
+
+artifact
+  filename         {}
+  file             {}
+  bytes            {}
+  sha256           {}
+  sidecar          matched
+  signature        present
+  gpg verified     {}
+
+apply
+  update applied   no
+
+privacy
+  payload view      contents are not displayed by conU",
+        report.policy.source.as_str(),
+        report.policy.version,
+        report.policy.release_tag,
+        report.target,
+        report.filename,
+        report.artifact_file.display(),
+        report.bytes,
+        report.sha256,
+        yes_no(report.gpg_verified)
+    )
+}
+
 fn render_update_usage() -> String {
     r"usage:
   conu update check --policy-file <path> [--sha256-file <path>] [--signature-file <path>] [--gpg-verify] [--json]
-  conu update check --policy-url <https-url> [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]"
+  conu update check --policy-url <https-url> [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]
+  conu update download --policy-file <path> --output-dir <dir> [--target <target>] [--gpg-verify] [--json]
+  conu update download --policy-url <https-url> --output-dir <dir> [--target <target>] [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]"
         .to_string()
 }
 
 fn render_update_check_usage() -> String {
+    render_update_usage()
+}
+
+fn render_update_download_usage() -> String {
     render_update_usage()
 }
 
@@ -7209,29 +7730,40 @@ fn verify_update_sha256_sidecar(
     if !bytes.is_ascii() {
         return Err("release update policy checksum sidecar must be ASCII".to_string());
     }
-    let text = String::from_utf8(bytes).map_err(|error| {
-        format!("release update policy checksum sidecar is invalid UTF-8: {error}")
-    })?;
+    verify_update_sha256_sidecar_bytes(&bytes, policy_name, actual_sha256, "release update policy")
+}
+
+fn verify_update_sha256_sidecar_bytes(
+    bytes: &[u8],
+    asset_name: &str,
+    actual_sha256: &str,
+    label: &str,
+) -> Result<(), String> {
+    if !bytes.is_ascii() {
+        return Err(format!("{label} checksum sidecar must be ASCII"));
+    }
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|error| format!("{label} checksum sidecar is invalid UTF-8: {error}"))?;
     let line = text.trim_end_matches(['\r', '\n']);
     if line.contains('\n') || line.contains('\r') {
-        return Err("release update policy checksum sidecar must contain one line".to_string());
+        return Err(format!("{label} checksum sidecar must contain one line"));
     }
     let parts = line.split_whitespace().collect::<Vec<_>>();
     if parts.len() != 2 {
-        return Err("release update policy checksum sidecar has invalid format".to_string());
+        return Err(format!("{label} checksum sidecar has invalid format"));
     }
     let expected_sha256 = parts[0].to_ascii_lowercase();
     if !is_sha256_hex(&expected_sha256) {
-        return Err("release update policy checksum sidecar hash is invalid".to_string());
+        return Err(format!("{label} checksum sidecar hash is invalid"));
     }
-    if parts[1] != policy_name {
+    if parts[1] != asset_name {
         return Err(format!(
-            "release update policy checksum sidecar names {}, expected {policy_name}",
+            "{label} checksum sidecar names {}, expected {asset_name}",
             parts[1]
         ));
     }
     if expected_sha256 != actual_sha256 {
-        return Err("release update policy checksum did not match policy file".to_string());
+        return Err(format!("{label} checksum did not match file"));
     }
     Ok(())
 }
@@ -7242,32 +7774,44 @@ fn verify_update_signature_sidecar(path: &Path) -> Result<(), String> {
         MAX_UPDATE_SIGNATURE_BYTES,
         "release update policy signature",
     )?;
+    verify_update_signature_sidecar_bytes(&bytes, "release update policy signature")
+}
+
+fn verify_update_signature_sidecar_bytes(bytes: &[u8], label: &str) -> Result<(), String> {
     if !bytes.is_ascii() {
-        return Err("release update policy signature must be ASCII armored".to_string());
+        return Err(format!("{label} must be ASCII armored"));
     }
-    let text = String::from_utf8(bytes)
-        .map_err(|error| format!("release update policy signature is invalid UTF-8: {error}"))?;
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|error| format!("{label} is invalid UTF-8: {error}"))?;
     if !text.contains("BEGIN PGP SIGNATURE") {
-        return Err("release update policy signature is not ASCII-armored PGP".to_string());
+        return Err(format!("{label} is not ASCII-armored PGP"));
     }
     Ok(())
 }
 
 fn verify_update_signature_with_gpg(signature: &Path, policy: &Path) -> Result<(), String> {
+    verify_detached_signature_with_gpg(signature, policy, "release update policy")
+}
+
+fn verify_detached_signature_with_gpg(
+    signature: &Path,
+    subject: &Path,
+    label: &str,
+) -> Result<(), String> {
     let gpg = env::var("GPG_EXE").unwrap_or_else(|_| "gpg".to_string());
     let status = Command::new(&gpg)
         .arg("--verify")
         .arg(signature)
-        .arg(policy)
+        .arg(subject)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map_err(|error| {
-            format!("could not run {gpg} for update policy signature verification: {error}")
+            format!("could not run {gpg} for {label} signature verification: {error}")
         })?;
     if !status.success() {
-        return Err("release update policy signature did not verify with gpg".to_string());
+        return Err(format!("{label} signature did not verify with gpg"));
     }
     Ok(())
 }
@@ -8781,6 +9325,156 @@ mod tests {
     }
 
     #[test]
+    fn update_download_verifies_selected_platform_artifact_without_payloads() {
+        let artifact_bytes = b"public conU release archive bytes";
+        let artifact_sha = sha256_hex(artifact_bytes);
+        let home = temp_home("update-download");
+        let policy = write_update_policy_fixture_with_asset_sha(&home, false, &artifact_sha);
+        let validated = validate_release_update_policy(&UpdateCheckArgs {
+            policy_file: Some(policy),
+            policy_url: None,
+            sha256_file: None,
+            sha256_url: None,
+            signature_file: None,
+            signature_url: None,
+            gpg_verify: false,
+            json: true,
+        })
+        .expect("policy validates");
+        let asset =
+            select_update_platform_archive(&validated.policy, "linux-x64").expect("asset selects");
+        let output_dir = temp_home("update-download-output");
+        let sha256_bytes = format!("{artifact_sha}  {}\n", asset.filename);
+        let signature_bytes =
+            b"-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n";
+        let files = write_verified_update_artifact_files(
+            &asset,
+            artifact_bytes,
+            sha256_bytes.as_bytes(),
+            signature_bytes,
+            &output_dir,
+            false,
+        )
+        .expect("artifact writes");
+        let report = UpdateArtifactDownloadReport {
+            policy: validated.report,
+            target: asset.target,
+            filename: asset.filename,
+            url: asset.url,
+            artifact_file: files.artifact_file.clone(),
+            sha256_file: files.sha256_file,
+            signature_file: files.signature_file,
+            bytes: files.bytes,
+            sha256: artifact_sha,
+            gpg_verified: false,
+        };
+        let rendered = render_update_download_json(&report);
+
+        assert_eq!(
+            fs::read(&files.artifact_file).expect("artifact reads"),
+            artifact_bytes
+        );
+        assert!(rendered.contains("\"status\": \"update_artifact_downloaded\""));
+        assert!(rendered.contains("\"target\": \"linux-x64\""));
+        assert!(rendered.contains("\"sha256SidecarMatched\": true"));
+        assert!(rendered.contains("\"signatureSidecarPresent\": true"));
+        assert!(rendered.contains("\"updateApplied\": false"));
+        assert!(rendered.contains("\"contentsDisplayed\": false"));
+        assert!(!rendered.contains("BEGIN PGP SIGNATURE"));
+        assert!(!rendered.contains("public conU release archive bytes"));
+        assert!(!rendered.contains("private message contents"));
+    }
+
+    #[test]
+    fn update_download_rejects_checksum_drift_before_output() {
+        let expected_bytes = b"expected public release archive";
+        let expected_sha = sha256_hex(expected_bytes);
+        let home = temp_home("update-download-drift");
+        let policy = write_update_policy_fixture_with_asset_sha(&home, false, &expected_sha);
+        let validated = validate_release_update_policy(&UpdateCheckArgs {
+            policy_file: Some(policy),
+            policy_url: None,
+            sha256_file: None,
+            sha256_url: None,
+            signature_file: None,
+            signature_url: None,
+            gpg_verify: false,
+            json: false,
+        })
+        .expect("policy validates");
+        let asset =
+            select_update_platform_archive(&validated.policy, "linux-x64").expect("asset selects");
+        let output_dir = temp_home("update-download-drift-output");
+        let signature_bytes =
+            b"-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n";
+        let err = write_verified_update_artifact_files(
+            &asset,
+            b"tampered public release archive",
+            format!("{expected_sha}  {}\n", asset.filename).as_bytes(),
+            signature_bytes,
+            &output_dir,
+            false,
+        )
+        .expect_err("checksum drift rejects");
+
+        assert!(err.contains("SHA-256 did not match policy"));
+        assert!(!output_dir.exists());
+    }
+
+    #[test]
+    fn update_download_rejects_existing_sidecar_before_partial_output() {
+        let artifact_bytes = b"public conU release archive bytes";
+        let artifact_sha = sha256_hex(artifact_bytes);
+        let home = temp_home("update-download-existing-sidecar");
+        let policy = write_update_policy_fixture_with_asset_sha(&home, false, &artifact_sha);
+        let validated = validate_release_update_policy(&UpdateCheckArgs {
+            policy_file: Some(policy),
+            policy_url: None,
+            sha256_file: None,
+            sha256_url: None,
+            signature_file: None,
+            signature_url: None,
+            gpg_verify: false,
+            json: false,
+        })
+        .expect("policy validates");
+        let asset =
+            select_update_platform_archive(&validated.policy, "linux-x64").expect("asset selects");
+        let output_dir = temp_home("update-download-existing-sidecar-output");
+        fs::create_dir_all(&output_dir).expect("output dir writes");
+        let existing_sidecar = output_dir.join(format!("{}.sha256", asset.filename));
+        fs::write(&existing_sidecar, "existing").expect("existing sidecar writes");
+        let signature_bytes =
+            b"-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n";
+        let err = write_verified_update_artifact_files(
+            &asset,
+            artifact_bytes,
+            format!("{artifact_sha}  {}\n", asset.filename).as_bytes(),
+            signature_bytes,
+            &output_dir,
+            false,
+        )
+        .expect_err("existing output rejects");
+
+        assert!(err.contains("output already exists"));
+        assert!(!output_dir.join(&asset.filename).exists());
+        assert!(existing_sidecar.exists());
+    }
+
+    #[test]
+    fn update_download_requires_output_dir() {
+        let output = run([
+            "update",
+            "download",
+            "--policy-file",
+            "dist/conu-0.1.0-update-policy.json",
+        ]);
+
+        assert_eq!(output.code, 2);
+        assert!(output.stderr.contains("conu update download"));
+    }
+
+    #[test]
     fn update_check_rejects_auto_apply_policy() {
         let home = temp_home("update-auto-apply");
         let policy = write_update_policy_fixture(&home, true);
@@ -10088,6 +10782,14 @@ mod tests {
     }
 
     fn write_update_policy_fixture(directory: &Path, auto_apply: bool) -> PathBuf {
+        write_update_policy_fixture_with_asset_sha(directory, auto_apply, &"0".repeat(64))
+    }
+
+    fn write_update_policy_fixture_with_asset_sha(
+        directory: &Path,
+        auto_apply: bool,
+        asset_sha: &str,
+    ) -> PathBuf {
         fs::create_dir_all(directory).expect("fixture dir creates");
         let policy = directory.join("conu-0.1.0-update-policy.json");
         let release_base = "https://github.com/imthegoodboy/conU/releases/download/v0.1.0";
@@ -10179,7 +10881,7 @@ mod tests {
   "version": "0.1.0"
 }}
 "#,
-            asset_sha = "0".repeat(64)
+            asset_sha = asset_sha
         );
         fs::write(&policy, policy_text).expect("policy writes");
         let digest = sha256_hex(&fs::read(&policy).expect("policy reads"));
