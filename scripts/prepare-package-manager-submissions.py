@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""Prepare a verified package-manager submission bundle for a conU release."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
+HASH_CHUNK_BYTES = 1024 * 1024
+MAX_TEXT_BYTES = 2 * 1024 * 1024
+MAX_BINARY_BYTES = 512 * 1024 * 1024
+ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
+DEBIAN_ARCHES = ("amd64", "arm64")
+RPM_ARCHES = ("x86_64", "aarch64")
+FORBIDDEN_TEXT = (
+    "NPM_TOKEN",
+    "NODE_AUTH_TOKEN",
+    "CONU_RELAY_TOKEN",
+    "CONU_WINDOWS_SIGN_CERT",
+    "CONU_MACOS_DEVELOPER_ID",
+    "CONU_LINUX_GPG_PRIVATE_KEY",
+    "BEGIN PRIVATE KEY",
+    "BEGIN CERTIFICATE",
+    "payload_ciphertext",
+    "payload_hex",
+    "payloadHex",
+    "token_sha256_hex",
+)
+
+
+@dataclass(frozen=True)
+class BundleEntry:
+    source_name: str
+    archive_name: str
+    kind: str
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class SubmissionBundleReport:
+    version: str
+    output: Path
+    checksum: Path
+    entry_count: int
+    entries: tuple[str, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "output": str(self.output),
+            "checksum": str(self.checksum),
+            "entryCount": self.entry_count,
+            "entries": list(self.entries),
+            "contentsDisplayed": False,
+            "payloadDisplayed": False,
+            "tokenDisplayed": False,
+            "tokenHashDisplayed": False,
+            "keyMaterialDisplayed": False,
+        }
+
+
+def main() -> int:
+    args = parse_args()
+    dist = args.dist.resolve()
+    output_dir = args.output_dir.resolve()
+    version = validate_version(args.version or read_repo_version())
+    if not dist.exists() or not dist.is_dir():
+        raise SystemExit(f"package-manager output directory does not exist: {dist}")
+
+    report = prepare_submission_bundle(
+        dist,
+        output_dir,
+        version,
+        require_rpm_assets=args.require_rpm_assets,
+        require_repository_metadata=args.require_repository_metadata,
+        require_linux_signatures=args.require_linux_signatures,
+    )
+    if args.json:
+        print(json.dumps(report.as_json(), indent=2, sort_keys=True))
+    else:
+        print(
+            "prepared package-manager submission bundle: "
+            f"{report.output} ({report.entry_count} entries)"
+        )
+    return 0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("dist", type=Path, help="directory containing generated release files")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("dist"),
+        help="directory for the generated submission bundle",
+    )
+    parser.add_argument("--version", help="release version; defaults to npm package version")
+    parser.add_argument(
+        "--require-rpm-assets",
+        action="store_true",
+        help="fail unless signed-release RPM package outputs are present",
+    )
+    parser.add_argument(
+        "--require-repository-metadata",
+        action="store_true",
+        help="fail unless APT and RPM repository metadata bundles are present",
+    )
+    parser.add_argument(
+        "--require-linux-signatures",
+        action="store_true",
+        help="fail unless Linux package/metadata signatures and public key assets are present",
+    )
+    parser.add_argument("--json", action="store_true", help="print a machine-readable report")
+    return parser.parse_args()
+
+
+def read_repo_version() -> str:
+    package_json = Path(__file__).resolve().parents[1] / "packaging/npm/conu-cli/package.json"
+    with package_json.open("r", encoding="utf-8") as handle:
+        package = json.load(handle)
+    version = package.get("version")
+    if not isinstance(version, str) or not version:
+        raise SystemExit(f"{package_json} does not contain a non-empty version")
+    return version
+
+
+def validate_version(version: str) -> str:
+    if not SEMVER_RE.fullmatch(version):
+        raise SystemExit(f"invalid release version for package-manager submissions: {version}")
+    return version
+
+
+def debian_version(version: str) -> str:
+    return version.replace("-", "~")
+
+
+def rpm_version(version: str) -> str:
+    return version.replace("-", "~").replace("+", "_")
+
+
+def submission_bundle_filename(version: str) -> str:
+    return f"conu-{version}-package-manager-submissions.zip"
+
+
+def required_and_optional_entries(
+    version: str,
+    *,
+    require_rpm_assets: bool,
+    require_repository_metadata: bool,
+    require_linux_signatures: bool,
+) -> tuple[BundleEntry, ...]:
+    deb_version = debian_version(version)
+    rpm_ver = rpm_version(version)
+    entries: list[BundleEntry] = [
+        BundleEntry("conu.rb", "homebrew-tap/Formula/conu.rb", "homebrew"),
+        BundleEntry("conu.json", "scoop-bucket/bucket/conu.json", "scoop"),
+        BundleEntry(
+            "imthegoodboy.conU.yaml",
+            f"winget-pkgs/manifests/i/imthegoodboy/conU/{version}/imthegoodboy.conU.yaml",
+            "winget",
+        ),
+        BundleEntry(f"conu.{version}.nupkg", f"chocolatey/conu.{version}.nupkg", "chocolatey"),
+        BundleEntry("conu.spec", "rpm/conu.spec", "rpm-spec"),
+    ]
+    for arch in DEBIAN_ARCHES:
+        package = f"conu_{deb_version}_{arch}.deb"
+        entries.extend(
+            [
+                BundleEntry(package, f"debian/{package}", "binary"),
+                BundleEntry(f"{package}.sha256", f"debian/{package}.sha256", "checksum"),
+                BundleEntry(
+                    f"{package}.asc",
+                    f"debian/{package}.asc",
+                    "signature",
+                    required=require_linux_signatures,
+                ),
+            ]
+        )
+
+    apt_metadata = f"conu-{deb_version}-apt-repository-metadata.zip"
+    rpm_metadata = f"conu-{rpm_ver}-rpm-repository-metadata.zip"
+    for metadata, archive_prefix in (
+        (apt_metadata, "apt"),
+        (rpm_metadata, "rpm"),
+    ):
+        entries.extend(
+            [
+                BundleEntry(
+                    metadata,
+                    f"{archive_prefix}/{metadata}",
+                    "binary",
+                    required=require_repository_metadata,
+                ),
+                BundleEntry(
+                    f"{metadata}.sha256",
+                    f"{archive_prefix}/{metadata}.sha256",
+                    "checksum",
+                    required=require_repository_metadata,
+                ),
+                BundleEntry(
+                    f"{metadata}.asc",
+                    f"{archive_prefix}/{metadata}.asc",
+                    "signature",
+                    required=require_repository_metadata and require_linux_signatures,
+                ),
+            ]
+        )
+
+    for arch in RPM_ARCHES:
+        package = f"conu-{rpm_ver}-1.{arch}.rpm"
+        entries.extend(
+            [
+                BundleEntry(package, f"rpm/{package}", "binary", required=require_rpm_assets),
+                BundleEntry(
+                    f"{package}.sha256",
+                    f"rpm/{package}.sha256",
+                    "checksum",
+                    required=require_rpm_assets,
+                ),
+                BundleEntry(
+                    f"{package}.asc",
+                    f"rpm/{package}.asc",
+                    "signature",
+                    required=require_rpm_assets and require_linux_signatures,
+                ),
+            ]
+        )
+
+    entries.extend(
+        [
+            BundleEntry(
+                "conu-linux-gpg-key.asc",
+                "linux-signing/conu-linux-gpg-key.asc",
+                "public-key",
+                required=require_linux_signatures,
+            ),
+            BundleEntry(
+                "conu-linux-gpg-key.asc.sha256",
+                "linux-signing/conu-linux-gpg-key.asc.sha256",
+                "checksum",
+                required=require_linux_signatures,
+            ),
+        ]
+    )
+    return tuple(entries)
+
+
+def prepare_submission_bundle(
+    dist: Path,
+    output_dir: Path,
+    version: str,
+    *,
+    require_rpm_assets: bool = False,
+    require_repository_metadata: bool = False,
+    require_linux_signatures: bool = False,
+) -> SubmissionBundleReport:
+    entries = required_and_optional_entries(
+        version,
+        require_rpm_assets=require_rpm_assets,
+        require_repository_metadata=require_repository_metadata,
+        require_linux_signatures=require_linux_signatures,
+    )
+    selected: list[tuple[BundleEntry, Path, bytes]] = []
+    for entry in entries:
+        source = dist / entry.source_name
+        if not source.exists():
+            if entry.required:
+                raise SystemExit(f"missing package-manager submission source: {entry.source_name}")
+            continue
+        if not source.is_file():
+            raise SystemExit(f"package-manager submission source is not a file: {entry.source_name}")
+        data = read_entry_data(source, entry, dist)
+        selected.append((entry, source, data))
+
+    validate_no_duplicate_archive_names(entry.archive_name for entry, _source, _data in selected)
+    readme = render_readme(version, [entry.archive_name for entry, _source, _data in selected])
+    assert_safe_text(readme, "README.txt", dist)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle = output_dir / submission_bundle_filename(version)
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+        write_zip_text(archive, "README.txt", readme)
+        for entry, _source, data in selected:
+            write_zip_bytes(archive, entry.archive_name, data)
+
+    checksum = sha256_file(bundle)
+    checksum_path = bundle.with_name(f"{bundle.name}.sha256")
+    checksum_path.write_text(f"{checksum}  {bundle.name}\n", encoding="ascii", newline="\n")
+    entries_written = ("README.txt", *(entry.archive_name for entry, _source, _data in selected))
+    return SubmissionBundleReport(
+        version=version,
+        output=bundle,
+        checksum=checksum_path,
+        entry_count=len(entries_written),
+        entries=tuple(entries_written),
+    )
+
+
+def read_entry_data(source: Path, entry: BundleEntry, dist: Path) -> bytes:
+    size = source.stat().st_size
+    if size <= 0:
+        raise SystemExit(f"package-manager submission source is empty: {entry.source_name}")
+    if size > MAX_BINARY_BYTES:
+        raise SystemExit(f"package-manager submission source is too large: {entry.source_name}")
+    data = source.read_bytes()
+    if entry.kind == "checksum":
+        validate_checksum_source(source, dist)
+    elif entry.kind == "signature":
+        validate_signature_source(source, data, entry.source_name, dist)
+    elif entry.kind == "public-key":
+        validate_public_key_source(data, entry.source_name)
+    elif entry.kind == "chocolatey":
+        validate_chocolatey_package(source, dist)
+    elif entry.kind in {"homebrew", "scoop", "winget", "rpm-spec"}:
+        text = read_ascii_text(source, entry.source_name)
+        validate_structured_manifest(text, entry, source)
+        assert_safe_text(text, entry.source_name, dist)
+    return data
+
+
+def read_ascii_text(path: Path, label: str) -> str:
+    if path.stat().st_size > MAX_TEXT_BYTES:
+        raise SystemExit(f"{label} is too large to inspect as text")
+    try:
+        return path.read_text(encoding="ascii")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{label} is not ASCII") from exc
+
+
+def validate_structured_manifest(text: str, entry: BundleEntry, source: Path) -> None:
+    if entry.kind == "homebrew":
+        for required in ('class Conu < Formula', 'homepage "https://github.com/', 'sha256 "'):
+            if required not in text:
+                raise SystemExit(f"{entry.source_name} is missing expected Homebrew field: {required}")
+    elif entry.kind == "scoop":
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"{entry.source_name} is not valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise SystemExit(f"{entry.source_name} must contain a JSON object")
+        if payload.get("version") is None or "architecture" not in payload or "bin" not in payload:
+            raise SystemExit(f"{entry.source_name} is missing Scoop version, architecture, or bin data")
+    elif entry.kind == "winget":
+        for required in ("PackageIdentifier: imthegoodboy.conU", "InstallerSha256:", "InstallerUrl: https://"):
+            if required not in text:
+                raise SystemExit(f"{entry.source_name} is missing expected winget field: {required}")
+    elif entry.kind == "rpm-spec":
+        for required in ("Name: conu", "Source0: https://", "%install", "%files"):
+            if required not in text:
+                raise SystemExit(f"{entry.source_name} is missing expected RPM spec field: {required}")
+    if str(source.resolve()).replace("\\", "/") in text.replace("\\", "/"):
+        raise SystemExit(f"{entry.source_name} contains a local source path")
+
+
+def validate_chocolatey_package(path: Path, dist: Path) -> None:
+    try:
+        with zipfile.ZipFile(path) as package:
+            names = package.namelist()
+            expected = [
+                "conu.nuspec",
+                "tools/chocolateyInstall.ps1",
+                "tools/chocolateyUninstall.ps1",
+            ]
+            if names != expected:
+                raise SystemExit(f"{path.name} has unexpected Chocolatey package entries: {names!r}")
+            for name in names:
+                normalized = normalize_archive_path(name)
+                if normalized != name:
+                    raise SystemExit(f"{path.name} has unsafe Chocolatey package path: {name}")
+                info = package.getinfo(name)
+                if info.file_size > MAX_TEXT_BYTES:
+                    raise SystemExit(f"{path.name}:{name} is too large")
+                text = package.read(name).decode("ascii")
+                assert_safe_text(text, f"{path.name}:{name}", dist)
+    except zipfile.BadZipFile as exc:
+        raise SystemExit(f"{path.name} is not a readable Chocolatey nupkg") from exc
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{path.name} contains non-ASCII Chocolatey metadata") from exc
+
+
+def validate_checksum_source(path: Path, dist: Path) -> None:
+    text = read_ascii_text(path, path.name)
+    match = CHECKSUM_RE.fullmatch(text)
+    if match is None:
+        raise SystemExit(f"{path.name} is not a strict SHA-256 sidecar")
+    target_name = match.group(2)
+    expected_target = path.name[: -len(".sha256")]
+    if target_name != expected_target:
+        raise SystemExit(f"{path.name} names wrong target: {target_name}")
+    target = dist / target_name
+    if not target.exists() or not target.is_file():
+        raise SystemExit(f"{path.name} target is missing: {target_name}")
+    expected = match.group(1).lower()
+    actual = sha256_file(target)
+    if expected != actual:
+        raise SystemExit(f"{path.name} SHA-256 mismatch for {target_name}")
+
+
+def validate_signature_source(source: Path, data: bytes, label: str, dist: Path) -> None:
+    target_name = source.name[: -len(".asc")]
+    target = dist / target_name
+    if not target.exists() or not target.is_file():
+        raise SystemExit(f"{label} signed target is missing: {target_name}")
+    if len(data) > MAX_TEXT_BYTES:
+        raise SystemExit(f"{label} is too large")
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{label} is not ASCII armored signature data") from exc
+    if "BEGIN PGP SIGNATURE" not in text or "END PGP SIGNATURE" not in text:
+        raise SystemExit(f"{label} is not an armored detached PGP signature")
+    assert_safe_text(text, label, Path())
+
+
+def validate_public_key_source(data: bytes, label: str) -> None:
+    if len(data) > MAX_TEXT_BYTES:
+        raise SystemExit(f"{label} is too large")
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{label} is not ASCII armored public-key data") from exc
+    if "BEGIN PGP PUBLIC KEY BLOCK" not in text or "END PGP PUBLIC KEY BLOCK" not in text:
+        raise SystemExit(f"{label} is not an armored PGP public key")
+    assert_safe_text(text, label, Path())
+
+
+def assert_safe_text(text: str, label: str, dist: Path) -> None:
+    normalized = text.replace("\\", "/")
+    for forbidden in FORBIDDEN_TEXT:
+        if forbidden in text:
+            raise SystemExit(f"{label} contains forbidden literal: {forbidden}")
+    if dist != Path():
+        resolved_dist = str(dist.resolve()).replace("\\", "/")
+        if resolved_dist and resolved_dist in normalized:
+            raise SystemExit(f"{label} contains local package-manager output path")
+
+
+def validate_no_duplicate_archive_names(names: Any) -> None:
+    seen: set[str] = set()
+    for name in names:
+        normalized = normalize_archive_path(name)
+        if normalized in seen:
+            raise SystemExit(f"duplicate package-manager submission archive path: {normalized}")
+        seen.add(normalized)
+
+
+def normalize_archive_path(raw_name: str) -> str:
+    normalized = raw_name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    parts = [part for part in path.parts if part not in {"", ".", "/"}]
+    if path.is_absolute() or ".." in parts or not parts:
+        raise SystemExit(f"unsafe package-manager submission archive path: {raw_name}")
+    return "/".join(parts)
+
+
+def render_readme(version: str, entries: list[str]) -> str:
+    entry_list = "\n".join(f"- {entry}" for entry in entries)
+    return f"""conU {version} package-manager submission bundle
+
+This deterministic bundle is generated from verified release package-manager
+outputs. Copy the files into the matching package-manager repository layout only
+after reviewing the public release assets, checksums, and signatures.
+
+Included files:
+
+{entry_list}
+
+Display guards:
+payload_displayed = false
+token_displayed = false
+token_hash_displayed = false
+key_material_displayed = false
+contents_displayed = false
+"""
+
+
+def write_zip_text(archive: zipfile.ZipFile, name: str, text: str) -> None:
+    write_zip_bytes(archive, name, text.encode("ascii"))
+
+
+def write_zip_bytes(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
+    normalized = normalize_archive_path(name)
+    info = zipfile.ZipInfo(normalized, ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_STORED
+    info.external_attr = 0o644 << 16
+    archive.writestr(info, data)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

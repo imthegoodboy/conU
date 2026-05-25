@@ -29,6 +29,7 @@ SIGNABLE_FIXTURES = (
     "conu-0.1.0-hosted-linux-repositories.zip",
     "conu-0.1.0-hosted-linux-repository-site.zip",
     "conu-0.1.0-update-policy.json",
+    "conu-0.1.0-package-manager-submissions.zip",
 )
 UNSIGNED_FIXTURES = (
     "conu-0.1.0-windows-x64.zip",
@@ -197,6 +198,32 @@ def main() -> int:
         run_gpg(gpg, verify_home, ["--verify", str(policy_signature), str(update_policy)])
         if hosted_site.with_name(f"{hosted_site.name}.asc").exists():
             raise AssertionError("only-policy signing mode signed a hosted repository site")
+
+        only_submissions_dist = temp / "only-submissions-dist"
+        only_submissions_dist.mkdir()
+        submissions = only_submissions_dist / "conu-0.1.0-package-manager-submissions.zip"
+        submissions.write_bytes(b"package manager submission bundle fixture\n")
+        update_policy_extra = only_submissions_dist / "conu-0.1.0-update-policy.json"
+        update_policy_extra.write_text('{"schema":"conu.releaseUpdatePolicy.v1"}\n', encoding="ascii")
+        subprocess.run(
+            [
+                sys.executable,
+                str(SIGNER),
+                str(only_submissions_dist),
+                "--only-package-manager-submissions",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+        )
+        submissions_signature = only_submissions_dist / "conu-0.1.0-package-manager-submissions.zip.asc"
+        if not submissions_signature.exists():
+            raise AssertionError("package-manager submission bundle signature was not generated")
+        run_gpg(gpg, verify_home, ["--verify", str(submissions_signature), str(submissions)])
+        if update_policy_extra.with_name(f"{update_policy_extra.name}.asc").exists():
+            raise AssertionError("only-submissions signing mode signed an update policy")
 
     print("Linux release signing regression checks passed")
     return 0

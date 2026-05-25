@@ -24,6 +24,8 @@ jobs:
         run: python scripts/check-release-artifact-smoke-preflight.py
       - name: Package-manager manifest regression
         run: python scripts/check-package-manager-manifests.py
+      - name: Package-manager submission bundle regression
+        run: python scripts/check-package-manager-submissions.py
       - name: Linux signing secret preflight regression
         run: python scripts/check-linux-signing-secrets-preflight-regression.py
       - name: GitHub release secret readiness regression

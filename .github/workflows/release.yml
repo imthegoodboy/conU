@@ -134,6 +134,8 @@ jobs:
         run: python scripts/check-release-artifact-smoke-preflight.py
       - name: Package-manager manifest regression
         run: python scripts/check-package-manager-manifests.py
+      - name: Package-manager submission bundle regression
+        run: python scripts/check-package-manager-submissions.py
       - name: Linux signing secret preflight regression
         run: python scripts/check-linux-signing-secrets-preflight-regression.py
       - name: GitHub release secret readiness regression
@@ -382,6 +384,25 @@ jobs:
           CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
           CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
         run: python scripts/sign-linux-release-assets.py dist
+      - name: Prepare package-manager submission bundle
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          python scripts/prepare-package-manager-submissions.py dist \
+            --output-dir dist \
+            --version "$VERSION" \
+            --require-rpm-assets \
+            --require-repository-metadata \
+            --require-linux-signatures
+      - name: Sign package-manager submission bundle
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/sign-linux-release-assets.py dist --only-package-manager-submissions
       - name: Generate hosted Linux repositories
         env:
           TAG_NAME: ${{ github.ref_name }}
@@ -465,7 +486,8 @@ jobs:
 
           This release includes platform archives, sibling SHA-256 checksum files,
           generated Homebrew/Scoop/winget/Chocolatey/Debian/RPM
-          package-manager files, signed RPM package payloads, signed APT and
+          package-manager files, a signed package-manager submission bundle,
+          signed RPM package payloads, signed APT and
           RPM repository metadata, a signed hosted Linux repository bundle, a
           signed hosted Linux repository site artifact, signed release update
           policy metadata, the Linux release GPG public key, and
@@ -502,7 +524,9 @@ jobs:
           to the configured maintainer fingerprint.
           Use conu-linux-gpg-key.asc plus the published maintainer fingerprint
           to verify Linux .asc, native RPM package, InRelease, Release.gpg, and
-          repomd.xml.asc signatures.
+          repomd.xml.asc signatures. The package-manager submission bundle lays
+          out generated Homebrew tap, Scoop bucket, winget-pkgs, Chocolatey,
+          Debian, APT, RPM, and Linux signing files in repository-ready paths.
 
           Installers, npm launchers, and package-manager submissions must use
           the matching .sha256-derived hashes and Linux .asc signatures.
