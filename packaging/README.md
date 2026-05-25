@@ -134,6 +134,7 @@ python scripts/sign-linux-release-assets.py dist --only-update-policies
 conu update check --policy-file dist/conu-0.1.0-update-policy.json --gpg-verify
 conu update check --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --gpg-verify
 conu update download --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --output-dir dist/update-downloads --target linux-x64 --gpg-verify
+conu update apply --policy-url https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu-0.1.0-update-policy.json --artifact-file dist/update-downloads/conu-0.1.0-linux-x64.tar.gz --install-dir /usr/local/bin --target linux-x64 --gpg-verify --dry-run
 python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir dist/hosted-linux-repository-site
 python scripts/check-github-pages-readiness.py --repo imthegoodboy/conU
 python scripts/check-package-manager-manifests.py
@@ -192,7 +193,12 @@ download --policy-url <https-url> --output-dir <dir> [--target <target>]
 [--gpg-verify]` to revalidate the policy, fetch one selected public platform
 archive plus strict `.sha256` and detached `.asc` sidecars, verify the archive
 SHA-256 and optional GPG signature, and write the files without clobbering
-existing output; this still does not apply the update.
+existing output. Operators can then run `conu update apply --policy-file
+<path>|--policy-url <https-url> --artifact-file <archive> --install-dir <dir>
+[--target <target>] [--gpg-verify] --dry-run` to revalidate the policy and
+downloaded archive, reject unsafe archive members, stage only the expected conU
+binaries, and review the install plan without writing; `--confirm` performs the
+copy and backs up existing binaries before replacement.
 On tagged releases, after assets are uploaded, the workflow imports the
 published Linux public key, verifies its fingerprint, and runs both public
 `conu update check --policy-url --gpg-verify` and public `conu update download

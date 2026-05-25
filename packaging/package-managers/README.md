@@ -146,8 +146,14 @@ without applying an update. `conu update download --policy-url <https-url>
 --output-dir <dir> [--target <target>] [--gpg-verify]` can then fetch one
 selected public platform archive plus sidecars, verify the strict SHA-256 and
 optional GPG signature, and leave the files in an operator-chosen directory
-without applying the update. Remote check mode fetches only the policy JSON plus
-sidecars with TLS, size, timeout, redirect, and public-host limits.
+without applying the update. `conu update apply --policy-file <path>|--policy-url
+<https-url> --artifact-file <archive> --install-dir <dir> [--target <target>]
+[--gpg-verify] --dry-run` then revalidates the policy and downloaded archive,
+checks the archive member boundary, stages only the expected conU binaries, and
+reports the install plan without writing. Confirmed apply requires `--confirm`
+and backs up existing binaries before replacement. Remote check mode fetches
+only the policy JSON plus sidecars with TLS, size, timeout, redirect, and
+public-host limits.
 On tagged releases, after uploading the GitHub Release assets, the workflow
 imports the published Linux public key, verifies its fingerprint, and runs both
 public `conu update check --policy-url --gpg-verify` and public `conu update
@@ -156,7 +162,7 @@ The workflow then verifies and extracts the signed
 site ZIP into a GitHub Pages deployment artifact when the release uses the
 default repository Pages base URL. Custom DNS/TLS endpoint activation,
 package-manager submission, operator proof that the generated cache policy is
-applied, and automatic update apply behavior remain future work.
+applied, and unattended automatic update apply behavior remain future work.
 
 The generated manifest/spec files contain only public GitHub Release URLs,
 static SHA-256 hashes, package metadata, install helper code, and binary
