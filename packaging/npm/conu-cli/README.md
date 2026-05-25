@@ -55,7 +55,7 @@ extraction, and launcher path are checked before publishing.
 CONU_NPM_DIST_BASE             Override the release base URL; HTTPS is required unless the URL is loopback HTTP.
 CONU_NPM_BINARY_DIR            Copy binaries from an existing local directory after regular-file preflight.
 CONU_NPM_SKIP_DOWNLOAD         Skip install download for package publishing checks.
-CONU_NPM_ALLOW_UNVERIFIED      Allow install when a checksum file is unavailable.
+CONU_NPM_ALLOW_UNVERIFIED      Allow missing checksum files only for loopback testing downloads.
 CONU_NPM_DOWNLOAD_TIMEOUT_MS   Override the per-request download timeout; default is 300000.
 CONU_NPM_MAX_ARCHIVE_BYTES     Override the native archive download limit; default is 536870912.
 CONU_NPM_MAX_CHECKSUM_BYTES    Override the checksum response limit; default is 16384.
