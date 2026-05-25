@@ -63,6 +63,43 @@ def write_required_env_file(path: Path, module, value: str) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def run_env_template_tests(module) -> None:
+    template = module.render_env_template(module.REQUIRED_RELEASE_SECRETS)
+    if SENSITIVE_SENTINEL in template:
+        raise AssertionError("env template leaked a secret value")
+    for name in module.REQUIRED_RELEASE_SECRETS:
+        if f"{name}=" not in template:
+            raise AssertionError(f"env template omitted {name}")
+    if "UNRELATED_SECRET" in template:
+        raise AssertionError("env template included an unsupported secret name")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        env_file = temp_path / ".env.release"
+        module.write_env_template(env_file, module.REQUIRED_RELEASE_SECRETS)
+        written = env_file.read_text(encoding="utf-8")
+        if written != template:
+            raise AssertionError("written env template drifted from rendered template")
+        values = module.load_env_file_values(env_file, module.REQUIRED_RELEASE_SECRETS)
+        if set(values) != set(module.REQUIRED_RELEASE_SECRETS):
+            raise AssertionError("empty env template should still contain every required key")
+        if any(values.values()):
+            raise AssertionError("empty env template should not contain configured values")
+        if module.missing_required_values(values, module.REQUIRED_RELEASE_SECRETS) != module.REQUIRED_RELEASE_SECRETS:
+            raise AssertionError("empty env template should fail the missing-value gate")
+        assert_raises(
+            lambda: module.write_env_template(env_file, module.REQUIRED_RELEASE_SECRETS),
+            "already exists",
+        )
+        assert_raises(
+            lambda: module.write_env_template(
+                temp_path / "missing-parent" / ".env.release",
+                module.REQUIRED_RELEASE_SECRETS,
+            ),
+            "parent directory does not exist",
+        )
+
+
 def run_env_collection_tests(module) -> None:
     original = {name: os.environ.get(name) for name in module.REQUIRED_RELEASE_SECRETS}
     try:
@@ -282,6 +319,93 @@ def run_env_file_main_tests(module) -> None:
         restore_env(original)
 
 
+def run_env_template_main_tests(module) -> None:
+    def call_main(argv: list[str]) -> tuple[int, str]:
+        original_argv = sys.argv
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        sys.argv = argv
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                exit_code = module.main()
+        finally:
+            sys.argv = original_argv
+        return exit_code, stdout.getvalue() + stderr.getvalue()
+
+    original_argv = sys.argv
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    sys.argv = ["set-github-release-secrets.py", "--print-env-template"]
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = module.main()
+    finally:
+        sys.argv = original_argv
+    rendered = stdout.getvalue() + stderr.getvalue()
+    if exit_code != 0:
+        raise AssertionError(f"expected print template to pass: {rendered}")
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("print template leaked a secret value")
+    for name in module.REQUIRED_RELEASE_SECRETS:
+        if f"{name}=" not in rendered:
+            raise AssertionError(f"print template omitted {name}")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        template_path = Path(temp_dir) / ".env.release"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        sys.argv = [
+            "set-github-release-secrets.py",
+            "--write-env-template",
+            str(template_path),
+        ]
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                exit_code = module.main()
+        finally:
+            sys.argv = original_argv
+        rendered = stdout.getvalue() + stderr.getvalue()
+        if exit_code != 0:
+            raise AssertionError(f"expected write template to pass: {rendered}")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("write template output leaked a secret value")
+        if not template_path.exists():
+            raise AssertionError("write template did not create the requested file")
+
+    invalid_cases = (
+        (
+            [
+                "set-github-release-secrets.py",
+                "--print-env-template",
+                "--write-env-template",
+                ".env.release",
+            ],
+            "mutually exclusive",
+        ),
+        (
+            ["set-github-release-secrets.py", "--print-env-template", "--dry-run"],
+            "cannot be combined",
+        ),
+        (
+            [
+                "set-github-release-secrets.py",
+                "--write-env-template",
+                ".env.release",
+                "--preflight-values",
+            ],
+            "cannot be combined",
+        ),
+    )
+    for argv, expected in invalid_cases:
+        exit_code, rendered = call_main(argv)
+        if exit_code == 0:
+            raise AssertionError(f"expected template flag combination to fail: {argv}")
+        if expected not in rendered:
+            raise AssertionError(f"expected {expected!r} in template flag error: {rendered}")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("template flag error leaked a secret value")
+
+
 def run_missing_report_tests(module) -> None:
     buffer = io.StringIO()
     module.print_secret_names("missing:", ("NPM_TOKEN",), buffer)
@@ -294,12 +418,14 @@ def run_missing_report_tests(module) -> None:
 
 def main() -> int:
     module = load_module()
+    run_env_template_tests(module)
     run_env_collection_tests(module)
     run_env_file_tests(module)
     run_secret_set_tests(module)
     run_value_preflight_tests(module)
     run_dry_run_tests(module)
     run_env_file_main_tests(module)
+    run_env_template_main_tests(module)
     run_missing_report_tests(module)
     print("GitHub release secret setup regression checks passed")
     return 0

@@ -16,6 +16,32 @@ from github_release_secrets import REQUIRED_RELEASE_SECRETS, find_gh, infer_repo
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
+def render_env_template(names: tuple[str, ...]) -> str:
+    lines = [
+        "# conU release secret values",
+        "# Fill these values locally, keep this file ignored, then run:",
+        "# python scripts/set-github-release-secrets.py --repo <owner/name> --env-file .env.release --dry-run --preflight-values --require-openssl",
+        "",
+    ]
+    lines.extend(f"{name}=" for name in names)
+    return "\n".join(lines) + "\n"
+
+
+def write_env_template(path: Path, names: tuple[str, ...]) -> None:
+    if path.exists():
+        raise ValueError(f"env template file already exists: {path}")
+    if path.parent and not path.parent.exists():
+        raise ValueError(f"env template parent directory does not exist: {path.parent}")
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        raise ValueError(f"could not create env template file: {path}") from exc
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(render_env_template(names))
+
+
 def collect_env_values(names: tuple[str, ...]) -> tuple[dict[str, str], tuple[str, ...]]:
     values: dict[str, str] = {}
     missing: list[str] = []
@@ -178,6 +204,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--print-env-template",
+        action="store_true",
+        help="print an empty release-secret env-file template and exit",
+    )
+    parser.add_argument(
+        "--write-env-template",
+        default="",
+        help="write an empty release-secret env-file template; refuses to overwrite",
+    )
+    parser.add_argument(
         "--preflight-values",
         action="store_true",
         help="run local signing secret value preflights before dry-run output or GitHub writes",
@@ -202,6 +238,19 @@ def main() -> int:
         os.chdir(repo_root)
         if args.require_openssl and not args.preflight_values:
             raise ValueError("--require-openssl requires --preflight-values")
+        if args.print_env_template and args.write_env_template:
+            raise ValueError("--print-env-template and --write-env-template are mutually exclusive")
+        if (args.print_env_template or args.write_env_template) and (
+            args.dry_run or args.env_file or args.preflight_values
+        ):
+            raise ValueError("env template generation cannot be combined with setup options")
+        if args.print_env_template:
+            print(render_env_template(REQUIRED_RELEASE_SECRETS), end="")
+            return 0
+        if args.write_env_template:
+            write_env_template(Path(args.write_env_template).expanduser(), REQUIRED_RELEASE_SECRETS)
+            print(f"GitHub release secret env template written: {args.write_env_template}")
+            return 0
 
         values, _missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
         if args.env_file:
