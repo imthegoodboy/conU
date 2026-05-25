@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -8759,17 +8759,95 @@ fn connect_update_public_tcp(
 
 fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => {
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.is_unspecified()
-                || ip.is_multicast())
-        }
-        IpAddr::V6(ip) => !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast()),
+        IpAddr::V4(ip) => is_public_ipv4(ip),
+        IpAddr::V6(ip) => is_public_ipv6(ip),
     }
+}
+
+fn is_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [first, second, third, _fourth] = ip.octets();
+    !(first == 0
+        || ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || (first == 100 && (64..=127).contains(&second))
+        || (first == 192 && second == 0 && third == 0)
+        || (first == 192 && second == 88 && third == 99)
+        || (first == 198 && (second == 18 || second == 19))
+        || first >= 240)
+}
+
+fn is_public_ipv6(ip: Ipv6Addr) -> bool {
+    if ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || is_ipv6_unique_local(ip)
+        || is_ipv6_link_local(ip)
+        || is_ipv6_site_local(ip)
+        || is_ipv6_documentation(ip)
+        || is_ipv6_discard_only(ip)
+        || is_ipv6_protocol_assignment(ip)
+        || is_ipv6_6to4(ip)
+    {
+        return false;
+    }
+
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return is_public_ipv4(mapped);
+    }
+    if let Some(compatible) = ipv4_compatible_address(ip) {
+        return is_public_ipv4(compatible);
+    }
+
+    true
+}
+
+fn is_ipv6_unique_local(ip: Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xfe00) == 0xfc00
+}
+
+fn is_ipv6_link_local(ip: Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80
+}
+
+fn is_ipv6_site_local(ip: Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfec0
+}
+
+fn is_ipv6_documentation(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x2001 && segments[1] == 0x0db8
+}
+
+fn is_ipv6_discard_only(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0
+}
+
+fn is_ipv6_protocol_assignment(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x2001 && segments[1] <= 0x01ff
+}
+
+fn is_ipv6_6to4(ip: Ipv6Addr) -> bool {
+    ip.segments()[0] == 0x2002
+}
+
+fn ipv4_compatible_address(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = ip.segments();
+    if segments[..6].iter().any(|segment| *segment != 0) {
+        return None;
+    }
+    Some(Ipv4Addr::new(
+        (segments[6] >> 8) as u8,
+        segments[6] as u8,
+        (segments[7] >> 8) as u8,
+        segments[7] as u8,
+    ))
 }
 
 fn asset_name_from_update_url(url: &str, label: &str) -> Result<String, String> {
@@ -10423,6 +10501,67 @@ mod tests {
 
         assert_eq!(output.code, 1);
         assert!(output.stderr.contains("host must be public"));
+    }
+
+    #[test]
+    fn update_check_rejects_non_public_ipv6_remote_policy_urls() {
+        for host in [
+            "[fc00::1]",
+            "[fd12:3456:789a::1]",
+            "[fe80::1]",
+            "[fec0::1]",
+            "[2001:db8::1]",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:10.0.0.1]",
+            "[::127.0.0.1]",
+        ] {
+            let url = format!("https://{host}/conu-0.1.0-update-policy.json");
+            let output = run(["update", "check", "--policy-url", url.as_str()]);
+
+            assert_eq!(output.code, 1, "{host}: {}", output.stderr);
+            assert!(output.stderr.contains("host must be public"));
+            assert!(!output.stderr.contains("private message contents"));
+        }
+    }
+
+    #[test]
+    fn update_public_ip_filter_rejects_non_global_special_ranges() {
+        for value in [
+            "0.1.2.3",
+            "100.64.0.1",
+            "192.0.0.1",
+            "192.88.99.1",
+            "198.18.0.1",
+            "240.0.0.1",
+            "::",
+            "::1",
+            "fc00::1",
+            "fd12:3456:789a::1",
+            "fe80::1",
+            "fec0::1",
+            "100::1",
+            "2001::1",
+            "2001:db8::1",
+            "2002::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "::10.0.0.1",
+        ] {
+            let ip = value.parse::<IpAddr>().expect("test IP parses");
+            assert!(!is_public_ip(ip), "{value} should be non-public");
+        }
+
+        for value in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "2606:4700:4700::1111",
+            "2001:4860:4860::8888",
+            "::ffff:8.8.8.8",
+            "::8.8.8.8",
+        ] {
+            let ip = value.parse::<IpAddr>().expect("test IP parses");
+            assert!(is_public_ip(ip), "{value} should be public");
+        }
     }
 
     #[test]
