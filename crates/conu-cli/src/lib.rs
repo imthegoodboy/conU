@@ -10713,8 +10713,8 @@ mod tests {
     #[test]
     fn update_apply_rejects_unsafe_archive_member_before_install() {
         let target = update_apply_test_target();
-        let filename = update_archive_fixture_name(&target);
-        let archive_bytes = update_archive_fixture_bytes(&target, true);
+        let filename = update_zip_archive_fixture_name(&target);
+        let archive_bytes = update_zip_archive_fixture_bytes(&target, true);
         let archive_sha = sha256_hex(&archive_bytes);
         let home = temp_home("update-apply-unsafe");
         let policy =
@@ -12209,6 +12209,10 @@ mod tests {
         format!("conu-0.1.0-{target}.tar.gz")
     }
 
+    fn update_zip_archive_fixture_name(target: &str) -> String {
+        format!("conu-0.1.0-{target}.zip")
+    }
+
     fn update_archive_fixture_bytes(target: &str, unsafe_member: bool) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut builder = tar::Builder::new(encoder);
@@ -12238,6 +12242,33 @@ mod tests {
         encoder.finish().expect("gzip finishes")
     }
 
+    fn update_zip_archive_fixture_bytes(target: &str, unsafe_member: bool) -> Vec<u8> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let root = format!("conu-0.1.0-{target}");
+        let manifest = format!(
+            "version = \"0.1.0\"\ntarget = \"{target}\"\npayload_contents_included = false\n"
+        );
+        append_update_zip_archive_fixture_file(
+            &mut writer,
+            &format!("{root}/manifest.toml"),
+            manifest.as_bytes(),
+            0o644,
+        );
+        for name in UPDATE_BINARY_NAMES {
+            append_update_zip_archive_fixture_file(
+                &mut writer,
+                &format!("{root}/bin/{}", update_binary_filename(name)),
+                &update_archive_binary_bytes(name),
+                0o755,
+            );
+        }
+        if unsafe_member {
+            append_update_zip_archive_fixture_file(&mut writer, "../bin/conu", b"escape", 0o755);
+        }
+        writer.finish().expect("zip finishes").into_inner()
+    }
+
     fn append_update_archive_fixture_file<W: Write>(
         builder: &mut tar::Builder<W>,
         path: &str,
@@ -12251,6 +12282,21 @@ mod tests {
         builder
             .append_data(&mut header, path, bytes)
             .expect("tar fixture file appends");
+    }
+
+    fn append_update_zip_archive_fixture_file<W: Write + io::Seek>(
+        writer: &mut zip::ZipWriter<W>,
+        path: &str,
+        bytes: &[u8],
+        mode: u32,
+    ) {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(mode);
+        writer
+            .start_file(path, options)
+            .expect("zip fixture file starts");
+        writer.write_all(bytes).expect("zip fixture file writes");
     }
 
     fn update_archive_binary_bytes(name: &str) -> Vec<u8> {

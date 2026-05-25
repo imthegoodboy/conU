@@ -109,8 +109,10 @@ Validation:
 - `cargo fmt --all -- --check` passed.
 - `git diff --check` passed.
 - Local `cargo +stable-x86_64-pc-windows-gnu test -p conu-cli update_apply -- --nocapture`
-  could not link because `dlltool.exe` is unavailable on this workstation. CI
-  must run the focused and full Rust test matrix.
+  could not link because `dlltool.exe` is unavailable on this workstation; local
+  default-toolchain `cargo test -p conu-cli update_apply -- --nocapture` also
+  could not link because `link.exe` is unavailable. CI must run the focused and
+  full Rust test matrix.
 
 Known gaps:
 
