@@ -248,6 +248,7 @@ quick commands
   conu update check --policy-file <path>
   conu update check --policy-url <https-url>
   conu update download --policy-url <https-url> --output-dir <dir>
+  conu update apply --policy-file <path> --artifact-file <archive> --install-dir <dir> --dry-run
   conu security audit
   conu security rotate storage --confirm
   conu security rotate identity --confirm-peer-refresh
@@ -6114,6 +6115,11 @@ const MAX_UPDATE_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_UPDATE_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_UPDATE_REDIRECTS: usize = 3;
 const UPDATE_DOWNLOAD_TIMEOUT_SECONDS: u64 = 20;
+const MAX_UPDATE_ARCHIVE_ENTRIES: usize = 512;
+const MAX_UPDATE_ARCHIVE_MEMBER_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_UPDATE_ARCHIVE_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_UPDATE_ARCHIVE_MANIFEST_BYTES: u64 = 64 * 1024;
+const UPDATE_BINARY_NAMES: [&str; 4] = ["conu", "conud", "conu-relay", "conu-mcp"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpdateCheckArgs {
@@ -6182,6 +6188,16 @@ struct UpdateDownloadArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateApplyArgs {
+    check: UpdateCheckArgs,
+    target: Option<String>,
+    artifact_file: PathBuf,
+    install_dir: PathBuf,
+    dry_run: bool,
+    confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ValidatedUpdatePolicy {
     report: UpdateCheckReport,
     policy: Value,
@@ -6219,10 +6235,53 @@ struct UpdateArtifactDownloadReport {
     gpg_verified: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateApplyBinaryReport {
+    name: String,
+    source_file: PathBuf,
+    target_file: PathBuf,
+    backup_file: Option<PathBuf>,
+    bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateApplyReport {
+    policy: UpdateCheckReport,
+    target: String,
+    filename: String,
+    archive_file: PathBuf,
+    install_dir: PathBuf,
+    backup_dir: Option<PathBuf>,
+    entries_scanned: usize,
+    unpacked_bytes: u64,
+    binaries: Vec<UpdateApplyBinaryReport>,
+    sha256: String,
+    gpg_verified: bool,
+    dry_run: bool,
+    update_applied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StagedUpdateBinary {
+    name: String,
+    source_file: PathBuf,
+    bytes: u64,
+}
+
+#[derive(Debug)]
+struct StagedUpdateArchive {
+    _staging_dir: UpdateDownloadDir,
+    manifest_target: String,
+    entries_scanned: usize,
+    unpacked_bytes: u64,
+    binaries: Vec<StagedUpdateBinary>,
+}
+
 fn render_update(args: &[String]) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("check") => render_update_check(&args[1..]),
         Some("download") => render_update_download(&args[1..]),
+        Some("apply") => render_update_apply(&args[1..]),
         Some("--help") | Some("-h") | None => CliOutput::success(render_update_usage()),
         _ => CliOutput::failure(2, render_update_usage()),
     }
@@ -6261,6 +6320,24 @@ fn render_update_download(args: &[String]) -> CliOutput {
             }
         }
         Err(error) => CliOutput::failure(1, format!("conU update download failed\n\n{error}")),
+    }
+}
+
+fn render_update_apply(args: &[String]) -> CliOutput {
+    let parsed = match parse_update_apply_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match apply_release_update_artifact(&parsed) {
+        Ok(report) => {
+            if parsed.check.json {
+                CliOutput::success(render_update_apply_json(&report))
+            } else {
+                CliOutput::success(render_update_apply_text(&report))
+            }
+        }
+        Err(error) => CliOutput::failure(1, format!("conU update apply failed\n\n{error}")),
     }
 }
 
@@ -6458,6 +6535,139 @@ fn parse_update_download_args(args: &[String]) -> Result<UpdateDownloadArgs, Cli
         },
         target,
         output_dir,
+    })
+}
+
+fn parse_update_apply_args(args: &[String]) -> Result<UpdateApplyArgs, CliOutput> {
+    let mut policy_file = None;
+    let mut policy_url = None;
+    let mut sha256_file = None;
+    let mut sha256_url = None;
+    let mut signature_file = None;
+    let mut signature_url = None;
+    let mut target = None;
+    let mut artifact_file = None;
+    let mut install_dir = None;
+    let mut dry_run = false;
+    let mut confirm = false;
+    let mut gpg_verify = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--policy-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                policy_file = Some(PathBuf::from(value));
+            }
+            "--policy-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                policy_url = Some(value.to_string());
+            }
+            "--sha256-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                sha256_file = Some(PathBuf::from(value));
+            }
+            "--sha256-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                sha256_url = Some(value.to_string());
+            }
+            "--signature-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                signature_file = Some(PathBuf::from(value));
+            }
+            "--signature-url" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                signature_url = Some(value.to_string());
+            }
+            "--target" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                target = Some(value.to_string());
+            }
+            "--artifact-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                artifact_file = Some(PathBuf::from(value));
+            }
+            "--install-dir" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(CliOutput::failure(2, render_update_apply_usage()));
+                };
+                install_dir = Some(PathBuf::from(value));
+            }
+            "--dry-run" => dry_run = true,
+            "--confirm" => confirm = true,
+            "--gpg-verify" => gpg_verify = true,
+            "--json" => json = true,
+            "--help" | "-h" => return Err(CliOutput::success(render_update_apply_usage())),
+            _ => return Err(CliOutput::failure(2, render_update_apply_usage())),
+        }
+        index += 1;
+    }
+
+    if policy_file.is_some() == policy_url.is_some() {
+        return Err(CliOutput::failure(2, render_update_apply_usage()));
+    }
+    if policy_url.is_some() && (sha256_file.is_some() || signature_file.is_some()) {
+        return Err(CliOutput::failure(2, render_update_apply_usage()));
+    }
+    if policy_file.is_some() && (sha256_url.is_some() || signature_url.is_some()) {
+        return Err(CliOutput::failure(2, render_update_apply_usage()));
+    }
+    let Some(artifact_file) = artifact_file else {
+        return Err(CliOutput::failure(2, render_update_apply_usage()));
+    };
+    let Some(install_dir) = install_dir else {
+        return Err(CliOutput::failure(2, render_update_apply_usage()));
+    };
+    if dry_run == confirm {
+        return Err(CliOutput::failure(2, render_update_apply_usage()));
+    }
+    if let Some(target) = target.as_deref() {
+        validate_public_asset_name(target, "update apply target")
+            .map_err(|_| CliOutput::failure(2, render_update_apply_usage()))?;
+    }
+
+    Ok(UpdateApplyArgs {
+        check: UpdateCheckArgs {
+            policy_file,
+            policy_url,
+            sha256_file,
+            sha256_url,
+            signature_file,
+            signature_url,
+            gpg_verify,
+            json,
+        },
+        target,
+        artifact_file,
+        install_dir,
+        dry_run,
+        confirm,
     })
 }
 
@@ -7017,6 +7227,757 @@ fn write_verified_update_artifact_files(
     })
 }
 
+fn apply_release_update_artifact(args: &UpdateApplyArgs) -> Result<UpdateApplyReport, String> {
+    let validated = validate_release_update_policy(&args.check)?;
+    let target = match args.target.clone() {
+        Some(target) => target,
+        None => default_update_target()
+            .ok_or_else(|| {
+                "release update apply target could not be detected; pass --target".to_string()
+            })?
+            .to_string(),
+    };
+    ensure_update_apply_target_matches_current_platform(&target)?;
+    let asset = select_update_platform_archive(&validated.policy, &target)?;
+    let artifact_name = file_name_string(&args.artifact_file, "release update artifact")?;
+    validate_public_asset_name(&artifact_name, "release update artifact")?;
+    if artifact_name != asset.filename {
+        return Err(format!(
+            "release update artifact file was {artifact_name}, expected {} for target {target}",
+            asset.filename
+        ));
+    }
+
+    let artifact_bytes = read_limited_file(
+        &args.artifact_file,
+        MAX_UPDATE_ARTIFACT_BYTES,
+        "release update artifact",
+    )?;
+    let actual_sha256 = sha256_hex(&artifact_bytes);
+    if actual_sha256 != asset.sha256 {
+        return Err("release update artifact SHA-256 did not match policy".to_string());
+    }
+    verify_update_artifact_sidecars(
+        &args.artifact_file,
+        &asset.filename,
+        &actual_sha256,
+        args.check.gpg_verify,
+    )?;
+
+    let staged = stage_update_archive_binaries(&asset.filename, &artifact_bytes, &target)?;
+    if staged.manifest_target != target {
+        return Err(format!(
+            "release update archive manifest target was {}, expected {target}",
+            staged.manifest_target
+        ));
+    }
+
+    let (binaries, backup_dir, update_applied) = if args.confirm {
+        let backup_dir = update_apply_backup_dir(&args.install_dir, &validated.report.version)?;
+        let reports =
+            install_staged_update_binaries(&staged.binaries, &args.install_dir, Some(&backup_dir))?;
+        (reports, Some(backup_dir), true)
+    } else {
+        let reports =
+            plan_staged_update_binaries(&staged.binaries, &args.install_dir, None, false)?;
+        (reports, None, false)
+    };
+
+    Ok(UpdateApplyReport {
+        policy: validated.report,
+        target,
+        filename: asset.filename,
+        archive_file: args.artifact_file.clone(),
+        install_dir: args.install_dir.clone(),
+        backup_dir,
+        entries_scanned: staged.entries_scanned,
+        unpacked_bytes: staged.unpacked_bytes,
+        binaries,
+        sha256: actual_sha256,
+        gpg_verified: args.check.gpg_verify,
+        dry_run: args.dry_run,
+        update_applied,
+    })
+}
+
+fn ensure_update_apply_target_matches_current_platform(target: &str) -> Result<(), String> {
+    let current = default_update_target().ok_or_else(|| {
+        "release update apply cannot detect the current platform target".to_string()
+    })?;
+    if target != current {
+        return Err(format!(
+            "release update apply target {target} does not match current platform {current}"
+        ));
+    }
+    Ok(())
+}
+
+fn verify_update_artifact_sidecars(
+    artifact_file: &Path,
+    artifact_name: &str,
+    actual_sha256: &str,
+    gpg_verify: bool,
+) -> Result<(), String> {
+    let sha256_file = sidecar_path(artifact_file, ".sha256");
+    let signature_file = sidecar_path(artifact_file, ".asc");
+    let sha256_bytes = read_limited_file(
+        &sha256_file,
+        MAX_UPDATE_CHECKSUM_BYTES,
+        "release update artifact checksum",
+    )?;
+    verify_update_sha256_sidecar_bytes(
+        &sha256_bytes,
+        artifact_name,
+        actual_sha256,
+        "release update artifact",
+    )?;
+    let signature_bytes = read_limited_file(
+        &signature_file,
+        MAX_UPDATE_SIGNATURE_BYTES,
+        "release update artifact signature",
+    )?;
+    verify_update_signature_sidecar_bytes(&signature_bytes, "release update artifact signature")?;
+    if gpg_verify {
+        verify_detached_signature_with_gpg(
+            &signature_file,
+            artifact_file,
+            "release update artifact",
+        )?;
+    }
+    Ok(())
+}
+
+fn stage_update_archive_binaries(
+    archive_name: &str,
+    archive_bytes: &[u8],
+    target: &str,
+) -> Result<StagedUpdateArchive, String> {
+    if archive_name.ends_with(".tar.gz") {
+        return stage_update_tar_gz_archive(archive_name, archive_bytes, target);
+    }
+    if archive_name.ends_with(".zip") {
+        return stage_update_zip_archive(archive_name, archive_bytes, target);
+    }
+    Err(format!(
+        "release update artifact {archive_name} must be a .tar.gz or .zip archive"
+    ))
+}
+
+fn stage_update_zip_archive(
+    archive_name: &str,
+    archive_bytes: &[u8],
+    target: &str,
+) -> Result<StagedUpdateArchive, String> {
+    let reader = std::io::Cursor::new(archive_bytes);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|error| format!("release update ZIP archive is invalid: {error}"))?;
+    let staging_dir = UpdateDownloadDir::create()?;
+    let mut scan = UpdateArchiveScan::new(target)?;
+
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|error| format!("release update ZIP member {index} is invalid: {error}"))?;
+        let raw_name = file.name().to_string();
+        let mode = file.unix_mode();
+        if mode.is_some_and(|value| (value & 0o170000) == 0o120000) {
+            return Err(format!(
+                "release update archive contains unsupported link member: {raw_name}"
+            ));
+        }
+        let is_dir = file.is_dir();
+        let size = file.size();
+        let normalized = scan.record_member(archive_name, &raw_name, size, is_dir)?;
+        if normalized.is_empty() || is_dir {
+            continue;
+        }
+        if normalized == "manifest.toml" {
+            let manifest = read_update_archive_member_limited(
+                &mut file,
+                MAX_UPDATE_ARCHIVE_MANIFEST_BYTES,
+                "release update archive manifest.toml",
+            )?;
+            scan.record_manifest(&manifest)?;
+            continue;
+        }
+        if let Some(binary_name) = scan.expected_binary_name(&normalized) {
+            let path = staging_dir
+                .path()
+                .join(update_binary_filename(&binary_name));
+            write_update_staged_binary(&path, &mut file, size, archive_name, &binary_name)?;
+            scan.record_binary(&binary_name, path, size)?;
+        }
+    }
+
+    scan.finish(staging_dir)
+}
+
+fn stage_update_tar_gz_archive(
+    archive_name: &str,
+    archive_bytes: &[u8],
+    target: &str,
+) -> Result<StagedUpdateArchive, String> {
+    let reader = std::io::Cursor::new(archive_bytes);
+    let decoder = flate2::read::GzDecoder::new(reader);
+    let mut archive = tar::Archive::new(decoder);
+    let staging_dir = UpdateDownloadDir::create()?;
+    let mut scan = UpdateArchiveScan::new(target)?;
+    let entries = archive
+        .entries()
+        .map_err(|error| format!("release update tar archive is invalid: {error}"))?;
+
+    for entry in entries {
+        let mut entry =
+            entry.map_err(|error| format!("release update tar member is invalid: {error}"))?;
+        let raw_name = entry
+            .path()
+            .map_err(|error| format!("release update tar member path is invalid: {error}"))?
+            .to_str()
+            .ok_or_else(|| "release update tar member path is not UTF-8".to_string())?
+            .to_string();
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(format!(
+                "release update archive contains unsupported link member: {raw_name}"
+            ));
+        }
+        let is_dir = entry_type.is_dir();
+        if !is_dir && !entry_type.is_file() {
+            return Err(format!(
+                "release update archive contains unsupported non-file member: {raw_name}"
+            ));
+        }
+        let size = entry
+            .header()
+            .size()
+            .map_err(|error| format!("release update tar member size is invalid: {error}"))?;
+        let normalized = scan.record_member(archive_name, &raw_name, size, is_dir)?;
+        if normalized.is_empty() || is_dir {
+            continue;
+        }
+        if normalized == "manifest.toml" {
+            let manifest = read_update_archive_member_limited(
+                &mut entry,
+                MAX_UPDATE_ARCHIVE_MANIFEST_BYTES,
+                "release update archive manifest.toml",
+            )?;
+            scan.record_manifest(&manifest)?;
+            continue;
+        }
+        if let Some(binary_name) = scan.expected_binary_name(&normalized) {
+            let path = staging_dir
+                .path()
+                .join(update_binary_filename(&binary_name));
+            write_update_staged_binary(&path, &mut entry, size, archive_name, &binary_name)?;
+            scan.record_binary(&binary_name, path, size)?;
+        }
+    }
+
+    scan.finish(staging_dir)
+}
+
+struct UpdateArchiveScan {
+    target: String,
+    expected_binaries: Vec<(String, String)>,
+    paths: HashSet<String>,
+    binaries: Vec<StagedUpdateBinary>,
+    manifest_target: Option<String>,
+    manifest_payload_safe: bool,
+    entries_scanned: usize,
+    unpacked_bytes: u64,
+}
+
+impl UpdateArchiveScan {
+    fn new(target: &str) -> Result<Self, String> {
+        let suffix = update_binary_suffix_for_target(target)?;
+        let expected_binaries = UPDATE_BINARY_NAMES
+            .iter()
+            .map(|name| ((*name).to_string(), format!("bin/{}{}", name, suffix)))
+            .collect();
+        Ok(Self {
+            target: target.to_string(),
+            expected_binaries,
+            paths: HashSet::new(),
+            binaries: Vec::new(),
+            manifest_target: None,
+            manifest_payload_safe: false,
+            entries_scanned: 0,
+            unpacked_bytes: 0,
+        })
+    }
+
+    fn record_member(
+        &mut self,
+        archive_name: &str,
+        raw_name: &str,
+        size: u64,
+        is_dir: bool,
+    ) -> Result<String, String> {
+        self.entries_scanned += 1;
+        if self.entries_scanned > MAX_UPDATE_ARCHIVE_ENTRIES {
+            return Err(format!(
+                "release update archive {archive_name} contains more than {MAX_UPDATE_ARCHIVE_ENTRIES} entries"
+            ));
+        }
+        if size > MAX_UPDATE_ARCHIVE_MEMBER_BYTES {
+            return Err(format!(
+                "release update archive member is too large: {raw_name}"
+            ));
+        }
+        let normalized = normalize_update_archive_member(raw_name)?;
+        if normalized.is_empty() {
+            return Ok(normalized);
+        }
+        if !is_dir && !self.paths.insert(normalized.clone()) {
+            return Err(format!(
+                "release update archive duplicated path: {normalized}"
+            ));
+        }
+        if !is_dir {
+            self.unpacked_bytes = self
+                .unpacked_bytes
+                .checked_add(size)
+                .ok_or_else(|| "release update archive unpacked size overflowed".to_string())?;
+            if self.unpacked_bytes > MAX_UPDATE_ARCHIVE_UNPACKED_BYTES {
+                return Err(format!(
+                    "release update archive uncompressed contents exceed {MAX_UPDATE_ARCHIVE_UNPACKED_BYTES} bytes"
+                ));
+            }
+            self.reject_unexpected_binary_path(&normalized)?;
+        }
+        Ok(normalized)
+    }
+
+    fn reject_unexpected_binary_path(&self, normalized: &str) -> Result<(), String> {
+        let filename = normalized.rsplit('/').next().unwrap_or(normalized);
+        let expected_filenames = self
+            .expected_binaries
+            .iter()
+            .map(|(_, path)| path.rsplit('/').next().unwrap_or(path.as_str()))
+            .collect::<HashSet<_>>();
+        let is_expected_binary_name = expected_filenames.contains(filename);
+        let is_expected_path = self
+            .expected_binaries
+            .iter()
+            .any(|(_, path)| path == normalized);
+        if is_expected_binary_name && !is_expected_path {
+            return Err(format!(
+                "release update archive contains unexpected binary path: {normalized}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn expected_binary_name(&self, normalized: &str) -> Option<String> {
+        self.expected_binaries
+            .iter()
+            .find_map(|(name, path)| (path == normalized).then_some(name.clone()))
+    }
+
+    fn record_manifest(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if !bytes.is_ascii() {
+            return Err("release update archive manifest.toml must be ASCII".to_string());
+        }
+        let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
+            format!("release update archive manifest.toml is invalid UTF-8: {error}")
+        })?;
+        self.manifest_target = parse_update_archive_manifest_target(&text);
+        self.manifest_payload_safe = text
+            .lines()
+            .any(|line| line.trim() == "payload_contents_included = false");
+        Ok(())
+    }
+
+    fn record_binary(
+        &mut self,
+        name: &str,
+        source_file: PathBuf,
+        bytes: u64,
+    ) -> Result<(), String> {
+        if self.binaries.iter().any(|binary| binary.name == name) {
+            return Err(format!("release update archive duplicated binary: {name}"));
+        }
+        self.binaries.push(StagedUpdateBinary {
+            name: name.to_string(),
+            source_file,
+            bytes,
+        });
+        Ok(())
+    }
+
+    fn finish(self, staging_dir: UpdateDownloadDir) -> Result<StagedUpdateArchive, String> {
+        let manifest_target = self
+            .manifest_target
+            .ok_or_else(|| "release update archive manifest.toml is missing target".to_string())?;
+        if !self.manifest_payload_safe {
+            return Err(
+                "release update archive manifest.toml does not declare payload_contents_included = false"
+                    .to_string(),
+            );
+        }
+        if manifest_target != self.target {
+            return Err(format!(
+                "release update archive manifest target was {manifest_target}, expected {}",
+                self.target
+            ));
+        }
+        let present = self
+            .binaries
+            .iter()
+            .map(|binary| binary.name.as_str())
+            .collect::<HashSet<_>>();
+        let missing = UPDATE_BINARY_NAMES
+            .iter()
+            .filter(|name| !present.contains(**name))
+            .copied()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(format!(
+                "release update archive missing binaries: {}",
+                missing.join(", ")
+            ));
+        }
+        Ok(StagedUpdateArchive {
+            _staging_dir: staging_dir,
+            manifest_target,
+            entries_scanned: self.entries_scanned,
+            unpacked_bytes: self.unpacked_bytes,
+            binaries: self.binaries,
+        })
+    }
+}
+
+fn normalize_update_archive_member(name: &str) -> Result<String, String> {
+    let normalized = name.replace('\\', "/");
+    if normalized.contains(':') || normalized.contains('\0') {
+        return Err(format!(
+            "release update archive contains unsafe path: {name}"
+        ));
+    }
+    let path = std::path::Path::new(&normalized);
+    if path.is_absolute() {
+        return Err(format!(
+            "release update archive contains unsafe path: {name}"
+        ));
+    }
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(value) => {
+                let part = value
+                    .to_str()
+                    .ok_or_else(|| format!("release update archive path is not UTF-8: {name}"))?;
+                if part.is_empty() {
+                    continue;
+                }
+                parts.push(part.to_string());
+            }
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(format!(
+                    "release update archive contains unsafe path: {name}"
+                ));
+            }
+        }
+    }
+    if parts.first().is_some_and(|part| part.starts_with("conu-")) {
+        parts.remove(0);
+    }
+    Ok(parts.join("/"))
+}
+
+fn read_update_archive_member_limited<R: Read>(
+    reader: &mut R,
+    limit: u64,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let mut limited = reader.take(limit + 1);
+    let mut bytes = Vec::new();
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{label} could not be read: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{label} is too large"));
+    }
+    Ok(bytes)
+}
+
+fn write_update_staged_binary<R: Read>(
+    path: &Path,
+    reader: &mut R,
+    expected_bytes: u64,
+    archive_name: &str,
+    binary_name: &str,
+) -> Result<(), String> {
+    let mut file = fs::File::create(path).map_err(|error| {
+        format!("could not stage {binary_name} from release update archive {archive_name}: {error}")
+    })?;
+    let copied = io::copy(reader, &mut file).map_err(|error| {
+        format!("could not read {binary_name} from release update archive {archive_name}: {error}")
+    })?;
+    if copied != expected_bytes {
+        return Err(format!(
+            "release update archive {binary_name} size changed while staging"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_update_archive_manifest_target(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let (key, value) = trimmed.split_once('=')?;
+        if key.trim() != "target" {
+            return None;
+        }
+        let value = value.trim();
+        value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .filter(|value| !value.trim().is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn update_binary_suffix_for_target(target: &str) -> Result<&'static str, String> {
+    if target.starts_with("windows-") {
+        return Ok(".exe");
+    }
+    if target.starts_with("linux-") || target.starts_with("macos-") {
+        return Ok("");
+    }
+    Err(format!(
+        "release update apply target is unsupported: {target}"
+    ))
+}
+
+fn update_binary_filename(name: &str) -> String {
+    format!("{}{}", name, env::consts::EXE_SUFFIX)
+}
+
+fn update_apply_backup_dir(install_dir: &Path, version: &str) -> Result<PathBuf, String> {
+    validate_public_asset_name(version, "release update version")?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    Ok(install_dir
+        .join(".conu-update-backups")
+        .join(format!("{version}-{nonce}")))
+}
+
+fn plan_staged_update_binaries(
+    binaries: &[StagedUpdateBinary],
+    install_dir: &Path,
+    backup_dir: Option<&Path>,
+    _confirmed: bool,
+) -> Result<Vec<UpdateApplyBinaryReport>, String> {
+    if install_dir.exists() && !install_dir.is_dir() {
+        return Err(format!(
+            "release update install-dir is not a directory: {}",
+            install_dir.display()
+        ));
+    }
+
+    let mut reports = Vec::new();
+    let mut targets = HashSet::new();
+    for binary in binaries {
+        validate_public_asset_name(&binary.name, "release update binary")?;
+        let filename = update_binary_filename(&binary.name);
+        let target_file = install_dir.join(&filename);
+        if !targets.insert(target_file.clone()) {
+            return Err(format!(
+                "release update install target overlaps: {}",
+                target_file.display()
+            ));
+        }
+        if let Ok(metadata) = fs::symlink_metadata(&target_file) {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "release update install target is not a regular file: {}",
+                    target_file.display()
+                ));
+            }
+        }
+        let backup_file = backup_dir.and_then(|dir| {
+            if target_file.exists() {
+                Some(dir.join(&filename))
+            } else {
+                None
+            }
+        });
+        reports.push(UpdateApplyBinaryReport {
+            name: binary.name.clone(),
+            source_file: binary.source_file.clone(),
+            target_file,
+            backup_file,
+            bytes: binary.bytes,
+        });
+    }
+    Ok(reports)
+}
+
+fn install_staged_update_binaries(
+    binaries: &[StagedUpdateBinary],
+    install_dir: &Path,
+    backup_dir: Option<&Path>,
+) -> Result<Vec<UpdateApplyBinaryReport>, String> {
+    let reports = plan_staged_update_binaries(binaries, install_dir, backup_dir, true)?;
+    fs::create_dir_all(install_dir).map_err(|error| {
+        format!(
+            "could not create release update install directory {}: {error}",
+            install_dir.display()
+        )
+    })?;
+    if let Some(backup_dir) = backup_dir {
+        fs::create_dir_all(backup_dir).map_err(|error| {
+            format!(
+                "could not create release update backup directory {}: {error}",
+                backup_dir.display()
+            )
+        })?;
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let mut temp_targets = Vec::new();
+    for report in &reports {
+        let filename = report
+            .target_file
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "release update install target has invalid filename".to_string())?;
+        let temp_target = install_dir.join(format!(".{filename}.conu-update-new-{nonce}"));
+        if temp_target.exists() {
+            cleanup_update_temp_targets(&temp_targets);
+            return Err(format!(
+                "release update temporary install target already exists: {}",
+                temp_target.display()
+            ));
+        }
+        if let Err(error) = fs::copy(&report.source_file, &temp_target) {
+            cleanup_update_temp_targets(&temp_targets);
+            let _ = fs::remove_file(&temp_target);
+            return Err(format!(
+                "could not stage release update binary {}: {error}",
+                report.target_file.display()
+            ));
+        }
+        if let Err(error) = set_update_binary_permissions(&temp_target) {
+            cleanup_update_temp_targets(&temp_targets);
+            let _ = fs::remove_file(&temp_target);
+            return Err(error);
+        }
+        temp_targets.push((report.target_file.clone(), temp_target));
+    }
+
+    for report in &reports {
+        if report.target_file.exists() {
+            let Some(backup_file) = report.backup_file.as_ref() else {
+                cleanup_update_temp_targets(&temp_targets);
+                return Err("release update backup path was not prepared".to_string());
+            };
+            if backup_file.exists() {
+                cleanup_update_temp_targets(&temp_targets);
+                return Err(format!(
+                    "release update backup target already exists: {}",
+                    backup_file.display()
+                ));
+            }
+            if let Err(error) = fs::copy(&report.target_file, backup_file) {
+                cleanup_update_temp_targets(&temp_targets);
+                let _ = fs::remove_file(backup_file);
+                return Err(format!(
+                    "could not back up release update binary {}: {error}",
+                    report.target_file.display()
+                ));
+            }
+        }
+    }
+
+    let mut installed = Vec::new();
+    for (target_file, temp_target) in &temp_targets {
+        let backup_file = reports
+            .iter()
+            .find(|report| report.target_file == *target_file)
+            .and_then(|report| report.backup_file.clone());
+        if target_file.exists() {
+            if let Err(error) = fs::remove_file(target_file) {
+                rollback_update_install(&installed);
+                cleanup_update_temp_targets(&temp_targets);
+                return Err(format!(
+                    "could not replace release update binary {}: {error}",
+                    target_file.display()
+                ));
+            }
+        }
+        if let Err(error) = fs::rename(temp_target, target_file) {
+            if let Some(backup_file) = backup_file.as_ref() {
+                restore_update_backup(target_file, backup_file);
+            }
+            rollback_update_install(&installed);
+            cleanup_update_temp_targets(&temp_targets);
+            return Err(format!(
+                "could not install release update binary {}: {error}",
+                target_file.display()
+            ));
+        }
+        installed.push((target_file.clone(), backup_file));
+    }
+
+    Ok(reports)
+}
+
+fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) {
+    for (target_file, backup_file) in installed.iter().rev() {
+        let _ = fs::remove_file(target_file);
+        if let Some(backup_file) = backup_file {
+            restore_update_backup(target_file, backup_file);
+        }
+    }
+}
+
+fn restore_update_backup(target_file: &Path, backup_file: &Path) {
+    if backup_file.exists() {
+        let _ = fs::copy(backup_file, target_file);
+        let _ = set_update_binary_permissions(target_file);
+    }
+}
+
+fn cleanup_update_temp_targets(temp_targets: &[(PathBuf, PathBuf)]) {
+    for (_, temp_target) in temp_targets {
+        let _ = fs::remove_file(temp_target);
+    }
+}
+
+#[cfg(unix)]
+fn set_update_binary_permissions(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .map_err(|error| {
+            format!(
+                "could not read release update binary permissions {}: {error}",
+                path.display()
+            )
+        })?
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).map_err(|error| {
+        format!(
+            "could not set release update binary permissions {}: {error}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn set_update_binary_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 fn ensure_update_output_files_available(dir: &Path, names: &[&str]) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|error| {
         format!(
@@ -7289,12 +8250,162 @@ privacy
     )
 }
 
+fn render_update_apply_json(report: &UpdateApplyReport) -> String {
+    let backup_dir = report
+        .backup_dir
+        .as_ref()
+        .map(|path| format!(r#""{}""#, json_escape(&path.display().to_string())))
+        .unwrap_or_else(|| "null".to_string());
+    let binaries = report
+        .binaries
+        .iter()
+        .map(|binary| {
+            let backup_file = binary
+                .backup_file
+                .as_ref()
+                .map(|path| format!(r#""{}""#, json_escape(&path.display().to_string())))
+                .unwrap_or_else(|| "null".to_string());
+            format!(
+                r#"    {{
+      "name": "{}",
+      "targetFile": "{}",
+      "backupFile": {},
+      "bytes": {}
+    }}"#,
+                json_escape(&binary.name),
+                json_escape(&binary.target_file.display().to_string()),
+                backup_file,
+                binary.bytes
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!(
+        r#"{{
+  "status": "{}",
+  "source": "{}",
+  "version": "{}",
+  "releaseTag": "{}",
+  "target": "{}",
+  "filename": "{}",
+  "archiveFile": "{}",
+  "installDir": "{}",
+  "backupDir": {},
+  "entriesScanned": {},
+  "unpackedBytes": {},
+  "binaries": [
+{}
+  ],
+  "sha256": "{}",
+  "sha256SidecarMatched": true,
+  "signatureSidecarPresent": true,
+  "gpgVerified": {},
+  "dryRun": {},
+  "updateApplied": {},
+  "privacy": {{
+    "payloadDisplayed": false,
+    "tokenDisplayed": false,
+    "keyMaterialDisplayed": false,
+    "ciphertextDisplayed": false,
+    "contentsDisplayed": false
+  }}
+}}"#,
+        if report.update_applied {
+            "update_applied"
+        } else {
+            "update_apply_ready"
+        },
+        report.policy.source.as_str(),
+        json_escape(&report.policy.version),
+        json_escape(&report.policy.release_tag),
+        json_escape(&report.target),
+        json_escape(&report.filename),
+        json_escape(&report.archive_file.display().to_string()),
+        json_escape(&report.install_dir.display().to_string()),
+        backup_dir,
+        report.entries_scanned,
+        report.unpacked_bytes,
+        binaries,
+        report.sha256,
+        report.gpg_verified,
+        report.dry_run,
+        report.update_applied
+    )
+}
+
+fn render_update_apply_text(report: &UpdateApplyReport) -> String {
+    let backup_dir = report
+        .backup_dir
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let binaries = report
+        .binaries
+        .iter()
+        .map(|binary| format!("  {:<15} {}", binary.name, binary.target_file.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r"conU update apply
+
+status: {}
+source: {}
+version: {}
+tag: {}
+target: {}
+
+artifact
+  filename         {}
+  file             {}
+  bytes unpacked   {}
+  entries scanned  {}
+  sha256           {}
+  sidecar          matched
+  signature        present
+  gpg verified     {}
+
+install
+  install dir      {}
+  backup dir       {}
+  dry run          {}
+  update applied   {}
+
+binaries
+{}
+
+privacy
+  payload view      contents are not displayed by conU",
+        if report.update_applied {
+            "update applied"
+        } else {
+            "ready to apply"
+        },
+        report.policy.source.as_str(),
+        report.policy.version,
+        report.policy.release_tag,
+        report.target,
+        report.filename,
+        report.archive_file.display(),
+        report.unpacked_bytes,
+        report.entries_scanned,
+        report.sha256,
+        yes_no(report.gpg_verified),
+        report.install_dir.display(),
+        backup_dir,
+        yes_no(report.dry_run),
+        yes_no(report.update_applied),
+        binaries
+    )
+}
+
 fn render_update_usage() -> String {
     r"usage:
   conu update check --policy-file <path> [--sha256-file <path>] [--signature-file <path>] [--gpg-verify] [--json]
   conu update check --policy-url <https-url> [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]
   conu update download --policy-file <path> --output-dir <dir> [--target <target>] [--gpg-verify] [--json]
-  conu update download --policy-url <https-url> --output-dir <dir> [--target <target>] [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]"
+  conu update download --policy-url <https-url> --output-dir <dir> [--target <target>] [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] [--json]
+  conu update apply --policy-file <path> --artifact-file <archive> --install-dir <dir> [--target <target>] [--gpg-verify] (--dry-run|--confirm) [--json]
+  conu update apply --policy-url <https-url> --artifact-file <archive> --install-dir <dir> [--target <target>] [--sha256-url <https-url>] [--signature-url <https-url>] [--gpg-verify] (--dry-run|--confirm) [--json]"
         .to_string()
 }
 
@@ -7303,6 +8414,10 @@ fn render_update_check_usage() -> String {
 }
 
 fn render_update_download_usage() -> String {
+    render_update_usage()
+}
+
+fn render_update_apply_usage() -> String {
     render_update_usage()
 }
 
@@ -9475,6 +10590,174 @@ mod tests {
     }
 
     #[test]
+    fn update_apply_dry_run_validates_archive_without_installing() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let archive_bytes = update_archive_fixture_bytes(&target, false);
+        let archive_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-dry-run");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
+        let install_dir = home.join("install-bin");
+
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--dry-run",
+            "--json",
+        ]);
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"update_apply_ready\""));
+        assert!(output.stdout.contains("\"dryRun\": true"));
+        assert!(output.stdout.contains("\"updateApplied\": false"));
+        assert!(output.stdout.contains("\"sha256SidecarMatched\": true"));
+        assert!(output.stdout.contains("\"signatureSidecarPresent\": true"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("fixture binary bytes"));
+        assert!(!output.stdout.contains("BEGIN PGP SIGNATURE"));
+        assert!(!install_dir.exists());
+    }
+
+    #[test]
+    fn update_apply_confirm_installs_expected_binaries_and_backup() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let archive_bytes = update_archive_fixture_bytes(&target, false);
+        let archive_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-confirm");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let existing_conu = install_dir.join(update_binary_filename("conu"));
+        fs::write(&existing_conu, b"old conu binary").expect("existing binary writes");
+
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--confirm",
+            "--json",
+        ]);
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"update_applied\""));
+        assert!(output.stdout.contains("\"updateApplied\": true"));
+        assert!(output.stdout.contains("\"dryRun\": false"));
+        for name in UPDATE_BINARY_NAMES {
+            let installed = install_dir.join(update_binary_filename(name));
+            assert_eq!(
+                fs::read(&installed).expect("installed binary reads"),
+                update_archive_binary_bytes(name)
+            );
+        }
+        let backup_root = install_dir.join(".conu-update-backups");
+        let backups = fs::read_dir(&backup_root)
+            .expect("backup root exists")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("backup entries read");
+        assert_eq!(backups.len(), 1);
+        let backed_up_conu = backups[0].path().join(update_binary_filename("conu"));
+        assert_eq!(
+            fs::read(backed_up_conu).expect("backup reads"),
+            b"old conu binary"
+        );
+        assert!(!output.stdout.contains("old conu binary"));
+        assert!(!output.stdout.contains("fixture binary bytes"));
+    }
+
+    #[test]
+    fn update_apply_rejects_checksum_drift_before_install() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let archive_bytes = update_archive_fixture_bytes(&target, false);
+        let expected_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-drift");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &expected_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, b"tampered archive bytes");
+        let install_dir = home.join("install-bin");
+
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--confirm",
+            "--json",
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("SHA-256 did not match policy"));
+        assert!(!install_dir.exists());
+    }
+
+    #[test]
+    fn update_apply_rejects_unsafe_archive_member_before_install() {
+        let target = update_apply_test_target();
+        let filename = update_zip_archive_fixture_name(&target);
+        let archive_bytes = update_zip_archive_fixture_bytes(&target, true);
+        let archive_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-unsafe");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
+        let install_dir = home.join("install-bin");
+
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--dry-run",
+            "--json",
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("unsafe path"));
+        assert!(!install_dir.exists());
+    }
+
+    #[test]
+    fn update_apply_requires_dry_run_or_confirm() {
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            "dist/conu-0.1.0-update-policy.json",
+            "--artifact-file",
+            "dist/conu-0.1.0-linux-x64.tar.gz",
+            "--install-dir",
+            "bin",
+        ]);
+
+        assert_eq!(output.code, 2);
+        assert!(output.stderr.contains("conu update apply"));
+    }
+
+    #[test]
     fn update_check_rejects_auto_apply_policy() {
         let home = temp_home("update-auto-apply");
         let policy = write_update_policy_fixture(&home, true);
@@ -10790,6 +12073,22 @@ mod tests {
         auto_apply: bool,
         asset_sha: &str,
     ) -> PathBuf {
+        write_update_policy_fixture_for_asset(
+            directory,
+            auto_apply,
+            asset_sha,
+            "linux-x64",
+            "conu-0.1.0-linux-x64.tar.gz",
+        )
+    }
+
+    fn write_update_policy_fixture_for_asset(
+        directory: &Path,
+        auto_apply: bool,
+        asset_sha: &str,
+        target: &str,
+        filename: &str,
+    ) -> PathBuf {
         fs::create_dir_all(directory).expect("fixture dir creates");
         let policy = directory.join("conu-0.1.0-update-policy.json");
         let release_base = "https://github.com/imthegoodboy/conU/releases/download/v0.1.0";
@@ -10841,13 +12140,13 @@ mod tests {
   "payloadDisplayed": false,
   "platformArchives": [
     {{
-      "filename": "conu-0.1.0-linux-x64.tar.gz",
+      "filename": "{filename}",
       "kind": "platform-archive",
       "sha256": "{asset_sha}",
-      "sha256Url": "{release_base}/conu-0.1.0-linux-x64.tar.gz.sha256",
-      "signatureUrl": "{release_base}/conu-0.1.0-linux-x64.tar.gz.asc",
-      "target": "linux-x64",
-      "url": "{release_base}/conu-0.1.0-linux-x64.tar.gz"
+      "sha256Url": "{release_base}/{filename}.sha256",
+      "signatureUrl": "{release_base}/{filename}.asc",
+      "target": "{target}",
+      "url": "{release_base}/{filename}"
     }}
   ],
   "policyAsset": {{
@@ -10881,7 +12180,9 @@ mod tests {
   "version": "0.1.0"
 }}
 "#,
-            asset_sha = asset_sha
+            asset_sha = asset_sha,
+            filename = filename,
+            target = target
         );
         fs::write(&policy, policy_text).expect("policy writes");
         let digest = sha256_hex(&fs::read(&policy).expect("policy reads"));
@@ -10896,6 +12197,128 @@ mod tests {
         )
         .expect("signature writes");
         policy
+    }
+
+    fn update_apply_test_target() -> String {
+        default_update_target()
+            .expect("test runner has supported update target")
+            .to_string()
+    }
+
+    fn update_archive_fixture_name(target: &str) -> String {
+        format!("conu-0.1.0-{target}.tar.gz")
+    }
+
+    fn update_zip_archive_fixture_name(target: &str) -> String {
+        format!("conu-0.1.0-{target}.zip")
+    }
+
+    fn update_archive_fixture_bytes(target: &str, unsafe_member: bool) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let root = format!("conu-0.1.0-{target}");
+        let manifest = format!(
+            "version = \"0.1.0\"\ntarget = \"{target}\"\npayload_contents_included = false\n"
+        );
+        append_update_archive_fixture_file(
+            &mut builder,
+            &format!("{root}/manifest.toml"),
+            manifest.as_bytes(),
+            0o644,
+        );
+        for name in UPDATE_BINARY_NAMES {
+            append_update_archive_fixture_file(
+                &mut builder,
+                &format!("{root}/bin/{}", update_binary_filename(name)),
+                &update_archive_binary_bytes(name),
+                0o755,
+            );
+        }
+        if unsafe_member {
+            append_update_archive_fixture_file(&mut builder, "../bin/conu", b"escape", 0o755);
+        }
+        builder.finish().expect("tar builder finishes");
+        let encoder = builder.into_inner().expect("tar encoder returns");
+        encoder.finish().expect("gzip finishes")
+    }
+
+    fn update_zip_archive_fixture_bytes(target: &str, unsafe_member: bool) -> Vec<u8> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let root = format!("conu-0.1.0-{target}");
+        let manifest = format!(
+            "version = \"0.1.0\"\ntarget = \"{target}\"\npayload_contents_included = false\n"
+        );
+        append_update_zip_archive_fixture_file(
+            &mut writer,
+            &format!("{root}/manifest.toml"),
+            manifest.as_bytes(),
+            0o644,
+        );
+        for name in UPDATE_BINARY_NAMES {
+            append_update_zip_archive_fixture_file(
+                &mut writer,
+                &format!("{root}/bin/{}", update_binary_filename(name)),
+                &update_archive_binary_bytes(name),
+                0o755,
+            );
+        }
+        if unsafe_member {
+            append_update_zip_archive_fixture_file(&mut writer, "../bin/conu", b"escape", 0o755);
+        }
+        writer.finish().expect("zip finishes").into_inner()
+    }
+
+    fn append_update_archive_fixture_file<W: Write>(
+        builder: &mut tar::Builder<W>,
+        path: &str,
+        bytes: &[u8],
+        mode: u32,
+    ) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, bytes)
+            .expect("tar fixture file appends");
+    }
+
+    fn append_update_zip_archive_fixture_file<W: Write + io::Seek>(
+        writer: &mut zip::ZipWriter<W>,
+        path: &str,
+        bytes: &[u8],
+        mode: u32,
+    ) {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(mode);
+        writer
+            .start_file(path, options)
+            .expect("zip fixture file starts");
+        writer.write_all(bytes).expect("zip fixture file writes");
+    }
+
+    fn update_archive_binary_bytes(name: &str) -> Vec<u8> {
+        format!("fixture binary bytes for {name}\n").into_bytes()
+    }
+
+    fn write_update_artifact_fixture(directory: &Path, filename: &str, bytes: &[u8]) -> PathBuf {
+        fs::create_dir_all(directory).expect("artifact dir creates");
+        let artifact = directory.join(filename);
+        fs::write(&artifact, bytes).expect("artifact writes");
+        let digest = sha256_hex(bytes);
+        fs::write(
+            sidecar_path(&artifact, ".sha256"),
+            format!("{digest}  {filename}\n"),
+        )
+        .expect("artifact sidecar writes");
+        fs::write(
+            sidecar_path(&artifact, ".asc"),
+            "-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n",
+        )
+        .expect("artifact signature writes");
+        artifact
     }
 
     fn pairing_code_from_output(output: &str) -> String {
