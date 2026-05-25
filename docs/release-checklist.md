@@ -14,7 +14,7 @@ Use this checklist before publishing any conU build.
 - Run `python scripts/check-package-manager-submissions.py`; CI and release package gates use the same regression check to prove the package-manager submission bundle lays out generated Homebrew tap, Scoop bucket, winget-pkgs, Chocolatey, Debian, APT, RPM, and Linux signing files under deterministic repository-ready paths, requires strict sidecars/signatures when requested, rejects forbidden output, and writes a strict bundle `.sha256` sidecar.
 - Run `python scripts/check-linux-signing-secrets-preflight-regression.py`; CI and release package gates use the same regression check to prove Linux signing secrets fail closed when missing, malformed, fingerprint-mismatched, or unusable for probe signing.
 - Run `python scripts/check-platform-signing-secrets-preflight-regression.py`; CI and release package gates use the same regression check to prove Windows/macOS signing secret values fail closed when missing, malformed, unsafe for timestamp/notary identity fields, or unusable as PKCS#12 certificate/private-key material when OpenSSL is available.
-- Run `python scripts/set-github-release-secrets-regression.py`; CI and release package gates use the same regression check to prove release secret setup reads local values from the environment, sends them to `gh secret set` through stdin rather than command arguments, and reports only secret names.
+- Run `python scripts/set-github-release-secrets-regression.py`; CI and release package gates use the same regression check to prove release secret setup reads local values from the environment or a strict ignored env file, passes env-file values to preflight subprocesses through environment variables, sends values to `gh secret set` through stdin rather than command arguments, and reports only secret names.
 - Run `python scripts/check-github-release-secret-readiness.py --repo <owner/name>` before creating a release tag; it reports only configured or missing secret names.
 - Run `python scripts/check-github-main-protection.py --repo <owner/name>` before creating a release tag or marking the repository production-ready; it reports whether the default branch has strict required CI checks, force pushes disabled, and branch deletion disabled without printing tokens, logs, or branch-protection API bodies.
 - Run `python scripts/check-github-actions-permissions.py --repo <owner/name>` before creating a release tag or marking the repository production-ready; it verifies Actions are enabled, repository Actions admission is restricted to selected actions, the default workflow token is read-only, Actions cannot approve pull requests, GitHub-owned actions are allowed, and only the expected `dtolnay/rust-toolchain@stable` marketplace pattern is allowed.
@@ -234,6 +234,10 @@ conu stop
   `python scripts/set-github-release-secrets.py --repo <owner/name> --dry-run --preflight-values --require-openssl`
   to validate Windows/macOS PKCS#12 values and Linux GPG signing values before
   any GitHub writes.
+- As an alternative to shell exports, place the required `KEY=VALUE` pairs in
+  an ignored local file such as `.env.release` and add `--env-file .env.release`
+  to the same dry-run and upload commands. The parser accepts only required
+  release secret names and reports only names plus line numbers on errors.
 - After that dry run passes, rerun without `--dry-run` to configure the
   repository secrets through GitHub CLI stdin without printing values. If the
   combined preflight fails, run the individual platform or Linux signing

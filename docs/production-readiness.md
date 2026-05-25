@@ -140,6 +140,10 @@ For repository setup, run
 after exporting all release secret values; it runs Windows/macOS and Linux GPG
 value preflights before any upload, then sends values to GitHub CLI through
 stdin when rerun without `--dry-run`.
+Use `--env-file .env.release` instead of exported shell values when the
+maintainer wants a local ignored `KEY=VALUE` file; the parser accepts only the
+required release secret names and reports only names plus line numbers on
+errors.
 Add `-CheckLinuxRepositoryEndpoint -LinuxRepositoryBaseUrl <https-url>` after a
 custom hosted repository site is published to prove endpoint metadata and live
 Cache-Control headers match the generated policy.

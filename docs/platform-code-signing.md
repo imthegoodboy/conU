@@ -99,6 +99,18 @@ release secret values and run:
 python scripts/set-github-release-secrets.py --repo <owner/name> --dry-run --preflight-values --require-openssl
 ```
 
+Instead of exporting values into the shell, maintainers may place the required
+`KEY=VALUE` pairs in an ignored local file such as `.env.release` and run:
+
+```sh
+python scripts/set-github-release-secrets.py --repo <owner/name> --env-file .env.release --dry-run --preflight-values --require-openssl
+```
+
+The env-file parser accepts only the required release secret names, rejects
+malformed, duplicate, or unsupported keys, and reports only names plus line
+numbers. It must not be committed; the repository ignores `.env` and `.env.*`
+files by default.
+
 That helper also runs the Linux GPG signing-secret preflight, suppresses
 preflight stdout/stderr to avoid leaking secret material from subprocesses, and
 sends values to `gh secret set` through stdin when rerun without `--dry-run`.
