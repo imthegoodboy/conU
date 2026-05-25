@@ -19,6 +19,16 @@ from pathlib import Path, PurePosixPath
 
 REQUIRED_BINARIES = ("conu", "conud", "conu-relay", "conu-mcp")
 DEFAULT_PACKAGE_DIR = Path("packaging/npm/conu-cli")
+MAX_MEMBER_BYTES = 512_000_000
+MAX_MEMBER_COUNT = 10_000
+MAX_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
+
+
+class ExtractState:
+    def __init__(self) -> None:
+        self.paths: set[str] = set()
+        self.entry_count = 0
+        self.total_uncompressed = 0
 
 
 def main() -> int:
@@ -214,17 +224,44 @@ def archive_stem(archive: Path) -> str:
 
 def extract_archive(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
+    state = ExtractState()
     if archive.suffix == ".zip":
         with zipfile.ZipFile(archive) as package:
             for member in package.infolist():
                 if member.filename.endswith("/"):
+                    if member.file_size != 0:
+                        raise SystemExit(
+                            f"{archive.name} contains directory member with data: "
+                            f"{member.filename}"
+                        )
+                    validate_extract_entry(
+                        archive.name,
+                        member.filename,
+                        0,
+                        state,
+                        allow_empty=True,
+                    )
                     continue
+                if member.flag_bits & 0x1:
+                    raise SystemExit(
+                        f"{archive.name} contains encrypted zip member: {member.filename}"
+                    )
                 file_type = (member.external_attr >> 16) & 0o170000
                 if file_type == stat.S_IFLNK:
                     raise SystemExit(
                         f"{archive.name} contains unsupported link member: {member.filename}"
                     )
-                output_path = safe_extract_path(destination, member.filename)
+                if file_type not in {0, stat.S_IFREG}:
+                    raise SystemExit(
+                        f"{archive.name} contains unsupported zip member: {member.filename}"
+                    )
+                output_path = checked_extract_path(
+                    archive.name,
+                    destination,
+                    member.filename,
+                    member.file_size,
+                    state,
+                )
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_bytes(package.read(member))
                 unix_mode = (member.external_attr >> 16) & 0o777
@@ -236,12 +273,29 @@ def extract_archive(archive: Path, destination: Path) -> None:
         with tarfile.open(archive, "r:gz") as package:
             for member in package.getmembers():
                 if member.isdir():
+                    if member.size != 0:
+                        raise SystemExit(
+                            f"{archive.name} contains directory member with data: {member.name}"
+                        )
+                    validate_extract_entry(
+                        archive.name,
+                        member.name,
+                        0,
+                        state,
+                        allow_empty=True,
+                    )
                     continue
                 if not member.isfile():
                     raise SystemExit(
                         f"{archive.name} contains unsupported non-file member: {member.name}"
                     )
-                output_path = safe_extract_path(destination, member.name)
+                output_path = checked_extract_path(
+                    archive.name,
+                    destination,
+                    member.name,
+                    member.size,
+                    state,
+                )
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 file_object = package.extractfile(member)
                 if file_object is None:
@@ -253,20 +307,64 @@ def extract_archive(archive: Path, destination: Path) -> None:
     raise SystemExit(f"unsupported release archive {archive.name}")
 
 
-def safe_extract_path(destination: Path, member_name: str) -> Path:
-    normalized = member_name.replace("\\", "/")
-    path = PurePosixPath(normalized)
-    parts = [part for part in path.parts if part not in {"", ".", "/"}]
-    if path.is_absolute() or ".." in parts:
-        raise SystemExit(f"unsafe archive path: {member_name}")
-
-    output_path = (destination / Path(*parts)).resolve()
+def checked_extract_path(
+    archive_name: str,
+    destination: Path,
+    member_name: str,
+    size: int,
+    state: ExtractState,
+) -> Path:
+    normalized = validate_extract_entry(archive_name, member_name, size, state)
+    output_path = (destination / Path(*PurePosixPath(normalized).parts)).resolve()
     destination_resolved = destination.resolve()
     try:
         output_path.relative_to(destination_resolved)
     except ValueError as exc:
         raise SystemExit(f"unsafe archive path: {member_name}") from exc
     return output_path
+
+
+def validate_extract_entry(
+    archive_name: str,
+    member_name: str,
+    size: int,
+    state: ExtractState,
+    *,
+    allow_empty: bool = False,
+) -> str:
+    if size < 0:
+        raise SystemExit(f"{archive_name} contains member with invalid size: {member_name}")
+    if size > MAX_MEMBER_BYTES:
+        raise SystemExit(f"{archive_name} member is too large: {member_name}")
+
+    state.entry_count += 1
+    if state.entry_count > MAX_MEMBER_COUNT:
+        raise SystemExit(f"{archive_name} contains more than {MAX_MEMBER_COUNT} entries")
+
+    normalized = normalize_extract_path(member_name)
+    if not normalized:
+        if allow_empty:
+            return normalized
+        raise SystemExit(f"{archive_name} contains empty archive path: {member_name}")
+
+    state.total_uncompressed += size
+    if state.total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
+        raise SystemExit(
+            f"{archive_name} uncompressed contents exceed {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes"
+        )
+    if normalized in state.paths:
+        raise SystemExit(f"{archive_name} contains duplicate archive path: {normalized}")
+    state.paths.add(normalized)
+    return normalized
+
+
+def normalize_extract_path(member_name: str) -> str:
+    normalized = member_name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    parts = [part for part in path.parts if part not in {"", ".", "/"}]
+    if path.is_absolute() or ".." in parts:
+        raise SystemExit(f"unsafe archive path: {member_name}")
+    return "/".join(parts)
 
 
 def find_package_root(archive: Path, extract_dir: Path) -> Path:

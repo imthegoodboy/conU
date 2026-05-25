@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import stat
 import tempfile
 import zipfile
 from pathlib import Path
@@ -91,6 +92,74 @@ def main() -> int:
             "unexpected extracted root",
         )
 
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-duplicate.zip"
+        write_zip_entries(
+            archive,
+            [
+                ("bin/conu", "first"),
+                ("bin/./conu", "second"),
+            ],
+        )
+        expect_action_failure(
+            lambda: smoke.extract_archive(archive, root / "extract-duplicate"),
+            "duplicate archive path",
+            "duplicate extracted path",
+        )
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-too-large.zip"
+        write_zip(archive, {"bin/conu": "too large"})
+        original_limit = smoke.MAX_MEMBER_BYTES
+        smoke.MAX_MEMBER_BYTES = 1
+        try:
+            expect_action_failure(
+                lambda: smoke.extract_archive(archive, root / "extract-large"),
+                "member is too large",
+                "oversized extracted member",
+            )
+        finally:
+            smoke.MAX_MEMBER_BYTES = original_limit
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-too-many.zip"
+        write_zip_entries(archive, [("one", "1"), ("two", "2")])
+        original_limit = smoke.MAX_MEMBER_COUNT
+        smoke.MAX_MEMBER_COUNT = 1
+        try:
+            expect_action_failure(
+                lambda: smoke.extract_archive(archive, root / "extract-many"),
+                "contains more than",
+                "extracted entry count bound",
+            )
+        finally:
+            smoke.MAX_MEMBER_COUNT = original_limit
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-total.zip"
+        write_zip_entries(archive, [("one", "1"), ("two", "2")])
+        original_limit = smoke.MAX_TOTAL_UNCOMPRESSED_BYTES
+        smoke.MAX_TOTAL_UNCOMPRESSED_BYTES = 1
+        try:
+            expect_action_failure(
+                lambda: smoke.extract_archive(archive, root / "extract-total"),
+                "uncompressed contents exceed",
+                "extracted total size bound",
+            )
+        finally:
+            smoke.MAX_TOTAL_UNCOMPRESSED_BYTES = original_limit
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-unsupported.zip"
+        info = zipfile.ZipInfo("device")
+        info.external_attr = (stat.S_IFCHR | 0o644) << 16
+        write_zip_infos(archive, [(info, b"device")])
+        expect_action_failure(
+            lambda: smoke.extract_archive(archive, root / "extract-unsupported"),
+            "unsupported zip member",
+            "unsupported zip member type",
+        )
+
     print("npm launcher local smoke preflight check passed")
     return 0
 
@@ -124,11 +193,21 @@ def write_binaries(bin_dir: Path, smoke, skip: str | None = None) -> None:
 
 
 def write_zip(path: Path, members: dict[str, bytes | str]) -> None:
+    write_zip_entries(path, list(members.items()))
+
+
+def write_zip_entries(path: Path, entries: list[tuple[str, bytes | str]]) -> None:
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as package:
-        for name, content in members.items():
+        for name, content in entries:
             if isinstance(content, str):
                 content = content.encode("utf-8")
             package.writestr(name, content)
+
+
+def write_zip_infos(path: Path, entries: list[tuple[zipfile.ZipInfo, bytes]]) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as package:
+        for info, content in entries:
+            package.writestr(info, content)
 
 
 def expect_failure(smoke, bin_dir: Path, expected: str, label: str) -> None:
