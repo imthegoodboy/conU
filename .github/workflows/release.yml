@@ -66,9 +66,22 @@ jobs:
             exit 1
           fi
           echo "Tagged release preflight passed."
-      - name: Install Linux signing preflight tools
+      - name: Install signing preflight tools
         if: startsWith(github.ref, 'refs/tags/v')
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg openssl
+      - name: Validate platform signing secret values
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}
+          CONU_WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PASSWORD }}
+          CONU_WINDOWS_TIMESTAMP_URL: ${{ secrets.CONU_WINDOWS_TIMESTAMP_URL }}
+          CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD }}
+          CONU_MACOS_CODESIGN_IDENTITY: ${{ secrets.CONU_MACOS_CODESIGN_IDENTITY }}
+          CONU_MACOS_NOTARY_APPLE_ID: ${{ secrets.CONU_MACOS_NOTARY_APPLE_ID }}
+          CONU_MACOS_NOTARY_TEAM_ID: ${{ secrets.CONU_MACOS_NOTARY_TEAM_ID }}
+          CONU_MACOS_NOTARY_PASSWORD: ${{ secrets.CONU_MACOS_NOTARY_PASSWORD }}
+        run: python scripts/check-platform-signing-secrets-preflight.py --require-openssl
       - name: Validate Linux signing secrets
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -125,7 +138,7 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - name: Install package tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg openssl
       - name: Release version consistency
         run: python scripts/verify-release-versions.py
       - name: Release artifact verifier regression
@@ -138,6 +151,8 @@ jobs:
         run: python scripts/check-package-manager-submissions.py
       - name: Linux signing secret preflight regression
         run: python scripts/check-linux-signing-secrets-preflight-regression.py
+      - name: Platform signing secret value preflight regression
+        run: python scripts/check-platform-signing-secrets-preflight-regression.py
       - name: GitHub release secret readiness regression
         run: python scripts/check-github-release-secret-readiness-regression.py
       - name: GitHub release secret setup regression

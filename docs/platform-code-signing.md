@@ -77,13 +77,29 @@ secret key after import.
 Apple-supported notary credential material. Do not store raw certificate files
 or passwords in the repo.
 
+Before storing or tagging with these values, export the local environment and
+run:
+
+```sh
+python scripts/check-platform-signing-secrets-preflight.py --require-openssl --json
+```
+
+The preflight decodes the Windows PFX and macOS P12 as strict base64, validates
+the macOS notary identity fields, rejects timestamp URLs with credentials,
+queries, or fragments, and uses OpenSSL to confirm each PKCS#12 blob parses
+with the configured password and contains both a certificate and a private key.
+Its text and JSON reports include only environment variable names, booleans, and
+sanitized failure categories; they do not print certificates, private keys,
+passwords, tokens, or signing material.
+
 ## Workflow Behavior
 
 On tag builds matching `v*`, the release workflow runs a preflight before
 package checks and platform builds. The preflight fails closed unless all
 Windows signing, macOS signing/notarization, Linux GPG signing, and
-`NPM_TOKEN` publication secrets are configured. It also imports the configured
-Linux GPG private key into a temporary keyring, verifies that
+`NPM_TOKEN` publication secrets are configured. It also validates the configured
+Windows PFX and macOS P12 values with OpenSSL before platform matrix jobs start,
+imports the configured Linux GPG private key into a temporary keyring, verifies that
 `CONU_LINUX_GPG_KEY_ID` resolves to `CONU_LINUX_GPG_KEY_FINGERPRINT`, and
 probe-signs a temporary file with `CONU_LINUX_GPG_PASSPHRASE` so malformed
 keys, mismatched fingerprints, and wrong passphrases fail before builds.
