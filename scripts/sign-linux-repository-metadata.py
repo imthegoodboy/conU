@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from linux_gpg_common import (
@@ -26,13 +27,29 @@ from linux_gpg_common import (
 CHECKSUM_RE = re.compile(r"^([0-9a-f]{64})  ([^ \t\r\n]+)\n$")
 MAX_SIGNING_KEY_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
+MAX_REPOSITORY_METADATA_BUNDLE_BYTES = 512_000_000
+MAX_TOTAL_REPOSITORY_METADATA_BUNDLE_BYTES = 1_000_000_000
 MAX_ZIP_MEMBER_BYTES = 512_000_000
 MAX_ZIP_MEMBERS = 10_000
 MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
+MAX_GENERATED_SIGNATURE_BYTES = 1024 * 1024
 HASH_CHUNK_BYTES = 1024 * 1024
 ZIP_SOURCE_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 APT_METADATA_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-apt-repository-metadata\.zip$")
 RPM_METADATA_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-rpm-repository-metadata\.zip$")
+
+
+@dataclass
+class RepositoryMetadataBudget:
+    total_bytes: int = 0
+
+    def add(self, size: int) -> None:
+        self.total_bytes += size
+        if self.total_bytes > MAX_TOTAL_REPOSITORY_METADATA_BUNDLE_BYTES:
+            raise SystemExit(
+                "repository metadata bundles exceed "
+                f"{MAX_TOTAL_REPOSITORY_METADATA_BUNDLE_BYTES} bytes"
+            )
 
 
 def main() -> int:
@@ -52,10 +69,13 @@ def main() -> int:
         raise SystemExit(f"{args.key_id_env} must not be empty")
     expected_fingerprint = read_expected_fingerprint(os.environ, args.fingerprint_env)
 
-    apt_bundles = repository_metadata_assets(dist, APT_METADATA_RE)
-    rpm_bundles = repository_metadata_assets(dist, RPM_METADATA_RE)
+    apt_bundles, rpm_bundles = repository_metadata_assets(dist)
     if not apt_bundles and not rpm_bundles:
         raise SystemExit(f"no generated APT/RPM repository metadata bundles found in {dist}")
+    for bundle in apt_bundles:
+        verify_sha256_sidecar(bundle, "APT repository metadata bundle")
+    for bundle in rpm_bundles:
+        verify_sha256_sidecar(bundle, "RPM repository metadata bundle")
 
     signed: list[Path] = []
     with tempfile.TemporaryDirectory(prefix="conu-repository-signing-") as gnupg_home_text:
@@ -67,13 +87,11 @@ def main() -> int:
         verify_imported_secret_key_fingerprint(gpg, env, key_id, expected_fingerprint)
 
         for bundle in apt_bundles:
-            verify_sha256_sidecar(bundle, "APT repository metadata bundle")
             sign_apt_bundle(gpg, env, key_id, passphrase, bundle)
             write_sha256_sidecar(bundle)
             signed.append(bundle)
 
         for bundle in rpm_bundles:
-            verify_sha256_sidecar(bundle, "RPM repository metadata bundle")
             sign_rpm_bundle(gpg, env, key_id, passphrase, bundle)
             write_sha256_sidecar(bundle)
             signed.append(bundle)
@@ -124,12 +142,18 @@ def read_secret_key(name: str) -> bytes:
     return decoded
 
 
-def repository_metadata_assets(dist: Path, pattern: re.Pattern[str]) -> tuple[Path, ...]:
-    return tuple(
-        path
-        for path in sorted(dist.iterdir(), key=lambda candidate: candidate.name)
-        if path.is_file() and pattern.fullmatch(path.name)
-    )
+def repository_metadata_assets(dist: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    apt_bundles: list[Path] = []
+    rpm_bundles: list[Path] = []
+    budget = RepositoryMetadataBudget()
+    for path in sorted(dist.iterdir(), key=lambda candidate: candidate.name):
+        if APT_METADATA_RE.fullmatch(path.name):
+            validate_repository_metadata_bundle(path, budget)
+            apt_bundles.append(path)
+        elif RPM_METADATA_RE.fullmatch(path.name):
+            validate_repository_metadata_bundle(path, budget)
+            rpm_bundles.append(path)
+    return tuple(apt_bundles), tuple(rpm_bundles)
 
 
 def sign_apt_bundle(
@@ -193,8 +217,14 @@ def sign_apt_bundle(
         run_gpg(gpg, env, ["--verify", str(inrelease_path)])
         run_gpg(gpg, env, ["--verify", str(release_gpg_path), str(release_path)])
 
-        members["InRelease"] = inrelease_path.read_bytes()
-        members["Release.gpg"] = release_gpg_path.read_bytes()
+        members["InRelease"] = read_generated_signature(
+            inrelease_path,
+            f"generated InRelease signature for {bundle.name}",
+        )
+        members["Release.gpg"] = read_generated_signature(
+            release_gpg_path,
+            f"generated Release.gpg signature for {bundle.name}",
+        )
 
     write_zip_members(bundle, members)
 
@@ -237,7 +267,10 @@ def sign_rpm_bundle(
             input_bytes=(passphrase + "\n").encode("utf-8"),
         )
         run_gpg(gpg, env, ["--verify", str(signature_path), str(repomd_path)])
-        members["repodata/repomd.xml.asc"] = signature_path.read_bytes()
+        members["repodata/repomd.xml.asc"] = read_generated_signature(
+            signature_path,
+            f"generated repomd.xml.asc signature for {bundle.name}",
+        )
 
     write_zip_members(bundle, members)
 
@@ -298,14 +331,41 @@ def normalize_zip_path(raw_name: str) -> str:
 
 
 def write_zip_members(bundle: Path, members: dict[str, bytes]) -> None:
+    validate_regular_file(
+        bundle,
+        f"repository metadata bundle output {bundle.name}",
+        max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
+        allow_empty=False,
+    )
     order = [name for name in members if not signature_member(name)]
     for signature in ("InRelease", "Release.gpg", "repodata/repomd.xml.asc"):
         if signature in members:
             order.append(signature)
 
-    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
-        for name in order:
-            write_deterministic_zip_bytes(archive, name, members[name])
+    temp_path = temporary_sibling_path(bundle)
+    try:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name in order:
+                write_deterministic_zip_bytes(archive, name, members[name])
+        temp_path.chmod(0o644)
+        validate_regular_file(
+            temp_path,
+            f"rewritten repository metadata bundle {bundle.name}",
+            max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
+            allow_empty=False,
+        )
+        os.replace(temp_path, bundle)
+        validate_regular_file(
+            bundle,
+            f"repository metadata bundle output {bundle.name}",
+            max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
+            allow_empty=False,
+        )
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def signature_member(name: str) -> bool:
@@ -321,10 +381,12 @@ def write_deterministic_zip_bytes(archive: zipfile.ZipFile, name: str, data: byt
 
 def verify_sha256_sidecar(path: Path, label: str) -> None:
     sidecar = path.with_name(f"{path.name}.sha256")
-    if not sidecar.exists() or not sidecar.is_file():
-        raise SystemExit(f"missing SHA-256 sidecar for {label}: {path.name}")
-    if sidecar.stat().st_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"SHA-256 sidecar is too large for {label}: {path.name}")
+    validate_regular_file(
+        sidecar,
+        f"SHA-256 sidecar for {label} {path.name}",
+        max_bytes=MAX_CHECKSUM_BYTES,
+        allow_empty=False,
+    )
     try:
         checksum_text = sidecar.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -341,11 +403,95 @@ def verify_sha256_sidecar(path: Path, label: str) -> None:
 
 
 def write_sha256_sidecar(path: Path) -> None:
-    path.with_name(f"{path.name}.sha256").write_text(
-        f"{sha256_file(path)}  {path.name}\n",
-        encoding="ascii",
-        newline="\n",
+    sidecar = path.with_name(f"{path.name}.sha256")
+    if sidecar.exists() or sidecar.is_symlink():
+        validate_regular_file(
+            sidecar,
+            f"SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=True,
+        )
+    text = f"{sha256_file(path)}  {path.name}\n"
+    temp_path = temporary_sibling_path(sidecar)
+    try:
+        temp_path.write_text(text, encoding="ascii", newline="\n")
+        temp_path.chmod(0o644)
+        validate_regular_file(
+            temp_path,
+            f"temporary SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=False,
+        )
+        os.replace(temp_path, sidecar)
+        validate_regular_file(
+            sidecar,
+            f"SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=False,
+        )
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def validate_repository_metadata_bundle(
+    path: Path,
+    budget: RepositoryMetadataBudget | None = None,
+) -> int:
+    size = validate_regular_file(
+        path,
+        f"repository metadata bundle {path.name}",
+        max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
+        allow_empty=False,
     )
+    if budget is not None:
+        budget.add(size)
+    return size
+
+
+def read_generated_signature(path: Path, label: str) -> bytes:
+    validate_regular_file(
+        path,
+        label,
+        max_bytes=MAX_GENERATED_SIGNATURE_BYTES,
+        allow_empty=False,
+    )
+    return path.read_bytes()
+
+
+def validate_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"missing {label}: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    size = metadata.st_size
+    if not allow_empty and size == 0:
+        raise SystemExit(f"{label} must not be empty: {path.name}")
+    if size > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    return size
+
+
+def temporary_sibling_path(path: Path) -> Path:
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        return Path(handle.name)
 
 
 def sha256_file(path: Path) -> str:
