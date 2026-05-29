@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,9 @@ REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 HASH_CHUNK_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 MAX_SIGNATURE_BYTES = 1024 * 1024
+MAX_TEXT_ASSET_BYTES = 1024 * 1024
+MAX_SOURCE_ASSET_BYTES = 2 * 1024 * 1024 * 1024
+MAX_TOTAL_SOURCE_BYTES = 10 * 1024 * 1024 * 1024
 UPDATE_POLICY_SCHEMA = "conu.releaseUpdatePolicy.v1"
 NPM_REGISTRY = "https://registry.npmjs.org"
 PLATFORM_ARCHIVES = {
@@ -84,6 +88,19 @@ class ReleaseAsset:
         if self.signature_url is not None:
             data["signatureUrl"] = self.signature_url
         return data
+
+
+@dataclass
+class SourceBudget:
+    total_bytes: int = 0
+
+    def add(self, size: int) -> None:
+        self.total_bytes += size
+        if self.total_bytes > MAX_TOTAL_SOURCE_BYTES:
+            raise SystemExit(
+                "release update policy source inputs exceed "
+                f"{MAX_TOTAL_SOURCE_BYTES} bytes"
+            )
 
 
 def main() -> int:
@@ -224,10 +241,15 @@ def build_update_policy(
     channel: str,
     release_base_url: str,
 ) -> dict[str, Any]:
-    platform_archives = collect_platform_archives(dist, version, release_base_url)
-    package_manager_assets = collect_package_manager_assets(dist, version, release_base_url)
-    linux_package_assets = collect_linux_package_assets(dist, version, release_base_url)
-    repository_assets = collect_repository_assets(dist, version, release_base_url)
+    source_budget = SourceBudget()
+    platform_archives = collect_platform_archives(dist, version, release_base_url, source_budget)
+    package_manager_assets = collect_package_manager_assets(
+        dist, version, release_base_url, source_budget
+    )
+    linux_package_assets = collect_linux_package_assets(
+        dist, version, release_base_url, source_budget
+    )
+    repository_assets = collect_repository_assets(dist, version, release_base_url, source_budget)
     policy_name = update_policy_filename(version)
 
     return {
@@ -280,6 +302,7 @@ def collect_platform_archives(
     dist: Path,
     version: str,
     release_base_url: str,
+    source_budget: SourceBudget,
 ) -> tuple[ReleaseAsset, ...]:
     assets: list[ReleaseAsset] = []
     for target, extension in PLATFORM_ARCHIVES.items():
@@ -294,6 +317,7 @@ def collect_platform_archives(
                 target=target,
                 require_sidecar=True,
                 require_signature=signature,
+                source_budget=source_budget,
             )
         )
     return tuple(assets)
@@ -303,6 +327,7 @@ def collect_package_manager_assets(
     dist: Path,
     version: str,
     release_base_url: str,
+    source_budget: SourceBudget,
 ) -> tuple[ReleaseAsset, ...]:
     assets = [
         release_asset(
@@ -313,6 +338,7 @@ def collect_package_manager_assets(
             package_manager=package_manager,
             require_sidecar=False,
             require_signature=False,
+            source_budget=source_budget,
         )
         for package_manager, filename in STATIC_PACKAGE_MANAGER_ASSETS
     ]
@@ -325,6 +351,7 @@ def collect_package_manager_assets(
             package_manager="chocolatey",
             require_sidecar=False,
             require_signature=False,
+            source_budget=source_budget,
         )
     )
     return tuple(assets)
@@ -334,6 +361,7 @@ def collect_linux_package_assets(
     dist: Path,
     version: str,
     release_base_url: str,
+    source_budget: SourceBudget,
 ) -> tuple[ReleaseAsset, ...]:
     assets: list[ReleaseAsset] = []
     deb_version = debian_version(version)
@@ -347,6 +375,7 @@ def collect_linux_package_assets(
                 target=target,
                 require_sidecar=True,
                 require_signature=True,
+                source_budget=source_budget,
             )
         )
     rpm_ver = rpm_version(version)
@@ -360,6 +389,7 @@ def collect_linux_package_assets(
                 target=target,
                 require_sidecar=True,
                 require_signature=True,
+                source_budget=source_budget,
             )
         )
     return tuple(assets)
@@ -369,6 +399,7 @@ def collect_repository_assets(
     dist: Path,
     version: str,
     release_base_url: str,
+    source_budget: SourceBudget,
 ) -> tuple[ReleaseAsset, ...]:
     deb_version = debian_version(version)
     rpm_ver = rpm_version(version)
@@ -387,6 +418,7 @@ def collect_repository_assets(
             release_base_url=release_base_url,
             require_sidecar=require_sidecar,
             require_signature=require_signature,
+            source_budget=source_budget,
         )
         for kind, filename, require_sidecar, require_signature in names
     )
@@ -402,16 +434,25 @@ def release_asset(
     package_manager: str | None = None,
     require_sidecar: bool,
     require_signature: bool,
+    source_budget: SourceBudget,
 ) -> ReleaseAsset:
     path = dist / filename
-    if not path.exists() or not path.is_file():
-        raise SystemExit(f"missing release update policy asset: {filename}")
+    validate_source_file(
+        path,
+        f"release update policy asset {filename}",
+        MAX_TEXT_ASSET_BYTES if is_text_asset(filename) else MAX_SOURCE_ASSET_BYTES,
+        source_budget,
+    )
     if is_text_asset(filename):
         assert_file_text_safe(path)
-    sha256 = verify_sha256_sidecar(path, kind) if require_sidecar else sha256_file(path)
+    sha256 = (
+        verify_sha256_sidecar(path, kind, source_budget)
+        if require_sidecar
+        else sha256_file(path)
+    )
     signature_url = None
     if require_signature:
-        require_detached_signature(path)
+        require_detached_signature(path, source_budget)
         signature_url = asset_url(release_base_url, f"{filename}.asc")
     return ReleaseAsset(
         kind=kind,
@@ -425,12 +466,14 @@ def release_asset(
     )
 
 
-def verify_sha256_sidecar(path: Path, label: str) -> str:
+def verify_sha256_sidecar(path: Path, label: str, source_budget: SourceBudget) -> str:
     sidecar = path.with_name(f"{path.name}.sha256")
-    if not sidecar.exists() or not sidecar.is_file():
-        raise SystemExit(f"missing SHA-256 sidecar for {label}: {path.name}")
-    if sidecar.stat().st_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"SHA-256 sidecar is too large for {label}: {path.name}")
+    validate_source_file(
+        sidecar,
+        f"SHA-256 sidecar for {label} {path.name}",
+        MAX_CHECKSUM_BYTES,
+        source_budget,
+    )
     try:
         checksum_text = sidecar.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -449,12 +492,14 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
     return expected
 
 
-def require_detached_signature(path: Path) -> None:
+def require_detached_signature(path: Path, source_budget: SourceBudget) -> None:
     signature = path.with_name(f"{path.name}.asc")
-    if not signature.exists() or not signature.is_file():
-        raise SystemExit(f"missing detached signature for release update policy asset: {signature.name}")
-    if signature.stat().st_size > MAX_SIGNATURE_BYTES:
-        raise SystemExit(f"detached signature is too large: {signature.name}")
+    validate_source_file(
+        signature,
+        f"detached signature for release update policy asset {path.name}",
+        MAX_SIGNATURE_BYTES,
+        source_budget,
+    )
     try:
         signature_text = signature.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -490,6 +535,28 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_source_file(
+    path: Path,
+    label: str,
+    max_bytes: int,
+    source_budget: SourceBudget | None = None,
+) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"missing {label}: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    size = metadata.st_size
+    if size > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    if source_budget is not None:
+        source_budget.add(size)
+    return size
+
+
 def write_sha256_sidecar(path: Path) -> None:
     path.with_name(f"{path.name}.sha256").write_text(
         f"{sha256_file(path)}  {path.name}\n",
@@ -515,6 +582,7 @@ def is_text_asset(filename: str) -> bool:
 
 
 def assert_file_text_safe(path: Path) -> None:
+    validate_source_file(path, f"text release update policy asset {path.name}", MAX_TEXT_ASSET_BYTES)
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
