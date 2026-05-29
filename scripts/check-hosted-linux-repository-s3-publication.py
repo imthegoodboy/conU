@@ -98,6 +98,55 @@ def main() -> int:
         )
         assert_failure("bad endpoint URL", bad_endpoint, "S3 endpoint URL must use HTTPS")
 
+        oversized_metadata = temp / "oversized-metadata-site"
+        shutil.copytree(site_dir, oversized_metadata)
+        (oversized_metadata / "repository.json").write_text(
+            '{"padding":"' + ("x" * (1024 * 1024 + 1)) + '"}\n',
+            encoding="ascii",
+            newline="\n",
+        )
+        oversized_result = run_publisher_raw(oversized_metadata, "--dry-run")
+        assert_failure("oversized metadata", oversized_result, "repository.json is larger")
+
+        bad_cache_control = temp / "bad-cache-control-site"
+        shutil.copytree(site_dir, bad_cache_control)
+        cache_policy_path = bad_cache_control / "cache-policy.json"
+        cache_policy = json.loads(cache_policy_path.read_text(encoding="ascii"))
+        cache_policy["rules"][0]["cacheControl"] = "public, max-age=300\nx-bad: 1"
+        cache_policy_path.write_text(
+            json.dumps(cache_policy, indent=2, sort_keys=True) + "\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        bad_cache_result = run_publisher_raw(bad_cache_control, "--dry-run")
+        assert_failure("bad Cache-Control", bad_cache_result, "Cache-Control")
+
+        symlink_metadata = temp / "symlink-metadata-site"
+        shutil.copytree(site_dir, symlink_metadata)
+        metadata_target = temp / "repository-target.json"
+        metadata_target.write_text(
+            (site_dir / "repository.json").read_text(encoding="ascii"),
+            encoding="ascii",
+            newline="\n",
+        )
+        metadata_link = symlink_metadata / "repository.json"
+        metadata_link.unlink()
+        if try_symlink(metadata_target, metadata_link):
+            symlink_result = run_publisher_raw(symlink_metadata, "--dry-run")
+            assert_failure(
+                "symlinked metadata",
+                symlink_result,
+                "repository.json must not be a symlink",
+            )
+
+        symlink_entry = temp / "symlink-entry-site"
+        shutil.copytree(site_dir, symlink_entry)
+        external_dir = temp / "external-dir"
+        external_dir.mkdir()
+        if try_symlink(external_dir, symlink_entry / "linked-dir", target_is_directory=True):
+            symlink_entry_result = run_publisher_raw(symlink_entry, "--dry-run")
+            assert_failure("symlinked site entry", symlink_entry_result, "site entry must not be a symlink")
+
     assert_workflow_wiring()
     print("Hosted Linux repository S3 publication regression checks passed")
     return 0
@@ -276,6 +325,14 @@ def assert_fake_aws_log(log: Path, expected_count: int) -> None:
 def assert_failure(description: str, result: subprocess.CompletedProcess[str], expected: str) -> None:
     if result.returncode == 0 or expected not in result.stdout:
         raise AssertionError(f"{description} failed with {result.stdout!r}, expected {expected!r}")
+
+
+def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
+    try:
+        os.symlink(target, link, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        return False
+    return True
 
 
 def assert_workflow_wiring() -> None:
