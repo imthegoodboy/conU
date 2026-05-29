@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -158,6 +159,93 @@ def main() -> int:
             "missing detached signature",
         )
 
+        symlink_dist = temp / "symlink-dist"
+        if try_symlink(dist, symlink_dist, target_is_directory=True):
+            expect_failure_at_output(
+                "symlinked dist directory",
+                symlink_dist,
+                temp / "symlink-dist-output",
+                BASE_URL,
+                "release dist directory must not be a symlink",
+            )
+
+        symlink_bundle = temp / "symlink-bundle"
+        shutil.copytree(dist, symlink_bundle)
+        bundle_target = temp / "hosted-bundle-target.zip"
+        shutil.copy2(symlink_bundle / HOSTED_BUNDLE, bundle_target)
+        (symlink_bundle / HOSTED_BUNDLE).unlink()
+        if try_symlink(bundle_target, symlink_bundle / HOSTED_BUNDLE):
+            expect_failure(
+                "symlinked hosted bundle",
+                symlink_bundle,
+                BASE_URL,
+                "hosted Linux repository bundle must not be a symlink",
+            )
+
+        symlink_checksum = temp / "symlink-checksum"
+        shutil.copytree(dist, symlink_checksum)
+        checksum_target = temp / "hosted-bundle-target.zip.sha256"
+        shutil.copy2(symlink_checksum / f"{HOSTED_BUNDLE}.sha256", checksum_target)
+        (symlink_checksum / f"{HOSTED_BUNDLE}.sha256").unlink()
+        if try_symlink(checksum_target, symlink_checksum / f"{HOSTED_BUNDLE}.sha256"):
+            expect_failure(
+                "symlinked hosted bundle checksum",
+                symlink_checksum,
+                BASE_URL,
+                "SHA-256 sidecar for hosted Linux repository bundle must not be a symlink",
+            )
+
+        symlink_signature = temp / "symlink-signature"
+        shutil.copytree(dist, symlink_signature)
+        signature_target = temp / "hosted-bundle-target.zip.asc"
+        shutil.copy2(symlink_signature / f"{HOSTED_BUNDLE}.asc", signature_target)
+        (symlink_signature / f"{HOSTED_BUNDLE}.asc").unlink()
+        if try_symlink(signature_target, symlink_signature / f"{HOSTED_BUNDLE}.asc"):
+            expect_failure(
+                "symlinked hosted bundle signature",
+                symlink_signature,
+                BASE_URL,
+                "detached signature for hosted Linux repository site input must not be a symlink",
+            )
+
+        symlink_output_target = temp / "output-target"
+        symlink_output_target.mkdir()
+        symlink_output = temp / "symlink-output"
+        if try_symlink(symlink_output_target, symlink_output, target_is_directory=True):
+            expect_failure_at_output(
+                "symlinked output directory",
+                dist,
+                symlink_output,
+                BASE_URL,
+                "hosted repository site output directory must not be a symlink",
+            )
+
+        symlink_output_file = temp / "symlink-output-file"
+        symlink_output_file.mkdir()
+        output_file_target = temp / "site-target.zip"
+        output_file_target.write_bytes(b"existing\n")
+        if try_symlink(output_file_target, symlink_output_file / SITE_BUNDLE):
+            expect_failure_at_output(
+                "symlinked output site bundle",
+                dist,
+                symlink_output_file,
+                BASE_URL,
+                "hosted Linux repository site artifact output must not be a symlink",
+            )
+
+        symlink_output_sidecar = temp / "symlink-output-sidecar"
+        symlink_output_sidecar.mkdir()
+        output_sidecar_target = temp / "site-target.zip.sha256"
+        output_sidecar_target.write_text("", encoding="ascii")
+        if try_symlink(output_sidecar_target, symlink_output_sidecar / f"{SITE_BUNDLE}.sha256"):
+            expect_failure_at_output(
+                "symlinked output site checksum",
+                dist,
+                symlink_output_sidecar,
+                BASE_URL,
+                "hosted Linux repository site artifact SHA-256 sidecar output must not be a symlink",
+            )
+
         unsafe_bundle = temp / "unsafe-bundle"
         shutil.copytree(dist, unsafe_bundle)
         with zipfile.ZipFile(unsafe_bundle / HOSTED_BUNDLE, "w", compression=zipfile.ZIP_STORED) as archive:
@@ -240,13 +328,23 @@ def run_generator(dist: Path, output: Path, base_url: str) -> str:
 
 
 def expect_failure(description: str, dist: Path, base_url: str, expected: str) -> None:
+    expect_failure_at_output(description, dist, dist / "out", base_url, expected)
+
+
+def expect_failure_at_output(
+    description: str,
+    dist: Path,
+    output: Path,
+    base_url: str,
+    expected: str,
+) -> None:
     failed = subprocess.run(
         [
             sys.executable,
             str(SITE_GENERATOR),
             str(dist),
             "--output-dir",
-            str(dist / "out"),
+            str(output),
             "--version",
             VERSION,
             "--base-url",
@@ -293,6 +391,14 @@ def expect_action_failure(action, expected: str, label: str) -> None:
             return
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
+    try:
+        os.symlink(target, link, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        return False
+    return True
 
 
 def assert_site_bundle(site: Path, hosted_bundle: Path) -> None:

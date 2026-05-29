@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import io
 import importlib.util
+import os
 import shutil
 import stat
 import subprocess
@@ -62,6 +63,86 @@ def main() -> int:
             missing_signature,
             "missing detached signature",
         )
+
+        symlink_dist = temp / "symlink-dist"
+        if try_symlink(dist, symlink_dist, target_is_directory=True):
+            expect_failure_at_output(
+                "symlinked dist directory",
+                symlink_dist,
+                temp / "symlink-dist-output",
+                "release dist directory must not be a symlink",
+            )
+
+        symlink_asset = temp / "symlink-asset"
+        shutil.copytree(dist, symlink_asset)
+        asset_target = temp / "debian-package-target.deb"
+        shutil.copy2(symlink_asset / DEBIAN_PACKAGES[0], asset_target)
+        (symlink_asset / DEBIAN_PACKAGES[0]).unlink()
+        if try_symlink(asset_target, symlink_asset / DEBIAN_PACKAGES[0]):
+            expect_failure(
+                "symlinked package asset",
+                symlink_asset,
+                "signed Debian package must not be a symlink",
+            )
+
+        symlink_checksum = temp / "symlink-checksum"
+        shutil.copytree(dist, symlink_checksum)
+        checksum_target = temp / "debian-package-target.deb.sha256"
+        shutil.copy2(symlink_checksum / f"{DEBIAN_PACKAGES[0]}.sha256", checksum_target)
+        (symlink_checksum / f"{DEBIAN_PACKAGES[0]}.sha256").unlink()
+        if try_symlink(checksum_target, symlink_checksum / f"{DEBIAN_PACKAGES[0]}.sha256"):
+            expect_failure(
+                "symlinked package checksum",
+                symlink_checksum,
+                "SHA-256 sidecar for signed Debian package must not be a symlink",
+            )
+
+        symlink_signature = temp / "symlink-signature"
+        shutil.copytree(dist, symlink_signature)
+        signature_target = temp / "debian-package-target.deb.asc"
+        shutil.copy2(symlink_signature / f"{DEBIAN_PACKAGES[0]}.asc", signature_target)
+        (symlink_signature / f"{DEBIAN_PACKAGES[0]}.asc").unlink()
+        if try_symlink(signature_target, symlink_signature / f"{DEBIAN_PACKAGES[0]}.asc"):
+            expect_failure(
+                "symlinked package signature",
+                symlink_signature,
+                "detached signature for hosted repository asset must not be a symlink",
+            )
+
+        symlink_output_target = temp / "output-target"
+        symlink_output_target.mkdir()
+        symlink_output = temp / "symlink-output"
+        if try_symlink(symlink_output_target, symlink_output, target_is_directory=True):
+            expect_failure_at_output(
+                "symlinked output directory",
+                dist,
+                symlink_output,
+                "hosted repository output directory must not be a symlink",
+            )
+
+        symlink_output_file = temp / "symlink-output-file"
+        symlink_output_file.mkdir()
+        output_file_target = temp / "hosted-bundle-target.zip"
+        output_file_target.write_bytes(b"existing\n")
+        if try_symlink(output_file_target, symlink_output_file / HOSTED_BUNDLE):
+            expect_failure_at_output(
+                "symlinked output bundle",
+                dist,
+                symlink_output_file,
+                "hosted Linux repository bundle output must not be a symlink",
+            )
+
+        symlink_output_sidecar = temp / "symlink-output-sidecar"
+        symlink_output_sidecar.mkdir()
+        output_sidecar_target = temp / "hosted-bundle-target.zip.sha256"
+        output_sidecar_target.write_text("", encoding="ascii")
+        if try_symlink(output_sidecar_target, symlink_output_sidecar / f"{HOSTED_BUNDLE}.sha256"):
+            expect_failure_at_output(
+                "symlinked output checksum",
+                dist,
+                symlink_output_sidecar,
+                "hosted Linux repository bundle SHA-256 sidecar output must not be a symlink",
+            )
 
         missing_native_apt_signature = temp / "missing-native-apt-signature"
         shutil.copytree(dist, missing_native_apt_signature)
@@ -190,13 +271,17 @@ def run_generator(dist: Path, output: Path) -> str:
 
 
 def expect_failure(description: str, dist: Path, expected: str) -> None:
+    expect_failure_at_output(description, dist, dist / "out", expected)
+
+
+def expect_failure_at_output(description: str, dist: Path, output: Path, expected: str) -> None:
     failed = subprocess.run(
         [
             sys.executable,
             str(GENERATOR),
             str(dist),
             "--output-dir",
-            str(dist / "out"),
+            str(output),
             "--version",
             VERSION,
         ],
@@ -241,6 +326,14 @@ def expect_action_failure(action, expected: str, label: str) -> None:
             return
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
+    try:
+        os.symlink(target, link, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        return False
+    return True
 
 
 def write_signed_dist(dist: Path) -> None:
