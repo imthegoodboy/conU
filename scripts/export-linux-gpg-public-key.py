@@ -8,6 +8,7 @@ import base64
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,8 @@ from linux_gpg_common import (
 
 DEFAULT_OUTPUT_NAME = "conu-linux-gpg-key.asc"
 MAX_SIGNING_KEY_BYTES = 1024 * 1024
+MAX_PUBLIC_KEY_BYTES = 1024 * 1024
+MAX_CHECKSUM_BYTES = 4096
 HASH_CHUNK_BYTES = 1024 * 1024
 
 
@@ -31,6 +34,8 @@ def main() -> int:
     if not dist.exists() or not dist.is_dir():
         raise SystemExit(f"release dist directory does not exist: {dist}")
     output_name = validate_output_name(args.output_name)
+    output = dist / output_name
+    prepare_public_key_output(output)
 
     gpg = shutil.which("gpg")
     if gpg is None:
@@ -52,13 +57,8 @@ def main() -> int:
         verify_imported_secret_key_fingerprint(gpg, env, key_id, expected_fingerprint)
         public_key = run_gpg(gpg, env, ["--armor", "--export", key_id])
 
-    if b"BEGIN PGP PUBLIC KEY BLOCK" not in public_key:
-        raise SystemExit("exported Linux GPG key was not an armored public key")
-    if b"PRIVATE KEY BLOCK" in public_key:
-        raise SystemExit("refusing to write private key material as a public-key asset")
-
-    output = dist / output_name
-    output.write_bytes(public_key)
+    validate_public_key_bytes(public_key)
+    write_public_key_asset(output, public_key)
     write_sha256_sidecar(output)
     print(f"exported Linux release public key: {output.name}, {output.name}.sha256")
     return 0
@@ -119,12 +119,119 @@ def read_secret_key(name: str) -> bytes:
     return decoded
 
 
+def validate_public_key_bytes(public_key: bytes) -> None:
+    if not public_key:
+        raise SystemExit("exported Linux GPG key was empty")
+    if len(public_key) > MAX_PUBLIC_KEY_BYTES:
+        raise SystemExit(f"exported Linux GPG key exceeds {MAX_PUBLIC_KEY_BYTES} bytes")
+    if b"BEGIN PGP PUBLIC KEY BLOCK" not in public_key:
+        raise SystemExit("exported Linux GPG key was not an armored public key")
+    if b"PRIVATE KEY BLOCK" in public_key:
+        raise SystemExit("refusing to write private key material as a public-key asset")
+
+
+def prepare_public_key_output(path: Path) -> None:
+    if path.exists() or path.is_symlink():
+        validate_regular_file(
+            path,
+            f"Linux public-key output {path.name}",
+            max_bytes=MAX_PUBLIC_KEY_BYTES,
+            allow_empty=True,
+        )
+
+
+def write_public_key_asset(path: Path, public_key: bytes) -> None:
+    validate_public_key_bytes(public_key)
+    prepare_public_key_output(path)
+    temp_path = temporary_sibling_path(path)
+    try:
+        temp_path.write_bytes(public_key)
+        temp_path.chmod(0o644)
+        validate_regular_file(
+            temp_path,
+            f"temporary Linux public-key output {path.name}",
+            max_bytes=MAX_PUBLIC_KEY_BYTES,
+            allow_empty=False,
+        )
+        os.replace(temp_path, path)
+        validate_regular_file(
+            path,
+            f"Linux public-key output {path.name}",
+            max_bytes=MAX_PUBLIC_KEY_BYTES,
+            allow_empty=False,
+        )
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def write_sha256_sidecar(path: Path) -> None:
-    path.with_name(f"{path.name}.sha256").write_text(
-        f"{sha256_file(path)}  {path.name}\n",
-        encoding="ascii",
-        newline="\n",
-    )
+    sidecar = path.with_name(f"{path.name}.sha256")
+    if sidecar.exists() or sidecar.is_symlink():
+        validate_regular_file(
+            sidecar,
+            f"SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=True,
+        )
+    text = f"{sha256_file(path)}  {path.name}\n"
+    temp_path = temporary_sibling_path(sidecar)
+    try:
+        temp_path.write_text(text, encoding="ascii", newline="\n")
+        temp_path.chmod(0o644)
+        validate_regular_file(
+            temp_path,
+            f"temporary SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=False,
+        )
+        os.replace(temp_path, sidecar)
+        validate_regular_file(
+            sidecar,
+            f"SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=False,
+        )
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def validate_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"missing {label}: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    size = metadata.st_size
+    if not allow_empty and size == 0:
+        raise SystemExit(f"{label} must not be empty: {path.name}")
+    if size > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    return size
+
+
+def temporary_sibling_path(path: Path) -> Path:
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        return Path(handle.name)
 
 
 def sha256_file(path: Path) -> str:
