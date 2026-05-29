@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -19,9 +20,12 @@ PASSPHRASE = "conu-linux-public-key-regression-passphrase"
 USER_ID = "conU Linux Public Key Regression <noreply@github.com>"
 PUBLIC_KEY_ASSET = "conu-linux-gpg-key.asc"
 WRONG_FINGERPRINT = "F" * 40
+PUBLIC_KEY_FIXTURE = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nfixture\n"
 
 
 def main() -> int:
+    run_output_file_preflights()
+
     gpg = shutil.which("gpg")
     if gpg is None:
         print("Linux GPG public-key export regression skipped: gpg is unavailable")
@@ -120,6 +124,148 @@ def main() -> int:
 
     print("Linux GPG public-key export regression checks passed")
     return 0
+
+
+def run_output_file_preflights() -> None:
+    exporter = load_exporter()
+    with tempfile.TemporaryDirectory(prefix="conu-linux-public-key-output-check-") as temp_text:
+        temp = Path(temp_text)
+
+        output = temp / PUBLIC_KEY_ASSET
+        exporter.write_public_key_asset(output, PUBLIC_KEY_FIXTURE)
+        exporter.write_sha256_sidecar(output)
+        if output.read_bytes() != PUBLIC_KEY_FIXTURE:
+            raise AssertionError("public-key exporter did not write the expected fixture bytes")
+        assert_sha256_sidecar(output)
+
+        expect_action_failure(
+            lambda: exporter.validate_public_key_bytes(b""),
+            "was empty",
+            "public-key empty output bound",
+        )
+        expect_action_failure(
+            lambda: exporter.validate_public_key_bytes(b"not a public key\n"),
+            "not an armored public key",
+            "public-key armor validation",
+        )
+        expect_action_failure(
+            lambda: exporter.validate_public_key_bytes(
+                b"-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
+                b"-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            ),
+            "private key material",
+            "public-key private material validation",
+        )
+        expect_constant_failure(
+            exporter,
+            "MAX_PUBLIC_KEY_BYTES",
+            len(PUBLIC_KEY_FIXTURE) - 1,
+            lambda: exporter.write_public_key_asset(temp / "oversized.asc", PUBLIC_KEY_FIXTURE),
+            "exceeds",
+            "public-key size bound",
+        )
+
+        output_directory = temp / "output-directory.asc"
+        output_directory.mkdir()
+        expect_action_failure(
+            lambda: exporter.write_public_key_asset(output_directory, PUBLIC_KEY_FIXTURE),
+            "must be a regular file",
+            "public-key output directory",
+        )
+
+        sidecar_directory_output = temp / "sidecar-directory.asc"
+        exporter.write_public_key_asset(sidecar_directory_output, PUBLIC_KEY_FIXTURE)
+        sidecar_directory_output.with_name(f"{sidecar_directory_output.name}.sha256").mkdir()
+        expect_action_failure(
+            lambda: exporter.write_sha256_sidecar(sidecar_directory_output),
+            "must be a regular file",
+            "public-key sidecar output directory",
+        )
+
+        symlink_output_target = temp / "real-output.asc"
+        symlink_output_target.write_bytes(PUBLIC_KEY_FIXTURE)
+        symlink_output = temp / "symlink-output.asc"
+        if try_symlink(symlink_output, symlink_output_target):
+            expect_action_failure(
+                lambda: exporter.write_public_key_asset(symlink_output, PUBLIC_KEY_FIXTURE),
+                "must not be a symlink",
+                "public-key symlink output",
+            )
+
+        symlink_sidecar_output = temp / "symlink-sidecar.asc"
+        symlink_sidecar_target = temp / "real-output.asc.sha256"
+        exporter.write_public_key_asset(symlink_sidecar_output, PUBLIC_KEY_FIXTURE)
+        write_sidecar_fixture(symlink_sidecar_output, symlink_sidecar_target)
+        symlink_sidecar = symlink_sidecar_output.with_name(
+            f"{symlink_sidecar_output.name}.sha256"
+        )
+        if try_symlink(symlink_sidecar, symlink_sidecar_target):
+            expect_action_failure(
+                lambda: exporter.write_sha256_sidecar(symlink_sidecar_output),
+                "must not be a symlink",
+                "public-key symlink sidecar output",
+            )
+
+
+def load_exporter():
+    script_dir = ROOT / "scripts"
+    sys.path.insert(0, str(script_dir))
+    try:
+        spec = importlib.util.spec_from_file_location("export_linux_gpg_public_key", EXPORTER)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("could not load Linux public-key exporter")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        try:
+            sys.path.remove(str(script_dir))
+        except ValueError:
+            pass
+
+
+def expect_constant_failure(
+    module,
+    constant_name: str,
+    value: int,
+    action,
+    expected: str,
+    label: str,
+) -> None:
+    original = getattr(module, constant_name)
+    setattr(module, constant_name, value)
+    try:
+        expect_action_failure(action, expected, label)
+    finally:
+        setattr(module, constant_name, original)
+
+
+def expect_action_failure(action, expected: str, label: str) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        message = str(exc)
+        if expected in message:
+            return
+        raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+    raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def try_symlink(link: Path, target: Path) -> bool:
+    try:
+        link.symlink_to(target)
+        return True
+    except (NotImplementedError, OSError):
+        return False
+
+
+def write_sidecar_fixture(path: Path, sidecar: Path) -> None:
+    sidecar.write_text(
+        f"{sha256_file(path)}  {path.name}\n",
+        encoding="ascii",
+        newline="\n",
+    )
 
 
 def assert_sha256_sidecar(path: Path) -> None:
