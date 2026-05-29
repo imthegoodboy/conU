@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -115,6 +116,45 @@ def main() -> int:
             "missing detached signature",
         )
 
+        symlink_site = temp / "symlink-site"
+        shutil.copytree(dist, symlink_site)
+        site_target = temp / "site-target.zip"
+        shutil.copy2(site, site_target)
+        (symlink_site / SITE_BUNDLE).unlink()
+        if try_symlink(site_target, symlink_site / SITE_BUNDLE):
+            expect_failure(
+                "symlinked site ZIP",
+                symlink_site,
+                temp / "symlink-site-pages",
+                "site ZIP must not be a symlink",
+            )
+
+        symlink_checksum = temp / "symlink-checksum"
+        shutil.copytree(dist, symlink_checksum)
+        checksum_target = temp / "site-target.zip.sha256"
+        shutil.copy2(dist / f"{SITE_BUNDLE}.sha256", checksum_target)
+        (symlink_checksum / f"{SITE_BUNDLE}.sha256").unlink()
+        if try_symlink(checksum_target, symlink_checksum / f"{SITE_BUNDLE}.sha256"):
+            expect_failure(
+                "symlinked site checksum",
+                symlink_checksum / SITE_BUNDLE,
+                temp / "symlink-checksum-pages",
+                "SHA-256 sidecar for hosted Linux repository site must not be a symlink",
+            )
+
+        symlink_signature = temp / "symlink-signature"
+        shutil.copytree(dist, symlink_signature)
+        signature_target = temp / "site-target.zip.asc"
+        shutil.copy2(dist / f"{SITE_BUNDLE}.asc", signature_target)
+        (symlink_signature / f"{SITE_BUNDLE}.asc").unlink()
+        if try_symlink(signature_target, symlink_signature / f"{SITE_BUNDLE}.asc"):
+            expect_failure(
+                "symlinked site signature",
+                symlink_signature / SITE_BUNDLE,
+                temp / "symlink-signature-pages",
+                "detached signature for hosted Linux repository site must not be a symlink",
+            )
+
         unsafe = temp / "unsafe"
         shutil.copytree(dist, unsafe)
         rewrite_site_zip(unsafe / SITE_BUNDLE, {"../index.html": b"escape\n"})
@@ -222,6 +262,17 @@ def main() -> int:
             "must be empty",
         )
 
+        output_target = temp / "output-target"
+        output_target.mkdir()
+        output_link = temp / "output-link"
+        if try_symlink(output_target, output_link, target_is_directory=True):
+            expect_failure(
+                "symlinked output",
+                dist / SITE_BUNDLE,
+                output_link,
+                "Pages output directory must not be a symlink",
+            )
+
     print("Hosted Linux repository Pages regression checks passed")
     return 0
 
@@ -320,6 +371,14 @@ def expect_action_failure(action, expected: str, label: str) -> None:
             return
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
+    try:
+        os.symlink(target, link, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        return False
+    return True
 
 
 def assert_pages_output(pages: Path, site: Path) -> None:
