@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -254,6 +255,22 @@ def expect_failure(description: str, action, expected: str) -> None:
             ) from exc
         return
     raise AssertionError(f"{description} unexpectedly passed")
+
+
+def expect_failure_with_limit(
+    generator,
+    limit_name: str,
+    value: int,
+    description: str,
+    action,
+    expected: str,
+) -> None:
+    original = getattr(generator, limit_name)
+    setattr(generator, limit_name, value)
+    try:
+        expect_failure(description, action, expected)
+    finally:
+        setattr(generator, limit_name, original)
 
 
 def assert_no_forbidden_output(path: Path, temp: Path) -> None:
@@ -687,6 +704,38 @@ def assert_zip_no_forbidden_output(path: Path, temp: Path) -> None:
         assert_no_forbidden_text(text, f"{path.name}:{name}", temp)
 
 
+def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
+    data = bytearray(path.read_bytes())
+    target = member_name.encode("utf-8")
+    offset = 0
+    while offset + 4 <= len(data):
+        signature = int.from_bytes(data[offset : offset + 4], "little")
+        if signature == 0x04034B50:
+            name_length = int.from_bytes(data[offset + 26 : offset + 28], "little")
+            extra_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            name_start = offset + 30
+            name_end = name_start + name_length
+            compressed_size = int.from_bytes(data[offset + 18 : offset + 22], "little")
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 6 : offset + 8], "little") | 0x1
+                data[offset + 6 : offset + 8] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + compressed_size
+            continue
+        if signature == 0x02014B50:
+            name_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            extra_length = int.from_bytes(data[offset + 30 : offset + 32], "little")
+            comment_length = int.from_bytes(data[offset + 32 : offset + 34], "little")
+            name_start = offset + 46
+            name_end = name_start + name_length
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 8 : offset + 10], "little") | 0x1
+                data[offset + 8 : offset + 10] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + comment_length
+            continue
+        offset += 1
+    path.write_bytes(data)
+
+
 def main() -> int:
     generator = load_generator()
     if generator.validate_version("1.2.3-rc.1+build.5") != "1.2.3-rc.1+build.5":
@@ -701,6 +750,32 @@ def main() -> int:
         rootless_dist.mkdir()
         hashes = write_dist(rootless_dist, rooted_windows=False)
         generate(generator, rootless_dist, rootless_out)
+
+        expect_failure_with_limit(
+            generator,
+            "MAX_RELEASE_ARCHIVE_BYTES",
+            1,
+            "oversized release asset",
+            lambda: generator.load_release_assets(
+                rootless_dist,
+                VERSION,
+                "imthegoodboy/conU",
+                f"v{VERSION}",
+            ),
+            "release asset is larger than 1 bytes",
+        )
+
+        expect_failure_with_limit(
+            generator,
+            "MAX_RELEASE_MEMBER_COUNT",
+            1,
+            "windows archive member count bound",
+            lambda: generator.detect_windows_extract_dir(
+                rootless_dist / TARGETS["windows-x64"],
+                VERSION,
+            ),
+            "contains more than 1 entries",
+        )
 
         homebrew = (rootless_out / HOMEBREW_FILENAME).read_text(encoding="ascii")
         if "class Conu < Formula" not in homebrew:
@@ -967,6 +1042,122 @@ def main() -> int:
                 "linux-x64",
             ),
             "linux release asset is not a readable tar.gz",
+        )
+
+        encrypted_windows = temp / "encrypted-windows"
+        encrypted_windows.mkdir()
+        write_dist(encrypted_windows)
+        encrypted_archive = encrypted_windows / TARGETS["windows-x64"]
+        mark_zip_member_encrypted(encrypted_archive, "bin/conu.exe")
+        expect_failure(
+            "encrypted windows zip member",
+            lambda: generator.detect_windows_extract_dir(encrypted_archive, VERSION),
+            "contains encrypted zip member",
+        )
+
+        unsupported_windows = temp / "unsupported-windows"
+        unsupported_windows.mkdir()
+        write_dist(unsupported_windows)
+        unsupported_archive = unsupported_windows / TARGETS["windows-x64"]
+        with zipfile.ZipFile(unsupported_archive, "a", compression=zipfile.ZIP_STORED) as package:
+            info = zipfile.ZipInfo("device")
+            info.external_attr = stat.S_IFCHR << 16
+            package.writestr(info, b"device\n")
+        expect_failure(
+            "unsupported windows zip member",
+            lambda: generator.detect_windows_extract_dir(unsupported_archive, VERSION),
+            "contains unsupported zip member",
+        )
+
+        mixed_windows = temp / "mixed-windows"
+        mixed_windows.mkdir()
+        write_dist(mixed_windows)
+        mixed_archive = mixed_windows / TARGETS["windows-x64"]
+        with zipfile.ZipFile(mixed_archive, "a", compression=zipfile.ZIP_STORED) as package:
+            package.writestr(f"conu-{VERSION}-windows-x64/README.md", "# conU\n")
+        expect_failure(
+            "mixed rooted windows archive",
+            lambda: generator.detect_windows_extract_dir(mixed_archive, VERSION),
+            "mixes rooted and rootless archive paths",
+        )
+
+        expect_failure_with_limit(
+            generator,
+            "MAX_RELEASE_MEMBER_BYTES",
+            1,
+            "linux archive member size bound",
+            lambda: generator.extract_linux_binaries(
+                rootless_dist / TARGETS["linux-x64"],
+                VERSION,
+                "linux-x64",
+            ),
+            "member is too large",
+        )
+
+        expect_failure_with_limit(
+            generator,
+            "MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES",
+            1,
+            "linux archive total uncompressed bound",
+            lambda: generator.extract_linux_binaries(
+                rootless_dist / TARGETS["linux-x64"],
+                VERSION,
+                "linux-x64",
+            ),
+            "uncompressed contents exceed 1 bytes",
+        )
+
+        unsupported_linux = temp / "unsupported-linux"
+        unsupported_linux.mkdir()
+        unsupported_linux_archive = unsupported_linux / TARGETS["linux-x64"]
+        with tarfile.open(unsupported_linux_archive, "w:gz") as package:
+            for binary in LINUX_BINARIES:
+                data = f"{binary}-linux-x64\n".encode("ascii")
+                info = tarfile.TarInfo(f"bin/{binary}")
+                info.size = len(data)
+                info.mode = 0o755
+                info.mtime = 1577836800
+                package.addfile(info, io.BytesIO(data))
+            link = tarfile.TarInfo("bin/linked-conu")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "bin/conu"
+            link.mtime = 1577836800
+            package.addfile(link)
+        expect_failure(
+            "unsupported linux tar member",
+            lambda: generator.extract_linux_binaries(
+                unsupported_linux_archive,
+                VERSION,
+                "linux-x64",
+            ),
+            "contains unsupported non-file member",
+        )
+
+        mixed_linux = temp / "mixed-linux"
+        mixed_linux.mkdir()
+        mixed_linux_archive = mixed_linux / TARGETS["linux-x64"]
+        with tarfile.open(mixed_linux_archive, "w:gz") as package:
+            for binary in LINUX_BINARIES:
+                data = f"{binary}-linux-x64\n".encode("ascii")
+                info = tarfile.TarInfo(f"bin/{binary}")
+                info.size = len(data)
+                info.mode = 0o755
+                info.mtime = 1577836800
+                package.addfile(info, io.BytesIO(data))
+            rooted_data = b"# conU\n"
+            rooted_info = tarfile.TarInfo(f"conu-{VERSION}-linux-x64/README.md")
+            rooted_info.size = len(rooted_data)
+            rooted_info.mode = 0o644
+            rooted_info.mtime = 1577836800
+            package.addfile(rooted_info, io.BytesIO(rooted_data))
+        expect_failure(
+            "mixed rooted linux archive",
+            lambda: generator.extract_linux_binaries(
+                mixed_linux_archive,
+                VERSION,
+                "linux-x64",
+            ),
+            "mixes rooted and rootless archive paths",
         )
 
     print("package-manager manifest generation regressions passed")

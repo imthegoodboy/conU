@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -45,7 +46,18 @@ STATIC_OUTPUT_FILENAMES = (
 )
 ZIP_SOURCE_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 SOURCE_EPOCH = 1577836800
-MAX_PACKAGE_BINARY_BYTES = 512_000_000
+MAX_RELEASE_ARCHIVE_BYTES = 1_000_000_000
+MAX_RELEASE_MEMBER_BYTES = 512_000_000
+MAX_RELEASE_MEMBER_COUNT = 10_000
+MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
+MAX_PACKAGE_BINARY_BYTES = MAX_RELEASE_MEMBER_BYTES
+
+
+@dataclass
+class ArchiveScanState:
+    paths: set[str]
+    entry_count: int = 0
+    total_uncompressed: int = 0
 
 
 @dataclass(frozen=True)
@@ -343,6 +355,7 @@ def load_release_assets(
         archive = dist / filename
         if not archive.exists() or not archive.is_file():
             raise SystemExit(f"missing required release asset for {target}: {filename}")
+        validate_release_asset_size(archive)
         sha256 = read_verified_checksum(archive)
         url = f"https://github.com/{repo}/releases/download/{tag}/{filename}"
         assets[target] = ReleaseAsset(
@@ -352,6 +365,14 @@ def load_release_assets(
             url=url,
         )
     return assets
+
+
+def validate_release_asset_size(archive: Path) -> None:
+    size = archive.stat().st_size
+    if size > MAX_RELEASE_ARCHIVE_BYTES:
+        raise SystemExit(
+            f"release asset is larger than {MAX_RELEASE_ARCHIVE_BYTES} bytes: {archive.name}"
+        )
 
 
 def read_verified_checksum(archive: Path) -> str:
@@ -392,96 +413,232 @@ def sha256_file(path: Path) -> str:
 
 def detect_windows_extract_dir(archive: Path, version: str) -> str | None:
     root = f"conu-{version}-windows-x64"
-    root_prefix = f"{root}/"
     rootless_bins = {f"bin/{binary}.exe" for binary in EXPECTED_BINARIES}
-    rooted_bins = {f"{root_prefix}bin/{binary}.exe" for binary in EXPECTED_BINARIES}
+    state = ArchiveScanState(paths=set())
+    root_style: str | None = None
+    file_paths: set[str] = set()
 
     try:
         with zipfile.ZipFile(archive) as package:
-            paths = {
-                normalize_zip_path(member.filename)
-                for member in package.infolist()
-                if not member.is_dir()
-            }
+            infos = package.infolist()
+            if len(infos) > MAX_RELEASE_MEMBER_COUNT:
+                raise SystemExit(
+                    f"{archive.name} contains more than {MAX_RELEASE_MEMBER_COUNT} entries"
+                )
+            for member in infos:
+                normalized, root_style, is_file = validate_zip_release_member_for_scan(
+                    archive.name,
+                    member,
+                    root,
+                    state,
+                    root_style,
+                )
+                if is_file:
+                    file_paths.add(normalized)
     except zipfile.BadZipFile as exc:
         raise SystemExit(f"windows release asset is not a readable zip: {archive.name}") from exc
 
-    if rootless_bins <= paths:
+    if rootless_bins <= file_paths:
+        if root_style == "rooted":
+            return root
         return None
-    if rooted_bins <= paths:
-        return root
     raise SystemExit(
         f"{archive.name} does not contain expected rootless or {root}/bin Windows binaries"
     )
 
 
-def normalize_zip_path(raw_name: str) -> str:
+def validate_zip_release_member_for_scan(
+    archive_name: str,
+    member: zipfile.ZipInfo,
+    expected_root: str,
+    state: ArchiveScanState,
+    root_style: str | None,
+) -> tuple[str, str | None, bool]:
+    raw_name = member.filename
+    if member.flag_bits & 0x1:
+        raise SystemExit(f"{archive_name} contains encrypted zip member: {raw_name}")
+    file_type = (member.external_attr >> 16) & 0o170000
+    is_directory = member.is_dir() or file_type == stat.S_IFDIR
+    if file_type == stat.S_IFLNK:
+        raise SystemExit(f"{archive_name} contains unsupported link member: {raw_name}")
+    if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+        raise SystemExit(f"{archive_name} contains unsupported zip member: {raw_name}")
+    if is_directory:
+        if member.file_size != 0:
+            raise SystemExit(f"{archive_name} contains directory member with data: {raw_name}")
+        normalized, root_style = record_release_archive_member(
+            archive_name,
+            raw_name,
+            expected_root,
+            0,
+            state,
+            root_style,
+            allow_empty=True,
+        )
+        return normalized, root_style, False
+    normalized, root_style = record_release_archive_member(
+        archive_name,
+        raw_name,
+        expected_root,
+        member.file_size,
+        state,
+        root_style,
+    )
+    return normalized, root_style, True
+
+
+def record_release_archive_member(
+    archive_name: str,
+    raw_name: str,
+    expected_root: str,
+    size: int,
+    state: ArchiveScanState,
+    root_style: str | None,
+    *,
+    allow_empty: bool = False,
+) -> tuple[str, str | None]:
+    if size < 0:
+        raise SystemExit(f"{archive_name} contains member with invalid size: {raw_name}")
+    if size > MAX_RELEASE_MEMBER_BYTES:
+        raise SystemExit(f"{archive_name} member is too large: {raw_name}")
+
+    state.entry_count += 1
+    if state.entry_count > MAX_RELEASE_MEMBER_COUNT:
+        raise SystemExit(f"{archive_name} contains more than {MAX_RELEASE_MEMBER_COUNT} entries")
+
+    normalized, member_style = normalize_release_member_path(raw_name, expected_root)
+    root_style = update_release_root_style(archive_name, raw_name, root_style, member_style)
+    if not normalized:
+        if allow_empty:
+            return normalized, root_style
+        raise SystemExit(f"{archive_name} contains empty archive path: {raw_name}")
+
+    if normalized in state.paths:
+        raise SystemExit(f"{archive_name} contains duplicate archive path: {normalized}")
+    state.paths.add(normalized)
+
+    state.total_uncompressed += size
+    if state.total_uncompressed > MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES:
+        raise SystemExit(
+            f"{archive_name} uncompressed contents exceed "
+            f"{MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES} bytes"
+        )
+    return normalized, root_style
+
+
+def normalize_release_member_path(raw_name: str, expected_root: str) -> tuple[str, str | None]:
     normalized = raw_name.replace("\\", "/")
     path = PurePosixPath(normalized)
     parts = [part for part in path.parts if part not in {"", ".", "/"}]
     if path.is_absolute() or ".." in parts:
-        raise SystemExit(f"unsafe zip path in package-manager asset: {raw_name}")
-    return "/".join(parts)
+        raise SystemExit(f"unsafe archive path in package-manager asset: {raw_name}")
+    root_style = None
+    if parts:
+        if parts[0] == expected_root:
+            root_style = "rooted"
+            parts = parts[1:]
+        elif parts[0].startswith("conu-"):
+            raise SystemExit(
+                f"unexpected archive root in package-manager asset: {parts[0]} "
+                f"(expected {expected_root})"
+            )
+        else:
+            root_style = "rootless"
+    return "/".join(parts), root_style
+
+
+def update_release_root_style(
+    archive_name: str,
+    raw_name: str,
+    current: str | None,
+    member_style: str | None,
+) -> str | None:
+    if member_style is None:
+        return current
+    if current is not None and current != member_style:
+        raise SystemExit(f"{archive_name} mixes rooted and rootless archive paths: {raw_name}")
+    return member_style
 
 
 def extract_linux_binaries(archive: Path, version: str, target: str) -> dict[str, bytes]:
     root = f"conu-{version}-{target}"
-    root_prefix = f"{root}/"
     rootless_bins = {f"bin/{binary}" for binary in EXPECTED_BINARIES}
-    rooted_bins = {f"{root_prefix}bin/{binary}" for binary in EXPECTED_BINARIES}
-    wanted = rootless_bins | rooted_bins
-    paths: set[str] = set()
+    state = ArchiveScanState(paths=set())
+    file_paths: set[str] = set()
+    root_style: str | None = None
     extracted: dict[str, bytes] = {}
 
     try:
-        with tarfile.open(archive, "r:gz") as package:
-            for member in package.getmembers():
-                normalized = normalize_tar_path(member.name)
-                if not normalized:
-                    continue
-                if normalized in paths:
-                    raise SystemExit(f"{archive.name} contains duplicate tar path: {normalized}")
-                paths.add(normalized)
-                if normalized not in wanted:
+        with tarfile.open(archive, "r|gz") as package:
+            for member in package:
+                if member.isdir():
+                    if member.size != 0:
+                        raise SystemExit(
+                            f"{archive.name} contains directory member with data: {member.name}"
+                        )
+                    _, root_style = record_release_archive_member(
+                        archive.name,
+                        member.name,
+                        root,
+                        0,
+                        state,
+                        root_style,
+                        allow_empty=True,
+                    )
                     continue
                 if not member.isfile():
-                    raise SystemExit(f"{archive.name} contains non-file binary path: {member.name}")
-                if member.size < 0:
-                    raise SystemExit(f"{archive.name} contains binary with invalid size: {member.name}")
-                if member.size > MAX_PACKAGE_BINARY_BYTES:
-                    raise SystemExit(f"{archive.name} contains oversized binary: {member.name}")
+                    raise SystemExit(
+                        f"{archive.name} contains unsupported non-file member: {member.name}"
+                    )
+                normalized, root_style = record_release_archive_member(
+                    archive.name,
+                    member.name,
+                    root,
+                    member.size,
+                    state,
+                    root_style,
+                )
+                if not normalized:
+                    continue
+                file_paths.add(normalized)
+                if normalized not in rootless_bins:
+                    continue
                 handle = package.extractfile(member)
                 if handle is None:
                     raise SystemExit(f"{archive.name} could not read binary: {member.name}")
-                extracted[normalized] = handle.read()
+                extracted[normalized] = read_limited_release_member(
+                    archive.name,
+                    member.name,
+                    handle,
+                    MAX_PACKAGE_BINARY_BYTES,
+                )
     except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
         raise SystemExit(f"linux release asset is not a readable tar.gz: {archive.name}") from exc
 
-    if rootless_bins <= paths:
-        prefix = ""
-    elif rooted_bins <= paths:
-        prefix = root_prefix
-    else:
+    if not rootless_bins <= file_paths:
         raise SystemExit(
             f"{archive.name} does not contain expected rootless or {root}/bin Linux binaries"
         )
 
     binaries: dict[str, bytes] = {}
     for binary in EXPECTED_BINARIES:
-        path = f"{prefix}bin/{binary}"
+        path = f"bin/{binary}"
         if path not in extracted:
             raise SystemExit(f"{archive.name} could not extract expected binary: {path}")
         binaries[binary] = extracted[path]
     return binaries
 
 
-def normalize_tar_path(raw_name: str) -> str:
-    normalized = raw_name.replace("\\", "/")
-    path = PurePosixPath(normalized)
-    parts = [part for part in path.parts if part not in {"", ".", "/"}]
-    if path.is_absolute() or ".." in parts:
-        raise SystemExit(f"unsafe tar path in package-manager asset: {raw_name}")
-    return "/".join(parts)
+def read_limited_release_member(
+    archive_name: str,
+    member_name: str,
+    handle,
+    limit: int,
+) -> bytes:
+    content = handle.read(limit + 1)
+    if len(content) > limit:
+        raise SystemExit(f"{archive_name} member is too large: {member_name}")
+    return content
 
 
 def render_homebrew_formula(version: str, repo: str, assets: dict[str, ReleaseAsset]) -> str:
