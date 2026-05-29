@@ -80,17 +80,21 @@ def read_manifest_target(archive: Path) -> str:
 
 def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:
     expected_root = expected_archive_root(archive)
+    state = ExtractState()
     if archive.suffix == ".zip":
         with zipfile.ZipFile(archive) as package:
             found: bytes | None = None
             root_style: str | None = None
             for member in package.infolist():
-                if member.filename.endswith("/"):
-                    continue
-                normalized, member_style = normalize_member(member.filename, expected_root)
-                root_style = update_archive_root_style(
-                    archive.name, member.filename, root_style, member_style
+                normalized, root_style, is_file = validate_zip_member_for_read(
+                    archive.name,
+                    member,
+                    expected_root,
+                    state,
+                    root_style,
                 )
+                if not is_file:
+                    continue
                 if normalized == normalized_name:
                     if found is not None:
                         raise SystemExit(
@@ -100,16 +104,19 @@ def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:
             return found
 
     if archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive, "r:gz") as package:
+        with tarfile.open(archive, "r|gz") as package:
             found: bytes | None = None
             root_style: str | None = None
-            for member in package.getmembers():
-                if not member.isfile():
-                    continue
-                normalized, member_style = normalize_member(member.name, expected_root)
-                root_style = update_archive_root_style(
-                    archive.name, member.name, root_style, member_style
+            for member in package:
+                normalized, root_style, is_file = validate_tar_member_for_read(
+                    archive.name,
+                    member,
+                    expected_root,
+                    state,
+                    root_style,
                 )
+                if not is_file:
+                    continue
                 if normalized == normalized_name:
                     if found is not None:
                         raise SystemExit(
@@ -120,6 +127,107 @@ def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:
             return found
 
     raise SystemExit(f"unsupported release archive {archive.name}")
+
+
+def validate_zip_member_for_read(
+    archive_name: str,
+    member: zipfile.ZipInfo,
+    expected_root: str,
+    state: ExtractState,
+    root_style: str | None,
+) -> tuple[str, str | None, bool]:
+    if member.flag_bits & 0x1:
+        raise SystemExit(f"{archive_name} contains encrypted zip member: {member.filename}")
+    file_type = (member.external_attr >> 16) & 0o170000
+    is_directory = member.is_dir() or file_type == stat.S_IFDIR
+    if file_type == stat.S_IFLNK:
+        raise SystemExit(f"{archive_name} contains unsupported link member: {member.filename}")
+    if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+        raise SystemExit(f"{archive_name} contains unsupported zip member: {member.filename}")
+    if is_directory and member.file_size != 0:
+        raise SystemExit(
+            f"{archive_name} contains directory member with data: {member.filename}"
+        )
+    normalized, root_style = validate_archive_read_entry(
+        archive_name,
+        member.filename,
+        0 if is_directory else member.file_size,
+        state,
+        expected_root,
+        root_style,
+        allow_empty=is_directory,
+    )
+    return normalized, root_style, not is_directory
+
+
+def validate_tar_member_for_read(
+    archive_name: str,
+    member: tarfile.TarInfo,
+    expected_root: str,
+    state: ExtractState,
+    root_style: str | None,
+) -> tuple[str, str | None, bool]:
+    if member.isdir():
+        if member.size != 0:
+            raise SystemExit(f"{archive_name} contains directory member with data: {member.name}")
+        normalized, root_style = validate_archive_read_entry(
+            archive_name,
+            member.name,
+            0,
+            state,
+            expected_root,
+            root_style,
+            allow_empty=True,
+        )
+        return normalized, root_style, False
+    if not member.isfile():
+        raise SystemExit(f"{archive_name} contains unsupported non-file member: {member.name}")
+    normalized, root_style = validate_archive_read_entry(
+        archive_name,
+        member.name,
+        member.size,
+        state,
+        expected_root,
+        root_style,
+    )
+    return normalized, root_style, True
+
+
+def validate_archive_read_entry(
+    archive_name: str,
+    member_name: str,
+    size: int,
+    state: ExtractState,
+    expected_root: str,
+    root_style: str | None,
+    *,
+    allow_empty: bool = False,
+) -> tuple[str, str | None]:
+    if size < 0:
+        raise SystemExit(f"{archive_name} contains member with invalid size: {member_name}")
+    if size > MAX_MEMBER_BYTES:
+        raise SystemExit(f"{archive_name} member is too large: {member_name}")
+
+    state.entry_count += 1
+    if state.entry_count > MAX_MEMBER_COUNT:
+        raise SystemExit(f"{archive_name} contains more than {MAX_MEMBER_COUNT} entries")
+
+    normalized, member_style = normalize_member(member_name, expected_root)
+    root_style = update_archive_root_style(archive_name, member_name, root_style, member_style)
+    if not normalized:
+        if allow_empty:
+            return normalized, root_style
+        raise SystemExit(f"{archive_name} contains empty archive path: {member_name}")
+
+    state.total_uncompressed += size
+    if state.total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
+        raise SystemExit(
+            f"{archive_name} uncompressed contents exceed {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes"
+        )
+    if normalized in state.paths:
+        raise SystemExit(f"{archive_name} contains duplicate archive path: {normalized}")
+    state.paths.add(normalized)
+    return normalized, root_style
 
 
 def expected_archive_root(archive: Path) -> str:
@@ -242,8 +350,8 @@ def extract_archive(archive: Path, destination: Path) -> None:
         return
 
     if archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive, "r:gz") as package:
-            for member in package.getmembers():
+        with tarfile.open(archive, "r|gz") as package:
+            for member in package:
                 if member.isdir():
                     if member.size != 0:
                         raise SystemExit(

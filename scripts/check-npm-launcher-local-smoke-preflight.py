@@ -74,6 +74,91 @@ def main() -> int:
         )
 
     with fixture_dir() as root:
+        archive = root / "conu-0.1.0-manifest-duplicate.zip"
+        write_zip_entries(
+            archive,
+            [
+                ("manifest.toml", 'target = "host"\n'),
+                ("bin/conu", "first"),
+                ("bin/./conu", "second"),
+            ],
+        )
+        expect_action_failure(
+            lambda: smoke.read_manifest_target(archive),
+            "duplicate archive path",
+            "duplicate path during manifest read",
+        )
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-manifest-too-large.zip"
+        write_zip(archive, {"manifest.toml": 'target = "host"\n'})
+        original_limit = smoke.MAX_MEMBER_BYTES
+        smoke.MAX_MEMBER_BYTES = 1
+        try:
+            expect_action_failure(
+                lambda: smoke.read_manifest_target(archive),
+                "member is too large",
+                "oversized manifest read member",
+            )
+        finally:
+            smoke.MAX_MEMBER_BYTES = original_limit
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-manifest-too-many.zip"
+        write_zip_entries(archive, [("manifest.toml", 'target = "host"\n'), ("bin/conu", "x")])
+        original_limit = smoke.MAX_MEMBER_COUNT
+        smoke.MAX_MEMBER_COUNT = 1
+        try:
+            expect_action_failure(
+                lambda: smoke.read_manifest_target(archive),
+                "contains more than",
+                "manifest read member count bound",
+            )
+        finally:
+            smoke.MAX_MEMBER_COUNT = original_limit
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-manifest-total.zip"
+        write_zip(archive, {"manifest.toml": 'target = "host"\n'})
+        original_limit = smoke.MAX_TOTAL_UNCOMPRESSED_BYTES
+        smoke.MAX_TOTAL_UNCOMPRESSED_BYTES = 1
+        try:
+            expect_action_failure(
+                lambda: smoke.read_manifest_target(archive),
+                "uncompressed contents exceed",
+                "manifest read total size bound",
+            )
+        finally:
+            smoke.MAX_TOTAL_UNCOMPRESSED_BYTES = original_limit
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-manifest-unsupported.zip"
+        info = zipfile.ZipInfo("device")
+        info.external_attr = (stat.S_IFCHR | 0o644) << 16
+        write_zip_infos(
+            archive,
+            [
+                (zipfile.ZipInfo("manifest.toml"), b'target = "host"\n'),
+                (info, b"device"),
+            ],
+        )
+        expect_action_failure(
+            lambda: smoke.read_manifest_target(archive),
+            "unsupported zip member",
+            "unsupported member during manifest read",
+        )
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-manifest-encrypted.zip"
+        write_zip_entries(archive, [("manifest.toml", 'target = "host"\n'), ("bin/conu", "x")])
+        mark_zip_member_encrypted(archive, "bin/conu")
+        expect_action_failure(
+            lambda: smoke.read_manifest_target(archive),
+            "encrypted zip member",
+            "encrypted member during manifest read",
+        )
+
+    with fixture_dir() as root:
         archive = Path("conu-0.1.0-test.zip")
         expected_root = root / "conu-0.1.0-test"
         expected_root.mkdir()
@@ -208,6 +293,38 @@ def write_zip_infos(path: Path, entries: list[tuple[zipfile.ZipInfo, bytes]]) ->
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as package:
         for info, content in entries:
             package.writestr(info, content)
+
+
+def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
+    data = bytearray(path.read_bytes())
+    target = member_name.encode("utf-8")
+    offset = 0
+    while offset + 4 <= len(data):
+        signature = int.from_bytes(data[offset : offset + 4], "little")
+        if signature == 0x04034B50:
+            name_length = int.from_bytes(data[offset + 26 : offset + 28], "little")
+            extra_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            name_start = offset + 30
+            name_end = name_start + name_length
+            compressed_size = int.from_bytes(data[offset + 18 : offset + 22], "little")
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 6 : offset + 8], "little") | 0x1
+                data[offset + 6 : offset + 8] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + compressed_size
+            continue
+        if signature == 0x02014B50:
+            name_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            extra_length = int.from_bytes(data[offset + 30 : offset + 32], "little")
+            comment_length = int.from_bytes(data[offset + 32 : offset + 34], "little")
+            name_start = offset + 46
+            name_end = name_start + name_length
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 8 : offset + 10], "little") | 0x1
+                data[offset + 8 : offset + 10] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + comment_length
+            continue
+        offset += 1
+    path.write_bytes(data)
 
 
 def expect_failure(smoke, bin_dir: Path, expected: str, label: str) -> None:
