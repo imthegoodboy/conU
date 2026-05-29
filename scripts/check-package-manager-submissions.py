@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import stat
 import sys
 import tempfile
 import zipfile
@@ -168,6 +169,54 @@ def expect_failure(description: str, action, expected: str) -> None:
     raise AssertionError(f"{description} unexpectedly passed")
 
 
+def expect_failure_with_limit(
+    module,
+    limit_name: str,
+    value: int,
+    description: str,
+    action,
+    expected: str,
+) -> None:
+    original = getattr(module, limit_name)
+    setattr(module, limit_name, value)
+    try:
+        expect_failure(description, action, expected)
+    finally:
+        setattr(module, limit_name, original)
+
+
+def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
+    data = bytearray(path.read_bytes())
+    target = member_name.encode("utf-8")
+    offset = 0
+    while offset + 4 <= len(data):
+        signature = int.from_bytes(data[offset : offset + 4], "little")
+        if signature == 0x04034B50:
+            name_length = int.from_bytes(data[offset + 26 : offset + 28], "little")
+            extra_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            name_start = offset + 30
+            name_end = name_start + name_length
+            compressed_size = int.from_bytes(data[offset + 18 : offset + 22], "little")
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 6 : offset + 8], "little") | 0x1
+                data[offset + 6 : offset + 8] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + compressed_size
+            continue
+        if signature == 0x02014B50:
+            name_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            extra_length = int.from_bytes(data[offset + 30 : offset + 32], "little")
+            comment_length = int.from_bytes(data[offset + 32 : offset + 34], "little")
+            name_start = offset + 46
+            name_end = name_start + name_length
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 8 : offset + 10], "little") | 0x1
+                data[offset + 8 : offset + 10] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + comment_length
+            continue
+        offset += 1
+    path.write_bytes(data)
+
+
 def main() -> int:
     preparer = load_module(PREPARER_PATH, "prepare_package_manager_submissions")
     manifest_check = load_module(MANIFEST_CHECK_PATH, "check_package_manager_manifests")
@@ -193,6 +242,22 @@ def main() -> int:
         second = assert_bundle(preparer, generated, repeat_output)
         if first.read_bytes() != second.read_bytes():
             raise AssertionError("package-manager submission bundle was not deterministic")
+
+        expect_failure_with_limit(
+            preparer,
+            "MAX_TOTAL_SOURCE_BYTES",
+            1,
+            "submission source aggregate bound",
+            lambda: preparer.prepare_submission_bundle(
+                generated,
+                temp / "total-source-bound-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "package-manager submission sources exceed 1 bytes",
+        )
 
         missing_signature = temp / "missing-signature"
         manifest_check.generate(
@@ -257,6 +322,57 @@ def main() -> int:
                 VERSION,
             ),
             "signed target is missing",
+        )
+
+        encrypted_chocolatey = temp / "encrypted-chocolatey"
+        manifest_check.generate(
+            generator,
+            dist,
+            encrypted_chocolatey,
+            build_apt_repository_metadata=True,
+        )
+        write_signed_release_extras(encrypted_chocolatey)
+        mark_zip_member_encrypted(encrypted_chocolatey / "conu.0.1.0.nupkg", "conu.nuspec")
+        expect_failure(
+            "encrypted Chocolatey package member",
+            lambda: preparer.prepare_submission_bundle(
+                encrypted_chocolatey,
+                temp / "encrypted-chocolatey-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "contains encrypted Chocolatey package member",
+        )
+
+        unsupported_chocolatey = temp / "unsupported-chocolatey"
+        manifest_check.generate(
+            generator,
+            dist,
+            unsupported_chocolatey,
+            build_apt_repository_metadata=True,
+        )
+        write_signed_release_extras(unsupported_chocolatey)
+        with zipfile.ZipFile(
+            unsupported_chocolatey / "conu.0.1.0.nupkg",
+            "a",
+            compression=zipfile.ZIP_STORED,
+        ) as archive:
+            info = zipfile.ZipInfo("device")
+            info.external_attr = stat.S_IFCHR << 16
+            archive.writestr(info, b"device\n")
+        expect_failure(
+            "unsupported Chocolatey package member",
+            lambda: preparer.prepare_submission_bundle(
+                unsupported_chocolatey,
+                temp / "unsupported-chocolatey-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "contains unsupported Chocolatey package member",
         )
 
         forbidden = temp / "forbidden"
