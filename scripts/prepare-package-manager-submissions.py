@@ -7,6 +7,8 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
+import stat
 import sys
 import zipfile
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
 HASH_CHUNK_BYTES = 1024 * 1024
 MAX_TEXT_BYTES = 2 * 1024 * 1024
 MAX_BINARY_BYTES = 512 * 1024 * 1024
+MAX_TOTAL_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 DEBIAN_ARCHES = ("amd64", "arm64")
 RPM_ARCHES = ("x86_64", "aarch64")
@@ -44,6 +47,13 @@ class BundleEntry:
     archive_name: str
     kind: str
     required: bool = True
+
+
+@dataclass(frozen=True)
+class PreparedEntry:
+    entry: BundleEntry
+    source: Path
+    size: int
 
 
 @dataclass(frozen=True)
@@ -270,7 +280,8 @@ def prepare_submission_bundle(
         require_repository_metadata=require_repository_metadata,
         require_linux_signatures=require_linux_signatures,
     )
-    selected: list[tuple[BundleEntry, Path, bytes]] = []
+    selected: list[PreparedEntry] = []
+    total_source_bytes = 0
     for entry in entries:
         source = dist / entry.source_name
         if not source.exists():
@@ -279,24 +290,30 @@ def prepare_submission_bundle(
             continue
         if not source.is_file():
             raise SystemExit(f"package-manager submission source is not a file: {entry.source_name}")
-        data = read_entry_data(source, entry, dist)
-        selected.append((entry, source, data))
+        size = validate_entry_source(source, entry, dist)
+        total_source_bytes += size
+        if total_source_bytes > MAX_TOTAL_SOURCE_BYTES:
+            raise SystemExit(
+                "package-manager submission sources exceed "
+                f"{MAX_TOTAL_SOURCE_BYTES} bytes"
+            )
+        selected.append(PreparedEntry(entry=entry, source=source, size=size))
 
-    validate_no_duplicate_archive_names(entry.archive_name for entry, _source, _data in selected)
-    readme = render_readme(version, [entry.archive_name for entry, _source, _data in selected])
+    validate_no_duplicate_archive_names(prepared.entry.archive_name for prepared in selected)
+    readme = render_readme(version, [prepared.entry.archive_name for prepared in selected])
     assert_safe_text(readme, "README.txt", dist)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     bundle = output_dir / submission_bundle_filename(version)
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         write_zip_text(archive, "README.txt", readme)
-        for entry, _source, data in selected:
-            write_zip_bytes(archive, entry.archive_name, data)
+        for prepared in selected:
+            write_zip_file(archive, prepared.entry.archive_name, prepared.source, prepared.size)
 
     checksum = sha256_file(bundle)
     checksum_path = bundle.with_name(f"{bundle.name}.sha256")
     checksum_path.write_text(f"{checksum}  {bundle.name}\n", encoding="ascii", newline="\n")
-    entries_written = ("README.txt", *(entry.archive_name for entry, _source, _data in selected))
+    entries_written = ("README.txt", *(prepared.entry.archive_name for prepared in selected))
     return SubmissionBundleReport(
         version=version,
         output=bundle,
@@ -306,26 +323,25 @@ def prepare_submission_bundle(
     )
 
 
-def read_entry_data(source: Path, entry: BundleEntry, dist: Path) -> bytes:
+def validate_entry_source(source: Path, entry: BundleEntry, dist: Path) -> int:
     size = source.stat().st_size
     if size <= 0:
         raise SystemExit(f"package-manager submission source is empty: {entry.source_name}")
     if size > MAX_BINARY_BYTES:
         raise SystemExit(f"package-manager submission source is too large: {entry.source_name}")
-    data = source.read_bytes()
     if entry.kind == "checksum":
         validate_checksum_source(source, dist)
     elif entry.kind == "signature":
-        validate_signature_source(source, data, entry.source_name, dist)
+        validate_signature_source(source, entry.source_name, dist)
     elif entry.kind == "public-key":
-        validate_public_key_source(data, entry.source_name)
+        validate_public_key_source(source, entry.source_name)
     elif entry.kind == "chocolatey":
         validate_chocolatey_package(source, dist)
     elif entry.kind in {"homebrew", "scoop", "winget", "rpm-spec"}:
         text = read_ascii_text(source, entry.source_name)
         validate_structured_manifest(text, entry, source)
         assert_safe_text(text, entry.source_name, dist)
-    return data
+    return size
 
 
 def read_ascii_text(path: Path, label: str) -> str:
@@ -366,27 +382,61 @@ def validate_structured_manifest(text: str, entry: BundleEntry, source: Path) ->
 def validate_chocolatey_package(path: Path, dist: Path) -> None:
     try:
         with zipfile.ZipFile(path) as package:
-            names = package.namelist()
+            infos = package.infolist()
+            names = [info.filename for info in infos]
             expected = [
                 "conu.nuspec",
                 "tools/chocolateyInstall.ps1",
                 "tools/chocolateyUninstall.ps1",
             ]
+            for info in infos:
+                validate_chocolatey_member(path.name, info)
             if names != expected:
                 raise SystemExit(f"{path.name} has unexpected Chocolatey package entries: {names!r}")
-            for name in names:
+            for info in infos:
+                name = info.filename
                 normalized = normalize_archive_path(name)
                 if normalized != name:
                     raise SystemExit(f"{path.name} has unsafe Chocolatey package path: {name}")
-                info = package.getinfo(name)
-                if info.file_size > MAX_TEXT_BYTES:
-                    raise SystemExit(f"{path.name}:{name} is too large")
-                text = package.read(name).decode("ascii")
+                text = read_chocolatey_text_member(package, info, path.name)
                 assert_safe_text(text, f"{path.name}:{name}", dist)
-    except zipfile.BadZipFile as exc:
+    except (RuntimeError, zipfile.BadZipFile) as exc:
         raise SystemExit(f"{path.name} is not a readable Chocolatey nupkg") from exc
     except UnicodeDecodeError as exc:
         raise SystemExit(f"{path.name} contains non-ASCII Chocolatey metadata") from exc
+
+
+def validate_chocolatey_member(package_name: str, info: zipfile.ZipInfo) -> None:
+    name = info.filename
+    if info.flag_bits & 0x1:
+        raise SystemExit(f"{package_name} contains encrypted Chocolatey package member: {name}")
+    file_type = (info.external_attr >> 16) & 0o170000
+    is_directory = info.is_dir() or file_type == stat.S_IFDIR
+    if file_type == stat.S_IFLNK:
+        raise SystemExit(f"{package_name} contains unsupported Chocolatey link member: {name}")
+    if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+        raise SystemExit(f"{package_name} contains unsupported Chocolatey package member: {name}")
+    if is_directory:
+        if info.file_size != 0:
+            raise SystemExit(f"{package_name} contains Chocolatey directory member with data: {name}")
+        raise SystemExit(f"{package_name} has unexpected Chocolatey package directory: {name}")
+    if info.file_size > MAX_TEXT_BYTES:
+        raise SystemExit(f"{package_name}:{name} is too large")
+
+
+def read_chocolatey_text_member(
+    package: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    package_name: str,
+) -> str:
+    try:
+        with package.open(info, "r") as handle:
+            data = handle.read(MAX_TEXT_BYTES + 1)
+    except (RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+        raise SystemExit(f"{package_name} could not read Chocolatey package member: {info.filename}") from exc
+    if len(data) > MAX_TEXT_BYTES:
+        raise SystemExit(f"{package_name}:{info.filename} is too large")
+    return data.decode("ascii")
 
 
 def validate_checksum_source(path: Path, dist: Path) -> None:
@@ -407,29 +457,19 @@ def validate_checksum_source(path: Path, dist: Path) -> None:
         raise SystemExit(f"{path.name} SHA-256 mismatch for {target_name}")
 
 
-def validate_signature_source(source: Path, data: bytes, label: str, dist: Path) -> None:
+def validate_signature_source(source: Path, label: str, dist: Path) -> None:
     target_name = source.name[: -len(".asc")]
     target = dist / target_name
     if not target.exists() or not target.is_file():
         raise SystemExit(f"{label} signed target is missing: {target_name}")
-    if len(data) > MAX_TEXT_BYTES:
-        raise SystemExit(f"{label} is too large")
-    try:
-        text = data.decode("ascii")
-    except UnicodeDecodeError as exc:
-        raise SystemExit(f"{label} is not ASCII armored signature data") from exc
+    text = read_ascii_text(source, label)
     if "BEGIN PGP SIGNATURE" not in text or "END PGP SIGNATURE" not in text:
         raise SystemExit(f"{label} is not an armored detached PGP signature")
     assert_safe_text(text, label, Path())
 
 
-def validate_public_key_source(data: bytes, label: str) -> None:
-    if len(data) > MAX_TEXT_BYTES:
-        raise SystemExit(f"{label} is too large")
-    try:
-        text = data.decode("ascii")
-    except UnicodeDecodeError as exc:
-        raise SystemExit(f"{label} is not ASCII armored public-key data") from exc
+def validate_public_key_source(source: Path, label: str) -> None:
+    text = read_ascii_text(source, label)
     if "BEGIN PGP PUBLIC KEY BLOCK" not in text or "END PGP PUBLIC KEY BLOCK" not in text:
         raise SystemExit(f"{label} is not an armored PGP public key")
     assert_safe_text(text, label, Path())
@@ -495,6 +535,16 @@ def write_zip_bytes(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
     info.compress_type = zipfile.ZIP_STORED
     info.external_attr = 0o644 << 16
     archive.writestr(info, data)
+
+
+def write_zip_file(archive: zipfile.ZipFile, name: str, source: Path, size: int) -> None:
+    normalized = normalize_archive_path(name)
+    info = zipfile.ZipInfo(normalized, ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_STORED
+    info.external_attr = 0o644 << 16
+    info.file_size = size
+    with archive.open(info, "w") as output, source.open("rb") as input_file:
+        shutil.copyfileobj(input_file, output, HASH_CHUNK_BYTES)
 
 
 def sha256_file(path: Path) -> str:
