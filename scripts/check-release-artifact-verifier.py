@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import os
 import sys
 import tarfile
 import tempfile
@@ -160,6 +161,14 @@ def expect_failure(description: str, action, expected: str) -> None:
     raise AssertionError(f"{description} unexpectedly passed")
 
 
+def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
+    try:
+        os.symlink(target, link, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        return False
+    return True
+
+
 def main() -> int:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory(prefix="conu-release-verifier-") as temp:
@@ -168,6 +177,58 @@ def main() -> int:
         valid_zip = root / "conu-0.1.0-test.zip"
         write_zip(valid_zip)
         verify_archive(verifier, valid_zip)
+
+        symlink_dist = root / "symlink-dist"
+        if try_symlink(root, symlink_dist, target_is_directory=True):
+            expect_failure(
+                "symlinked dist directory",
+                lambda: verifier.validate_input_directory(symlink_dist, "release dist directory"),
+                "release dist directory must not be a symlink",
+            )
+
+        symlink_archive_target = root / "conu-0.1.0-symlink-target.zip"
+        write_zip(symlink_archive_target)
+        symlink_archive = root / "conu-0.1.0-symlink-archive.zip"
+        if try_symlink(symlink_archive_target, symlink_archive):
+            expect_failure(
+                "symlinked release archive",
+                lambda: verifier.verify_checksum(symlink_archive),
+                "release archive must not be a symlink",
+            )
+
+        directory_archive = root / "conu-0.1.0-directory-archive.zip"
+        directory_archive.mkdir()
+        expect_failure(
+            "directory release archive",
+            lambda: verifier.verify_checksum(directory_archive),
+            "release archive must be a regular file",
+        )
+
+        symlink_checksum = root / "conu-0.1.0-symlink-checksum.zip"
+        write_zip(symlink_checksum)
+        checksum_path = symlink_checksum.with_name(f"{symlink_checksum.name}.sha256")
+        checksum_target = root / "symlink-checksum-target.sha256"
+        checksum_target.write_text(checksum_path.read_text(encoding="ascii"), encoding="ascii")
+        checksum_path.unlink()
+        if try_symlink(checksum_target, checksum_path):
+            expect_failure(
+                "symlinked checksum sidecar",
+                lambda: verifier.verify_checksum(symlink_checksum),
+                "checksum file for conu-0.1.0-symlink-checksum.zip must not be a symlink",
+            )
+
+        directory_checksum = root / "conu-0.1.0-directory-checksum.zip"
+        write_zip(directory_checksum)
+        directory_checksum_path = directory_checksum.with_name(
+            f"{directory_checksum.name}.sha256"
+        )
+        directory_checksum_path.unlink()
+        directory_checksum_path.mkdir()
+        expect_failure(
+            "directory checksum sidecar",
+            lambda: verifier.verify_checksum(directory_checksum),
+            "checksum file for conu-0.1.0-directory-checksum.zip must be a regular file",
+        )
 
         original_max_archive_bytes = verifier.MAX_ARCHIVE_BYTES
         verifier.MAX_ARCHIVE_BYTES = 1

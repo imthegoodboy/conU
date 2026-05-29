@@ -67,9 +67,13 @@ def main() -> int:
     parser.add_argument("dist", type=Path, help="directory containing release archives")
     args = parser.parse_args()
 
-    archives = sorted(args.dist.glob("*.zip")) + sorted(args.dist.glob("*.tar.gz"))
+    dist = args.dist.expanduser()
+    validate_input_directory(dist, "release dist directory")
+    dist = dist.resolve()
+
+    archives = sorted(dist.glob("*.zip")) + sorted(dist.glob("*.tar.gz"))
     if not archives:
-        raise SystemExit(f"no release archives found in {args.dist}")
+        raise SystemExit(f"no release archives found in {dist}")
 
     for archive in archives:
         verify_checksum(archive)
@@ -81,17 +85,21 @@ def main() -> int:
 
 
 def verify_checksum(archive: Path) -> None:
-    archive_size = archive.stat().st_size
-    if archive_size > MAX_ARCHIVE_BYTES:
-        raise SystemExit(f"{archive.name} is larger than {MAX_ARCHIVE_BYTES} bytes")
+    validate_regular_file(
+        archive,
+        "release archive",
+        max_bytes=MAX_ARCHIVE_BYTES,
+        too_large_message=f"{archive.name} is larger than {MAX_ARCHIVE_BYTES} bytes",
+    )
 
     checksum_path = archive.with_name(f"{archive.name}.sha256")
-    if not checksum_path.exists():
-        raise SystemExit(f"missing checksum file for {archive.name}")
-
-    checksum_size = checksum_path.stat().st_size
-    if checksum_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"checksum file is too large for {archive.name}")
+    validate_regular_file(
+        checksum_path,
+        f"checksum file for {archive.name}",
+        max_bytes=MAX_CHECKSUM_BYTES,
+        missing_message=f"missing checksum file for {archive.name}",
+        too_large_message=f"checksum file is too large for {archive.name}",
+    )
 
     try:
         checksum_text = checksum_path.read_text(encoding="ascii")
@@ -126,9 +134,12 @@ def sha256_file(path: Path) -> str:
 
 
 def archive_members(archive: Path) -> ArchiveMembers:
-    archive_size = archive.stat().st_size
-    if archive_size > MAX_ARCHIVE_BYTES:
-        raise SystemExit(f"{archive.name} is larger than {MAX_ARCHIVE_BYTES} bytes")
+    validate_regular_file(
+        archive,
+        "release archive",
+        max_bytes=MAX_ARCHIVE_BYTES,
+        too_large_message=f"{archive.name} is larger than {MAX_ARCHIVE_BYTES} bytes",
+    )
     expected_root = expected_archive_root(archive.name)
 
     if archive.suffix == ".zip":
@@ -231,6 +242,36 @@ def archive_members(archive: Path) -> ArchiveMembers:
                     )
             return ArchiveMembers(paths=paths, manifest=manifest)
     raise SystemExit(f"unsupported release archive {archive.name}")
+
+
+def validate_input_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+
+
+def validate_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    missing_message: str | None = None,
+    too_large_message: str | None = None,
+) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(missing_message or f"missing {label}: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"{label} could not be inspected: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    if metadata.st_size > max_bytes:
+        raise SystemExit(too_large_message or f"{label} is too large: {path.name}")
+    return metadata.st_size
 
 
 def record_entry(
