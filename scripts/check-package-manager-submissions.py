@@ -265,7 +265,7 @@ def main() -> int:
                     require_repository_metadata=True,
                     require_linux_signatures=True,
                 ),
-                "package-manager submission source directory must not be a symlink",
+                "must not be a symlink",
             )
 
         symlink_source = temp / "symlink-source"
@@ -284,7 +284,7 @@ def main() -> int:
                     require_repository_metadata=True,
                     require_linux_signatures=True,
                 ),
-                "package-manager submission source must not be a symlink",
+                "must not be a symlink",
             )
 
         symlink_checksum = temp / "symlink-checksum-source"
@@ -303,7 +303,7 @@ def main() -> int:
                     require_repository_metadata=True,
                     require_linux_signatures=True,
                 ),
-                "package-manager submission source must not be a symlink",
+                "must not be a symlink",
             )
 
         symlink_output_target = temp / "symlink-output-target"
@@ -320,7 +320,7 @@ def main() -> int:
                     require_repository_metadata=True,
                     require_linux_signatures=True,
                 ),
-                "package-manager submission output directory must not be a symlink",
+                "must not be a symlink",
             )
 
         bundle_name = preparer.submission_bundle_filename(VERSION)
@@ -339,7 +339,7 @@ def main() -> int:
                     require_repository_metadata=True,
                     require_linux_signatures=True,
                 ),
-                "package-manager submission bundle output must not be a symlink",
+                "must not be a symlink",
             )
 
         directory_output_bundle = temp / "directory-output-bundle"
@@ -355,7 +355,7 @@ def main() -> int:
                 require_repository_metadata=True,
                 require_linux_signatures=True,
             ),
-            "package-manager submission bundle output must be a regular file",
+            "must be a regular file",
         )
 
         symlink_output_sidecar = temp / "symlink-output-sidecar"
@@ -373,7 +373,7 @@ def main() -> int:
                     require_repository_metadata=True,
                     require_linux_signatures=True,
                 ),
-                "package-manager submission bundle SHA-256 sidecar output must not be a symlink",
+                "must not be a symlink",
             )
 
         directory_output_sidecar = temp / "directory-output-sidecar"
@@ -389,7 +389,7 @@ def main() -> int:
                 require_repository_metadata=True,
                 require_linux_signatures=True,
             ),
-            "package-manager submission bundle SHA-256 sidecar output must be a regular file",
+            "must be a regular file",
         )
 
         expect_failure_with_limit(

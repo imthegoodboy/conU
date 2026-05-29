@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
+import os
 import re
 import shutil
 import stat
@@ -13,7 +15,7 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
@@ -24,6 +26,8 @@ MAX_BINARY_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SUBMISSION_BUNDLE_BYTES = MAX_TOTAL_SOURCE_BYTES + MAX_TEXT_BYTES + (1024 * 1024)
 MAX_CHECKSUM_BYTES = 4096
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 DEBIAN_ARCHES = ("amd64", "arm64")
 RPM_ARCHES = ("x86_64", "aarch64")
@@ -306,21 +310,35 @@ def prepare_submission_bundle(
     assert_safe_text(readme, "README.txt", dist)
 
     bundle = output_dir / submission_bundle_filename(version)
-    validate_output_file(bundle, "package-manager submission bundle")
-    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
-        write_zip_text(archive, "README.txt", readme)
-        for prepared in selected:
-            write_zip_file(archive, prepared.entry.archive_name, prepared.source, prepared.size)
+    with open_output_file(bundle, "package-manager submission bundle") as bundle_file:
+        with zipfile.ZipFile(bundle_file, "w", compression=zipfile.ZIP_STORED) as archive:
+            write_zip_text(archive, "README.txt", readme)
+            for prepared in selected:
+                write_zip_file(archive, prepared.entry.archive_name, prepared.source, prepared.size)
+        validate_open_regular_file(
+            bundle_file,
+            "package-manager submission bundle",
+            max_bytes=MAX_SUBMISSION_BUNDLE_BYTES,
+        )
+        checksum = sha256_open_file(bundle_file)
     validate_regular_file(
         bundle,
         "package-manager submission bundle",
         max_bytes=MAX_SUBMISSION_BUNDLE_BYTES,
     )
 
-    checksum = sha256_file(bundle)
     checksum_path = bundle.with_name(f"{bundle.name}.sha256")
-    validate_output_file(checksum_path, "package-manager submission bundle SHA-256 sidecar")
-    checksum_path.write_text(f"{checksum}  {bundle.name}\n", encoding="ascii", newline="\n")
+    with open_output_file(
+        checksum_path,
+        "package-manager submission bundle SHA-256 sidecar",
+    ) as checksum_file:
+        checksum_file.write(f"{checksum}  {bundle.name}\n".encode("ascii"))
+        checksum_file.flush()
+        validate_open_regular_file(
+            checksum_file,
+            "package-manager submission bundle SHA-256 sidecar",
+            max_bytes=MAX_CHECKSUM_BYTES,
+        )
     validate_regular_file(
         checksum_path,
         "package-manager submission bundle SHA-256 sidecar",
@@ -476,7 +494,12 @@ def validate_checksum_source(path: Path, dist: Path) -> None:
         non_regular_message=f"{path.name} target is not a regular file: {target_name}",
     )
     expected = match.group(1).lower()
-    actual = sha256_file(target)
+    actual = sha256_file(
+        target,
+        f"{path.name} target",
+        max_bytes=MAX_BINARY_BYTES,
+        display_name=target_name,
+    )
     if expected != actual:
         raise SystemExit(f"{path.name} SHA-256 mismatch for {target_name}")
 
@@ -558,19 +581,63 @@ def validate_regular_file(
     missing_message: str | None = None,
     non_regular_message: str | None = None,
 ) -> int:
+    handle, size = open_regular_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        display_name=display_name,
+        missing_message=missing_message,
+        non_regular_message=non_regular_message,
+    )
+    handle.close()
+    return size
+
+
+def open_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    display_name: str | None = None,
+    missing_message: str | None = None,
+    non_regular_message: str | None = None,
+) -> tuple[BinaryIO, int]:
     display = display_name or path.name
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {display}")
     if not path.exists():
         raise SystemExit(missing_message or f"missing {label}: {display}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
     try:
-        metadata = path.stat()
+        fd = os.open(path, flags)
     except OSError as exc:
-        raise SystemExit(f"{label} could not be inspected: {display}") from exc
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {display}") from exc
+        if not path.exists():
+            raise SystemExit(missing_message or f"missing {label}: {display}") from exc
+        if not path.is_file():
+            raise SystemExit(
+                non_regular_message or f"{label} must be a regular file: {display}"
+            ) from exc
+        raise SystemExit(f"{label} could not be opened: {display}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(non_regular_message or f"{label} must be a regular file: {display}")
+        if metadata.st_size > max_bytes:
+            raise SystemExit(f"{label} is too large: {display}")
+        return os.fdopen(fd, "rb"), metadata.st_size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def validate_open_regular_file(handle: BinaryIO, label: str, *, max_bytes: int) -> int:
+    metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(non_regular_message or f"{label} must be a regular file: {display}")
+        raise SystemExit(f"{label} must be a regular file")
     if metadata.st_size > max_bytes:
-        raise SystemExit(f"{label} is too large: {display}")
+        raise SystemExit(f"{label} is too large")
     return metadata.st_size
 
 
@@ -584,6 +651,27 @@ def validate_output_file(path: Path, label: str) -> None:
             raise SystemExit(f"{label} output could not be inspected: {path.name}") from exc
         if not stat.S_ISREG(metadata.st_mode):
             raise SystemExit(f"{label} output must be a regular file: {path.name}")
+
+
+def open_output_file(path: Path, label: str) -> BinaryIO:
+    validate_output_file(path, label)
+    flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | OPEN_BINARY | OPEN_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} output must not be a symlink: {path.name}") from exc
+        if path.exists() and not path.is_file():
+            raise SystemExit(f"{label} output must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} output could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+        return os.fdopen(fd, "w+b")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def render_readme(version: str, entries: list[str]) -> str:
@@ -625,18 +713,48 @@ def write_zip_file(archive: zipfile.ZipFile, name: str, source: Path, size: int)
     info.compress_type = zipfile.ZIP_STORED
     info.external_attr = 0o644 << 16
     info.file_size = size
-    with archive.open(info, "w") as output, source.open("rb") as input_file:
-        shutil.copyfileobj(input_file, output, HASH_CHUNK_BYTES)
+    input_file, actual_size = open_regular_file(
+        source,
+        "package-manager submission source",
+        display_name=source.name,
+        max_bytes=MAX_BINARY_BYTES,
+    )
+    if actual_size != size:
+        input_file.close()
+        raise SystemExit(f"package-manager submission source changed while bundling: {source.name}")
+    with input_file:
+        with archive.open(info, "w") as output:
+            shutil.copyfileobj(input_file, output, HASH_CHUNK_BYTES)
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    display_name: str | None = None,
+) -> str:
+    handle, _size = open_regular_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        display_name=display_name,
+    )
+    with handle:
+        return sha256_open_file(handle)
+
+
+def sha256_open_file(handle: BinaryIO) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
+    if handle.writable():
+        handle.flush()
+    handle.seek(0)
+    while True:
+        chunk = handle.read(HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        digest.update(chunk)
+    handle.seek(0, os.SEEK_END)
     return digest.hexdigest()
 
 
