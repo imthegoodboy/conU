@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import importlib.util
 import io
 import os
 import shutil
@@ -40,6 +41,8 @@ RPM_PACKAGES = (
 
 
 def main() -> int:
+    run_source_file_preflights()
+
     missing_tools = [
         name
         for name, available in (
@@ -191,9 +194,187 @@ def main() -> int:
     return 0
 
 
-def write_checksum(path: Path, archive_name: str | None = None) -> str:
+def run_source_file_preflights() -> None:
+    signer = load_signer()
+    with tempfile.TemporaryDirectory(prefix="conu-rpm-package-signing-file-check-") as temp_text:
+        temp = Path(temp_text)
+
+        valid = temp / "valid"
+        valid.mkdir()
+        rpm_x64 = valid / RPM_PACKAGES[0]
+        rpm_arm64 = valid / RPM_PACKAGES[1]
+        rpm_x64.write_bytes(b"rpm x64 fixture\n")
+        rpm_arm64.write_bytes(b"rpm arm64 fixture\n")
+        write_checksum(rpm_x64)
+        write_checksum(rpm_arm64)
+        packages = signer.rpm_package_assets(valid)
+        if packages != (rpm_arm64, rpm_x64):
+            raise AssertionError("RPM signer did not select expected package assets")
+
+        directory_source = temp / "directory-source"
+        directory_source.mkdir()
+        (directory_source / RPM_PACKAGES[0]).mkdir()
+        expect_action_failure(
+            lambda: signer.rpm_package_assets(directory_source),
+            "must be a regular file",
+            "RPM signing directory source",
+        )
+
+        empty_source = temp / "empty-source"
+        empty_source.mkdir()
+        (empty_source / RPM_PACKAGES[0]).write_bytes(b"")
+        expect_action_failure(
+            lambda: signer.rpm_package_assets(empty_source),
+            "must not be empty",
+            "RPM signing empty source",
+        )
+
+        oversized_source = temp / "oversized-source"
+        oversized_source.mkdir()
+        oversized_package = oversized_source / RPM_PACKAGES[0]
+        oversized_package.write_bytes(b"rpm fixture\n")
+        expect_constant_failure(
+            signer,
+            "MAX_RPM_PACKAGE_BYTES",
+            max(0, oversized_package.stat().st_size - 1),
+            lambda: signer.rpm_package_assets(oversized_source),
+            "is too large",
+            "RPM signing source size bound",
+        )
+
+        aggregate_source = temp / "aggregate-source"
+        aggregate_source.mkdir()
+        aggregate_x64 = aggregate_source / RPM_PACKAGES[0]
+        aggregate_arm64 = aggregate_source / RPM_PACKAGES[1]
+        aggregate_x64.write_bytes(b"rpm x64 fixture\n")
+        aggregate_arm64.write_bytes(b"rpm arm64 fixture\n")
+        expect_constant_failure(
+            signer,
+            "MAX_TOTAL_RPM_PACKAGE_BYTES",
+            aggregate_arm64.stat().st_size,
+            lambda: signer.rpm_package_assets(aggregate_source),
+            "RPM package assets exceed",
+            "RPM signing aggregate source size bound",
+        )
+
+        sidecar_directory = temp / "sidecar-directory"
+        sidecar_directory.mkdir()
+        sidecar_package = sidecar_directory / RPM_PACKAGES[0]
+        sidecar_package.write_bytes(b"rpm fixture\n")
+        sidecar_package.with_name(f"{sidecar_package.name}.sha256").mkdir()
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(sidecar_package, "generated RPM package"),
+            "must be a regular file",
+            "RPM signing sidecar directory",
+        )
+
+        sidecar_output_directory = temp / "sidecar-output-directory"
+        sidecar_output_directory.mkdir()
+        output_package = sidecar_output_directory / RPM_PACKAGES[0]
+        output_package.write_bytes(b"rpm fixture\n")
+        output_package.with_name(f"{output_package.name}.sha256").mkdir()
+        expect_action_failure(
+            lambda: signer.write_sha256_sidecar(output_package),
+            "must be a regular file",
+            "RPM signing sidecar output directory",
+        )
+
+        symlink_source = temp / "symlink-source"
+        symlink_source.mkdir()
+        real_source = symlink_source / "real.rpm"
+        linked_source = symlink_source / RPM_PACKAGES[0]
+        real_source.write_bytes(b"rpm fixture\n")
+        if try_symlink(linked_source, real_source):
+            expect_action_failure(
+                lambda: signer.rpm_package_assets(symlink_source),
+                "must not be a symlink",
+                "RPM signing symlink source",
+            )
+
+        symlink_sidecar = temp / "symlink-sidecar"
+        symlink_sidecar.mkdir()
+        symlink_package = symlink_sidecar / RPM_PACKAGES[0]
+        symlink_target = symlink_sidecar / "real.sha256"
+        symlink_output = symlink_package.with_name(f"{symlink_package.name}.sha256")
+        symlink_package.write_bytes(b"rpm fixture\n")
+        write_checksum(symlink_package, sidecar=symlink_target)
+        if try_symlink(symlink_output, symlink_target):
+            expect_action_failure(
+                lambda: signer.verify_sha256_sidecar(
+                    symlink_package,
+                    "generated RPM package",
+                ),
+                "must not be a symlink",
+                "RPM signing symlink sidecar",
+            )
+            expect_action_failure(
+                lambda: signer.write_sha256_sidecar(symlink_package),
+                "must not be a symlink",
+                "RPM signing symlink sidecar output",
+            )
+
+
+def load_signer():
+    script_dir = ROOT / "scripts"
+    sys.path.insert(0, str(script_dir))
+    try:
+        spec = importlib.util.spec_from_file_location("sign_rpm_packages", SIGNER)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("could not load RPM package signer")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        try:
+            sys.path.remove(str(script_dir))
+        except ValueError:
+            pass
+
+
+def expect_constant_failure(
+    signer,
+    constant_name: str,
+    value: int,
+    action,
+    expected: str,
+    label: str,
+) -> None:
+    original = getattr(signer, constant_name)
+    setattr(signer, constant_name, value)
+    try:
+        expect_action_failure(action, expected, label)
+    finally:
+        setattr(signer, constant_name, original)
+
+
+def expect_action_failure(action, expected: str, label: str) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        message = str(exc)
+        if expected in message:
+            return
+        raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+    raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def try_symlink(link: Path, target: Path) -> bool:
+    try:
+        link.symlink_to(target)
+        return True
+    except (NotImplementedError, OSError):
+        return False
+
+
+def write_checksum(
+    path: Path,
+    archive_name: str | None = None,
+    *,
+    sidecar: Path | None = None,
+) -> str:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    path.with_name(f"{path.name}.sha256").write_text(
+    (sidecar or path.with_name(f"{path.name}.sha256")).write_text(
         f"{digest}  {archive_name or path.name}\n",
         encoding="ascii",
         newline="\n",

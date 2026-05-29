@@ -9,9 +9,11 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from linux_gpg_common import (
@@ -23,10 +25,24 @@ from linux_gpg_common import (
 
 MAX_SIGNING_KEY_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
+MAX_RPM_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_TOTAL_RPM_PACKAGE_BYTES = 4 * 1024 * 1024 * 1024
 HASH_CHUNK_BYTES = 1024 * 1024
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
 RPM_PACKAGE_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-1\.(x86_64|aarch64)\.rpm$")
 SIGNATURE_OUTPUT_RE = re.compile(r"(signature|pgp|rsa|dsa|openpgp)", re.IGNORECASE)
+
+
+@dataclass
+class RpmPackageBudget:
+    total_bytes: int = 0
+
+    def add(self, size: int) -> None:
+        self.total_bytes += size
+        if self.total_bytes > MAX_TOTAL_RPM_PACKAGE_BYTES:
+            raise SystemExit(
+                f"RPM package assets exceed {MAX_TOTAL_RPM_PACKAGE_BYTES} bytes"
+            )
 
 
 def main() -> int:
@@ -34,6 +50,12 @@ def main() -> int:
     dist = args.dist.resolve()
     if not dist.exists() or not dist.is_dir():
         raise SystemExit(f"release dist directory does not exist: {dist}")
+
+    packages = rpm_package_assets(dist)
+    if not packages:
+        raise SystemExit(f"no generated conU RPM package assets found in {dist}")
+    for package in packages:
+        verify_sha256_sidecar(package, "generated RPM package")
 
     gpg = shutil.which("gpg")
     if gpg is None:
@@ -51,12 +73,6 @@ def main() -> int:
     if not key_id:
         raise SystemExit(f"{args.key_id_env} must not be empty")
     expected_fingerprint = read_expected_fingerprint(os.environ, args.fingerprint_env)
-
-    packages = rpm_package_assets(dist)
-    if not packages:
-        raise SystemExit(f"no generated conU RPM package assets found in {dist}")
-    for package in packages:
-        verify_sha256_sidecar(package, "generated RPM package")
 
     with tempfile.TemporaryDirectory(prefix="conu-rpm-package-signing-") as temp_text:
         temp = Path(temp_text)
@@ -81,7 +97,9 @@ def main() -> int:
         warm_gpg_agent(gpg, env, key_id, passphrase, temp)
 
         for package in packages:
+            validate_rpm_package(package)
             sign_rpm_package(signer, env, gpg, gnupg_home, key_id, package)
+            validate_rpm_package(package)
             verify_rpm_signature(verifier, env, rpmdb, package)
             write_sha256_sidecar(package)
 
@@ -132,19 +150,23 @@ def read_secret_key(name: str) -> bytes:
 
 
 def rpm_package_assets(dist: Path) -> tuple[Path, ...]:
-    return tuple(
-        path
-        for path in sorted(dist.iterdir(), key=lambda candidate: candidate.name)
-        if path.is_file() and RPM_PACKAGE_RE.fullmatch(path.name)
-    )
+    packages: list[Path] = []
+    budget = RpmPackageBudget()
+    for path in sorted(dist.iterdir(), key=lambda candidate: candidate.name):
+        if RPM_PACKAGE_RE.fullmatch(path.name):
+            validate_rpm_package(path, budget)
+            packages.append(path)
+    return tuple(packages)
 
 
 def verify_sha256_sidecar(path: Path, label: str) -> str:
     sidecar = path.with_name(f"{path.name}.sha256")
-    if not sidecar.exists() or not sidecar.is_file():
-        raise SystemExit(f"missing SHA-256 sidecar for {label}: {path.name}")
-    if sidecar.stat().st_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"SHA-256 sidecar is too large for {label}: {path.name}")
+    validate_regular_file(
+        sidecar,
+        f"SHA-256 sidecar for {label} {path.name}",
+        max_bytes=MAX_CHECKSUM_BYTES,
+        allow_empty=False,
+    )
     try:
         checksum_text = sidecar.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -163,11 +185,85 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
 
 
 def write_sha256_sidecar(path: Path) -> None:
-    path.with_name(f"{path.name}.sha256").write_text(
-        f"{sha256_file(path)}  {path.name}\n",
-        encoding="ascii",
-        newline="\n",
+    sidecar = path.with_name(f"{path.name}.sha256")
+    if sidecar.exists() or sidecar.is_symlink():
+        validate_regular_file(
+            sidecar,
+            f"SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=True,
+        )
+    text = f"{sha256_file(path)}  {path.name}\n"
+    temp_path = temporary_sibling_path(sidecar)
+    try:
+        temp_path.write_text(text, encoding="ascii", newline="\n")
+        temp_path.chmod(0o644)
+        validate_regular_file(
+            temp_path,
+            f"temporary SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=False,
+        )
+        os.replace(temp_path, sidecar)
+        validate_regular_file(
+            sidecar,
+            f"SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=False,
+        )
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def validate_rpm_package(
+    path: Path,
+    budget: RpmPackageBudget | None = None,
+) -> int:
+    size = validate_regular_file(
+        path,
+        f"RPM package asset {path.name}",
+        max_bytes=MAX_RPM_PACKAGE_BYTES,
+        allow_empty=False,
     )
+    if budget is not None:
+        budget.add(size)
+    return size
+
+
+def validate_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"missing {label}: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    size = metadata.st_size
+    if not allow_empty and size == 0:
+        raise SystemExit(f"{label} must not be empty: {path.name}")
+    if size > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    return size
+
+
+def temporary_sibling_path(path: Path) -> Path:
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        return Path(handle.name)
 
 
 def sha256_file(path: Path) -> str:
