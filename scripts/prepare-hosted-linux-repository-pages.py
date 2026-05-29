@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import stat
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -22,7 +23,9 @@ HASH_CHUNK_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 MAX_SIGNATURE_BYTES = 1024 * 1024
 MAX_SITE_ZIP_BYTES = 2 * 1024 * 1024 * 1024
+MAX_SITE_MEMBER_BYTES = 512_000_000
 MAX_SITE_MEMBERS = 10000
+MAX_SITE_TOTAL_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
 CACHE_CONTROL_RULES = (
@@ -211,6 +214,7 @@ def prepare_output_dir(output_dir: Path) -> None:
 
 def read_site_members(site_zip: Path) -> dict[str, bytes]:
     members: dict[str, bytes] = {}
+    total_uncompressed = 0
     try:
         with zipfile.ZipFile(site_zip) as archive:
             infos = archive.infolist()
@@ -218,11 +222,16 @@ def read_site_members(site_zip: Path) -> dict[str, bytes]:
                 raise SystemExit(f"{site_zip.name} has too many members for Pages deployment")
             for info in infos:
                 name = normalize_zip_path(info.filename)
-                if info.is_dir():
+                if not validate_zip_member_for_read(site_zip.name, info, name):
                     continue
-                reject_unsupported_member_type(info, name)
                 if name in members:
                     raise SystemExit(f"{site_zip.name} contains duplicate zip member: {name}")
+                total_uncompressed += info.file_size
+                if total_uncompressed > MAX_SITE_TOTAL_UNCOMPRESSED_BYTES:
+                    raise SystemExit(
+                        f"{site_zip.name} uncompressed contents exceed "
+                        f"{MAX_SITE_TOTAL_UNCOMPRESSED_BYTES} bytes"
+                    )
                 members[name] = archive.read(info)
     except zipfile.BadZipFile as exc:
         raise SystemExit(f"{site_zip.name} is not a readable zip archive") from exc
@@ -244,11 +253,22 @@ def normalize_zip_path(raw_name: str) -> str:
     return "/".join(parts)
 
 
-def reject_unsupported_member_type(info: zipfile.ZipInfo, name: str) -> None:
-    mode = (info.external_attr >> 16) & 0o177777
-    file_type = mode & 0o170000
-    if file_type not in (0, 0o100000):
+def validate_zip_member_for_read(site_name: str, info: zipfile.ZipInfo, name: str) -> bool:
+    if info.flag_bits & 0x1:
+        raise SystemExit(f"{site_name} contains encrypted zip member: {name}")
+    file_type = (info.external_attr >> 16) & 0o170000
+    is_directory = info.is_dir() or file_type == stat.S_IFDIR
+    if file_type == stat.S_IFLNK:
+        raise SystemExit(f"hosted repository site contains unsupported link member: {name}")
+    if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
         raise SystemExit(f"hosted repository site contains unsupported member type: {name}")
+    if is_directory:
+        if info.file_size != 0:
+            raise SystemExit(f"{site_name} contains directory member with data: {name}")
+        return False
+    if info.file_size > MAX_SITE_MEMBER_BYTES:
+        raise SystemExit(f"{site_name} member is too large for Pages deployment: {name}")
+    return True
 
 
 def validate_site_members(site_name: str, version: str, members: dict[str, bytes]) -> None:

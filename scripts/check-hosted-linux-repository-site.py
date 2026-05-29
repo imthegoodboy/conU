@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -96,6 +97,53 @@ def main() -> int:
         assert_sha256_sidecar(site)
         assert_site_bundle(site, hosted_bundle)
 
+        site_generator = load_site_generator()
+        expect_zip_bound_failure(
+            site_generator,
+            hosted_bundle,
+            "MAX_ZIP_MEMBER_BYTES",
+            1,
+            "zip member is too large",
+            "hosted bundle member size bound",
+        )
+        expect_zip_bound_failure(
+            site_generator,
+            hosted_bundle,
+            "MAX_ZIP_MEMBERS",
+            1,
+            "contains more than",
+            "hosted bundle member count bound",
+        )
+        expect_zip_bound_failure(
+            site_generator,
+            hosted_bundle,
+            "MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES",
+            1,
+            "uncompressed ZIP contents exceed",
+            "hosted bundle total size bound",
+        )
+
+        encrypted_bundle = temp / "encrypted-hosted-bundle.zip"
+        shutil.copy2(hosted_bundle, encrypted_bundle)
+        mark_zip_member_encrypted(encrypted_bundle, "apt/Packages")
+        expect_action_failure(
+            lambda: site_generator.read_hosted_bundle(encrypted_bundle),
+            "encrypted zip member",
+            "encrypted hosted bundle member",
+        )
+
+        unsupported_bundle = temp / "unsupported-hosted-bundle.zip"
+        with zipfile.ZipFile(unsupported_bundle, "w", compression=zipfile.ZIP_STORED) as archive:
+            info = zipfile.ZipInfo("README.txt", ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = (stat.S_IFCHR | 0o644) << 16
+            archive.writestr(info, b"device\n")
+        expect_action_failure(
+            lambda: site_generator.read_hosted_bundle(unsupported_bundle),
+            "unsupported zip member",
+            "unsupported hosted bundle member",
+        )
+
         run_generator(dist, repeat, BASE_URL)
         if site.read_bytes() != (repeat / SITE_BUNDLE).read_bytes():
             raise AssertionError("hosted Linux repository site artifact was not deterministic")
@@ -156,6 +204,19 @@ def load_bundle_checker():
     return module
 
 
+def load_site_generator():
+    spec = importlib.util.spec_from_file_location(
+        "generate_hosted_linux_repository_site",
+        SITE_GENERATOR,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load hosted Linux repository site generator")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def run_generator(dist: Path, output: Path, base_url: str) -> str:
     return subprocess.run(
         [
@@ -201,6 +262,37 @@ def expect_failure(description: str, dist: Path, base_url: str, expected: str) -
         raise AssertionError(
             f"{description} failed with {failed.stdout!r}, expected {expected!r}"
         )
+
+
+def expect_zip_bound_failure(
+    site_generator,
+    archive: Path,
+    constant_name: str,
+    value: int,
+    expected: str,
+    label: str,
+) -> None:
+    original = getattr(site_generator, constant_name)
+    setattr(site_generator, constant_name, value)
+    try:
+        expect_action_failure(
+            lambda: site_generator.read_hosted_bundle(archive),
+            expected,
+            label,
+        )
+    finally:
+        setattr(site_generator, constant_name, original)
+
+
+def expect_action_failure(action, expected: str, label: str) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        message = str(exc)
+        if expected in message:
+            return
+        raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+    raise AssertionError(f"{label}: expected failure containing {expected!r}")
 
 
 def assert_site_bundle(site: Path, hosted_bundle: Path) -> None:
@@ -413,6 +505,38 @@ def write_zip_bytes(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
     info.compress_type = zipfile.ZIP_STORED
     info.external_attr = 0o644 << 16
     archive.writestr(info, data)
+
+
+def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
+    data = bytearray(path.read_bytes())
+    target = member_name.encode("utf-8")
+    offset = 0
+    while offset + 4 <= len(data):
+        signature = int.from_bytes(data[offset : offset + 4], "little")
+        if signature == 0x04034B50:
+            name_length = int.from_bytes(data[offset + 26 : offset + 28], "little")
+            extra_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            name_start = offset + 30
+            name_end = name_start + name_length
+            compressed_size = int.from_bytes(data[offset + 18 : offset + 22], "little")
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 6 : offset + 8], "little") | 0x1
+                data[offset + 6 : offset + 8] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + compressed_size
+            continue
+        if signature == 0x02014B50:
+            name_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            extra_length = int.from_bytes(data[offset + 30 : offset + 32], "little")
+            comment_length = int.from_bytes(data[offset + 32 : offset + 34], "little")
+            name_start = offset + 46
+            name_end = name_start + name_length
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 8 : offset + 10], "little") | 0x1
+                data[offset + 8 : offset + 10] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + comment_length
+            continue
+        offset += 1
+    path.write_bytes(data)
 
 
 if __name__ == "__main__":

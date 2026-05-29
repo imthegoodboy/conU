@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,9 @@ from linux_gpg_common import (
 CHECKSUM_RE = re.compile(r"^([0-9a-f]{64})  ([^ \t\r\n]+)\n$")
 MAX_SIGNING_KEY_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
+MAX_ZIP_MEMBER_BYTES = 512_000_000
+MAX_ZIP_MEMBERS = 10_000
+MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
 HASH_CHUNK_BYTES = 1024 * 1024
 ZIP_SOURCE_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 APT_METADATA_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-apt-repository-metadata\.zip$")
@@ -240,18 +244,46 @@ def sign_rpm_bundle(
 
 def read_zip_members(bundle: Path) -> dict[str, bytes]:
     members: dict[str, bytes] = {}
+    total_uncompressed = 0
     try:
         with zipfile.ZipFile(bundle) as archive:
-            for member in archive.infolist():
+            infos = archive.infolist()
+            if len(infos) > MAX_ZIP_MEMBERS:
+                raise SystemExit(f"{bundle.name} contains more than {MAX_ZIP_MEMBERS} members")
+            for member in infos:
                 name = normalize_zip_path(member.filename)
-                if member.is_dir():
+                if not validate_zip_member_for_read(bundle.name, member, name):
                     continue
                 if name in members:
                     raise SystemExit(f"{bundle.name} contains duplicate zip member: {name}")
+                total_uncompressed += member.file_size
+                if total_uncompressed > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES:
+                    raise SystemExit(
+                        f"{bundle.name} uncompressed ZIP contents exceed "
+                        f"{MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} bytes"
+                    )
                 members[name] = archive.read(member)
     except zipfile.BadZipFile as exc:
         raise SystemExit(f"{bundle.name} is not a readable zip archive") from exc
     return members
+
+
+def validate_zip_member_for_read(bundle_name: str, member: zipfile.ZipInfo, name: str) -> bool:
+    if member.flag_bits & 0x1:
+        raise SystemExit(f"{bundle_name} contains encrypted zip member: {name}")
+    file_type = (member.external_attr >> 16) & 0o170000
+    is_directory = member.is_dir() or file_type == stat.S_IFDIR
+    if file_type == stat.S_IFLNK:
+        raise SystemExit(f"{bundle_name} contains unsupported link member: {name}")
+    if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+        raise SystemExit(f"{bundle_name} contains unsupported zip member: {name}")
+    if is_directory:
+        if member.file_size != 0:
+            raise SystemExit(f"{bundle_name} contains directory member with data: {name}")
+        return False
+    if member.file_size > MAX_ZIP_MEMBER_BYTES:
+        raise SystemExit(f"{bundle_name} zip member is too large: {name}")
+    return True
 
 
 def normalize_zip_path(raw_name: str) -> str:
