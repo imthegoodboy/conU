@@ -109,8 +109,9 @@ def main() -> int:
     version = version_from_site_name(site_zip.name)
     verify_sha256_sidecar(site_zip, "hosted Linux repository site")
     require_detached_signature(site_zip)
-    output_dir = args.output_dir.resolve()
+    output_dir = args.output_dir.expanduser()
     prepare_output_dir(output_dir)
+    output_dir = output_dir.resolve()
     members = read_site_members(site_zip)
     validate_site_members(site_zip.name, version, members)
     extract_members(output_dir, members)
@@ -139,25 +140,44 @@ def parse_args() -> argparse.Namespace:
 
 
 def find_site_zip(site: Path, version: str | None) -> Path:
-    path = site.resolve()
+    path = site.expanduser()
+    if path.is_symlink():
+        raise SystemExit(f"hosted Linux repository site input must not be a symlink: {site}")
     if path.is_file():
         if version is not None and f"conu-{version}-hosted-linux-repository-site.zip" != path.name:
             raise SystemExit(f"site ZIP {path.name} does not match requested version {version}")
         version_from_site_name(path.name)
+        validate_regular_file(
+            path,
+            "hosted Linux repository site ZIP",
+            max_bytes=MAX_SITE_ZIP_BYTES,
+        )
         return path
     if not path.exists() or not path.is_dir():
         raise SystemExit(f"hosted Linux repository site input does not exist: {site}")
     if version is not None:
         candidate = path / f"conu-{version}-hosted-linux-repository-site.zip"
-        if not candidate.exists() or not candidate.is_file():
-            raise SystemExit(f"missing hosted Linux repository site ZIP: {candidate.name}")
+        validate_regular_file(
+            candidate,
+            "hosted Linux repository site ZIP",
+            max_bytes=MAX_SITE_ZIP_BYTES,
+        )
         return candidate
-    candidates = sorted(item for item in path.glob("conu-*-hosted-linux-repository-site.zip") if item.is_file())
+    candidates = sorted(
+        item
+        for item in path.glob("conu-*-hosted-linux-repository-site.zip")
+        if item.is_file() or item.is_symlink()
+    )
     if len(candidates) != 1:
         raise SystemExit(
             f"expected exactly one hosted Linux repository site ZIP in {path}, found {len(candidates)}"
         )
     version_from_site_name(candidates[0].name)
+    validate_regular_file(
+        candidates[0],
+        "hosted Linux repository site ZIP",
+        max_bytes=MAX_SITE_ZIP_BYTES,
+    )
     return candidates[0]
 
 
@@ -169,13 +189,13 @@ def version_from_site_name(name: str) -> str:
 
 
 def verify_sha256_sidecar(path: Path, label: str) -> str:
-    if path.stat().st_size > MAX_SITE_ZIP_BYTES:
-        raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+    validate_regular_file(path, label, max_bytes=MAX_SITE_ZIP_BYTES)
     sidecar = path.with_name(f"{path.name}.sha256")
-    if not sidecar.exists() or not sidecar.is_file():
-        raise SystemExit(f"missing SHA-256 sidecar for {label}: {path.name}")
-    if sidecar.stat().st_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"SHA-256 sidecar is too large for {label}: {path.name}")
+    validate_regular_file(
+        sidecar,
+        f"SHA-256 sidecar for {label}",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
     try:
         checksum_text = sidecar.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -194,10 +214,11 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
 
 def require_detached_signature(path: Path) -> None:
     signature = path.with_name(f"{path.name}.asc")
-    if not signature.exists() or not signature.is_file():
-        raise SystemExit(f"missing detached signature for hosted Linux repository site: {signature.name}")
-    if signature.stat().st_size > MAX_SIGNATURE_BYTES:
-        raise SystemExit(f"detached signature is too large: {signature.name}")
+    validate_regular_file(
+        signature,
+        "detached signature for hosted Linux repository site",
+        max_bytes=MAX_SIGNATURE_BYTES,
+    )
     try:
         signature_text = signature.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -207,9 +228,29 @@ def require_detached_signature(path: Path) -> None:
 
 
 def prepare_output_dir(output_dir: Path) -> None:
+    if output_dir.is_symlink():
+        raise SystemExit(f"Pages output directory must not be a symlink: {output_dir}")
+    if output_dir.exists() and not output_dir.is_dir():
+        raise SystemExit(f"Pages output path must be a directory: {output_dir}")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise SystemExit(f"Pages output directory must be empty: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def validate_regular_file(path: Path, label: str, *, max_bytes: int) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(f"missing {label}: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"{label} could not be inspected: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    if metadata.st_size > max_bytes:
+        raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+    return metadata.st_size
 
 
 def read_site_members(site_zip: Path) -> dict[str, bytes]:
