@@ -6,6 +6,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -185,6 +187,14 @@ def expect_failure_with_limit(
         setattr(module, limit_name, original)
 
 
+def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
+    try:
+        os.symlink(target, link, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        return False
+    return True
+
+
 def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
     data = bytearray(path.read_bytes())
     target = member_name.encode("utf-8")
@@ -242,6 +252,145 @@ def main() -> int:
         second = assert_bundle(preparer, generated, repeat_output)
         if first.read_bytes() != second.read_bytes():
             raise AssertionError("package-manager submission bundle was not deterministic")
+
+        symlink_dist = temp / "symlink-dist"
+        if try_symlink(generated, symlink_dist, target_is_directory=True):
+            expect_failure(
+                "symlinked submission source directory",
+                lambda: preparer.prepare_submission_bundle(
+                    symlink_dist,
+                    temp / "symlink-dist-out",
+                    VERSION,
+                    require_rpm_assets=True,
+                    require_repository_metadata=True,
+                    require_linux_signatures=True,
+                ),
+                "package-manager submission source directory must not be a symlink",
+            )
+
+        symlink_source = temp / "symlink-source"
+        shutil.copytree(generated, symlink_source)
+        source_target = temp / "symlink-source-target.deb"
+        shutil.copy2(symlink_source / DEBIAN_PACKAGES[0], source_target)
+        (symlink_source / DEBIAN_PACKAGES[0]).unlink()
+        if try_symlink(source_target, symlink_source / DEBIAN_PACKAGES[0]):
+            expect_failure(
+                "symlinked submission source",
+                lambda: preparer.prepare_submission_bundle(
+                    symlink_source,
+                    temp / "symlink-source-out",
+                    VERSION,
+                    require_rpm_assets=True,
+                    require_repository_metadata=True,
+                    require_linux_signatures=True,
+                ),
+                "package-manager submission source must not be a symlink",
+            )
+
+        symlink_checksum = temp / "symlink-checksum-source"
+        shutil.copytree(generated, symlink_checksum)
+        checksum_target = temp / "symlink-checksum-target.sha256"
+        shutil.copy2(symlink_checksum / f"{DEBIAN_PACKAGES[0]}.sha256", checksum_target)
+        (symlink_checksum / f"{DEBIAN_PACKAGES[0]}.sha256").unlink()
+        if try_symlink(checksum_target, symlink_checksum / f"{DEBIAN_PACKAGES[0]}.sha256"):
+            expect_failure(
+                "symlinked submission checksum source",
+                lambda: preparer.prepare_submission_bundle(
+                    symlink_checksum,
+                    temp / "symlink-checksum-source-out",
+                    VERSION,
+                    require_rpm_assets=True,
+                    require_repository_metadata=True,
+                    require_linux_signatures=True,
+                ),
+                "package-manager submission source must not be a symlink",
+            )
+
+        symlink_output_target = temp / "symlink-output-target"
+        symlink_output_target.mkdir()
+        symlink_output = temp / "symlink-output"
+        if try_symlink(symlink_output_target, symlink_output, target_is_directory=True):
+            expect_failure(
+                "symlinked submission output directory",
+                lambda: preparer.prepare_submission_bundle(
+                    generated,
+                    symlink_output,
+                    VERSION,
+                    require_rpm_assets=True,
+                    require_repository_metadata=True,
+                    require_linux_signatures=True,
+                ),
+                "package-manager submission output directory must not be a symlink",
+            )
+
+        bundle_name = preparer.submission_bundle_filename(VERSION)
+        symlink_output_bundle = temp / "symlink-output-bundle"
+        symlink_output_bundle.mkdir()
+        bundle_target = temp / "symlink-output-bundle-target.zip"
+        bundle_target.write_bytes(b"existing bundle\n")
+        if try_symlink(bundle_target, symlink_output_bundle / bundle_name):
+            expect_failure(
+                "symlinked submission output bundle",
+                lambda: preparer.prepare_submission_bundle(
+                    generated,
+                    symlink_output_bundle,
+                    VERSION,
+                    require_rpm_assets=True,
+                    require_repository_metadata=True,
+                    require_linux_signatures=True,
+                ),
+                "package-manager submission bundle output must not be a symlink",
+            )
+
+        directory_output_bundle = temp / "directory-output-bundle"
+        directory_output_bundle.mkdir()
+        (directory_output_bundle / bundle_name).mkdir()
+        expect_failure(
+            "directory submission output bundle",
+            lambda: preparer.prepare_submission_bundle(
+                generated,
+                directory_output_bundle,
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "package-manager submission bundle output must be a regular file",
+        )
+
+        symlink_output_sidecar = temp / "symlink-output-sidecar"
+        symlink_output_sidecar.mkdir()
+        sidecar_target = temp / "symlink-output-sidecar-target.sha256"
+        sidecar_target.write_text("", encoding="ascii")
+        if try_symlink(sidecar_target, symlink_output_sidecar / f"{bundle_name}.sha256"):
+            expect_failure(
+                "symlinked submission output checksum",
+                lambda: preparer.prepare_submission_bundle(
+                    generated,
+                    symlink_output_sidecar,
+                    VERSION,
+                    require_rpm_assets=True,
+                    require_repository_metadata=True,
+                    require_linux_signatures=True,
+                ),
+                "package-manager submission bundle SHA-256 sidecar output must not be a symlink",
+            )
+
+        directory_output_sidecar = temp / "directory-output-sidecar"
+        directory_output_sidecar.mkdir()
+        (directory_output_sidecar / f"{bundle_name}.sha256").mkdir()
+        expect_failure(
+            "directory submission output checksum",
+            lambda: preparer.prepare_submission_bundle(
+                generated,
+                directory_output_sidecar,
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "package-manager submission bundle SHA-256 sidecar output must be a regular file",
+        )
 
         expect_failure_with_limit(
             preparer,

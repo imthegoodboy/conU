@@ -22,6 +22,8 @@ HASH_CHUNK_BYTES = 1024 * 1024
 MAX_TEXT_BYTES = 2 * 1024 * 1024
 MAX_BINARY_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_SUBMISSION_BUNDLE_BYTES = MAX_TOTAL_SOURCE_BYTES + MAX_TEXT_BYTES + (1024 * 1024)
+MAX_CHECKSUM_BYTES = 4096
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 DEBIAN_ARCHES = ("amd64", "arm64")
 RPM_ARCHES = ("x86_64", "aarch64")
@@ -81,12 +83,9 @@ class SubmissionBundleReport:
 
 def main() -> int:
     args = parse_args()
-    dist = args.dist.resolve()
-    output_dir = args.output_dir.resolve()
+    dist = args.dist.expanduser()
+    output_dir = args.output_dir.expanduser()
     version = validate_version(args.version or read_repo_version())
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"package-manager output directory does not exist: {dist}")
-
     report = prepare_submission_bundle(
         dist,
         output_dir,
@@ -274,6 +273,11 @@ def prepare_submission_bundle(
     require_repository_metadata: bool = False,
     require_linux_signatures: bool = False,
 ) -> SubmissionBundleReport:
+    validate_input_directory(dist, "package-manager submission source directory")
+    dist = dist.resolve()
+    prepare_output_directory(output_dir, "package-manager submission output directory")
+    output_dir = output_dir.resolve()
+
     entries = required_and_optional_entries(
         version,
         require_rpm_assets=require_rpm_assets,
@@ -284,12 +288,10 @@ def prepare_submission_bundle(
     total_source_bytes = 0
     for entry in entries:
         source = dist / entry.source_name
-        if not source.exists():
+        if not source.exists() and not source.is_symlink():
             if entry.required:
                 raise SystemExit(f"missing package-manager submission source: {entry.source_name}")
             continue
-        if not source.is_file():
-            raise SystemExit(f"package-manager submission source is not a file: {entry.source_name}")
         size = validate_entry_source(source, entry, dist)
         total_source_bytes += size
         if total_source_bytes > MAX_TOTAL_SOURCE_BYTES:
@@ -303,16 +305,27 @@ def prepare_submission_bundle(
     readme = render_readme(version, [prepared.entry.archive_name for prepared in selected])
     assert_safe_text(readme, "README.txt", dist)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     bundle = output_dir / submission_bundle_filename(version)
+    validate_output_file(bundle, "package-manager submission bundle")
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_STORED) as archive:
         write_zip_text(archive, "README.txt", readme)
         for prepared in selected:
             write_zip_file(archive, prepared.entry.archive_name, prepared.source, prepared.size)
+    validate_regular_file(
+        bundle,
+        "package-manager submission bundle",
+        max_bytes=MAX_SUBMISSION_BUNDLE_BYTES,
+    )
 
     checksum = sha256_file(bundle)
     checksum_path = bundle.with_name(f"{bundle.name}.sha256")
+    validate_output_file(checksum_path, "package-manager submission bundle SHA-256 sidecar")
     checksum_path.write_text(f"{checksum}  {bundle.name}\n", encoding="ascii", newline="\n")
+    validate_regular_file(
+        checksum_path,
+        "package-manager submission bundle SHA-256 sidecar",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
     entries_written = ("README.txt", *(prepared.entry.archive_name for prepared in selected))
     return SubmissionBundleReport(
         version=version,
@@ -324,11 +337,16 @@ def prepare_submission_bundle(
 
 
 def validate_entry_source(source: Path, entry: BundleEntry, dist: Path) -> int:
-    size = source.stat().st_size
+    size = validate_regular_file(
+        source,
+        "package-manager submission source",
+        display_name=entry.source_name,
+        max_bytes=MAX_BINARY_BYTES,
+        missing_message=f"missing package-manager submission source: {entry.source_name}",
+        non_regular_message=f"package-manager submission source is not a file: {entry.source_name}",
+    )
     if size <= 0:
         raise SystemExit(f"package-manager submission source is empty: {entry.source_name}")
-    if size > MAX_BINARY_BYTES:
-        raise SystemExit(f"package-manager submission source is too large: {entry.source_name}")
     if entry.kind == "checksum":
         validate_checksum_source(source, dist)
     elif entry.kind == "signature":
@@ -449,8 +467,14 @@ def validate_checksum_source(path: Path, dist: Path) -> None:
     if target_name != expected_target:
         raise SystemExit(f"{path.name} names wrong target: {target_name}")
     target = dist / target_name
-    if not target.exists() or not target.is_file():
-        raise SystemExit(f"{path.name} target is missing: {target_name}")
+    validate_regular_file(
+        target,
+        f"{path.name} target",
+        display_name=target_name,
+        max_bytes=MAX_BINARY_BYTES,
+        missing_message=f"{path.name} target is missing: {target_name}",
+        non_regular_message=f"{path.name} target is not a regular file: {target_name}",
+    )
     expected = match.group(1).lower()
     actual = sha256_file(target)
     if expected != actual:
@@ -460,8 +484,14 @@ def validate_checksum_source(path: Path, dist: Path) -> None:
 def validate_signature_source(source: Path, label: str, dist: Path) -> None:
     target_name = source.name[: -len(".asc")]
     target = dist / target_name
-    if not target.exists() or not target.is_file():
-        raise SystemExit(f"{label} signed target is missing: {target_name}")
+    validate_regular_file(
+        target,
+        f"{label} signed target",
+        display_name=target_name,
+        max_bytes=MAX_BINARY_BYTES,
+        missing_message=f"{label} signed target is missing: {target_name}",
+        non_regular_message=f"{label} signed target is not a regular file: {target_name}",
+    )
     text = read_ascii_text(source, label)
     if "BEGIN PGP SIGNATURE" not in text or "END PGP SIGNATURE" not in text:
         raise SystemExit(f"{label} is not an armored detached PGP signature")
@@ -502,6 +532,58 @@ def normalize_archive_path(raw_name: str) -> str:
     if path.is_absolute() or ".." in parts or not parts:
         raise SystemExit(f"unsafe package-manager submission archive path: {raw_name}")
     return "/".join(parts)
+
+
+def validate_input_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+
+
+def prepare_output_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f"{label} must be a directory: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    display_name: str | None = None,
+    missing_message: str | None = None,
+    non_regular_message: str | None = None,
+) -> int:
+    display = display_name or path.name
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {display}")
+    if not path.exists():
+        raise SystemExit(missing_message or f"missing {label}: {display}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"{label} could not be inspected: {display}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(non_regular_message or f"{label} must be a regular file: {display}")
+    if metadata.st_size > max_bytes:
+        raise SystemExit(f"{label} is too large: {display}")
+    return metadata.st_size
+
+
+def validate_output_file(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} output must not be a symlink: {path.name}")
+    if path.exists():
+        try:
+            metadata = path.stat()
+        except OSError as exc:
+            raise SystemExit(f"{label} output could not be inspected: {path.name}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
 
 
 def render_readme(version: str, entries: list[str]) -> str:
