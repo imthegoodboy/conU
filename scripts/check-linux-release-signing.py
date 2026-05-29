@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +43,8 @@ UNSIGNED_FIXTURES = (
 
 
 def main() -> int:
+    run_source_selection_checks()
+
     gpg = shutil.which("gpg")
     if gpg is None:
         print("Linux release signing regression skipped: gpg is unavailable")
@@ -227,6 +231,116 @@ def main() -> int:
 
     print("Linux release signing regression checks passed")
     return 0
+
+
+def run_source_selection_checks() -> None:
+    signer = load_signer_module()
+    with tempfile.TemporaryDirectory(prefix="conu-linux-signing-selection-") as temp_text:
+        temp = Path(temp_text)
+        dist = temp / "dist"
+        dist.mkdir()
+
+        asset = dist / SIGNABLE_FIXTURES[0]
+        asset.write_bytes(b"linux asset fixture\n")
+        selected = signer.signable_linux_assets(dist)
+        if selected != (asset,):
+            raise AssertionError("signable asset selection returned unexpected files")
+
+        empty_dist = temp / "empty-dist"
+        empty_dist.mkdir()
+        empty_asset = empty_dist / SIGNABLE_FIXTURES[0]
+        empty_asset.write_bytes(b"")
+        expect_module_failure(
+            "empty signable asset",
+            lambda: signer.signable_linux_assets(empty_dist),
+            "must not be empty",
+        )
+
+        expect_module_failure_with_limit(
+            signer,
+            "signable asset size bound",
+            "MAX_SIGNABLE_ASSET_BYTES",
+            1,
+            lambda: signer.signable_linux_assets(dist),
+            "is too large",
+        )
+
+        expect_module_failure_with_limit(
+            signer,
+            "aggregate signable asset size bound",
+            "MAX_TOTAL_SIGNABLE_ASSET_BYTES",
+            1,
+            lambda: signer.signable_linux_assets(dist),
+            "signable Linux release assets exceed",
+        )
+
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_module_failure(
+                "symlinked signable asset",
+                lambda: signer.validate_signable_asset(
+                    asset,
+                    signer.SignableAssetBudget(),
+                ),
+                "must not be a symlink",
+            )
+
+        signature = dist / f"{asset.name}.asc"
+        signature.write_bytes(b"existing signature\n")
+        signer.prepare_signature_output(signature)
+
+        empty_signature = dist / f"{asset.name}.empty.asc"
+        empty_signature.write_bytes(b"")
+        expect_module_failure(
+            "empty generated signature",
+            lambda: signer.validate_signature_output(empty_signature),
+            "must not be empty",
+        )
+
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_module_failure(
+                "symlinked signature output",
+                lambda: signer.prepare_signature_output(signature),
+                "must not be a symlink",
+            )
+
+
+def load_signer_module():
+    spec = importlib.util.spec_from_file_location("sign_linux_release_assets", SIGNER)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load Linux release signer module")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def expect_module_failure(description: str, action, expected: str) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        rendered = str(exc)
+        if expected not in rendered:
+            raise AssertionError(
+                f"{description} failed with {rendered!r}, expected {expected!r}"
+            ) from exc
+        return
+    raise AssertionError(f"{description} unexpectedly passed")
+
+
+def expect_module_failure_with_limit(
+    signer,
+    description: str,
+    attr: str,
+    value: int,
+    action,
+    expected: str,
+) -> None:
+    original = getattr(signer, attr)
+    setattr(signer, attr, value)
+    try:
+        expect_module_failure(description, action, expected)
+    finally:
+        setattr(signer, attr, original)
 
 
 def create_test_key(gpg: str, home: Path) -> str:

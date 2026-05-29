@@ -8,9 +8,11 @@ import base64
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from linux_gpg_common import (
@@ -21,6 +23,9 @@ from linux_gpg_common import (
 
 
 MAX_SIGNING_KEY_BYTES = 1024 * 1024
+MAX_SIGNABLE_ASSET_BYTES = 2 * 1024 * 1024 * 1024
+MAX_TOTAL_SIGNABLE_ASSET_BYTES = 10 * 1024 * 1024 * 1024
+MAX_DETACHED_SIGNATURE_BYTES = 1024 * 1024
 LINUX_ARCHIVE_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-linux-(x64|arm64)\.tar\.gz$")
 DEBIAN_PACKAGE_RE = re.compile(r"^conu_[0-9A-Za-z.+_~-]+_(amd64|arm64)\.deb$")
 RPM_PACKAGE_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-1\.(x86_64|aarch64)\.rpm$")
@@ -36,6 +41,19 @@ UPDATE_POLICY_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-update-policy\.json$")
 PACKAGE_MANAGER_SUBMISSIONS_RE = re.compile(
     r"^conu-[0-9A-Za-z.+_~-]+-package-manager-submissions\.zip$"
 )
+
+
+@dataclass
+class SignableAssetBudget:
+    total_bytes: int = 0
+
+    def add(self, size: int) -> None:
+        self.total_bytes += size
+        if self.total_bytes > MAX_TOTAL_SIGNABLE_ASSET_BYTES:
+            raise SystemExit(
+                "signable Linux release assets exceed "
+                f"{MAX_TOTAL_SIGNABLE_ASSET_BYTES} bytes"
+            )
 
 
 def main() -> int:
@@ -75,6 +93,7 @@ def main() -> int:
         verify_imported_secret_key_fingerprint(gpg, env, key_id, expected_fingerprint)
         for asset in assets:
             signature = asset.with_name(f"{asset.name}.asc")
+            prepare_signature_output(signature)
             run_gpg(
                 gpg,
                 env,
@@ -93,6 +112,7 @@ def main() -> int:
                 ],
                 input_bytes=(passphrase + "\n").encode("utf-8"),
             )
+            validate_signature_output(signature)
             run_gpg(gpg, env, ["--verify", str(signature), str(asset)])
 
     print(
@@ -186,39 +206,107 @@ def signable_linux_assets(
             "choose only one Linux release asset signing filter at a time"
         )
     assets = []
+    budget = SignableAssetBudget()
     for path in sorted(dist.iterdir(), key=lambda candidate: candidate.name):
-        if not path.is_file():
-            continue
         name = path.name
-        if only_hosted_repository_bundles:
-            if HOSTED_REPOSITORY_RE.fullmatch(name):
-                assets.append(path)
-            continue
-        if only_hosted_repository_sites:
-            if HOSTED_REPOSITORY_SITE_RE.fullmatch(name):
-                assets.append(path)
-            continue
-        if only_update_policies:
-            if UPDATE_POLICY_RE.fullmatch(name):
-                assets.append(path)
-            continue
-        if only_package_manager_submissions:
-            if PACKAGE_MANAGER_SUBMISSIONS_RE.fullmatch(name):
-                assets.append(path)
-            continue
-        if (
-            LINUX_ARCHIVE_RE.fullmatch(name)
-            or DEBIAN_PACKAGE_RE.fullmatch(name)
-            or RPM_PACKAGE_RE.fullmatch(name)
-            or APT_METADATA_RE.fullmatch(name)
-            or RPM_METADATA_RE.fullmatch(name)
-            or HOSTED_REPOSITORY_RE.fullmatch(name)
-            or HOSTED_REPOSITORY_SITE_RE.fullmatch(name)
-            or UPDATE_POLICY_RE.fullmatch(name)
-            or PACKAGE_MANAGER_SUBMISSIONS_RE.fullmatch(name)
+        if is_signable_asset_name(
+            name,
+            only_hosted_repository_bundles=only_hosted_repository_bundles,
+            only_hosted_repository_sites=only_hosted_repository_sites,
+            only_update_policies=only_update_policies,
+            only_package_manager_submissions=only_package_manager_submissions,
         ):
+            validate_signable_asset(path, budget)
             assets.append(path)
     return tuple(assets)
+
+
+def is_signable_asset_name(
+    name: str,
+    *,
+    only_hosted_repository_bundles: bool = False,
+    only_hosted_repository_sites: bool = False,
+    only_update_policies: bool = False,
+    only_package_manager_submissions: bool = False,
+) -> bool:
+    if only_hosted_repository_bundles:
+        return HOSTED_REPOSITORY_RE.fullmatch(name) is not None
+    if only_hosted_repository_sites:
+        return HOSTED_REPOSITORY_SITE_RE.fullmatch(name) is not None
+    if only_update_policies:
+        return UPDATE_POLICY_RE.fullmatch(name) is not None
+    if only_package_manager_submissions:
+        return PACKAGE_MANAGER_SUBMISSIONS_RE.fullmatch(name) is not None
+    return any(
+        pattern.fullmatch(name)
+        for pattern in (
+            LINUX_ARCHIVE_RE,
+            DEBIAN_PACKAGE_RE,
+            RPM_PACKAGE_RE,
+            APT_METADATA_RE,
+            RPM_METADATA_RE,
+            HOSTED_REPOSITORY_RE,
+            HOSTED_REPOSITORY_SITE_RE,
+            UPDATE_POLICY_RE,
+            PACKAGE_MANAGER_SUBMISSIONS_RE,
+        )
+    )
+
+
+def validate_signable_asset(path: Path, budget: SignableAssetBudget) -> int:
+    size = validate_regular_file(
+        path,
+        f"signable Linux release asset {path.name}",
+        max_bytes=MAX_SIGNABLE_ASSET_BYTES,
+        allow_empty=False,
+    )
+    budget.add(size)
+    return size
+
+
+def prepare_signature_output(signature: Path) -> None:
+    if signature.is_symlink():
+        raise SystemExit(f"detached signature output must not be a symlink: {signature.name}")
+    if not signature.exists():
+        return
+    validate_regular_file(
+        signature,
+        f"detached signature output {signature.name}",
+        max_bytes=MAX_DETACHED_SIGNATURE_BYTES,
+        allow_empty=True,
+    )
+
+
+def validate_signature_output(signature: Path) -> int:
+    return validate_regular_file(
+        signature,
+        f"detached signature output {signature.name}",
+        max_bytes=MAX_DETACHED_SIGNATURE_BYTES,
+        allow_empty=False,
+    )
+
+
+def validate_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"missing {label}: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    size = metadata.st_size
+    if not allow_empty and size == 0:
+        raise SystemExit(f"{label} must not be empty: {path.name}")
+    if size > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    return size
 
 
 def run_gpg(
