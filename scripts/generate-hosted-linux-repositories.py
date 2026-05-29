@@ -22,6 +22,8 @@ HASH_CHUNK_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 MAX_SIGNATURE_BYTES = 1024 * 1024
 MAX_PUBLIC_KEY_BYTES = 1024 * 1024
+MAX_RELEASE_ASSET_BYTES = 2 * 1024 * 1024 * 1024
+MAX_HOSTED_BUNDLE_BYTES = 6 * 1024 * 1024 * 1024
 MAX_ZIP_MEMBER_BYTES = 512_000_000
 MAX_ZIP_MEMBERS = 10_000
 MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
@@ -50,15 +52,21 @@ class HostedLinuxAssets:
 def main() -> int:
     args = parse_args()
     version = validate_version(args.version or read_repo_version())
-    dist = args.dist.resolve()
-    output_dir = args.output_dir.resolve()
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"release dist directory does not exist: {dist}")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    dist = args.dist.expanduser()
+    output_dir = args.output_dir.expanduser()
+    validate_input_directory(dist, "release dist directory")
+    prepare_output_directory(output_dir, "hosted repository output directory")
+    dist = dist.resolve()
+    output_dir = output_dir.resolve()
 
     assets = collect_assets(dist, version)
     members = build_hosted_repository_members(assets)
     output = output_dir / hosted_repository_bundle_filename(version)
+    validate_output_file(output, "hosted Linux repository bundle")
+    validate_output_file(
+        output.with_name(f"{output.name}.sha256"),
+        "hosted Linux repository bundle SHA-256 sidecar",
+    )
     write_zip_members(output, members)
     write_sha256_sidecar(output)
     print(f"generated hosted Linux repositories: {output.name}, {output.name}.sha256")
@@ -155,19 +163,19 @@ def collect_assets(dist: Path, version: str) -> HostedLinuxAssets:
     )
 
 
-def required_asset(path: Path, label: str) -> Path:
-    if not path.exists() or not path.is_file():
-        raise SystemExit(f"missing {label}: {path.name}")
+def required_asset(path: Path, label: str, *, max_bytes: int = MAX_RELEASE_ASSET_BYTES) -> Path:
+    validate_regular_file(path, label, max_bytes=max_bytes)
     verify_sha256_sidecar(path, label)
     return path
 
 
 def require_detached_signature(path: Path) -> Path:
     signature = path.with_name(f"{path.name}.asc")
-    if not signature.exists() or not signature.is_file():
-        raise SystemExit(f"missing detached signature for hosted repository asset: {path.name}.asc")
-    if signature.stat().st_size > MAX_SIGNATURE_BYTES:
-        raise SystemExit(f"detached signature is too large: {signature.name}")
+    validate_regular_file(
+        signature,
+        "detached signature for hosted repository asset",
+        max_bytes=MAX_SIGNATURE_BYTES,
+    )
     try:
         signature_text = signature.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -178,8 +186,7 @@ def require_detached_signature(path: Path) -> Path:
 
 
 def verify_public_key(path: Path) -> None:
-    if path.stat().st_size > MAX_PUBLIC_KEY_BYTES:
-        raise SystemExit(f"Linux public key asset is too large: {path.name}")
+    validate_regular_file(path, "Linux public key asset", max_bytes=MAX_PUBLIC_KEY_BYTES)
     try:
         text = path.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -200,15 +207,27 @@ def build_hosted_repository_members(assets: HostedLinuxAssets) -> dict[str, byte
 
     members: dict[str, bytes] = {
         "README.txt": render_root_readme(assets.version).encode("ascii"),
-        PUBLIC_KEY_NAME: assets.public_key.read_bytes(),
-        f"{PUBLIC_KEY_NAME}.sha256": assets.public_key.with_name(
-            f"{PUBLIC_KEY_NAME}.sha256"
-        ).read_bytes(),
+        PUBLIC_KEY_NAME: read_regular_file(
+            assets.public_key,
+            "Linux GPG public key",
+            max_bytes=MAX_PUBLIC_KEY_BYTES,
+        ),
+        f"{PUBLIC_KEY_NAME}.sha256": read_regular_file(
+            assets.public_key.with_name(f"{PUBLIC_KEY_NAME}.sha256"),
+            "SHA-256 sidecar for Linux GPG public key",
+            max_bytes=MAX_CHECKSUM_BYTES,
+        ),
         "apt/README.txt": render_apt_readme(assets.version, debian_names).encode("ascii"),
-        f"apt/{PUBLIC_KEY_NAME}": assets.public_key.read_bytes(),
-        f"apt/{PUBLIC_KEY_NAME}.sha256": assets.public_key.with_name(
-            f"{PUBLIC_KEY_NAME}.sha256"
-        ).read_bytes(),
+        f"apt/{PUBLIC_KEY_NAME}": read_regular_file(
+            assets.public_key,
+            "Linux GPG public key",
+            max_bytes=MAX_PUBLIC_KEY_BYTES,
+        ),
+        f"apt/{PUBLIC_KEY_NAME}.sha256": read_regular_file(
+            assets.public_key.with_name(f"{PUBLIC_KEY_NAME}.sha256"),
+            "SHA-256 sidecar for Linux GPG public key",
+            max_bytes=MAX_CHECKSUM_BYTES,
+        ),
     }
     for name in ("Packages", "Packages.gz", "Release", "InRelease", "Release.gpg"):
         members[f"apt/{name}"] = apt_metadata[name]
@@ -216,10 +235,16 @@ def build_hosted_repository_members(assets: HostedLinuxAssets) -> dict[str, byte
         add_asset_triplet(members, "apt", package)
 
     members["rpm/README.txt"] = render_rpm_readme(assets.version, rpm_names).encode("ascii")
-    members[f"rpm/{PUBLIC_KEY_NAME}"] = assets.public_key.read_bytes()
-    members[f"rpm/{PUBLIC_KEY_NAME}.sha256"] = assets.public_key.with_name(
-        f"{PUBLIC_KEY_NAME}.sha256"
-    ).read_bytes()
+    members[f"rpm/{PUBLIC_KEY_NAME}"] = read_regular_file(
+        assets.public_key,
+        "Linux GPG public key",
+        max_bytes=MAX_PUBLIC_KEY_BYTES,
+    )
+    members[f"rpm/{PUBLIC_KEY_NAME}.sha256"] = read_regular_file(
+        assets.public_key.with_name(f"{PUBLIC_KEY_NAME}.sha256"),
+        "SHA-256 sidecar for Linux GPG public key",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
     for package in assets.rpm_packages:
         add_asset_triplet(members, "rpm", package)
     for name in sorted(rpm_metadata):
@@ -231,9 +256,21 @@ def build_hosted_repository_members(assets: HostedLinuxAssets) -> dict[str, byte
 
 
 def add_asset_triplet(members: dict[str, bytes], prefix: str, asset: Path) -> None:
-    members[f"{prefix}/{asset.name}"] = asset.read_bytes()
-    members[f"{prefix}/{asset.name}.sha256"] = asset.with_name(f"{asset.name}.sha256").read_bytes()
-    members[f"{prefix}/{asset.name}.asc"] = asset.with_name(f"{asset.name}.asc").read_bytes()
+    members[f"{prefix}/{asset.name}"] = read_regular_file(
+        asset,
+        f"{prefix} hosted repository asset",
+        max_bytes=MAX_RELEASE_ASSET_BYTES,
+    )
+    members[f"{prefix}/{asset.name}.sha256"] = read_regular_file(
+        asset.with_name(f"{asset.name}.sha256"),
+        f"SHA-256 sidecar for {prefix} hosted repository asset",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
+    members[f"{prefix}/{asset.name}.asc"] = read_regular_file(
+        asset.with_name(f"{asset.name}.asc"),
+        f"detached signature for {prefix} hosted repository asset",
+        max_bytes=MAX_SIGNATURE_BYTES,
+    )
 
 
 def validate_apt_metadata(
@@ -430,6 +467,7 @@ native RPM signatures from the release signing key.
 
 
 def write_zip_members(path: Path, members: dict[str, bytes]) -> None:
+    validate_output_file(path, "hosted Linux repository bundle")
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
         for name in sorted(members):
             info = zipfile.ZipInfo(name, ZIP_SOURCE_TIMESTAMP)
@@ -439,11 +477,13 @@ def write_zip_members(path: Path, members: dict[str, bytes]) -> None:
 
 
 def verify_sha256_sidecar(path: Path, label: str) -> str:
+    validate_regular_file(path, label, max_bytes=MAX_RELEASE_ASSET_BYTES)
     sidecar = path.with_name(f"{path.name}.sha256")
-    if not sidecar.exists() or not sidecar.is_file():
-        raise SystemExit(f"missing SHA-256 sidecar for {label}: {path.name}")
-    if sidecar.stat().st_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"SHA-256 sidecar is too large for {label}: {path.name}")
+    validate_regular_file(
+        sidecar,
+        f"SHA-256 sidecar for {label}",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
     try:
         checksum_text = sidecar.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -463,11 +503,67 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
 
 
 def write_sha256_sidecar(path: Path) -> None:
-    path.with_name(f"{path.name}.sha256").write_text(
+    validate_regular_file(path, "hosted Linux repository bundle", max_bytes=MAX_HOSTED_BUNDLE_BYTES)
+    sidecar = path.with_name(f"{path.name}.sha256")
+    validate_output_file(sidecar, "hosted Linux repository bundle SHA-256 sidecar")
+    sidecar.write_text(
         f"{sha256_file(path)}  {path.name}\n",
         encoding="ascii",
         newline="\n",
     )
+    validate_regular_file(
+        sidecar,
+        "hosted Linux repository bundle SHA-256 sidecar",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
+
+
+def validate_input_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+
+
+def prepare_output_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f"{label} must be a directory: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_regular_file(path: Path, label: str, *, max_bytes: int) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(f"missing {label}: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"{label} could not be inspected: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    if metadata.st_size > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name}")
+    return metadata.st_size
+
+
+def validate_output_file(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} output must not be a symlink: {path.name}")
+    if path.exists():
+        try:
+            metadata = path.stat()
+        except OSError as exc:
+            raise SystemExit(f"{label} output could not be inspected: {path.name}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+
+
+def read_regular_file(path: Path, label: str, *, max_bytes: int) -> bytes:
+    validate_regular_file(path, label, max_bytes=max_bytes)
+    return path.read_bytes()
 
 
 def sha256_file(path: Path) -> str:

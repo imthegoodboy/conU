@@ -20,6 +20,7 @@ SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?
 HASH_CHUNK_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 MAX_SIGNATURE_BYTES = 1024 * 1024
+MAX_HOSTED_BUNDLE_BYTES = 4 * 1024 * 1024 * 1024
 MAX_ZIP_MEMBER_BYTES = 512_000_000
 MAX_ZIP_MEMBERS = 10_000
 MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
@@ -94,11 +95,12 @@ def main() -> int:
     args = parse_args()
     version = validate_version(args.version or read_repo_version())
     base_url = validate_base_url(args.base_url or os.environ.get("CONU_LINUX_REPOSITORY_BASE_URL", ""))
-    dist = args.dist.resolve()
-    output_dir = args.output_dir.resolve()
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"release dist directory does not exist: {dist}")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    dist = args.dist.expanduser()
+    output_dir = args.output_dir.expanduser()
+    validate_input_directory(dist, "release dist directory")
+    prepare_output_directory(output_dir, "hosted repository site output directory")
+    dist = dist.resolve()
+    output_dir = output_dir.resolve()
 
     bundle = required_asset(
         dist / hosted_repository_bundle_filename(version),
@@ -116,6 +118,11 @@ def main() -> int:
         bundle_members=bundle_members,
     )
     output = output_dir / hosted_repository_site_filename(version)
+    validate_output_file(output, "hosted Linux repository site artifact")
+    validate_output_file(
+        output.with_name(f"{output.name}.sha256"),
+        "hosted Linux repository site artifact SHA-256 sidecar",
+    )
     write_zip_members(output, site_members)
     write_sha256_sidecar(output)
     print(f"generated hosted Linux repository site: {output.name}, {output.name}.sha256")
@@ -183,19 +190,19 @@ def hosted_repository_site_filename(version: str) -> str:
     return f"conu-{version}-hosted-linux-repository-site.zip"
 
 
-def required_asset(path: Path, label: str) -> Path:
-    if not path.exists() or not path.is_file():
-        raise SystemExit(f"missing {label}: {path.name}")
+def required_asset(path: Path, label: str, *, max_bytes: int = MAX_HOSTED_BUNDLE_BYTES) -> Path:
+    validate_regular_file(path, label, max_bytes=max_bytes)
     verify_sha256_sidecar(path, label)
     return path
 
 
 def require_detached_signature(path: Path) -> Path:
     signature = path.with_name(f"{path.name}.asc")
-    if not signature.exists() or not signature.is_file():
-        raise SystemExit(f"missing detached signature for hosted Linux repository site input: {signature.name}")
-    if signature.stat().st_size > MAX_SIGNATURE_BYTES:
-        raise SystemExit(f"detached signature is too large: {signature.name}")
+    validate_regular_file(
+        signature,
+        "detached signature for hosted Linux repository site input",
+        max_bytes=MAX_SIGNATURE_BYTES,
+    )
     try:
         signature_text = signature.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -325,9 +332,21 @@ def build_site_members(
     members["install/README.txt"] = render_install_readme(version, base_url).encode("ascii")
     members["install/conu.list"] = render_apt_source(base_url).encode("ascii")
     members["install/conu.repo"] = render_yum_repo(base_url).encode("ascii")
-    members[f"downloads/{bundle.name}"] = bundle.read_bytes()
-    members[f"downloads/{bundle.name}.sha256"] = bundle.with_name(f"{bundle.name}.sha256").read_bytes()
-    members[f"downloads/{bundle.name}.asc"] = signature.read_bytes()
+    members[f"downloads/{bundle.name}"] = read_regular_file(
+        bundle,
+        "hosted Linux repository bundle",
+        max_bytes=MAX_HOSTED_BUNDLE_BYTES,
+    )
+    members[f"downloads/{bundle.name}.sha256"] = read_regular_file(
+        bundle.with_name(f"{bundle.name}.sha256"),
+        "SHA-256 sidecar for hosted Linux repository bundle",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
+    members[f"downloads/{bundle.name}.asc"] = read_regular_file(
+        signature,
+        "detached signature for hosted Linux repository bundle",
+        max_bytes=MAX_SIGNATURE_BYTES,
+    )
     for name, data in members.items():
         if is_text_member(name):
             assert_no_forbidden_text(data, name)
@@ -515,11 +534,13 @@ def render_headers_file() -> str:
 
 
 def verify_sha256_sidecar(path: Path, label: str) -> str:
+    validate_regular_file(path, label, max_bytes=MAX_HOSTED_BUNDLE_BYTES)
     sidecar = path.with_name(f"{path.name}.sha256")
-    if not sidecar.exists() or not sidecar.is_file():
-        raise SystemExit(f"missing SHA-256 sidecar for {label}: {path.name}")
-    if sidecar.stat().st_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"SHA-256 sidecar is too large for {label}: {path.name}")
+    validate_regular_file(
+        sidecar,
+        f"SHA-256 sidecar for {label}",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
     try:
         checksum_text = sidecar.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -539,10 +560,18 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
 
 
 def write_sha256_sidecar(path: Path) -> None:
-    path.with_name(f"{path.name}.sha256").write_text(
+    validate_regular_file(path, "hosted Linux repository site artifact", max_bytes=MAX_HOSTED_BUNDLE_BYTES)
+    sidecar = path.with_name(f"{path.name}.sha256")
+    validate_output_file(sidecar, "hosted Linux repository site artifact SHA-256 sidecar")
+    sidecar.write_text(
         f"{sha256_file(path)}  {path.name}\n",
         encoding="ascii",
         newline="\n",
+    )
+    validate_regular_file(
+        sidecar,
+        "hosted Linux repository site artifact SHA-256 sidecar",
+        max_bytes=MAX_CHECKSUM_BYTES,
     )
 
 
@@ -558,6 +587,7 @@ def sha256_file(path: Path) -> str:
 
 
 def write_zip_members(path: Path, members: dict[str, bytes]) -> None:
+    validate_output_file(path, "hosted Linux repository site artifact")
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
         for name in sorted(members):
             info = zipfile.ZipInfo(name, ZIP_SOURCE_TIMESTAMP)
@@ -578,6 +608,54 @@ def assert_no_forbidden_text(data: bytes, label: str) -> None:
 
 def is_text_member(name: str) -> bool:
     return name == "_headers" or name.endswith((".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256"))
+
+
+def validate_input_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+
+
+def prepare_output_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f"{label} must be a directory: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_regular_file(path: Path, label: str, *, max_bytes: int) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(f"missing {label}: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"{label} could not be inspected: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    if metadata.st_size > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name}")
+    return metadata.st_size
+
+
+def validate_output_file(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} output must not be a symlink: {path.name}")
+    if path.exists():
+        try:
+            metadata = path.stat()
+        except OSError as exc:
+            raise SystemExit(f"{label} output could not be inspected: {path.name}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+
+
+def read_regular_file(path: Path, label: str, *, max_bytes: int) -> bytes:
+    validate_regular_file(path, label, max_bytes=max_bytes)
+    return path.read_bytes()
 
 
 def html_escape(value: str) -> str:
