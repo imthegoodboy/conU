@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +69,51 @@ def main() -> int:
         run_generator(dist, repeat)
         if policy.read_bytes() != (repeat / POLICY).read_bytes():
             raise AssertionError("release update policy was not deterministic")
+
+        generator = load_generator_module()
+        expect_module_failure_with_limit(
+            generator,
+            "text asset size bound",
+            "MAX_TEXT_ASSET_BYTES",
+            1,
+            lambda: build_policy(generator, dist),
+            "is too large",
+        )
+        expect_module_failure_with_limit(
+            generator,
+            "checksum sidecar size bound",
+            "MAX_CHECKSUM_BYTES",
+            1,
+            lambda: build_policy(generator, dist),
+            "is too large",
+        )
+        expect_module_failure_with_limit(
+            generator,
+            "detached signature size bound",
+            "MAX_SIGNATURE_BYTES",
+            1,
+            lambda: build_policy(generator, dist),
+            "is too large",
+        )
+        expect_module_failure_with_limit(
+            generator,
+            "aggregate source size bound",
+            "MAX_TOTAL_SOURCE_BYTES",
+            1,
+            lambda: build_policy(generator, dist),
+            "source inputs exceed",
+        )
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_module_failure(
+                "symlinked source asset",
+                lambda: generator.validate_source_file(
+                    dist / PLATFORM_ARCHIVES[0],
+                    "release update policy asset fixture",
+                    generator.MAX_SOURCE_ASSET_BYTES,
+                    generator.SourceBudget(),
+                ),
+                "must not be a symlink",
+            )
 
         missing_signature = temp / "missing-signature"
         shutil.copytree(dist, missing_signature)
@@ -127,6 +174,56 @@ def main() -> int:
 
     print("Release update policy regression checks passed")
     return 0
+
+
+def load_generator_module():
+    spec = importlib.util.spec_from_file_location("generate_release_update_policy", GENERATOR)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load release update policy generator module")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_policy(generator, dist: Path) -> dict[str, object]:
+    return generator.build_update_policy(
+        dist=dist,
+        version=VERSION,
+        tag=TAG,
+        repo=REPO,
+        channel="stable",
+        release_base_url=BASE_URL,
+    )
+
+
+def expect_module_failure(description: str, action, expected: str) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        rendered = str(exc)
+        if expected not in rendered:
+            raise AssertionError(
+                f"{description} failed with {rendered!r}, expected {expected!r}"
+            ) from exc
+        return
+    raise AssertionError(f"{description} unexpectedly passed")
+
+
+def expect_module_failure_with_limit(
+    generator,
+    description: str,
+    attr: str,
+    value: int,
+    action,
+    expected: str,
+) -> None:
+    original = getattr(generator, attr)
+    setattr(generator, attr, value)
+    try:
+        expect_module_failure(description, action, expected)
+    finally:
+        setattr(generator, attr, original)
 
 
 def run_generator(dist: Path, output: Path) -> str:
