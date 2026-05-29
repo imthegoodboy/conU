@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import gzip
 import hashlib
 import io
@@ -20,7 +21,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
@@ -29,6 +30,8 @@ TAG_RE = re.compile(r"^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 MAX_CHECKSUM_BYTES = 4096
 HASH_CHUNK_BYTES = 1024 * 1024
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
 EXPECTED_BINARIES = ("conu", "conud", "conu-relay", "conu-mcp")
 DEBIAN_ARCHES = {
     "linux-x64": "amd64",
@@ -401,7 +404,11 @@ def read_verified_checksum(archive: Path) -> str:
         max_bytes=MAX_CHECKSUM_BYTES,
     )
     try:
-        checksum_text = checksum_path.read_text(encoding="ascii")
+        checksum_text = read_ascii_file(
+            checksum_path,
+            "checksum file for package-manager asset",
+            max_bytes=MAX_CHECKSUM_BYTES,
+        )
     except UnicodeDecodeError as exc:
         raise SystemExit(f"checksum file is not ASCII for package-manager asset: {archive.name}") from exc
     match = CHECKSUM_RE.fullmatch(checksum_text)
@@ -413,7 +420,11 @@ def read_verified_checksum(archive: Path) -> str:
             f"checksum file for package-manager asset {archive.name} names wrong archive: {named_archive}"
         )
     expected = match.group(1).lower()
-    actual = sha256_file(archive)
+    actual = sha256_file(
+        archive,
+        "package-manager release asset",
+        max_bytes=MAX_RELEASE_ARCHIVE_BYTES,
+    )
     if expected != actual:
         raise SystemExit(f"checksum mismatch for package-manager asset: {archive.name}")
     return expected
@@ -435,18 +446,45 @@ def prepare_output_directory(path: Path, label: str) -> None:
 
 
 def validate_regular_file(path: Path, label: str, *, max_bytes: int) -> int:
+    handle, size = open_regular_file(path, label, max_bytes=max_bytes)
+    handle.close()
+    return size
+
+
+def open_regular_file(path: Path, label: str, *, max_bytes: int) -> tuple[BinaryIO, int]:
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
     if not path.exists():
         raise SystemExit(f"missing {label}: {path.name}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
     try:
-        metadata = path.stat()
+        fd = os.open(path, flags)
     except OSError as exc:
-        raise SystemExit(f"{label} could not be inspected: {path.name}") from exc
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {path.name}") from exc
+        if not path.exists():
+            raise SystemExit(f"missing {label}: {path.name}") from exc
+        if not path.is_file():
+            raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} must be a regular file: {path.name}")
+        if metadata.st_size > max_bytes:
+            raise SystemExit(f"{label} is too large: {path.name}")
+        return os.fdopen(fd, "rb"), metadata.st_size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def validate_open_regular_file(handle: BinaryIO, label: str, *, max_bytes: int) -> int:
+    metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(f"{label} must be a regular file: {path.name}")
+        raise SystemExit(f"{label} must be a regular file")
     if metadata.st_size > max_bytes:
-        raise SystemExit(f"{label} is too large: {path.name}")
+        raise SystemExit(f"{label} is too large")
     return metadata.st_size
 
 
@@ -462,31 +500,98 @@ def validate_output_file(path: Path, label: str) -> None:
             raise SystemExit(f"{label} output must be a regular file: {path.name}")
 
 
-def write_text_output(path: Path, label: str, text: str) -> None:
+def open_output_file(path: Path, label: str) -> BinaryIO:
     validate_output_file(path, label)
-    path.write_text(text, encoding="ascii", newline="\n")
+    flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | OPEN_BINARY | OPEN_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} output must not be a symlink: {path.name}") from exc
+        if path.exists() and not path.is_file():
+            raise SystemExit(f"{label} output must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} output could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+        return os.fdopen(fd, "w+b")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def write_text_output(path: Path, label: str, text: str) -> None:
+    with open_output_file(path, label) as handle:
+        handle.write(text.encode("ascii"))
+        handle.flush()
+        validate_open_regular_file(handle, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
     validate_regular_file(path, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
 
 
 def write_bytes_output(path: Path, label: str, data: bytes) -> None:
-    validate_output_file(path, label)
-    path.write_bytes(data)
+    with open_output_file(path, label) as handle:
+        handle.write(data)
+        handle.flush()
+        validate_open_regular_file(handle, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
     validate_regular_file(path, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
 
 
-def sha256_file(path: Path) -> str:
+def read_ascii_file(path: Path, label: str, *, max_bytes: int) -> str:
+    data = read_regular_file(path, label, max_bytes=max_bytes)
+    return data.decode("ascii")
+
+
+def read_regular_file(path: Path, label: str, *, max_bytes: int) -> bytes:
+    handle, _size = open_regular_file(path, label, max_bytes=max_bytes)
+    with handle:
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name}")
+    return data
+
+
+def copy_regular_file_output(source: Path, output: Path, label: str, *, max_bytes: int) -> None:
+    source_file, _size = open_regular_file(source, label, max_bytes=max_bytes)
+    with source_file:
+        with open_output_file(output, label) as output_file:
+            shutil.copyfileobj(source_file, output_file, HASH_CHUNK_BYTES)
+            output_file.flush()
+            validate_open_regular_file(output_file, label, max_bytes=max_bytes)
+    validate_regular_file(output, label, max_bytes=max_bytes)
+
+
+def sha256_file(
+    path: Path,
+    label: str = "package-manager file",
+    *,
+    max_bytes: int = MAX_GENERATED_OUTPUT_BYTES,
+) -> str:
+    handle, _size = open_regular_file(path, label, max_bytes=max_bytes)
+    with handle:
+        return sha256_open_file(handle, label, max_bytes=max_bytes)
+
+
+def sha256_open_file(handle: BinaryIO, label: str, *, max_bytes: int) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
+    if handle.writable():
+        handle.flush()
+    handle.seek(0)
+    total = 0
+    while True:
+        chunk = handle.read(HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise SystemExit(f"{label} is too large")
+        digest.update(chunk)
+    handle.seek(0, os.SEEK_END)
     return digest.hexdigest()
 
 
 def detect_windows_extract_dir(archive: Path, version: str) -> str | None:
-    validate_regular_file(
+    archive_file, _size = open_regular_file(
         archive,
         "Windows package-manager release asset",
         max_bytes=MAX_RELEASE_ARCHIVE_BYTES,
@@ -498,22 +603,23 @@ def detect_windows_extract_dir(archive: Path, version: str) -> str | None:
     file_paths: set[str] = set()
 
     try:
-        with zipfile.ZipFile(archive) as package:
-            infos = package.infolist()
-            if len(infos) > MAX_RELEASE_MEMBER_COUNT:
-                raise SystemExit(
-                    f"{archive.name} contains more than {MAX_RELEASE_MEMBER_COUNT} entries"
-                )
-            for member in infos:
-                normalized, root_style, is_file = validate_zip_release_member_for_scan(
-                    archive.name,
-                    member,
-                    root,
-                    state,
-                    root_style,
-                )
-                if is_file:
-                    file_paths.add(normalized)
+        with archive_file:
+            with zipfile.ZipFile(archive_file) as package:
+                infos = package.infolist()
+                if len(infos) > MAX_RELEASE_MEMBER_COUNT:
+                    raise SystemExit(
+                        f"{archive.name} contains more than {MAX_RELEASE_MEMBER_COUNT} entries"
+                    )
+                for member in infos:
+                    normalized, root_style, is_file = validate_zip_release_member_for_scan(
+                        archive.name,
+                        member,
+                        root,
+                        state,
+                        root_style,
+                    )
+                    if is_file:
+                        file_paths.add(normalized)
     except zipfile.BadZipFile as exc:
         raise SystemExit(f"windows release asset is not a readable zip: {archive.name}") from exc
 
@@ -640,7 +746,7 @@ def update_release_root_style(
 
 
 def extract_linux_binaries(archive: Path, version: str, target: str) -> dict[str, bytes]:
-    validate_regular_file(
+    archive_file, _size = open_regular_file(
         archive,
         "Linux package-manager release asset",
         max_bytes=MAX_RELEASE_ARCHIVE_BYTES,
@@ -653,49 +759,50 @@ def extract_linux_binaries(archive: Path, version: str, target: str) -> dict[str
     extracted: dict[str, bytes] = {}
 
     try:
-        with tarfile.open(archive, "r|gz") as package:
-            for member in package:
-                if member.isdir():
-                    if member.size != 0:
-                        raise SystemExit(
-                            f"{archive.name} contains directory member with data: {member.name}"
+        with archive_file:
+            with tarfile.open(fileobj=archive_file, mode="r|gz") as package:
+                for member in package:
+                    if member.isdir():
+                        if member.size != 0:
+                            raise SystemExit(
+                                f"{archive.name} contains directory member with data: {member.name}"
+                            )
+                        _, root_style = record_release_archive_member(
+                            archive.name,
+                            member.name,
+                            root,
+                            0,
+                            state,
+                            root_style,
+                            allow_empty=True,
                         )
-                    _, root_style = record_release_archive_member(
+                        continue
+                    if not member.isfile():
+                        raise SystemExit(
+                            f"{archive.name} contains unsupported non-file member: {member.name}"
+                        )
+                    normalized, root_style = record_release_archive_member(
                         archive.name,
                         member.name,
                         root,
-                        0,
+                        member.size,
                         state,
                         root_style,
-                        allow_empty=True,
                     )
-                    continue
-                if not member.isfile():
-                    raise SystemExit(
-                        f"{archive.name} contains unsupported non-file member: {member.name}"
+                    if not normalized:
+                        continue
+                    file_paths.add(normalized)
+                    if normalized not in rootless_bins:
+                        continue
+                    handle = package.extractfile(member)
+                    if handle is None:
+                        raise SystemExit(f"{archive.name} could not read binary: {member.name}")
+                    extracted[normalized] = read_limited_release_member(
+                        archive.name,
+                        member.name,
+                        handle,
+                        MAX_PACKAGE_BINARY_BYTES,
                     )
-                normalized, root_style = record_release_archive_member(
-                    archive.name,
-                    member.name,
-                    root,
-                    member.size,
-                    state,
-                    root_style,
-                )
-                if not normalized:
-                    continue
-                file_paths.add(normalized)
-                if normalized not in rootless_bins:
-                    continue
-                handle = package.extractfile(member)
-                if handle is None:
-                    raise SystemExit(f"{archive.name} could not read binary: {member.name}")
-                extracted[normalized] = read_limited_release_member(
-                    archive.name,
-                    member.name,
-                    handle,
-                    MAX_PACKAGE_BINARY_BYTES,
-                )
     except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
         raise SystemExit(f"linux release asset is not a readable tar.gz: {archive.name}") from exc
 
@@ -979,14 +1086,19 @@ def write_chocolatey_package(
     install_script: str,
     uninstall_script: str,
 ) -> None:
-    validate_output_file(path, "Chocolatey package")
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as package:
-        write_deterministic_zip_text(package, "conu.nuspec", nuspec)
-        write_deterministic_zip_text(package, "tools/chocolateyInstall.ps1", install_script)
-        write_deterministic_zip_text(
-            package,
-            "tools/chocolateyUninstall.ps1",
-            uninstall_script,
+    with open_output_file(path, "Chocolatey package") as package_file:
+        with zipfile.ZipFile(package_file, "w", compression=zipfile.ZIP_STORED) as package:
+            write_deterministic_zip_text(package, "conu.nuspec", nuspec)
+            write_deterministic_zip_text(package, "tools/chocolateyInstall.ps1", install_script)
+            write_deterministic_zip_text(
+                package,
+                "tools/chocolateyUninstall.ps1",
+                uninstall_script,
+            )
+        validate_open_regular_file(
+            package_file,
+            "Chocolatey package",
+            max_bytes=MAX_GENERATED_OUTPUT_BYTES,
         )
     validate_regular_file(path, "Chocolatey package", max_bytes=MAX_GENERATED_OUTPUT_BYTES)
 
@@ -1270,12 +1382,14 @@ def build_ar_archive(members: list[tuple[str, bytes]]) -> bytes:
 def write_sha256_sidecar(path: Path, digest: str) -> None:
     validate_regular_file(path, "package-manager output", max_bytes=MAX_GENERATED_OUTPUT_BYTES)
     sidecar = path.with_name(f"{path.name}.sha256")
-    validate_output_file(sidecar, "package-manager output SHA-256 sidecar")
-    sidecar.write_text(
-        f"{digest}  {path.name}\n",
-        encoding="ascii",
-        newline="\n",
-    )
+    with open_output_file(sidecar, "package-manager output SHA-256 sidecar") as handle:
+        handle.write(f"{digest}  {path.name}\n".encode("ascii"))
+        handle.flush()
+        validate_open_regular_file(
+            handle,
+            "package-manager output SHA-256 sidecar",
+            max_bytes=MAX_CHECKSUM_BYTES,
+        )
     validate_regular_file(
         sidecar,
         "package-manager output SHA-256 sidecar",
@@ -1299,7 +1413,11 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
         max_bytes=MAX_CHECKSUM_BYTES,
     )
     try:
-        checksum_text = sidecar.read_text(encoding="ascii")
+        checksum_text = read_ascii_file(
+            sidecar,
+            f"SHA-256 sidecar for {label}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+        )
     except UnicodeDecodeError as exc:
         raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
     match = CHECKSUM_RE.fullmatch(checksum_text)
@@ -1311,7 +1429,7 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
             f"SHA-256 sidecar for {label} {path.name} names wrong file: {named_path}"
         )
     expected = match.group(1).lower()
-    actual = sha256_file(path)
+    actual = sha256_file(path, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
     if expected != actual:
         raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
     return expected
@@ -1366,9 +1484,8 @@ def build_rpm_packages(
                     f"{packages[0].name!r}; expected {expected_name!r}"
                 )
             output_path = output_dir / expected_name
-            validate_output_file(output_path, "generated RPM package")
-            shutil.copy2(packages[0], output_path)
-            validate_regular_file(
+            copy_regular_file_output(
+                packages[0],
                 output_path,
                 "generated RPM package",
                 max_bytes=MAX_GENERATED_OUTPUT_BYTES,
@@ -1397,7 +1514,12 @@ def build_rpm_repository_metadata(
         repo_dir = Path(repo_text)
         for package_path in package_paths:
             repo_package = repo_dir / package_path.name
-            shutil.copyfile(package_path, repo_package)
+            copy_regular_file_output(
+                package_path,
+                repo_package,
+                "generated RPM package",
+                max_bytes=MAX_GENERATED_OUTPUT_BYTES,
+            )
             os.utime(repo_package, (SOURCE_EPOCH, SOURCE_EPOCH))
 
         command = [
@@ -1442,7 +1564,11 @@ def build_rpm_repository_metadata(
             write_deterministic_zip_text(archive, "README.txt", readme_text)
             for path in repodata_files:
                 relative = path.relative_to(repo_dir).as_posix()
-                data = path.read_bytes()
+                data = read_regular_file(
+                    path,
+                    "RPM repository metadata file",
+                    max_bytes=MAX_GENERATED_OUTPUT_BYTES,
+                )
                 metadata_texts.append(decode_rpm_repository_metadata(relative, data))
                 write_deterministic_zip_bytes(archive, relative, data)
         content = raw.getvalue()
