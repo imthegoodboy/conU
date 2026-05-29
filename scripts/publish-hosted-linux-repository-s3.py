@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import time
@@ -25,8 +26,10 @@ ENDPOINT_CHECKER = ROOT / "scripts" / "check-hosted-linux-repository-endpoint.py
 SITE_SCHEMA = "conu.hostedLinuxRepository.site.v1"
 CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
 MAX_FILES = 10000
+MAX_METADATA_BYTES = 1024 * 1024
 MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+MAX_CACHE_CONTROL_BYTES = 256
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,253}[A-Za-z0-9]$")
 FORBIDDEN_SEGMENTS = {
@@ -326,12 +329,7 @@ def validate_base_url(raw: str) -> str:
 
 
 def read_json_file(path: Path, label: str) -> dict[str, Any]:
-    if not path.exists() or not path.is_file():
-        raise PublicationError(f"missing {label} in site directory")
-    try:
-        text = path.read_text(encoding="ascii")
-    except UnicodeDecodeError as exc:
-        raise PublicationError(f"{label} must be ASCII JSON") from exc
+    text = read_bounded_ascii_file(path, label, max_bytes=MAX_METADATA_BYTES)
     assert_no_forbidden_text(text, label)
     try:
         value = json.loads(text)
@@ -403,6 +401,7 @@ def parse_cache_rules(cache_policy: dict[str, Any]) -> list[dict[str, Any]]:
             raise PublicationError("cache-policy.json cache rule kind is missing")
         if not isinstance(cache_control, str) or not cache_control:
             raise PublicationError(f"cache-policy.json cache rule {kind} cacheControl is missing")
+        validate_cache_control_value(cache_control, f"cache-policy.json cache rule {kind}")
         if not isinstance(paths, list) or not paths:
             raise PublicationError(f"cache-policy.json cache rule {kind} paths are missing")
         clean_paths: list[str] = []
@@ -428,17 +427,17 @@ def collect_files(
     files: list[PublishFile] = []
     total_size = 0
     for path in sorted(site_dir.rglob("*")):
+        relative_path = relative_name(site_dir, path)
+        if path.is_symlink():
+            raise PublicationError(f"site entry must not be a symlink: {relative_path}")
         if path.is_dir():
             continue
-        if path.is_symlink():
-            raise PublicationError(f"site file must not be a symlink: {relative_name(site_dir, path)}")
-        if not path.is_file():
-            raise PublicationError(f"site entry must be a regular file: {relative_name(site_dir, path)}")
-        relative_path = relative_name(site_dir, path)
         validate_relative_path(relative_path)
-        size = path.stat().st_size
-        if size > MAX_FILE_BYTES:
-            raise PublicationError(f"site file is too large: {relative_path}")
+        size = validate_regular_file(
+            path,
+            f"site file {relative_path}",
+            max_bytes=MAX_FILE_BYTES,
+        )
         total_size += size
         if total_size > MAX_TOTAL_BYTES:
             raise PublicationError("site directory is too large to publish")
@@ -487,6 +486,47 @@ def assert_no_forbidden_text(text: str, label: str) -> None:
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
             raise PublicationError(f"{label} contains forbidden repository publication text: {forbidden}")
+
+
+def validate_cache_control_value(value: str, label: str) -> None:
+    if len(value) > MAX_CACHE_CONTROL_BYTES:
+        raise PublicationError(f"{label} Cache-Control is too long")
+    if value != value.strip():
+        raise PublicationError(f"{label} Cache-Control must not have leading or trailing whitespace")
+    for character in value:
+        codepoint = ord(character)
+        if codepoint < 32 or codepoint == 127 or codepoint > 126:
+            raise PublicationError(
+                f"{label} Cache-Control must be printable ASCII without control characters"
+            )
+
+
+def read_bounded_ascii_file(path: Path, label: str, *, max_bytes: int) -> str:
+    validate_regular_file(path, label, max_bytes=max_bytes)
+    with path.open("rb") as handle:
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise PublicationError(f"{label} is larger than {max_bytes} bytes")
+    try:
+        return data.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise PublicationError(f"{label} must be ASCII") from exc
+
+
+def validate_regular_file(path: Path, label: str, *, max_bytes: int) -> int:
+    if path.is_symlink():
+        raise PublicationError(f"{label} must not be a symlink")
+    if not path.exists():
+        raise PublicationError(f"missing {label} in site directory")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise PublicationError(f"{label} could not be inspected") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise PublicationError(f"{label} must be a regular file")
+    if metadata.st_size > max_bytes:
+        raise PublicationError(f"{label} is larger than {max_bytes} bytes")
+    return metadata.st_size
 
 
 def cache_control_for_path(path: str, rules: list[dict[str, Any]]) -> str:
