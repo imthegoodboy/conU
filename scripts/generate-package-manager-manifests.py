@@ -51,6 +51,7 @@ MAX_RELEASE_MEMBER_BYTES = 512_000_000
 MAX_RELEASE_MEMBER_COUNT = 10_000
 MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
 MAX_PACKAGE_BINARY_BYTES = MAX_RELEASE_MEMBER_BYTES
+MAX_GENERATED_OUTPUT_BYTES = MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES
 
 
 @dataclass
@@ -96,12 +97,16 @@ class RpmRepositoryMetadata:
 
 def main() -> int:
     args = parse_args()
-    dist = args.dist.resolve()
+    dist = args.dist.expanduser()
+    validate_input_directory(dist, "release dist directory")
+    dist = dist.resolve()
     version = args.version or read_repo_version()
     validate_version(version)
     repo = validate_repo(args.repo)
     tag = validate_tag(args.tag or f"v{version}")
-    output_dir = args.output_dir.resolve()
+    output_dir = args.output_dir.expanduser()
+    prepare_output_directory(output_dir, "package-manager output directory")
+    output_dir = output_dir.resolve()
 
     assets = load_release_assets(dist, version, repo, tag)
     windows_extract_dir = detect_windows_extract_dir(dist / assets["windows-x64"].filename, version)
@@ -110,7 +115,6 @@ def main() -> int:
         for target in DEBIAN_ARCHES
     }
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     homebrew = render_homebrew_formula(version, repo, assets)
     scoop = render_scoop_manifest(version, repo, assets["windows-x64"], windows_extract_dir)
     winget = render_winget_manifest(version, repo, assets["windows-x64"], windows_extract_dir)
@@ -150,9 +154,9 @@ def main() -> int:
         dist,
     )
 
-    (output_dir / "conu.rb").write_text(homebrew, encoding="ascii", newline="\n")
-    (output_dir / "conu.json").write_text(scoop, encoding="ascii", newline="\n")
-    (output_dir / "imthegoodboy.conU.yaml").write_text(winget, encoding="ascii", newline="\n")
+    write_text_output(output_dir / "conu.rb", "Homebrew formula", homebrew)
+    write_text_output(output_dir / "conu.json", "Scoop manifest", scoop)
+    write_text_output(output_dir / "imthegoodboy.conU.yaml", "WinGet manifest", winget)
     write_chocolatey_package(
         output_dir / chocolatey_filename(version),
         chocolatey_nuspec,
@@ -161,14 +165,18 @@ def main() -> int:
     )
     for package in debian_packages:
         package_path = output_dir / package.filename
-        package_path.write_bytes(package.content)
+        write_bytes_output(package_path, "generated Debian package", package.content)
         write_sha256_sidecar(package_path, package.sha256)
     if apt_repository_metadata is not None:
         metadata_path = output_dir / apt_repository_metadata.filename
-        metadata_path.write_bytes(apt_repository_metadata.content)
+        write_bytes_output(
+            metadata_path,
+            "generated APT repository metadata",
+            apt_repository_metadata.content,
+        )
         write_sha256_sidecar(metadata_path, apt_repository_metadata.sha256)
     rpm_spec_path = output_dir / "conu.spec"
-    rpm_spec_path.write_text(rpm_spec, encoding="ascii", newline="\n")
+    write_text_output(rpm_spec_path, "RPM spec", rpm_spec)
     rpm_package_paths: tuple[Path, ...] = ()
     if args.build_rpm_packages:
         rpm_package_paths = build_rpm_packages(version, dist, rpm_spec_path, output_dir)
@@ -178,7 +186,11 @@ def main() -> int:
         rpm_repository_metadata = build_rpm_repository_metadata(version, rpm_package_paths)
         assert_output_safe(rpm_repository_metadata.metadata_text, dist)
         metadata_path = output_dir / rpm_repository_metadata.filename
-        metadata_path.write_bytes(rpm_repository_metadata.content)
+        write_bytes_output(
+            metadata_path,
+            "generated RPM repository metadata",
+            rpm_repository_metadata.content,
+        )
         write_sha256_sidecar(metadata_path, rpm_repository_metadata.sha256)
     print(
         "generated package-manager manifests: "
@@ -347,15 +359,16 @@ def load_release_assets(
     repo: str,
     tag: str,
 ) -> dict[str, ReleaseAsset]:
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"release dist directory does not exist: {dist}")
+    validate_input_directory(dist, "release dist directory")
 
     assets: dict[str, ReleaseAsset] = {}
     for target, filename in expected_filenames(version).items():
         archive = dist / filename
-        if not archive.exists() or not archive.is_file():
-            raise SystemExit(f"missing required release asset for {target}: {filename}")
-        validate_release_asset_size(archive)
+        validate_regular_file(
+            archive,
+            f"release asset for {target}",
+            max_bytes=MAX_RELEASE_ARCHIVE_BYTES,
+        )
         sha256 = read_verified_checksum(archive)
         url = f"https://github.com/{repo}/releases/download/{tag}/{filename}"
         assets[target] = ReleaseAsset(
@@ -368,19 +381,25 @@ def load_release_assets(
 
 
 def validate_release_asset_size(archive: Path) -> None:
-    size = archive.stat().st_size
-    if size > MAX_RELEASE_ARCHIVE_BYTES:
-        raise SystemExit(
-            f"release asset is larger than {MAX_RELEASE_ARCHIVE_BYTES} bytes: {archive.name}"
-        )
+    validate_regular_file(
+        archive,
+        "release asset",
+        max_bytes=MAX_RELEASE_ARCHIVE_BYTES,
+    )
 
 
 def read_verified_checksum(archive: Path) -> str:
+    validate_regular_file(
+        archive,
+        "package-manager release asset",
+        max_bytes=MAX_RELEASE_ARCHIVE_BYTES,
+    )
     checksum_path = archive.with_name(f"{archive.name}.sha256")
-    if not checksum_path.exists() or not checksum_path.is_file():
-        raise SystemExit(f"missing checksum file for package-manager asset: {archive.name}")
-    if checksum_path.stat().st_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"checksum file is too large for package-manager asset: {archive.name}")
+    validate_regular_file(
+        checksum_path,
+        "checksum file for package-manager asset",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
     try:
         checksum_text = checksum_path.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -400,6 +419,61 @@ def read_verified_checksum(archive: Path) -> str:
     return expected
 
 
+def validate_input_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+
+
+def prepare_output_directory(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f"{label} must be a directory: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_regular_file(path: Path, label: str, *, max_bytes: int) -> int:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(f"missing {label}: {path.name}")
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise SystemExit(f"{label} could not be inspected: {path.name}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file: {path.name}")
+    if metadata.st_size > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name}")
+    return metadata.st_size
+
+
+def validate_output_file(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} output must not be a symlink: {path.name}")
+    if path.exists():
+        try:
+            metadata = path.stat()
+        except OSError as exc:
+            raise SystemExit(f"{label} output could not be inspected: {path.name}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+
+
+def write_text_output(path: Path, label: str, text: str) -> None:
+    validate_output_file(path, label)
+    path.write_text(text, encoding="ascii", newline="\n")
+    validate_regular_file(path, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
+
+
+def write_bytes_output(path: Path, label: str, data: bytes) -> None:
+    validate_output_file(path, label)
+    path.write_bytes(data)
+    validate_regular_file(path, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -412,6 +486,11 @@ def sha256_file(path: Path) -> str:
 
 
 def detect_windows_extract_dir(archive: Path, version: str) -> str | None:
+    validate_regular_file(
+        archive,
+        "Windows package-manager release asset",
+        max_bytes=MAX_RELEASE_ARCHIVE_BYTES,
+    )
     root = f"conu-{version}-windows-x64"
     rootless_bins = {f"bin/{binary}.exe" for binary in EXPECTED_BINARIES}
     state = ArchiveScanState(paths=set())
@@ -561,6 +640,11 @@ def update_release_root_style(
 
 
 def extract_linux_binaries(archive: Path, version: str, target: str) -> dict[str, bytes]:
+    validate_regular_file(
+        archive,
+        "Linux package-manager release asset",
+        max_bytes=MAX_RELEASE_ARCHIVE_BYTES,
+    )
     root = f"conu-{version}-{target}"
     rootless_bins = {f"bin/{binary}" for binary in EXPECTED_BINARIES}
     state = ArchiveScanState(paths=set())
@@ -895,6 +979,7 @@ def write_chocolatey_package(
     install_script: str,
     uninstall_script: str,
 ) -> None:
+    validate_output_file(path, "Chocolatey package")
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as package:
         write_deterministic_zip_text(package, "conu.nuspec", nuspec)
         write_deterministic_zip_text(package, "tools/chocolateyInstall.ps1", install_script)
@@ -903,6 +988,7 @@ def write_chocolatey_package(
             "tools/chocolateyUninstall.ps1",
             uninstall_script,
         )
+    validate_regular_file(path, "Chocolatey package", max_bytes=MAX_GENERATED_OUTPUT_BYTES)
 
 
 def build_debian_package(
@@ -1182,10 +1268,18 @@ def build_ar_archive(members: list[tuple[str, bytes]]) -> bytes:
 
 
 def write_sha256_sidecar(path: Path, digest: str) -> None:
-    path.with_name(f"{path.name}.sha256").write_text(
+    validate_regular_file(path, "package-manager output", max_bytes=MAX_GENERATED_OUTPUT_BYTES)
+    sidecar = path.with_name(f"{path.name}.sha256")
+    validate_output_file(sidecar, "package-manager output SHA-256 sidecar")
+    sidecar.write_text(
         f"{digest}  {path.name}\n",
         encoding="ascii",
         newline="\n",
+    )
+    validate_regular_file(
+        sidecar,
+        "package-manager output SHA-256 sidecar",
+        max_bytes=MAX_CHECKSUM_BYTES,
     )
 
 
@@ -1197,13 +1291,13 @@ def existing_rpm_package_paths(version: str, output_dir: Path) -> tuple[Path, ..
 
 
 def verify_sha256_sidecar(path: Path, label: str) -> str:
-    if not path.exists() or not path.is_file():
-        raise SystemExit(f"missing {label}: {path.name}")
+    validate_regular_file(path, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
     sidecar = path.with_name(f"{path.name}.sha256")
-    if not sidecar.exists() or not sidecar.is_file():
-        raise SystemExit(f"missing SHA-256 sidecar for {label}: {path.name}")
-    if sidecar.stat().st_size > MAX_CHECKSUM_BYTES:
-        raise SystemExit(f"SHA-256 sidecar is too large for {label}: {path.name}")
+    validate_regular_file(
+        sidecar,
+        f"SHA-256 sidecar for {label}",
+        max_bytes=MAX_CHECKSUM_BYTES,
+    )
     try:
         checksum_text = sidecar.read_text(encoding="ascii")
     except UnicodeDecodeError as exc:
@@ -1272,7 +1366,13 @@ def build_rpm_packages(
                     f"{packages[0].name!r}; expected {expected_name!r}"
                 )
             output_path = output_dir / expected_name
+            validate_output_file(output_path, "generated RPM package")
             shutil.copy2(packages[0], output_path)
+            validate_regular_file(
+                output_path,
+                "generated RPM package",
+                max_bytes=MAX_GENERATED_OUTPUT_BYTES,
+            )
             write_sha256_sidecar(output_path, sha256_file(output_path))
             outputs.append(output_path)
     return tuple(outputs)

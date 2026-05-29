@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -255,6 +256,52 @@ def expect_failure(description: str, action, expected: str) -> None:
             ) from exc
         return
     raise AssertionError(f"{description} unexpectedly passed")
+
+
+def run_generator_cli(dist: Path, output: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(GENERATOR_PATH),
+            str(dist),
+            "--output-dir",
+            str(output),
+            "--version",
+            VERSION,
+            "--repo",
+            "imthegoodboy/conU",
+            "--tag",
+            f"v{VERSION}",
+            *extra_args,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def expect_cli_failure(
+    description: str,
+    dist: Path,
+    output: Path,
+    expected: str,
+    *extra_args: str,
+) -> None:
+    failed = run_generator_cli(dist, output, *extra_args)
+    if failed.returncode == 0 or expected not in failed.stdout:
+        raise AssertionError(
+            f"{description} failed with {failed.stdout!r}, expected {expected!r}"
+        )
+
+
+def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
+    try:
+        os.symlink(target, link, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        return False
+    return True
 
 
 def expect_failure_with_limit(
@@ -762,8 +809,116 @@ def main() -> int:
                 "imthegoodboy/conU",
                 f"v{VERSION}",
             ),
-            "release asset is larger than 1 bytes",
+            "release asset for macos-arm64 is too large",
         )
+
+        symlink_dist = temp / "symlink-dist"
+        if try_symlink(rootless_dist, symlink_dist, target_is_directory=True):
+            expect_cli_failure(
+                "symlinked release dist directory",
+                symlink_dist,
+                temp / "symlink-dist-out",
+                "release dist directory must not be a symlink",
+            )
+
+        symlink_asset = temp / "symlink-asset"
+        shutil.copytree(rootless_dist, symlink_asset)
+        asset_target = temp / "symlink-asset-target.zip"
+        shutil.copy2(symlink_asset / TARGETS["windows-x64"], asset_target)
+        (symlink_asset / TARGETS["windows-x64"]).unlink()
+        if try_symlink(asset_target, symlink_asset / TARGETS["windows-x64"]):
+            expect_cli_failure(
+                "symlinked release asset",
+                symlink_asset,
+                temp / "symlink-asset-out",
+                "release asset for windows-x64 must not be a symlink",
+            )
+
+        symlink_checksum = temp / "symlink-checksum"
+        shutil.copytree(rootless_dist, symlink_checksum)
+        checksum_target = temp / "symlink-checksum-target.sha256"
+        shutil.copy2(symlink_checksum / f"{TARGETS['macos-arm64']}.sha256", checksum_target)
+        (symlink_checksum / f"{TARGETS['macos-arm64']}.sha256").unlink()
+        if try_symlink(checksum_target, symlink_checksum / f"{TARGETS['macos-arm64']}.sha256"):
+            expect_cli_failure(
+                "symlinked release checksum",
+                symlink_checksum,
+                temp / "symlink-checksum-out",
+                "checksum file for package-manager asset must not be a symlink",
+            )
+
+        symlink_output_target = temp / "symlink-output-target"
+        symlink_output_target.mkdir()
+        symlink_output = temp / "symlink-output"
+        if try_symlink(symlink_output_target, symlink_output, target_is_directory=True):
+            expect_cli_failure(
+                "symlinked output directory",
+                rootless_dist,
+                symlink_output,
+                "package-manager output directory must not be a symlink",
+            )
+
+        symlink_output_file = temp / "symlink-output-file"
+        symlink_output_file.mkdir()
+        output_file_target = temp / "symlink-output-file-target.rb"
+        output_file_target.write_text("# target\n", encoding="ascii", newline="\n")
+        if try_symlink(output_file_target, symlink_output_file / HOMEBREW_FILENAME):
+            expect_cli_failure(
+                "symlinked Homebrew output",
+                rootless_dist,
+                symlink_output_file,
+                "Homebrew formula output must not be a symlink",
+            )
+
+        symlink_chocolatey = temp / "symlink-chocolatey"
+        symlink_chocolatey.mkdir()
+        chocolatey_target = temp / "symlink-chocolatey-target.nupkg"
+        chocolatey_target.write_bytes(b"target\n")
+        if try_symlink(chocolatey_target, symlink_chocolatey / CHOCOLATEY_FILENAME):
+            expect_cli_failure(
+                "symlinked Chocolatey output",
+                rootless_dist,
+                symlink_chocolatey,
+                "Chocolatey package output must not be a symlink",
+            )
+
+        symlink_sidecar = temp / "symlink-sidecar"
+        symlink_sidecar.mkdir()
+        sidecar_target = temp / "symlink-sidecar-target.sha256"
+        sidecar_target.write_text(f"{'0' * 64}  target\n", encoding="ascii", newline="\n")
+        if try_symlink(sidecar_target, symlink_sidecar / f"{DEBIAN_AMD64_FILENAME}.sha256"):
+            expect_cli_failure(
+                "symlinked generated sidecar",
+                rootless_dist,
+                symlink_sidecar,
+                "package-manager output SHA-256 sidecar output must not be a symlink",
+            )
+
+        symlink_existing_rpm = temp / "symlink-existing-rpm"
+        symlink_existing_rpm.mkdir()
+        rpm_target = temp / "symlink-existing-rpm-target.rpm"
+        rpm_target.write_bytes(b"rpm target\n")
+        if try_symlink(rpm_target, symlink_existing_rpm / RPM_X64_FILENAME):
+            expect_failure(
+                "symlinked existing RPM package",
+                lambda: generator.existing_rpm_package_paths(VERSION, symlink_existing_rpm),
+                "generated RPM package must not be a symlink",
+            )
+
+        symlink_existing_rpm_sidecar = temp / "symlink-existing-rpm-sidecar"
+        symlink_existing_rpm_sidecar.mkdir()
+        rpm_package = symlink_existing_rpm_sidecar / RPM_X64_FILENAME
+        rpm_package.write_bytes(b"rpm package\n")
+        write_checksum(rpm_package)
+        rpm_sidecar_target = temp / "symlink-existing-rpm-sidecar-target.sha256"
+        shutil.copy2(rpm_package.with_name(f"{rpm_package.name}.sha256"), rpm_sidecar_target)
+        rpm_package.with_name(f"{rpm_package.name}.sha256").unlink()
+        if try_symlink(rpm_sidecar_target, rpm_package.with_name(f"{rpm_package.name}.sha256")):
+            expect_failure(
+                "symlinked existing RPM sidecar",
+                lambda: generator.existing_rpm_package_paths(VERSION, symlink_existing_rpm_sidecar),
+                "SHA-256 sidecar for generated RPM package must not be a symlink",
+            )
 
         expect_failure_with_limit(
             generator,
