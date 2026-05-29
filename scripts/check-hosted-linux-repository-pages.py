@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,53 @@ def main() -> int:
 
         run_preparer(dist, pages)
         assert_pages_output(pages, site)
+
+        preparer = load_pages_preparer()
+        expect_zip_bound_failure(
+            preparer,
+            site,
+            "MAX_SITE_MEMBER_BYTES",
+            1,
+            "member is too large",
+            "Pages site member size bound",
+        )
+        expect_zip_bound_failure(
+            preparer,
+            site,
+            "MAX_SITE_MEMBERS",
+            1,
+            "too many members",
+            "Pages site member count bound",
+        )
+        expect_zip_bound_failure(
+            preparer,
+            site,
+            "MAX_SITE_TOTAL_UNCOMPRESSED_BYTES",
+            1,
+            "uncompressed contents exceed",
+            "Pages site total size bound",
+        )
+
+        encrypted_site = temp / "encrypted-site.zip"
+        shutil.copy2(site, encrypted_site)
+        mark_zip_member_encrypted(encrypted_site, "index.html")
+        expect_action_failure(
+            lambda: preparer.read_site_members(encrypted_site),
+            "encrypted zip member",
+            "encrypted Pages site member",
+        )
+
+        unsupported_site = temp / "unsupported-site.zip"
+        with zipfile.ZipFile(unsupported_site, "w", compression=zipfile.ZIP_STORED) as archive:
+            info = zipfile.ZipInfo("index.html", ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = (stat.S_IFCHR | 0o644) << 16
+            archive.writestr(info, b"device\n")
+        expect_action_failure(
+            lambda: preparer.read_site_members(unsupported_site),
+            "unsupported member type",
+            "unsupported Pages site member",
+        )
 
         missing_checksum = temp / "missing-checksum"
         shutil.copytree(dist, missing_checksum)
@@ -191,6 +239,19 @@ def load_site_checker():
     return module
 
 
+def load_pages_preparer():
+    spec = importlib.util.spec_from_file_location(
+        "prepare_hosted_linux_repository_pages",
+        PAGES_PREPARER,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load hosted Linux repository Pages preparer")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def run_preparer(site: Path, output_dir: Path) -> str:
     return subprocess.run(
         [
@@ -228,6 +289,37 @@ def expect_failure(description: str, site: Path, output_dir: Path, expected: str
         raise AssertionError(
             f"{description} failed with {failed.stdout!r}, expected {expected!r}"
         )
+
+
+def expect_zip_bound_failure(
+    preparer,
+    site: Path,
+    constant_name: str,
+    value: int,
+    expected: str,
+    label: str,
+) -> None:
+    original = getattr(preparer, constant_name)
+    setattr(preparer, constant_name, value)
+    try:
+        expect_action_failure(
+            lambda: preparer.read_site_members(site),
+            expected,
+            label,
+        )
+    finally:
+        setattr(preparer, constant_name, original)
+
+
+def expect_action_failure(action, expected: str, label: str) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        message = str(exc)
+        if expected in message:
+            return
+        raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+    raise AssertionError(f"{label}: expected failure containing {expected!r}")
 
 
 def assert_pages_output(pages: Path, site: Path) -> None:
@@ -336,6 +428,38 @@ def write_checksum(path: Path) -> None:
         encoding="ascii",
         newline="\n",
     )
+
+
+def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
+    data = bytearray(path.read_bytes())
+    target = member_name.encode("utf-8")
+    offset = 0
+    while offset + 4 <= len(data):
+        signature = int.from_bytes(data[offset : offset + 4], "little")
+        if signature == 0x04034B50:
+            name_length = int.from_bytes(data[offset + 26 : offset + 28], "little")
+            extra_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            name_start = offset + 30
+            name_end = name_start + name_length
+            compressed_size = int.from_bytes(data[offset + 18 : offset + 22], "little")
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 6 : offset + 8], "little") | 0x1
+                data[offset + 6 : offset + 8] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + compressed_size
+            continue
+        if signature == 0x02014B50:
+            name_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+            extra_length = int.from_bytes(data[offset + 30 : offset + 32], "little")
+            comment_length = int.from_bytes(data[offset + 32 : offset + 34], "little")
+            name_start = offset + 46
+            name_end = name_start + name_length
+            if data[name_start:name_end] == target:
+                flags = int.from_bytes(data[offset + 8 : offset + 10], "little") | 0x1
+                data[offset + 8 : offset + 10] = flags.to_bytes(2, "little")
+            offset = name_end + extra_length + comment_length
+            continue
+        offset += 1
+    path.write_bytes(data)
 
 
 if __name__ == "__main__":
