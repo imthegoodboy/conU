@@ -126,6 +126,7 @@ def main() -> int:
 
 def run_zip_ingestion_preflights() -> None:
     signer = load_signer()
+    run_source_file_preflights(signer)
     with tempfile.TemporaryDirectory(prefix="conu-repository-signing-zip-check-") as temp_text:
         temp = Path(temp_text)
         metadata = temp / APT_METADATA
@@ -178,6 +179,137 @@ def run_zip_ingestion_preflights() -> None:
         )
 
 
+def run_source_file_preflights(signer) -> None:
+    with tempfile.TemporaryDirectory(prefix="conu-repository-signing-file-check-") as temp_text:
+        temp = Path(temp_text)
+
+        valid = temp / "valid"
+        valid.mkdir()
+        apt = valid / APT_METADATA
+        rpm = valid / RPM_METADATA
+        write_apt_metadata_zip(apt)
+        write_rpm_metadata_zip(rpm)
+        write_sha256_sidecar(apt)
+        write_sha256_sidecar(rpm)
+        apt_bundles, rpm_bundles = signer.repository_metadata_assets(valid)
+        if apt_bundles != (apt,) or rpm_bundles != (rpm,):
+            raise AssertionError("repository signer did not select expected metadata bundles")
+
+        directory_source = temp / "directory-source"
+        directory_source.mkdir()
+        (directory_source / APT_METADATA).mkdir()
+        expect_action_failure(
+            lambda: signer.repository_metadata_assets(directory_source),
+            "must be a regular file",
+            "repository signing directory source",
+        )
+
+        empty_source = temp / "empty-source"
+        empty_source.mkdir()
+        (empty_source / APT_METADATA).write_bytes(b"")
+        expect_action_failure(
+            lambda: signer.repository_metadata_assets(empty_source),
+            "must not be empty",
+            "repository signing empty source",
+        )
+
+        oversized_source = temp / "oversized-source"
+        oversized_source.mkdir()
+        oversized_metadata = oversized_source / APT_METADATA
+        write_apt_metadata_zip(oversized_metadata)
+        expect_constant_failure(
+            signer,
+            "MAX_REPOSITORY_METADATA_BUNDLE_BYTES",
+            max(0, oversized_metadata.stat().st_size - 1),
+            lambda: signer.repository_metadata_assets(oversized_source),
+            "is too large",
+            "repository signing source size bound",
+        )
+
+        aggregate_source = temp / "aggregate-source"
+        aggregate_source.mkdir()
+        aggregate_apt = aggregate_source / APT_METADATA
+        aggregate_rpm = aggregate_source / RPM_METADATA
+        write_apt_metadata_zip(aggregate_apt)
+        write_rpm_metadata_zip(aggregate_rpm)
+        expect_constant_failure(
+            signer,
+            "MAX_TOTAL_REPOSITORY_METADATA_BUNDLE_BYTES",
+            aggregate_apt.stat().st_size,
+            lambda: signer.repository_metadata_assets(aggregate_source),
+            "repository metadata bundles exceed",
+            "repository signing aggregate source size bound",
+        )
+
+        sidecar_directory = temp / "sidecar-directory"
+        sidecar_directory.mkdir()
+        sidecar_bundle = sidecar_directory / APT_METADATA
+        write_apt_metadata_zip(sidecar_bundle)
+        sidecar_bundle.with_name(f"{sidecar_bundle.name}.sha256").mkdir()
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(sidecar_bundle, "APT repository metadata bundle"),
+            "must be a regular file",
+            "repository signing sidecar directory",
+        )
+
+        sidecar_output_directory = temp / "sidecar-output-directory"
+        sidecar_output_directory.mkdir()
+        output_bundle = sidecar_output_directory / APT_METADATA
+        write_apt_metadata_zip(output_bundle)
+        output_bundle.with_name(f"{output_bundle.name}.sha256").mkdir()
+        expect_action_failure(
+            lambda: signer.write_sha256_sidecar(output_bundle),
+            "must be a regular file",
+            "repository signing sidecar output directory",
+        )
+
+        symlink_source = temp / "symlink-source"
+        symlink_source.mkdir()
+        real_source = symlink_source / "real.zip"
+        linked_source = symlink_source / APT_METADATA
+        write_apt_metadata_zip(real_source)
+        if try_symlink(linked_source, real_source):
+            expect_action_failure(
+                lambda: signer.repository_metadata_assets(symlink_source),
+                "must not be a symlink",
+                "repository signing symlink source",
+            )
+
+        symlink_sidecar = temp / "symlink-sidecar"
+        symlink_sidecar.mkdir()
+        symlink_bundle = symlink_sidecar / APT_METADATA
+        symlink_target = symlink_sidecar / "real.sha256"
+        symlink_output = symlink_bundle.with_name(f"{symlink_bundle.name}.sha256")
+        write_apt_metadata_zip(symlink_bundle)
+        write_sha256_sidecar(symlink_bundle, sidecar=symlink_target)
+        if try_symlink(symlink_output, symlink_target):
+            expect_action_failure(
+                lambda: signer.verify_sha256_sidecar(
+                    symlink_bundle,
+                    "APT repository metadata bundle",
+                ),
+                "must not be a symlink",
+                "repository signing symlink sidecar",
+            )
+            expect_action_failure(
+                lambda: signer.write_sha256_sidecar(symlink_bundle),
+                "must not be a symlink",
+                "repository signing symlink sidecar output",
+            )
+
+        symlink_output_bundle = temp / "symlink-output-bundle"
+        symlink_output_bundle.mkdir()
+        real_output_bundle = symlink_output_bundle / "real.zip"
+        linked_output_bundle = symlink_output_bundle / APT_METADATA
+        write_apt_metadata_zip(real_output_bundle)
+        if try_symlink(linked_output_bundle, real_output_bundle):
+            expect_action_failure(
+                lambda: signer.write_zip_members(linked_output_bundle, {"Release": b"x\n"}),
+                "must not be a symlink",
+                "repository signing symlink bundle output",
+            )
+
+
 def load_signer():
     script_dir = ROOT / "scripts"
     sys.path.insert(0, str(script_dir))
@@ -219,6 +351,22 @@ def expect_zip_bound_failure(
         setattr(signer, constant_name, original)
 
 
+def expect_constant_failure(
+    signer,
+    constant_name: str,
+    value: int,
+    action,
+    expected: str,
+    label: str,
+) -> None:
+    original = getattr(signer, constant_name)
+    setattr(signer, constant_name, value)
+    try:
+        expect_action_failure(action, expected, label)
+    finally:
+        setattr(signer, constant_name, original)
+
+
 def expect_action_failure(action, expected: str, label: str) -> None:
     try:
         action()
@@ -228,6 +376,14 @@ def expect_action_failure(action, expected: str, label: str) -> None:
             return
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def try_symlink(link: Path, target: Path) -> bool:
+    try:
+        link.symlink_to(target)
+        return True
+    except (NotImplementedError, OSError):
+        return False
 
 
 def write_apt_metadata_zip(path: Path) -> None:
@@ -365,8 +521,8 @@ def assert_zip_member_normalized(archive: zipfile.ZipFile, name: str) -> None:
         raise AssertionError(f"{name} had mode {oct(mode)}")
 
 
-def write_sha256_sidecar(path: Path) -> None:
-    path.with_name(f"{path.name}.sha256").write_text(
+def write_sha256_sidecar(path: Path, *, sidecar: Path | None = None) -> None:
+    (sidecar or path.with_name(f"{path.name}.sha256")).write_text(
         f"{sha256_file(path)}  {path.name}\n",
         encoding="ascii",
         newline="\n",
