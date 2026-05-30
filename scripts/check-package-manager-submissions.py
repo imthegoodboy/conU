@@ -552,6 +552,39 @@ def main() -> int:
             "forbidden literal",
         )
 
+        private_key_public_asset = temp / "private-key-public-asset"
+        manifest_check.generate(
+            generator,
+            dist,
+            private_key_public_asset,
+            build_apt_repository_metadata=True,
+        )
+        write_signed_release_extras(private_key_public_asset)
+        public_key = private_key_public_asset / "conu-linux-gpg-key.asc"
+        public_key.write_text(
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
+            "fixture\n"
+            "-----END PGP PUBLIC KEY BLOCK-----\n"
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "fixture\n"
+            "-----END PGP PRIVATE KEY BLOCK-----\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        write_sha256(public_key)
+        expect_failure(
+            "private key material in public-key asset",
+            lambda: preparer.prepare_submission_bundle(
+                private_key_public_asset,
+                temp / "private-key-public-asset-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "private key material",
+        )
+
         no_optional = temp / "no-optional"
         manifest_check.generate(generator, dist, no_optional)
         preparer.prepare_submission_bundle(no_optional, temp / "no-optional-out", VERSION)
