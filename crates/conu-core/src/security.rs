@@ -452,6 +452,7 @@ pub fn rotate_storage_key_from_paths(
 ) -> Result<StorageKeyRotationReport, SecurityError> {
     ensure_security_state_from_paths(paths)?;
     let old_key = read_storage_key(paths)?;
+    let payload_files = local_storage_payload_files(paths)?;
     let archived_storage_keys = archive_storage_key(paths, &old_key)?;
     let new_key = generate_storage_key();
     let contents = render_storage_key_file(
@@ -471,7 +472,7 @@ pub fn rotate_storage_key_from_paths(
         contents_displayed: false,
     };
 
-    for payload_file in local_storage_payload_files(paths)? {
+    for payload_file in payload_files {
         report.files_scanned += 1;
         let Some(payload) = payload_file else {
             report.files_skipped += 1;
@@ -1663,7 +1664,7 @@ fn collect_files_with_extension(
     extension: &str,
     files: &mut Vec<PathBuf>,
 ) -> Result<(), SecurityError> {
-    if !root.exists() {
+    if !local_payload_directory_exists(root)? {
         return Ok(());
     }
 
@@ -1674,10 +1675,26 @@ fn collect_files_with_extension(
             SecurityError::io("read local payload directory entry", root, error)
         })?;
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type().map_err(|error| {
+            SecurityError::io("inspect local payload directory entry", &path, error)
+        })?;
+        if file_type.is_symlink() {
+            return Err(invalid_local_payload_path(
+                &path,
+                "local payload path is not a regular file or directory",
+            ));
+        }
+        if file_type.is_dir() {
             collect_files_with_extension(&path, extension, files)?;
-        } else if path.extension().and_then(|value| value.to_str()) == Some(extension) {
+        } else if file_type.is_file()
+            && path.extension().and_then(|value| value.to_str()) == Some(extension)
+        {
             files.push(path);
+        } else if !file_type.is_file() {
+            return Err(invalid_local_payload_path(
+                &path,
+                "local payload path is not a regular file or directory",
+            ));
         }
     }
 
@@ -1687,6 +1704,7 @@ fn collect_files_with_extension(
 fn local_storage_payload_file(
     path: &Path,
 ) -> Result<Option<LocalStoragePayloadFile>, SecurityError> {
+    ensure_regular_local_payload_file(path)?;
     let contents = fs::read_to_string(path)
         .map_err(|error| SecurityError::io("read local encrypted payload file", path, error))?;
     let values = parse_key_values(&contents);
@@ -1712,6 +1730,44 @@ fn local_storage_payload_file(
         encrypted,
         aad,
     }))
+}
+
+fn local_payload_directory_exists(path: &Path) -> Result<bool, SecurityError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(invalid_local_payload_path(
+                    path,
+                    "local payload directory path is not a directory",
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(SecurityError::io(
+            "inspect local payload directory",
+            path,
+            error,
+        )),
+    }
+}
+
+fn ensure_regular_local_payload_file(path: &Path) -> Result<(), SecurityError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| SecurityError::io("inspect local encrypted payload file", path, error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(invalid_local_payload_path(
+            path,
+            "local payload path is not a regular file",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_local_payload_path(path: &Path, reason: &'static str) -> SecurityError {
+    SecurityError::InvalidPayload {
+        reason: format!("{reason} at {}", path.display()),
+    }
 }
 
 fn local_storage_payload_aad(
@@ -3656,6 +3712,92 @@ mod tests {
             decrypt_from_storage_from_paths(&paths, &envelope_rotated, &envelope_aad)
                 .expect("envelope decrypts"),
             b"another private payload"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_key_rotation_rejects_symlinked_payload_scan_root_before_key_change() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("storage-rotation-symlink-root");
+        let paths = StatePaths::from_home(home.clone());
+        ensure_security_state_from_paths(&paths).expect("security state initializes");
+        let old_key_id = read_storage_key(&paths).expect("old key reads").key_id;
+        let outside = home.join("outside-payload-root");
+        fs::create_dir_all(&outside).expect("outside payload root creates");
+        fs::create_dir_all(
+            paths
+                .message_ipc_inbox_dir
+                .parent()
+                .expect("message ipc inbox has parent"),
+        )
+        .expect("message ipc parent creates");
+        symlink(&outside, &paths.message_ipc_inbox_dir).expect("payload root symlink creates");
+
+        let error = rotate_storage_key_from_paths(&paths)
+            .expect_err("symlinked payload scan root fails closed");
+
+        assert!(error.to_string().contains("not a directory"));
+        assert_eq!(
+            read_storage_key(&paths)
+                .expect("storage key still reads")
+                .key_id,
+            old_key_id
+        );
+        assert_eq!(
+            fs::read_dir(&outside)
+                .expect("outside payload root reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&paths.message_ipc_inbox_dir)
+                .expect("payload root link metadata reads")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_key_rotation_rejects_symlinked_payload_file_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("storage-rotation-symlink-file");
+        let paths = StatePaths::from_home(home.clone());
+        ensure_security_state_from_paths(&paths).expect("security state initializes");
+        fs::create_dir_all(&paths.message_ipc_inbox_dir).expect("message ipc inbox created");
+        let old_key_id = read_storage_key(&paths).expect("old key reads").key_id;
+        let outside = home.join("outside-payload-target.msg");
+        let outside_contents = "outside payload marker\n";
+        fs::write(&outside, outside_contents).expect("outside payload target writes");
+        let link = paths.message_ipc_inbox_dir.join("req.link.msg");
+        symlink(&outside, &link).expect("payload file symlink creates");
+
+        let error =
+            rotate_storage_key_from_paths(&paths).expect_err("symlinked payload file fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("not a regular file or directory")
+        );
+        assert_eq!(
+            read_storage_key(&paths)
+                .expect("storage key still reads")
+                .key_id,
+            old_key_id
+        );
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside payload target reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("payload file link metadata reads")
+                .file_type()
+                .is_symlink()
         );
     }
 
