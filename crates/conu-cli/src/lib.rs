@@ -7951,28 +7951,9 @@ fn install_staged_update_binaries(
         temp_targets.push((report.target_file.clone(), temp_target));
     }
 
-    for report in &reports {
-        if report.target_file.exists() {
-            let Some(backup_file) = report.backup_file.as_ref() else {
-                cleanup_update_temp_targets(&temp_targets);
-                return Err("release update backup path was not prepared".to_string());
-            };
-            if backup_file.exists() {
-                cleanup_update_temp_targets(&temp_targets);
-                return Err(format!(
-                    "release update backup target already exists: {}",
-                    backup_file.display()
-                ));
-            }
-            if let Err(error) = fs::copy(&report.target_file, backup_file) {
-                cleanup_update_temp_targets(&temp_targets);
-                let _ = fs::remove_file(backup_file);
-                return Err(format!(
-                    "could not back up release update binary {}: {error}",
-                    report.target_file.display()
-                ));
-            }
-        }
+    if let Err(error) = back_up_existing_update_binaries(&reports) {
+        cleanup_update_temp_targets(&temp_targets);
+        return Err(error);
     }
 
     let mut installed = Vec::new();
@@ -8006,6 +7987,57 @@ fn install_staged_update_binaries(
     }
 
     Ok(reports)
+}
+
+fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Result<(), String> {
+    for report in reports {
+        let metadata = match fs::symlink_metadata(&report.target_file) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect release update install target {}: {error}",
+                    report.target_file.display()
+                ));
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "release update install target is not a regular file: {}",
+                report.target_file.display()
+            ));
+        }
+        let Some(backup_file) = report.backup_file.as_ref() else {
+            return Err(format!(
+                "release update backup path was not prepared for {}",
+                report.target_file.display()
+            ));
+        };
+        if backup_file.exists() {
+            return Err(format!(
+                "release update backup target already exists: {}",
+                backup_file.display()
+            ));
+        }
+        let copied = match fs::copy(&report.target_file, backup_file) {
+            Ok(copied) => copied,
+            Err(error) => {
+                let _ = fs::remove_file(backup_file);
+                return Err(format!(
+                    "could not back up release update binary {}: {error}",
+                    report.target_file.display()
+                ));
+            }
+        };
+        if copied != metadata.len() {
+            let _ = fs::remove_file(backup_file);
+            return Err(format!(
+                "release update install target changed while backing up {}",
+                report.target_file.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn create_update_temp_install_target(
@@ -11028,6 +11060,36 @@ mod tests {
         assert_eq!(
             fs::read(&stale).expect("stale temp target reads"),
             b"stale temp target"
+        );
+    }
+
+    #[test]
+    fn update_apply_backup_rejects_unplanned_existing_target() {
+        let home = temp_home("update-apply-backup-unplanned-target");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let target_file = install_dir.join(&filename);
+        fs::write(&target_file, b"late existing target").expect("target writes");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        fs::write(&source_file, b"new conu binary").expect("source binary writes");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file,
+            target_file: target_file.clone(),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+        };
+
+        let error = back_up_existing_update_binaries(&[report])
+            .expect_err("unplanned target should fail closed");
+
+        assert!(error.contains("release update backup path was not prepared"));
+        assert_eq!(
+            fs::read(&target_file).expect("target remains readable"),
+            b"late existing target"
         );
     }
 
