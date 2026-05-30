@@ -517,6 +517,8 @@ def require_detached_signature(path: Path, source_budget: SourceBudget) -> None:
         raise SystemExit(f"detached signature is not ASCII-armored: {signature.name}") from exc
     if "BEGIN PGP SIGNATURE" not in signature_text:
         raise SystemExit(f"detached signature is not ASCII-armored: {signature.name}")
+    if "PRIVATE KEY BLOCK" in signature_text:
+        raise SystemExit(f"detached signature contains private key material: {signature.name}")
 
 
 def asset_url(release_base_url: str, filename: str) -> str:
