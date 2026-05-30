@@ -607,10 +607,13 @@ fn ensure_route_files(paths: &StatePaths) -> Result<(), RouteError> {
 }
 
 fn read_config(paths: &StatePaths) -> Result<HashMap<String, String>, RouteError> {
-    let contents = match fs::read_to_string(&paths.config) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(error) => return Err(RouteError::io("read route config", &paths.config, error)),
+    let contents = match state::read_optional_regular_state_file(
+        &paths.config,
+        "inspect route config",
+        "read route config",
+    )? {
+        Some(contents) => contents,
+        None => return Ok(HashMap::new()),
     };
     Ok(parse_key_values(&contents))
 }
@@ -626,12 +629,14 @@ fn relay_endpoint(config: &HashMap<String, String>) -> Result<String, RouteError
 }
 
 fn read_routes(paths: &StatePaths) -> Result<Vec<RouteRecord>, RouteError> {
-    if !paths.route_registry.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.route_registry,
+        "inspect route registry",
+        "read route registry",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.route_registry)
-        .map_err(|error| RouteError::io("read route registry", &paths.route_registry, error))?;
+    };
     parse_routes(&contents)
 }
 
@@ -694,8 +699,15 @@ fn write_routes(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteE
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.route_registry, contents)
-        .map_err(|error| RouteError::io("write route registry", &paths.route_registry, error))
+    state::write_regular_state_file(
+        &paths.route_registry,
+        &contents,
+        "inspect route registry",
+        "create route registry",
+        "open route registry",
+        "write route registry",
+    )?;
+    Ok(())
 }
 
 fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteError> {
@@ -705,22 +717,16 @@ fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteE
 
     fs::create_dir_all(&paths.routes_dir)
         .map_err(|error| RouteError::io("create routes directory", &paths.routes_dir, error))?;
-    let new_file = !paths.route_probes.exists();
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&paths.route_probes)
-        .map_err(|error| RouteError::io("open route probes", &paths.route_probes, error))?;
-
-    if new_file {
-        writeln!(file, "# conU route probes\nversion = \"{}\"", ROUTE_VERSION)
-            .map_err(|error| RouteError::io("write route probes", &paths.route_probes, error))?;
-    }
+    let mut contents = state::read_optional_regular_state_file(
+        &paths.route_probes,
+        "inspect route probes",
+        "read route probes",
+    )?
+    .unwrap_or_else(|| format!("# conU route probes\nversion = \"{}\"\n", ROUTE_VERSION));
 
     for probe in probes {
-        writeln!(
-            file,
-            "\n[[probe]]\nprobe_id = \"{}\"\nroute_id = \"{}\"\npeer_node_id = \"{}\"\ntransport = \"{}\"\nendpoint = \"{}\"\noutcome = \"{}\"\nscore = {}\nlatency_ms = {}\ncandidate_source = \"{}\"\ncandidate_kind = \"{}\"\nrendezvous_state = \"{}\"\ncreated_at_unix = {}\npayload_displayed = false",
+        contents.push_str(&format!(
+            "\n[[probe]]\nprobe_id = \"{}\"\nroute_id = \"{}\"\npeer_node_id = \"{}\"\ntransport = \"{}\"\nendpoint = \"{}\"\noutcome = \"{}\"\nscore = {}\nlatency_ms = {}\ncandidate_source = \"{}\"\ncandidate_kind = \"{}\"\nrendezvous_state = \"{}\"\ncreated_at_unix = {}\npayload_displayed = false\n",
             escape_file_value(&probe.probe_id),
             escape_file_value(&probe.route_id),
             escape_file_value(&probe.peer_node_id),
@@ -733,20 +739,29 @@ fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteE
             escape_file_value(&probe.candidate_kind),
             escape_file_value(&probe.rendezvous_state),
             probe.created_at_unix
-        )
-        .map_err(|error| RouteError::io("write route probe", &paths.route_probes, error))?;
+        ));
     }
 
+    state::write_regular_state_file(
+        &paths.route_probes,
+        &contents,
+        "inspect route probes",
+        "create route probes",
+        "open route probes",
+        "write route probes",
+    )?;
     Ok(())
 }
 
 fn read_probes(paths: &StatePaths) -> Result<Vec<RouteProbe>, RouteError> {
-    if !paths.route_probes.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.route_probes,
+        "inspect route probes",
+        "read route probes",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.route_probes)
-        .map_err(|error| RouteError::io("read route probes", &paths.route_probes, error))?;
+    };
     parse_probes(&contents)
 }
 
@@ -1394,6 +1409,62 @@ mod tests {
         assert!(!log.contains("private message contents"));
         assert!(!probes.contains("private message contents"));
         assert!(!log.contains("Review this code"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_registry_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("route-registry-symlink");
+        trusted_peer(&home);
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-route-registry");
+        let outside_contents = "outside route registry\n";
+        fs::write(&outside, outside_contents).expect("outside registry writes");
+        symlink(&outside, &paths.route_registry).expect("route registry symlink creates");
+
+        let error = sync_routes(Some(home)).expect_err("symlinked route registry fails closed");
+
+        assert!(error.to_string().contains("inspect route registry"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside registry reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.route_registry)
+                .expect("route registry metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_probes_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("route-probes-symlink");
+        trusted_peer(&home);
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-route-probes");
+        let outside_contents = "outside route probes\n";
+        fs::write(&outside, outside_contents).expect("outside probes write");
+        symlink(&outside, &paths.route_probes).expect("route probes symlink creates");
+
+        let error = sync_routes(Some(home)).expect_err("symlinked route probes fail closed");
+
+        assert!(error.to_string().contains("inspect route probes"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside probes read"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.route_probes)
+                .expect("route probes metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
