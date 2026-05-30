@@ -1232,8 +1232,11 @@ impl RelayRequest {
 }
 
 fn read_relay_request(path: &Path) -> Result<RelayRequest, RelayDeliveryError> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayDeliveryError::io("read relay outbox request", path, error))?;
+    let contents = state::read_required_regular_state_file(
+        path,
+        "inspect relay outbox request",
+        "read relay outbox request",
+    )?;
     let values = parse_key_values(&contents);
 
     if value_or_empty(&values, "version") != RELAY_REQUEST_VERSION {
@@ -2076,6 +2079,36 @@ mod tests {
         let error = read_relay_request(&path).expect_err("mismatched request fails");
 
         assert!(error.to_string().contains("does not match"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_request_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-request-read-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        fs::create_dir_all(&init.paths.relay_outbox_dir).expect("relay outbox");
+        let outside = init.paths.home.join("outside-relay-request.relay");
+        let outside_contents = "version = \"1\"\ntype = \"relay_message\"\nkind = \"message\"\nrequest_id = \"relayreq.1\"\nenvelope_id = \"env.1\"\nfrom_node_id = \"node.a\"\nto_node_id = \"node.b\"\nfrom_agent_id = \"agent.a\"\nto_agent_id = \"agent.b\"\npayload_len = 0\npayload_cipher = \"xchacha20poly1305\"\npayload_key_id = \"key.1\"\nsender_exchange_public_key_hex = \"aa\"\npayload_nonce_hex = \"bb\"\npayload_ciphertext_hex = \"cc\"\n";
+        fs::write(&outside, outside_contents).expect("outside request writes");
+        let path = init.paths.relay_outbox_dir.join("linked.relay");
+        symlink(&outside, &path).expect("relay request symlink creates");
+
+        let error =
+            read_relay_request(&path).expect_err("relay request symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect relay outbox request"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside request reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&path)
+                .expect("relay request symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

@@ -540,6 +540,22 @@ pub(crate) fn read_optional_regular_state_file(
     read_existing_state_file(path, inspect_action, read_action).map(Some)
 }
 
+pub(crate) fn read_required_regular_state_file(
+    path: &Path,
+    inspect_action: &'static str,
+    read_action: &'static str,
+) -> Result<String, StateError> {
+    if regular_state_file_metadata(path, inspect_action)?.is_none() {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    }
+
+    read_existing_state_file(path, inspect_action, read_action)
+}
+
 pub(crate) fn write_regular_state_file(
     path: &Path,
     contents: &str,
