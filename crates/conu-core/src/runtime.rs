@@ -598,13 +598,15 @@ pub fn request_runtime_stop(home_override: Option<PathBuf>) -> Result<StopReport
     let status = read_runtime_from_paths(&paths)?;
     if status.is_live() {
         let contents = format!("requested_at_unix = {}\n", current_unix_seconds());
-        fs::write(&paths.runtime_stop_request, contents).map_err(|error| {
-            RuntimeError::io(
-                "write runtime stop request",
-                &paths.runtime_stop_request,
-                error,
-            )
-        })?;
+        write_runtime_control_file(
+            &paths.runtime_stop_request,
+            &contents,
+            "inspect runtime stop request",
+            "create runtime stop request",
+            "open runtime stop request",
+            "truncate runtime stop request",
+            "write runtime stop request",
+        )?;
         append_log(
             &paths,
             "stop_requested_by_cli",
@@ -636,12 +638,10 @@ pub fn request_runtime_stop(home_override: Option<PathBuf>) -> Result<StopReport
 }
 
 fn read_runtime_from_paths(paths: &StatePaths) -> Result<RuntimeStatus, RuntimeError> {
-    if !paths.runtime_status.exists() {
+    let Some(contents) = read_runtime_control_file(&paths.runtime_status, "read runtime status")?
+    else {
         return Ok(offline_status(paths));
-    }
-
-    let contents = fs::read_to_string(&paths.runtime_status)
-        .map_err(|error| RuntimeError::io("read runtime status", &paths.runtime_status, error))?;
+    };
     let values = parse_key_values(&contents);
     let mut status = RuntimeStatus {
         state: RuntimeState::from_str(value_or_empty(&values, "state")),
@@ -680,8 +680,15 @@ fn write_status(paths: &StatePaths, status: &RuntimeStatus) -> Result<(), Runtim
         escape_file_value(&status.local_endpoint)
     );
 
-    fs::write(&paths.runtime_status, contents)
-        .map_err(|error| RuntimeError::io("write runtime status", &paths.runtime_status, error))
+    write_runtime_control_file(
+        &paths.runtime_status,
+        &contents,
+        "inspect runtime status",
+        "create runtime status",
+        "open runtime status",
+        "truncate runtime status",
+        "write runtime status",
+    )
 }
 
 fn write_lock(paths: &StatePaths, pid: u32, started_at_unix: u64) -> Result<(), RuntimeError> {
@@ -694,6 +701,73 @@ fn write_lock(paths: &StatePaths, pid: u32, started_at_unix: u64) -> Result<(), 
 
     file.write_all(contents.as_bytes())
         .map_err(|error| RuntimeError::io("write runtime lock", &paths.runtime_lock, error))
+}
+
+fn read_runtime_control_file(
+    path: &Path,
+    action: &'static str,
+) -> Result<Option<String>, RuntimeError> {
+    let Some(_) = regular_runtime_control_metadata(path, action)? else {
+        return Ok(None);
+    };
+    fs::read_to_string(path)
+        .map(Some)
+        .map_err(|error| RuntimeError::io(action, path, error))
+}
+
+fn write_runtime_control_file(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+    create_action: &'static str,
+    open_action: &'static str,
+    truncate_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), RuntimeError> {
+    match regular_runtime_control_metadata(path, inspect_action)? {
+        Some(_) => {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .open(path)
+                .map_err(|error| RuntimeError::io(open_action, path, error))?;
+            file.set_len(0)
+                .map_err(|error| RuntimeError::io(truncate_action, path, error))?;
+            file.write_all(contents.as_bytes())
+                .map_err(|error| RuntimeError::io(write_action, path, error))
+        }
+        None => {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|error| RuntimeError::io(create_action, path, error))?;
+            file.write_all(contents.as_bytes())
+                .map_err(|error| RuntimeError::io(write_action, path, error))
+        }
+    }
+}
+
+fn regular_runtime_control_metadata(
+    path: &Path,
+    action: &'static str,
+) -> Result<Option<fs::Metadata>, RuntimeError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(RuntimeError::io(
+                    action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "runtime control path is not a regular file",
+                    ),
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(RuntimeError::io(action, path, error)),
+    }
 }
 
 fn append_log(
@@ -857,6 +931,102 @@ mod tests {
         assert!(report.requested);
         assert!(request.contains("requested_at_unix"));
         assert!(!request.contains("private message contents"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_request_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("stop-request-symlink");
+        let _lease = acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.join("outside-stop-request");
+        fs::write(&outside, "outside control\n").expect("outside writes");
+        symlink(&outside, &paths.runtime_stop_request).expect("stop request symlink creates");
+
+        let error =
+            request_runtime_stop(Some(home)).expect_err("symlink stop request should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            "outside control\n"
+        );
+        assert!(
+            fs::symlink_metadata(&paths.runtime_stop_request)
+                .expect("stop request symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_status_write_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("status-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.join("outside-status");
+        fs::write(&outside, "outside status\n").expect("outside writes");
+        symlink(&outside, &paths.runtime_status).expect("status symlink creates");
+        let status = RuntimeStatus {
+            state: RuntimeState::Running,
+            pid: Some(process::id()),
+            node_id: Some(init.node.node_id),
+            started_at_unix: Some(1),
+            heartbeat_at_unix: Some(1),
+            local_endpoint: LOCAL_ENDPOINT.to_string(),
+            status_path: paths.runtime_status.clone(),
+            lock_path: paths.runtime_lock.clone(),
+        };
+
+        let error = write_status(&paths, &status).expect_err("symlink status should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            "outside status\n"
+        );
+        assert!(
+            fs::symlink_metadata(&paths.runtime_status)
+                .expect("status symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_status_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("status-read-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir creates");
+        let outside = home.join("outside-status");
+        fs::write(
+            &outside,
+            "version = \"1\"\nstate = \"running\"\npid = 123\nnode_id = \"node_outside\"\nstarted_at_unix = 1\nheartbeat_at_unix = 1\nlocal_endpoint = \"file-ipc:runtime/ipc/inbox\"\n",
+        )
+        .expect("outside writes");
+        symlink(&outside, &paths.runtime_status).expect("status symlink creates");
+
+        let error = read_runtime(Some(home)).expect_err("symlink status should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            "version = \"1\"\nstate = \"running\"\npid = 123\nnode_id = \"node_outside\"\nstarted_at_unix = 1\nheartbeat_at_unix = 1\nlocal_endpoint = \"file-ipc:runtime/ipc/inbox\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&paths.runtime_status)
+                .expect("status symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
