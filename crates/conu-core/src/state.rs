@@ -372,8 +372,10 @@ impl NodeIdentity {
 }
 
 fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
+    fs::create_dir_all(&paths.home)
+        .map_err(|error| StateError::io("create state directory", &paths.home, error))?;
+
     for directory in [
-        &paths.home,
         &paths.agents_dir,
         &paths.runtime_dir,
         &paths.ipc_dir,
@@ -403,11 +405,34 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
         &paths.security_dir,
         &paths.storage_key_archive_dir,
     ] {
-        fs::create_dir_all(directory)
-            .map_err(|error| StateError::io("create state directory", directory, error))?;
+        ensure_state_directory(directory)?;
     }
 
     Ok(())
+}
+
+fn ensure_state_directory(path: &Path) -> Result<(), StateError> {
+    if regular_state_directory_metadata(path, "inspect state directory")?.is_some() {
+        return Ok(());
+    }
+
+    match fs::create_dir(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            match regular_state_directory_metadata(path, "inspect state directory")? {
+                Some(_) => Ok(()),
+                None => Err(StateError::io(
+                    "inspect state directory",
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "state directory disappeared after create collision",
+                    ),
+                )),
+            }
+        }
+        Err(error) => Err(StateError::io("create state directory", path, error)),
+    }
 }
 
 fn write_if_missing(
@@ -512,6 +537,30 @@ fn regular_state_file_metadata(
                     io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "state file path is not a regular file",
+                    ),
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(StateError::io(action, path, error)),
+    }
+}
+
+fn regular_state_directory_metadata(
+    path: &Path,
+    action: &'static str,
+) -> Result<Option<fs::Metadata>, StateError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !file_type.is_dir() {
+                return Err(StateError::io(
+                    action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "state directory path is not a directory",
                     ),
                 ));
             }
@@ -758,6 +807,18 @@ mod tests {
         assert!(error.to_string().contains("inspect config file"));
     }
 
+    #[test]
+    fn init_rejects_file_instead_of_state_directory() {
+        let home = test_home("file-logs-dir");
+        let report = init_state(Some(home.clone())).expect("state initializes");
+        fs::remove_dir(&report.paths.logs_dir).expect("logs dir removes");
+        fs::write(&report.paths.logs_dir, "not a directory").expect("logs file writes");
+
+        let error = init_state(Some(home)).expect_err("file state directory should fail closed");
+
+        assert!(error.to_string().contains("inspect state directory"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn init_rejects_symlinked_node_identity_without_reading_target() {
@@ -841,6 +902,30 @@ mod tests {
         assert!(
             fs::symlink_metadata(&report.paths.config)
                 .expect("config symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_state_directory_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("messages-dir-symlink");
+        let report = init_state(Some(home.clone())).expect("state initializes");
+        let outside = home.join("outside-messages");
+        fs::create_dir_all(&outside).expect("outside directory creates");
+        fs::remove_dir_all(&report.paths.messages_dir).expect("messages dir removes");
+        symlink(&outside, &report.paths.messages_dir).expect("messages dir symlink creates");
+
+        let error = init_state(Some(home)).expect_err("state dir symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect state directory"));
+        assert!(!outside.join(MESSAGE_INBOX_DIR).exists());
+        assert!(
+            fs::symlink_metadata(&report.paths.messages_dir)
+                .expect("messages dir symlink metadata")
                 .file_type()
                 .is_symlink()
         );
