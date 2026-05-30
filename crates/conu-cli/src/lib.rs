@@ -8342,24 +8342,34 @@ fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) -> Result<(
 }
 
 fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(backup_file).map_err(|error| {
-        format!(
-            "could not inspect release update backup file {}: {error}",
-            backup_file.display()
-        )
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(format!(
-            "release update backup file is not a regular file: {}",
-            backup_file.display()
-        ));
-    }
+    let metadata = update_backup_file_metadata(backup_file)?;
     let mut backup = fs::File::open(backup_file).map_err(|error| {
         format!(
             "could not open release update backup file {}: {error}",
             backup_file.display()
         )
     })?;
+    let opened_path_metadata = update_backup_file_metadata(backup_file)?;
+    if !update_input_file_metadata_matches(&metadata, &opened_path_metadata) {
+        return Err(format!(
+            "release update backup changed while opening {}",
+            backup_file.display()
+        ));
+    }
+    let opened_metadata = backup.metadata().map_err(|error| {
+        format!(
+            "could not inspect opened release update backup file {}: {error}",
+            backup_file.display()
+        )
+    })?;
+    if !opened_metadata.is_file()
+        || !update_input_file_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(format!(
+            "release update backup changed while opening {}",
+            backup_file.display()
+        ));
+    }
     let mut target = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -8391,6 +8401,41 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
             ));
         }
     };
+    let final_path_metadata = match update_backup_file_metadata(backup_file) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            drop(target);
+            let _ = fs::remove_file(target_file);
+            return Err(error);
+        }
+    };
+    if !update_input_file_metadata_matches(&metadata, &final_path_metadata) {
+        drop(target);
+        let _ = fs::remove_file(target_file);
+        return Err(format!(
+            "release update backup changed while restoring {}",
+            backup_file.display()
+        ));
+    }
+    let final_opened_metadata = match backup.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            drop(target);
+            let _ = fs::remove_file(target_file);
+            return Err(format!(
+                "could not inspect opened release update backup file {}: {error}",
+                backup_file.display()
+            ));
+        }
+    };
+    if !update_input_file_metadata_matches(&metadata, &final_opened_metadata) {
+        drop(target);
+        let _ = fs::remove_file(target_file);
+        return Err(format!(
+            "release update backup changed while restoring {}",
+            backup_file.display()
+        ));
+    }
     if copied != metadata.len() {
         drop(target);
         let _ = fs::remove_file(target_file);
@@ -8406,6 +8451,22 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
     }
     drop(target);
     Ok(())
+}
+
+fn update_backup_file_metadata(backup_file: &Path) -> Result<fs::Metadata, String> {
+    let metadata = fs::symlink_metadata(backup_file).map_err(|error| {
+        format!(
+            "could not inspect release update backup file {}: {error}",
+            backup_file.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "release update backup file is not a regular file: {}",
+            backup_file.display()
+        ));
+    }
+    Ok(metadata)
 }
 
 fn cleanup_update_temp_targets(temp_targets: &[(PathBuf, PathBuf)]) {
@@ -11947,6 +12008,56 @@ mod tests {
         assert_eq!(
             fs::read(&target_file).expect("target remains readable"),
             b"partial update target"
+        );
+    }
+
+    #[test]
+    fn update_apply_restore_backup_rejects_directory_backup_without_writing_target() {
+        let home = temp_home("update-apply-directory-restore-backup");
+        let install_dir = home.join("install-bin");
+        let backup_dir = install_dir.join(".conu-update-backups").join("restore");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        let backup_file = backup_dir.join(update_binary_filename("conu"));
+        fs::create_dir_all(&backup_file).expect("directory backup creates");
+
+        let error = restore_update_backup(&target_file, &backup_file)
+            .expect_err("directory backup should fail closed");
+
+        assert!(error.contains("release update backup file is not a regular file"));
+        assert!(!target_file.exists());
+        assert!(backup_file.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_restore_backup_rejects_symlink_backup_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-symlink-restore-backup");
+        let install_dir = home.join("install-bin");
+        let backup_dir = install_dir.join(".conu-update-backups").join("restore");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        let backup_file = backup_dir.join(update_binary_filename("conu"));
+        let outside_backup = home.join("outside-restore-backup");
+        fs::write(&outside_backup, b"backup binary").expect("outside backup writes");
+        symlink(&outside_backup, &backup_file).expect("backup symlink creates");
+
+        let error = restore_update_backup(&target_file, &backup_file)
+            .expect_err("symlink backup should fail closed");
+
+        assert!(error.contains("release update backup file is not a regular file"));
+        assert!(!target_file.exists());
+        assert_eq!(
+            fs::read(&outside_backup).expect("outside backup reads"),
+            b"backup binary"
+        );
+        assert!(
+            fs::symlink_metadata(&backup_file)
+                .expect("backup symlink metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 
