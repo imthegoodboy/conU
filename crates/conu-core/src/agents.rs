@@ -808,6 +808,7 @@ fn move_request(request_path: &Path, target_dir: &Path) -> Result<(), AgentError
             .file_name()
             .unwrap_or_else(|| std::ffi::OsStr::new("request.req")),
     );
+    ensure_ipc_archive_target_available(&target)?;
     fs::rename(request_path, &target)
         .map_err(|error| AgentError::io("move IPC request", request_path, error))
 }
@@ -825,10 +826,30 @@ fn reject_request(
             .unwrap_or_else(|| std::ffi::OsStr::new("request.req")),
     );
     let error_path = target.with_extension("error");
-    fs::write(&error_path, format!("{error}\n"))
-        .map_err(|error| AgentError::io("write IPC rejection reason", &error_path, error))?;
+    ensure_ipc_archive_target_available(&target)?;
+    write_new_file_with_action(
+        &error_path,
+        &format!("{error}\n"),
+        "create IPC rejection reason",
+        "write IPC rejection reason",
+    )?;
     fs::rename(request_path, &target)
         .map_err(|error| AgentError::io("move rejected IPC request", request_path, error))
+}
+
+fn ensure_ipc_archive_target_available(path: &Path) -> Result<(), AgentError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(AgentError::io(
+            "reserve IPC archive target",
+            path,
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "archive target already exists",
+            ),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AgentError::io("inspect IPC archive target", path, error)),
+    }
 }
 
 fn render_registration_request(request_id: &str, registration: &AgentRegistration) -> String {
@@ -878,14 +899,23 @@ fn append_agent_log(paths: &StatePaths, event: &str, agent_id: &str) -> Result<(
 }
 
 fn write_new_file(path: &Path, contents: &str) -> Result<(), AgentError> {
+    write_new_file_with_action(path, contents, "create IPC request", "write IPC request")
+}
+
+fn write_new_file_with_action(
+    path: &Path,
+    contents: &str,
+    create_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), AgentError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|error| AgentError::io("create IPC request", path, error))?;
+        .map_err(|error| AgentError::io(create_action, path, error))?;
 
     file.write_all(contents.as_bytes())
-        .map_err(|error| AgentError::io("write IPC request", path, error))
+        .map_err(|error| AgentError::io(write_action, path, error))
 }
 
 fn required(values: &HashMap<String, String>, key: &'static str) -> Result<String, AgentError> {
@@ -1184,6 +1214,81 @@ mod tests {
         assert!(rejected >= 1);
         assert!(error_text.contains("unsupported request type"));
         assert!(!error_text.contains("secret private message contents"));
+    }
+
+    #[test]
+    fn processed_request_archive_refuses_existing_marker() {
+        let home = test_home("processed-collision");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let registration = AgentRegistration::new("agent.codex", "Codex Desktop", "coding-agent")
+            .expect("valid registration");
+        let submission =
+            submit_registration(Some(home.clone()), registration).expect("request submits");
+        let target = init.paths.ipc_processed_dir.join(
+            submission
+                .request_path
+                .file_name()
+                .expect("request filename"),
+        );
+        fs::write(&target, "existing processed marker").expect("existing marker writes");
+
+        let error = process_gateway_requests(Some(home))
+            .expect_err("existing processed marker should fail closed");
+
+        assert!(error.to_string().contains("reserve IPC archive target"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("existing marker reads"),
+            "existing processed marker"
+        );
+        assert!(submission.request_path.exists());
+    }
+
+    #[test]
+    fn rejected_request_archive_refuses_existing_marker() {
+        let home = test_home("rejected-collision");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let bad = init.paths.ipc_inbox_dir.join("bad.req");
+        fs::write(&bad, "version = \"1\"\ntype = \"unsupported\"\n").expect("bad request writes");
+        let target = init.paths.ipc_rejected_dir.join("bad.req");
+        let error_path = init.paths.ipc_rejected_dir.join("bad.error");
+        fs::write(&target, "existing rejected marker").expect("existing marker writes");
+        fs::write(&error_path, "existing rejection reason").expect("existing error writes");
+
+        let error = process_gateway_requests(Some(home))
+            .expect_err("existing rejected marker should fail closed");
+
+        assert!(error.to_string().contains("reserve IPC archive target"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("existing marker reads"),
+            "existing rejected marker"
+        );
+        assert_eq!(
+            fs::read_to_string(&error_path).expect("existing error reads"),
+            "existing rejection reason"
+        );
+        assert!(bad.exists());
+    }
+
+    #[test]
+    fn rejected_request_reason_refuses_existing_file() {
+        let home = test_home("rejected-error-collision");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let bad = init.paths.ipc_inbox_dir.join("bad.req");
+        fs::write(&bad, "version = \"1\"\ntype = \"unsupported\"\n").expect("bad request writes");
+        let target = init.paths.ipc_rejected_dir.join("bad.req");
+        let error_path = init.paths.ipc_rejected_dir.join("bad.error");
+        fs::write(&error_path, "existing rejection reason").expect("existing error writes");
+
+        let error = process_gateway_requests(Some(home))
+            .expect_err("existing rejection reason should fail closed");
+
+        assert!(error.to_string().contains("create IPC rejection reason"));
+        assert_eq!(
+            fs::read_to_string(&error_path).expect("existing error reads"),
+            "existing rejection reason"
+        );
+        assert!(!target.exists());
+        assert!(bad.exists());
     }
 
     fn test_home(label: &str) -> PathBuf {
