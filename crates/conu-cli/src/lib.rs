@@ -9222,12 +9222,33 @@ fn write_downloaded_update_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<
         )
     })?;
     let path = dir.join(name);
-    fs::write(&path, bytes).map_err(|error| {
-        format!(
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(format!(
+                "downloaded release update policy file already exists: {}",
+                path.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not reserve downloaded release update policy file {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(format!(
             "could not write downloaded release update policy file {}: {error}",
             path.display()
-        )
-    })?;
+        ));
+    }
     Ok(path)
 }
 
@@ -10913,6 +10934,49 @@ mod tests {
         ]);
 
         assert_eq!(output.code, 2);
+    }
+
+    #[test]
+    fn update_downloaded_metadata_write_rejects_existing_file_without_overwrite() {
+        let download_dir = temp_home("update-downloaded-metadata-existing");
+        fs::create_dir_all(&download_dir).expect("download dir creates");
+        let filename = "conu-0.1.0-update-policy.json";
+        let existing = download_dir.join(filename);
+        fs::write(&existing, b"existing policy metadata").expect("existing metadata writes");
+
+        let error = write_downloaded_update_file(&download_dir, filename, b"new metadata")
+            .expect_err("existing downloaded metadata should fail closed");
+
+        assert!(error.contains("downloaded release update policy file already exists"));
+        assert_eq!(
+            fs::read(&existing).expect("existing metadata reads"),
+            b"existing policy metadata"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_downloaded_metadata_write_rejects_symlink_target_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let download_dir = temp_home("update-downloaded-metadata-symlink");
+        fs::create_dir_all(&download_dir).expect("download dir creates");
+        let filename = "conu-0.1.0-update-policy.json";
+        let target = download_dir.join(filename);
+        let outside_target = download_dir.join("outside-metadata-target");
+        symlink(&outside_target, &target).expect("metadata symlink creates");
+
+        let error = write_downloaded_update_file(&download_dir, filename, b"new metadata")
+            .expect_err("symlink downloaded metadata should fail closed");
+
+        assert!(error.contains("downloaded release update policy file already exists"));
+        assert!(!outside_target.exists());
+        assert!(
+            fs::symlink_metadata(&target)
+                .expect("metadata symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
