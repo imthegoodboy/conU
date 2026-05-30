@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -693,17 +693,10 @@ fn append_stream_log(
     stream: &StreamRecord,
     payload_bytes: usize,
 ) -> Result<(), StreamError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| StreamError::io("create logs directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let path = paths.logs_dir.join("streams.log");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| StreamError::io("open stream log", &path, error))?;
 
-    writeln!(
-        file,
+    let line = format!(
         "event={} stream={} from={} to={} route={} bytes={} chunks={} state={} payload=not_observed",
         event,
         stream.stream_id,
@@ -713,8 +706,17 @@ fn append_stream_log(
         payload_bytes,
         stream.chunks_written,
         stream.state.as_str()
-    )
-    .map_err(|error| StreamError::io("write stream log", &path, error))
+    );
+
+    state::append_regular_state_file(
+        &path,
+        &(line + "\n"),
+        "inspect stream log",
+        "create stream log",
+        "open stream log",
+        "write stream log",
+    )?;
+    Ok(())
 }
 
 fn required(values: &HashMap<String, String>, key: &'static str) -> Result<String, StreamError> {
@@ -889,6 +891,36 @@ mod tests {
         assert!(
             fs::symlink_metadata(&paths.stream_registry)
                 .expect("stream registry metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_log_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("log-symlink");
+        register_agent(&home, "agent.a");
+        register_agent(&home, "agent.b");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-stream-log");
+        let outside_contents = "outside stream log\n";
+        fs::write(&outside, outside_contents).expect("outside log writes");
+        symlink(&outside, paths.logs_dir.join("streams.log")).expect("stream log symlink creates");
+
+        let error = open_stream(Some(home), "agent.a", "agent.b", "message")
+            .expect_err("symlinked stream log fails closed");
+
+        assert!(error.to_string().contains("inspect stream log"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside log reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(paths.logs_dir.join("streams.log"))
+                .expect("stream log metadata")
                 .file_type()
                 .is_symlink()
         );

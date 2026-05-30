@@ -776,24 +776,25 @@ fn append_log(
     pid: u32,
     node_id: &str,
 ) -> Result<(), RuntimeError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| RuntimeError::io("create log directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let log_path = paths.logs_dir.join("conud.log");
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&log_path)
-        .map_err(|error| RuntimeError::io("open runtime log", &log_path, error))?;
-
-    writeln!(
-        file,
+    let line = format!(
         "time={} event={} pid={} node={} payload=not_observed",
         current_unix_seconds(),
         event,
         pid,
         sanitize_log_value(node_id)
-    )
-    .map_err(|error| RuntimeError::io("write runtime log", &log_path, error))
+    );
+
+    state::append_regular_state_file(
+        &log_path,
+        &(line + "\n"),
+        "inspect runtime log",
+        "create runtime log",
+        "open runtime log",
+        "write runtime log",
+    )?;
+    Ok(())
 }
 
 fn runtime_is_stale(status: &RuntimeStatus) -> bool {

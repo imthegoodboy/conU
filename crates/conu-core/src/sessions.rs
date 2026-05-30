@@ -6,9 +6,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use conu_protocol::AgentCapabilities;
@@ -113,16 +112,6 @@ pub enum SessionError {
     InvalidRecord {
         reason: String,
     },
-}
-
-impl SessionError {
-    fn io(action: &'static str, path: &Path, source: io::Error) -> Self {
-        Self::Io {
-            action,
-            path: path.to_path_buf(),
-            source,
-        }
-    }
 }
 
 impl fmt::Display for SessionError {
@@ -446,13 +435,10 @@ fn report_from_sessions(sessions: &[RemoteSession], remote_agents: usize) -> Ses
 }
 
 fn ensure_session_files(paths: &StatePaths) -> Result<(), SessionError> {
-    fs::create_dir_all(&paths.sessions_dir).map_err(|error| {
-        SessionError::io("create sessions directory", &paths.sessions_dir, error)
-    })?;
-    fs::create_dir_all(&paths.agents_dir)
-        .map_err(|error| SessionError::io("create agents directory", &paths.agents_dir, error))?;
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| SessionError::io("create logs directory", &paths.logs_dir, error))
+    state::ensure_state_directory(&paths.sessions_dir)?;
+    state::ensure_state_directory(&paths.agents_dir)?;
+    state::ensure_state_directory(&paths.logs_dir)?;
+    Ok(())
 }
 
 fn local_node_id(paths: &StatePaths) -> Result<String, SessionError> {
@@ -832,25 +818,27 @@ fn append_session_log(
     sessions: &[RemoteSession],
     remote_agents: usize,
 ) -> Result<(), SessionError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| SessionError::io("create logs directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let path = paths.logs_dir.join("sessions.log");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| SessionError::io("open session log", &path, error))?;
     let report = report_from_sessions(sessions, remote_agents);
-    writeln!(
-        file,
+    let line = format!(
         "event=session_sync sessions={} connected={} reconnecting={} offline={} remote_agents={} payload=not_observed",
         report.sessions_synced,
         report.connected,
         report.reconnecting,
         report.offline,
         report.remote_agents_synced
-    )
-    .map_err(|error| SessionError::io("write session log", &path, error))
+    );
+
+    state::append_regular_state_file(
+        &path,
+        &(line + "\n"),
+        "inspect session log",
+        "create session log",
+        "open session log",
+        "write session log",
+    )?;
+    Ok(())
 }
 
 fn parse_key_values(contents: &str) -> HashMap<String, String> {
@@ -1015,6 +1003,8 @@ mod tests {
     use crate::security;
     use crate::trust;
     use std::env;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::process;
 
     #[test]

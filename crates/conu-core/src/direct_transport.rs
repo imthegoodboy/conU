@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -1237,25 +1237,26 @@ fn append_direct_log(
     peer_node_id: &str,
     bytes: usize,
 ) -> Result<(), DirectTransportError> {
-    fs::create_dir_all(&paths.logs_dir).map_err(|error| {
-        DirectTransportError::io("create log directory", &paths.logs_dir, error)
-    })?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let log_path = paths.logs_dir.join("direct.log");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|error| DirectTransportError::io("open direct log", &log_path, error))?;
-    writeln!(
-        file,
+    let line = format!(
         "time={} event={} peer={} envelope={} bytes={} payload=not_observed",
         current_unix_seconds(),
         sanitize_log_value(event),
         sanitize_log_value(peer_node_id),
         sanitize_log_value(envelope_id),
         bytes
-    )
-    .map_err(|error| DirectTransportError::io("write direct log", &log_path, error))
+    );
+
+    state::append_regular_state_file(
+        &log_path,
+        &(line + "\n"),
+        "inspect direct log",
+        "create direct log",
+        "open direct log",
+        "write direct log",
+    )?;
+    Ok(())
 }
 
 fn direct_probe_aad(probe_id: &str, from_node_id: &str, to_node_id: &str) -> Vec<u8> {
