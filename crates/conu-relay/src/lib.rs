@@ -46,6 +46,7 @@ const LOCAL_DEV_TOKEN: &str = "local-dev-token";
 const MIN_PUBLIC_BIND_TOKEN_LEN: usize = 24;
 const MAX_TOKEN_LEN: usize = 200;
 const ISSUED_RELAY_TOKEN_BYTES: usize = 32;
+const MAX_RELAY_MANIFEST_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Configuration for the relay server.
 #[derive(Clone, PartialEq, Eq)]
@@ -3244,26 +3245,66 @@ fn read_optional_regular_relay_file(
     inspect_action: &'static str,
     read_action: &'static str,
 ) -> Result<Option<String>, RelayError> {
-    if !regular_relay_file_exists(path, inspect_action)? {
+    let Some(metadata) = inspect_optional_regular_relay_file(path, inspect_action)? else {
         return Ok(None);
-    }
+    };
 
-    read_existing_regular_relay_file(path, inspect_action, read_action).map(Some)
+    read_existing_regular_relay_file_with_metadata(path, inspect_action, read_action, &metadata)
+        .map(Some)
 }
 
-fn read_existing_regular_relay_file(
+fn read_existing_regular_relay_file_with_metadata(
     path: &Path,
     inspect_action: &'static str,
     read_action: &'static str,
+    metadata: &fs::Metadata,
 ) -> Result<String, RelayError> {
-    regular_relay_file_exists(path, inspect_action)?;
     let mut file = OpenOptions::new()
         .read(true)
         .open(path)
         .map_err(|error| RelayError::io(read_action, error))?;
+    let path_metadata = inspect_existing_regular_relay_file(path, inspect_action)?;
+    if !relay_manifest_file_metadata_matches(metadata, &path_metadata) {
+        return Err(RelayError::io(
+            inspect_action,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relay file path changed while reading",
+            ),
+        ));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| RelayError::io(inspect_action, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_RELAY_MANIFEST_FILE_BYTES
+        || !relay_manifest_file_metadata_matches(metadata, &opened_metadata)
+    {
+        return Err(RelayError::io(
+            read_action,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relay file path changed while reading",
+            ),
+        ));
+    }
+
     let mut contents = String::new();
-    file.read_to_string(&mut contents)
+    let limit = MAX_RELAY_MANIFEST_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
         .map_err(|error| RelayError::io(read_action, error))?;
+    if contents.len() as u64 > MAX_RELAY_MANIFEST_FILE_BYTES {
+        return Err(RelayError::io(
+            read_action,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("relay file exceeds {MAX_RELAY_MANIFEST_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
     Ok(contents)
 }
 
@@ -3271,23 +3312,79 @@ fn regular_relay_file_exists(
     path: &Path,
     inspect_action: &'static str,
 ) -> Result<bool, RelayError> {
+    inspect_optional_regular_relay_file(path, inspect_action).map(|metadata| metadata.is_some())
+}
+
+fn inspect_optional_regular_relay_file(
+    path: &Path,
+    inspect_action: &'static str,
+) -> Result<Option<fs::Metadata>, RelayError> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            let file_type = metadata.file_type();
-            if file_type.is_symlink() || !file_type.is_file() {
-                return Err(RelayError::io(
-                    inspect_action,
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "relay file path is not a regular file",
-                    ),
-                ));
-            }
-            Ok(true)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Ok(metadata) => inspect_regular_relay_file_metadata(metadata, inspect_action).map(Some),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(RelayError::io(inspect_action, error)),
     }
+}
+
+fn inspect_existing_regular_relay_file(
+    path: &Path,
+    inspect_action: &'static str,
+) -> Result<fs::Metadata, RelayError> {
+    fs::symlink_metadata(path)
+        .map_err(|error| RelayError::io(inspect_action, error))
+        .and_then(|metadata| inspect_regular_relay_file_metadata(metadata, inspect_action))
+}
+
+fn inspect_regular_relay_file_metadata(
+    metadata: fs::Metadata,
+    inspect_action: &'static str,
+) -> Result<fs::Metadata, RelayError> {
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err(RelayError::io(
+            inspect_action,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relay file path is not a regular file",
+            ),
+        ));
+    }
+    if metadata.len() > MAX_RELAY_MANIFEST_FILE_BYTES {
+        return Err(RelayError::io(
+            inspect_action,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("relay file exceeds {MAX_RELAY_MANIFEST_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
+    Ok(metadata)
+}
+
+fn relay_manifest_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.len() == current.len() && relay_manifest_file_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn relay_manifest_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    expected.dev() == current.dev() && expected.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn relay_manifest_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
+        && expected.last_write_time() == current.last_write_time()
+        && expected.file_size() == current.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn relay_manifest_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.modified().ok() == current.modified().ok()
 }
 
 fn load_hosted_tenant_manifest_or_empty(path: &Path) -> Result<HostedTenantManifest, RelayError> {
@@ -8939,6 +9036,44 @@ contents_displayed = false\n",
     }
 
     #[test]
+    fn relay_manifest_reads_reject_oversized_files_without_reading_contents() {
+        let home = test_home("relay-manifest-oversized");
+        fs::create_dir_all(&home).expect("home creates");
+        let credential_secret = "relay-secret-token-credential-oversized";
+        let credential_path = home.join("credentials.toml");
+        write_oversized_relay_manifest(&credential_path, credential_secret);
+
+        let credential_error = load_scoped_credentials_file(&credential_path)
+            .expect_err("oversized credential manifest should fail closed");
+        let credential_message = credential_error.to_string();
+        assert!(credential_message.contains("relay credential file"));
+        assert!(credential_message.contains("exceeds"));
+        assert!(!credential_message.contains(credential_secret));
+
+        let admin_secret = "relay-secret-token-admin-oversized";
+        let admin_path = home.join("admin-tokens.toml");
+        write_oversized_relay_manifest(&admin_path, admin_secret);
+
+        let admin_error = audit_hosted_admin_tokens_file(&admin_path, None, "127.0.0.1:0")
+            .expect_err("oversized admin-token manifest should fail closed");
+        let admin_message = admin_error.to_string();
+        assert!(admin_message.contains("relay admin tokens file"));
+        assert!(admin_message.contains("exceeds"));
+        assert!(!admin_message.contains(admin_secret));
+
+        let tenant_secret = "relay-secret-token-tenant-oversized";
+        let tenant_path = home.join("tenants.toml");
+        write_oversized_relay_manifest(&tenant_path, tenant_secret);
+
+        let tenant_error = audit_hosted_tenants_file(&tenant_path, None)
+            .expect_err("oversized tenant manifest should fail closed");
+        let tenant_message = tenant_error.to_string();
+        assert!(tenant_message.contains("hosted tenant file"));
+        assert!(tenant_message.contains("exceeds"));
+        assert!(!tenant_message.contains(tenant_secret));
+    }
+
+    #[test]
     fn hosted_admin_dashboard_snapshots_metadata_with_admin_token() {
         let home = test_home("hosted-admin-dashboard");
         let manifest_path = home.join("credentials.toml");
@@ -11954,6 +12089,12 @@ token_displayed = false\n"
             process::id(),
             current_unix_nanos()
         ))
+    }
+
+    fn write_oversized_relay_manifest(path: &Path, secret: &str) {
+        let mut contents = format!("# {secret}\n");
+        contents.push_str(&"a".repeat((MAX_RELAY_MANIFEST_FILE_BYTES + 1) as usize));
+        fs::write(path, contents).expect("oversized relay manifest writes");
     }
 
     fn stable_counter_window() -> Duration {
