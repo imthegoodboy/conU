@@ -465,13 +465,14 @@ fn local_node_id(paths: &StatePaths) -> Result<String, SessionError> {
 }
 
 fn read_sessions(paths: &StatePaths) -> Result<Vec<RemoteSession>, SessionError> {
-    if !paths.session_registry.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.session_registry,
+        "inspect session registry",
+        "read session registry",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.session_registry).map_err(|error| {
-        SessionError::io("read session registry", &paths.session_registry, error)
-    })?;
+    };
     parse_sessions(&contents)
 }
 
@@ -515,22 +516,26 @@ fn write_sessions(paths: &StatePaths, sessions: &[RemoteSession]) -> Result<(), 
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.session_registry, contents)
-        .map_err(|error| SessionError::io("write session registry", &paths.session_registry, error))
+    state::write_regular_state_file(
+        &paths.session_registry,
+        &contents,
+        "inspect session registry",
+        "create session registry",
+        "open session registry",
+        "write session registry",
+    )?;
+    Ok(())
 }
 
 fn read_remote_agents(paths: &StatePaths) -> Result<Vec<RemoteAgentRecord>, SessionError> {
-    if !paths.remote_agent_registry.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.remote_agent_registry,
+        "inspect remote agent registry",
+        "read remote agent registry",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.remote_agent_registry).map_err(|error| {
-        SessionError::io(
-            "read remote agent registry",
-            &paths.remote_agent_registry,
-            error,
-        )
-    })?;
+    };
     parse_remote_agents(&contents)
 }
 
@@ -598,13 +603,15 @@ fn write_remote_agents(
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.remote_agent_registry, contents).map_err(|error| {
-        SessionError::io(
-            "write remote agent registry",
-            &paths.remote_agent_registry,
-            error,
-        )
-    })
+    state::write_regular_state_file(
+        &paths.remote_agent_registry,
+        &contents,
+        "inspect remote agent registry",
+        "create remote agent registry",
+        "open remote agent registry",
+        "write remote agent registry",
+    )?;
+    Ok(())
 }
 
 fn parse_sessions(contents: &str) -> Result<Vec<RemoteSession>, SessionError> {
@@ -803,12 +810,13 @@ fn signed_agent_card_from_remote_record(
 }
 
 fn relay_endpoint(paths: &StatePaths) -> Result<String, SessionError> {
-    let contents = match fs::read_to_string(&paths.config) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(DEFAULT_RELAY_ENDPOINT.to_string());
-        }
-        Err(error) => return Err(SessionError::io("read relay config", &paths.config, error)),
+    let contents = match state::read_optional_regular_state_file(
+        &paths.config,
+        "inspect relay config",
+        "read relay config",
+    )? {
+        Some(contents) => contents,
+        None => return Ok(DEFAULT_RELAY_ENDPOINT.to_string()),
     };
     let values = parse_key_values(&contents);
     let endpoint = values
@@ -1059,6 +1067,69 @@ mod tests {
         assert!(log.contains("payload=not_observed"));
         assert!(!log.contains("private message contents"));
         assert!(!log.contains("Review this code"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_registry_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("session-registry-symlink");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        let invite = trust::create_pairing_invite(Some(home.clone())).expect("invite creates");
+        trust::join_pairing_code(Some(home.clone()), &invite.code).expect("joins");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-session-registry");
+        let outside_contents = "outside session registry\n";
+        fs::write(&outside, outside_contents).expect("outside registry writes");
+        symlink(&outside, &paths.session_registry).expect("session registry symlink creates");
+
+        let error =
+            sync_remote_sessions(Some(home)).expect_err("symlinked session registry fails closed");
+
+        assert!(error.to_string().contains("inspect session registry"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside registry reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.session_registry)
+                .expect("session registry metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_agent_registry_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("remote-agent-registry-symlink");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        let invite = trust::create_pairing_invite(Some(home.clone())).expect("invite creates");
+        trust::join_pairing_code(Some(home.clone()), &invite.code).expect("joins");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-remote-agent-registry");
+        let outside_contents = "outside remote agent registry\n";
+        fs::write(&outside, outside_contents).expect("outside registry writes");
+        symlink(&outside, &paths.remote_agent_registry)
+            .expect("remote agent registry symlink creates");
+
+        let error = sync_remote_sessions(Some(home))
+            .expect_err("symlinked remote agent registry fails closed");
+
+        assert!(error.to_string().contains("inspect remote agent registry"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside registry reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.remote_agent_registry)
+                .expect("remote agent registry metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
