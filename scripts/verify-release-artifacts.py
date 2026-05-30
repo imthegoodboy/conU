@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
+import os
 import re
 import stat
 import sys
@@ -13,6 +15,7 @@ import zipfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 
 HASH_CHUNK_BYTES = 1024 * 1024
@@ -23,6 +26,8 @@ MAX_MEMBER_BYTES = 512_000_000
 MAX_MEMBER_COUNT = 10_000
 MAX_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 FORBIDDEN_PARTS = {
     ".conu",
     ".git",
@@ -85,7 +90,7 @@ def main() -> int:
 
 
 def verify_checksum(archive: Path) -> None:
-    validate_regular_file(
+    archive_file, _archive_size = open_regular_file(
         archive,
         "release archive",
         max_bytes=MAX_ARCHIVE_BYTES,
@@ -93,7 +98,7 @@ def verify_checksum(archive: Path) -> None:
     )
 
     checksum_path = archive.with_name(f"{archive.name}.sha256")
-    validate_regular_file(
+    checksum_file, _checksum_size = open_regular_file(
         checksum_path,
         f"checksum file for {archive.name}",
         max_bytes=MAX_CHECKSUM_BYTES,
@@ -101,40 +106,62 @@ def verify_checksum(archive: Path) -> None:
         too_large_message=f"checksum file is too large for {archive.name}",
     )
 
-    try:
-        checksum_text = checksum_path.read_text(encoding="ascii")
-    except UnicodeDecodeError as exc:
-        raise SystemExit(f"checksum file is not ASCII for {archive.name}") from exc
+    with archive_file:
+        with checksum_file:
+            try:
+                checksum_text = read_text_file(
+                    checksum_file,
+                    f"checksum file for {archive.name}",
+                    max_bytes=MAX_CHECKSUM_BYTES,
+                    encoding="ascii",
+                )
+            except UnicodeDecodeError as exc:
+                raise SystemExit(f"checksum file is not ASCII for {archive.name}") from exc
 
-    match = CHECKSUM_RE.fullmatch(checksum_text)
-    if match is None:
-        raise SystemExit(f"checksum file has invalid format for {archive.name}")
+        match = CHECKSUM_RE.fullmatch(checksum_text)
+        if match is None:
+            raise SystemExit(f"checksum file has invalid format for {archive.name}")
 
-    checksum_archive_name = match.group(2)
-    if checksum_archive_name != archive.name:
-        raise SystemExit(
-            f"checksum file for {archive.name} names wrong archive: {checksum_archive_name}"
+        checksum_archive_name = match.group(2)
+        if checksum_archive_name != archive.name:
+            raise SystemExit(
+                f"checksum file for {archive.name} names wrong archive: {checksum_archive_name}"
+            )
+
+        expected = match.group(1).lower()
+        actual = sha256_open_file(
+            archive_file,
+            "release archive",
+            max_bytes=MAX_ARCHIVE_BYTES,
         )
-
-    expected = match.group(1).lower()
-    actual = sha256_file(archive)
-    if expected != actual:
-        raise SystemExit(f"checksum mismatch for {archive.name}")
+        if expected != actual:
+            raise SystemExit(f"checksum mismatch for {archive.name}")
 
 
 def sha256_file(path: Path) -> str:
+    handle, _size = open_regular_file(path, "release archive", max_bytes=MAX_ARCHIVE_BYTES)
+    with handle:
+        return sha256_open_file(handle, "release archive", max_bytes=MAX_ARCHIVE_BYTES)
+
+
+def sha256_open_file(handle: BinaryIO, label: str, *, max_bytes: int) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
+    handle.seek(0)
+    total = 0
+    while True:
+        chunk = handle.read(HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise SystemExit(f"{label} is too large")
+        digest.update(chunk)
+    validate_open_regular_file(handle, label, max_bytes=max_bytes)
     return digest.hexdigest()
 
 
 def archive_members(archive: Path) -> ArchiveMembers:
-    validate_regular_file(
+    archive_file, _size = open_regular_file(
         archive,
         "release archive",
         max_bytes=MAX_ARCHIVE_BYTES,
@@ -143,104 +170,121 @@ def archive_members(archive: Path) -> ArchiveMembers:
     expected_root = expected_archive_root(archive.name)
 
     if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive) as package:
-            paths: set[str] = set()
-            manifest: bytes | None = None
-            total_uncompressed = 0
-            entry_count = 0
-            root_style: str | None = None
-            for member in package.infolist():
-                if member.is_dir():
-                    if member.file_size != 0:
-                        raise SystemExit(
-                            f"{archive.name} contains directory member with data: {member.filename}"
+        with archive_file:
+            with zipfile.ZipFile(archive_file) as package:
+                paths: set[str] = set()
+                manifest: bytes | None = None
+                total_uncompressed = 0
+                entry_count = 0
+                root_style: str | None = None
+                for member in package.infolist():
+                    if member.is_dir():
+                        if member.file_size != 0:
+                            raise SystemExit(
+                                f"{archive.name} contains directory member with data: {member.filename}"
+                            )
+                        _, total_uncompressed, entry_count, root_style = record_entry(
+                            archive.name,
+                            paths,
+                            member.filename,
+                            expected_root,
+                            root_style,
+                            0,
+                            total_uncompressed,
+                            entry_count,
+                            allow_empty=True,
                         )
-                    _, total_uncompressed, entry_count, root_style = record_entry(
+                        continue
+                    if member.flag_bits & 0x1:
+                        raise SystemExit(
+                            f"{archive.name} contains encrypted zip member: {member.filename}"
+                        )
+                    file_type = (member.external_attr >> 16) & 0o170000
+                    if file_type == stat.S_IFLNK:
+                        raise SystemExit(
+                            f"{archive.name} contains unsupported link member: {member.filename}"
+                        )
+                    if file_type not in {0, stat.S_IFREG}:
+                        raise SystemExit(
+                            f"{archive.name} contains unsupported zip member: {member.filename}"
+                        )
+                    normalized, total_uncompressed, entry_count, root_style = record_entry(
                         archive.name,
                         paths,
                         member.filename,
                         expected_root,
                         root_style,
-                        0,
+                        member.file_size,
                         total_uncompressed,
                         entry_count,
-                        allow_empty=True,
                     )
-                    continue
-                if member.flag_bits & 0x1:
-                    raise SystemExit(
-                        f"{archive.name} contains encrypted zip member: {member.filename}"
-                    )
-                file_type = (member.external_attr >> 16) & 0o170000
-                if file_type == stat.S_IFLNK:
-                    raise SystemExit(
-                        f"{archive.name} contains unsupported link member: {member.filename}"
-                    )
-                if file_type not in {0, stat.S_IFREG}:
-                    raise SystemExit(
-                        f"{archive.name} contains unsupported zip member: {member.filename}"
-                    )
-                normalized, total_uncompressed, entry_count, root_style = record_entry(
-                    archive.name,
-                    paths,
-                    member.filename,
-                    expected_root,
-                    root_style,
-                    member.file_size,
-                    total_uncompressed,
-                    entry_count,
+                    if normalized == "manifest.toml":
+                        manifest = read_zip_member(
+                            archive.name,
+                            package,
+                            member,
+                            MAX_MANIFEST_BYTES,
+                        )
+                    else:
+                        drain_zip_member(archive.name, package, member)
+                validate_open_regular_file(
+                    archive_file,
+                    "release archive",
+                    max_bytes=MAX_ARCHIVE_BYTES,
                 )
-                if normalized == "manifest.toml":
-                    manifest = read_zip_member(archive.name, package, member, MAX_MANIFEST_BYTES)
-                else:
-                    drain_zip_member(archive.name, package, member)
-            return ArchiveMembers(paths=paths, manifest=manifest)
+                return ArchiveMembers(paths=paths, manifest=manifest)
     if archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive, "r|gz") as package:
-            paths: set[str] = set()
-            manifest: bytes | None = None
-            total_uncompressed = 0
-            entry_count = 0
-            root_style: str | None = None
-            for member in package:
-                if member.isdir():
-                    _, total_uncompressed, entry_count, root_style = record_entry(
+        with archive_file:
+            with tarfile.open(fileobj=archive_file, mode="r|gz") as package:
+                paths: set[str] = set()
+                manifest: bytes | None = None
+                total_uncompressed = 0
+                entry_count = 0
+                root_style: str | None = None
+                for member in package:
+                    if member.isdir():
+                        _, total_uncompressed, entry_count, root_style = record_entry(
+                            archive.name,
+                            paths,
+                            member.name,
+                            expected_root,
+                            root_style,
+                            0,
+                            total_uncompressed,
+                            entry_count,
+                            allow_empty=True,
+                        )
+                        continue
+                    if not member.isfile():
+                        raise SystemExit(
+                            f"{archive.name} contains unsupported non-file member: {member.name}"
+                        )
+                    normalized, total_uncompressed, entry_count, root_style = record_entry(
                         archive.name,
                         paths,
                         member.name,
                         expected_root,
                         root_style,
-                        0,
+                        member.size,
                         total_uncompressed,
                         entry_count,
-                        allow_empty=True,
                     )
-                    continue
-                if not member.isfile():
-                    raise SystemExit(
-                        f"{archive.name} contains unsupported non-file member: {member.name}"
-                    )
-                normalized, total_uncompressed, entry_count, root_style = record_entry(
-                    archive.name,
-                    paths,
-                    member.name,
-                    expected_root,
-                    root_style,
-                    member.size,
-                    total_uncompressed,
-                    entry_count,
+                    if normalized == "manifest.toml":
+                        file_object = package.extractfile(member)
+                        if file_object is None:
+                            raise SystemExit(f"{archive.name} could not read manifest.toml")
+                        manifest = read_limited(
+                            archive.name,
+                            "manifest.toml",
+                            file_object,
+                            MAX_MANIFEST_BYTES,
+                        )
+                validate_open_regular_file(
+                    archive_file,
+                    "release archive",
+                    max_bytes=MAX_ARCHIVE_BYTES,
                 )
-                if normalized == "manifest.toml":
-                    file_object = package.extractfile(member)
-                    if file_object is None:
-                        raise SystemExit(f"{archive.name} could not read manifest.toml")
-                    manifest = read_limited(
-                        archive.name,
-                        "manifest.toml",
-                        file_object,
-                        MAX_MANIFEST_BYTES,
-                    )
-            return ArchiveMembers(paths=paths, manifest=manifest)
+                return ArchiveMembers(paths=paths, manifest=manifest)
     raise SystemExit(f"unsupported release archive {archive.name}")
 
 
@@ -259,19 +303,68 @@ def validate_regular_file(
     missing_message: str | None = None,
     too_large_message: str | None = None,
 ) -> int:
+    handle, size = open_regular_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        missing_message=missing_message,
+        too_large_message=too_large_message,
+    )
+    handle.close()
+    return size
+
+
+def open_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    missing_message: str | None = None,
+    too_large_message: str | None = None,
+) -> tuple[BinaryIO, int]:
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
     if not path.exists():
         raise SystemExit(missing_message or f"missing {label}: {path.name}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
     try:
-        metadata = path.stat()
+        fd = os.open(path, flags)
     except OSError as exc:
-        raise SystemExit(f"{label} could not be inspected: {path.name}") from exc
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {path.name}") from exc
+        if not path.exists():
+            raise SystemExit(missing_message or f"missing {label}: {path.name}") from exc
+        if not path.is_file():
+            raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} must be a regular file: {path.name}")
+        if metadata.st_size > max_bytes:
+            raise SystemExit(too_large_message or f"{label} is too large: {path.name}")
+        return os.fdopen(fd, "rb"), metadata.st_size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def validate_open_regular_file(handle: BinaryIO, label: str, *, max_bytes: int) -> int:
+    metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(f"{label} must be a regular file: {path.name}")
+        raise SystemExit(f"{label} must be a regular file")
     if metadata.st_size > max_bytes:
-        raise SystemExit(too_large_message or f"{label} is too large: {path.name}")
+        raise SystemExit(f"{label} is too large")
     return metadata.st_size
+
+
+def read_text_file(handle: BinaryIO, label: str, *, max_bytes: int, encoding: str) -> str:
+    handle.seek(0)
+    data = handle.read(max_bytes + 1)
+    validate_open_regular_file(handle, label, max_bytes=max_bytes)
+    if len(data) > max_bytes:
+        raise SystemExit(f"{label} is too large")
+    return data.decode(encoding)
 
 
 def record_entry(
