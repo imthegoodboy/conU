@@ -1474,8 +1474,11 @@ pub fn load_scoped_credentials_file(
     path: impl AsRef<Path>,
 ) -> Result<Vec<RelayCredential>, RelayError> {
     let path = path.as_ref();
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay credential file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )?;
     parse_scoped_credentials_file(&contents)
 }
 
@@ -1562,8 +1565,11 @@ fn load_admin_tokens_file(
     bind_addr: &str,
 ) -> Result<RelayAdminTokenManifest, RelayError> {
     let path = path.as_ref();
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay admin tokens file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay admin tokens file",
+        "read relay admin tokens file",
+    )?;
     parse_admin_tokens_file(&contents, bind_addr)
 }
 
@@ -1648,10 +1654,13 @@ pub fn upsert_issued_relay_credential_in_file(
     replace_existing: bool,
 ) -> Result<CredentialManifestUpdate, RelayError> {
     let path = path.as_ref();
-    let mut records = match fs::read_to_string(path) {
-        Ok(contents) => parse_credential_file_records(&contents)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(RelayError::io("read relay credential file", error)),
+    let mut records = match read_optional_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )? {
+        Some(contents) => parse_credential_file_records(&contents)?,
+        None => Vec::new(),
     };
     let mut existing_index = None;
     for (index, record) in records.iter().enumerate() {
@@ -1709,10 +1718,13 @@ pub fn upsert_hosted_relay_credential_hash_in_file(
     let account_id = validate_account_id(account_id.into())?;
     let node_id = validate_node_id(node_id.into())?;
     validate_token_length_metadata(token_length)?;
-    let mut records = match fs::read_to_string(path) {
-        Ok(contents) => parse_credential_file_records(&contents)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(RelayError::io("read relay credential file", error)),
+    let mut records = match read_optional_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )? {
+        Some(contents) => parse_credential_file_records(&contents)?,
+        None => Vec::new(),
     };
     let mut existing_index = None;
     for (index, record) in records.iter().enumerate() {
@@ -1777,8 +1789,11 @@ pub fn revoke_relay_credential_in_file(
 ) -> Result<CredentialManifestUpdate, RelayError> {
     let path = path.as_ref();
     let node_id = validate_node_id(node_id.into())?;
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay credential file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )?;
     let mut records = parse_credential_file_records(&contents)?;
     let updated_at_unix = current_unix_seconds();
     let mut revoked = false;
@@ -1820,8 +1835,11 @@ pub fn revoke_hosted_relay_credential_in_file(
     let path = path.as_ref();
     let account_id = validate_account_id(account_id.into())?;
     let node_id = validate_node_id(node_id.into())?;
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay credential file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )?;
     let mut records = parse_credential_file_records(&contents)?;
     let updated_at_unix = current_unix_seconds();
     let mut revoked = false;
@@ -1861,12 +1879,13 @@ pub fn revoke_hosted_relay_credentials_for_account_in_file(
 ) -> Result<HostedCredentialAudit, RelayError> {
     let path = path.as_ref();
     let account_id = validate_account_id(account_id.into())?;
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return audit_hosted_relay_credentials_file(path, Some(&account_id));
-        }
-        Err(error) => return Err(RelayError::io("read relay credential file", error)),
+    let contents = match read_optional_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )? {
+        Some(contents) => contents,
+        None => return audit_hosted_relay_credentials_file(path, Some(&account_id)),
     };
     let mut records = parse_credential_file_records(&contents)?;
     let updated_at_unix = current_unix_seconds();
@@ -1899,16 +1918,19 @@ pub fn revoke_hosted_relay_credentials_for_account_node_in_file(
     let path = path.as_ref();
     let account_id = validate_account_id(account_id.into())?;
     let node_id = validate_node_id(node_id.into())?;
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+    let contents = match read_optional_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )? {
+        Some(contents) => contents,
+        None => {
             return audit_hosted_relay_credentials_file_with_node(
                 path,
                 Some(&account_id),
                 Some(&node_id),
             );
         }
-        Err(error) => return Err(RelayError::io("read relay credential file", error)),
     };
     let mut records = parse_credential_file_records(&contents)?;
     let updated_at_unix = current_unix_seconds();
@@ -2037,10 +2059,13 @@ pub fn relay_credential_manifest_contains_node(
 ) -> Result<bool, RelayError> {
     let path = path.as_ref();
     let node_id = validate_node_id(node_id.into())?;
-    let contents = match fs::read_to_string(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(RelayError::io("read relay credential file", error)),
+    let contents = match read_optional_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )? {
+        Some(contents) => contents,
+        None => return Ok(false),
     };
     for record in parse_credential_file_records(&contents)? {
         if record.node_id()? == node_id {
@@ -2072,10 +2097,13 @@ pub fn audit_hosted_relay_credentials_file_with_node(
     let node_id = node_id
         .map(|value| validate_node_id(value.to_string()))
         .transpose()?;
-    let records = match fs::read_to_string(path) {
-        Ok(contents) => parse_credential_file_records(&contents)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(RelayError::io("read relay credential file", error)),
+    let records = match read_optional_regular_relay_file(
+        path,
+        "inspect relay credential file",
+        "read relay credential file",
+    )? {
+        Some(contents) => parse_credential_file_records(&contents)?,
+        None => Vec::new(),
     };
     let now_unix = current_unix_seconds();
     let mut accounts = HashSet::new();
@@ -2143,8 +2171,11 @@ pub fn audit_hosted_admin_tokens_file(
     let account_id = account_id
         .map(|value| validate_account_id(value.to_string()))
         .transpose()?;
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay admin tokens file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay admin tokens file",
+        "read relay admin tokens file",
+    )?;
     let manifest = parse_admin_tokens_file(&contents, bind_addr)?;
     let now_unix = current_unix_seconds();
     let mut accounts = HashSet::new();
@@ -2447,10 +2478,13 @@ pub fn audit_hosted_tenants_file_with_node(
     let node_id = node_id
         .map(|value| validate_node_id(value.to_string()))
         .transpose()?;
-    let manifest = match fs::read_to_string(path) {
-        Ok(contents) => parse_hosted_tenant_manifest(&contents)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => HostedTenantManifest::default(),
-        Err(error) => return Err(RelayError::io("read hosted tenant file", error)),
+    let manifest = match read_optional_regular_relay_file(
+        path,
+        "inspect hosted tenant file",
+        "read hosted tenant file",
+    )? {
+        Some(contents) => parse_hosted_tenant_manifest(&contents)?,
+        None => HostedTenantManifest::default(),
     };
     let mut tenants = 0_usize;
     let mut active_tenants = 0_usize;
@@ -3109,6 +3143,8 @@ fn write_credential_manifest_records(
         fs::create_dir_all(parent)
             .map_err(|error| RelayError::io("create relay credential file directory", error))?;
     }
+    let _existing_target_is_regular =
+        regular_relay_file_exists(path, "inspect relay credential file replacement")?;
 
     let temp_path = credential_manifest_temp_path(path)?;
     let mut options = OpenOptions::new();
@@ -3129,7 +3165,7 @@ fn write_credential_manifest_records(
     drop(file);
 
     #[cfg(windows)]
-    if path.exists() {
+    if _existing_target_is_regular {
         fs::remove_file(path)
             .map_err(|error| RelayError::io("replace relay credential file", error))?;
     }
@@ -3178,13 +3214,64 @@ fn credential_manifest_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
     )))
 }
 
-fn load_hosted_tenant_manifest_or_empty(path: &Path) -> Result<HostedTenantManifest, RelayError> {
-    match fs::read_to_string(path) {
-        Ok(contents) => parse_hosted_tenant_manifest(&contents),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            Ok(HostedTenantManifest::default())
+fn read_required_regular_relay_file(
+    path: &Path,
+    inspect_action: &'static str,
+    read_action: &'static str,
+) -> Result<String, RelayError> {
+    read_optional_regular_relay_file(path, inspect_action, read_action)?.ok_or_else(|| {
+        RelayError::io(
+            inspect_action,
+            io::Error::new(io::ErrorKind::NotFound, "relay file path is missing"),
+        )
+    })
+}
+
+fn read_optional_regular_relay_file(
+    path: &Path,
+    inspect_action: &'static str,
+    read_action: &'static str,
+) -> Result<Option<String>, RelayError> {
+    if !regular_relay_file_exists(path, inspect_action)? {
+        return Ok(None);
+    }
+
+    fs::read_to_string(path)
+        .map(Some)
+        .map_err(|error| RelayError::io(read_action, error))
+}
+
+fn regular_relay_file_exists(
+    path: &Path,
+    inspect_action: &'static str,
+) -> Result<bool, RelayError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !file_type.is_file() {
+                return Err(RelayError::io(
+                    inspect_action,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "relay file path is not a regular file",
+                    ),
+                ));
+            }
+            Ok(true)
         }
-        Err(error) => Err(RelayError::io("read hosted tenant file", error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(RelayError::io(inspect_action, error)),
+    }
+}
+
+fn load_hosted_tenant_manifest_or_empty(path: &Path) -> Result<HostedTenantManifest, RelayError> {
+    match read_optional_regular_relay_file(
+        path,
+        "inspect hosted tenant file",
+        "read hosted tenant file",
+    )? {
+        Some(contents) => parse_hosted_tenant_manifest(&contents),
+        None => Ok(HostedTenantManifest::default()),
     }
 }
 
@@ -3378,6 +3465,8 @@ fn write_hosted_tenant_manifest(
         fs::create_dir_all(parent)
             .map_err(|error| RelayError::io("create hosted tenant file directory", error))?;
     }
+    let _existing_target_is_regular =
+        regular_relay_file_exists(path, "inspect hosted tenant file replacement")?;
     let temp_path = credential_manifest_temp_path(path)?;
     let mut file = OpenOptions::new()
         .write(true)
@@ -3394,7 +3483,7 @@ fn write_hosted_tenant_manifest(
     drop(file);
 
     #[cfg(windows)]
-    if path.exists() {
+    if _existing_target_is_regular {
         fs::remove_file(path)
             .map_err(|error| RelayError::io("replace hosted tenant file", error))?;
     }
@@ -7728,6 +7817,45 @@ mod tests {
         assert!(!replaced_auth.authorize_at("node.issue", second.token(), 3_000));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn relay_credential_manifest_upsert_rejects_symlink_without_replacing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("credential-manifest-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let manifest_path = home.join("credentials.toml");
+        let target_path = home.join("outside-credentials.toml");
+        let target_token = "target-node-token-1234567890";
+        let target_hash = relay_token_sha256_hex(target_token).expect("target hash");
+        let target_contents =
+            credential_manifest_text("node.target", &target_hash, target_token.len(), "active");
+        fs::write(&target_path, &target_contents).expect("target manifest writes");
+        symlink(&target_path, &manifest_path).expect("credential manifest symlink creates");
+        let credential = issue_relay_credential_from_token_bytes(
+            "node.issue",
+            &[23_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            1_000,
+        )
+        .expect("credential issues");
+
+        let error = upsert_issued_relay_credential_in_file(&manifest_path, &credential, false)
+            .expect_err("symlinked credential manifest should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target_path).expect("target manifest reads"),
+            target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&manifest_path)
+                .expect("credential symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn relay_credential_manifest_revoke_marks_node_without_token_leak() {
         let home = test_home("relay-manifest-revoke");
@@ -8702,6 +8830,35 @@ contents_displayed = false\n",
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn admin_token_manifest_audit_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("admin-token-manifest-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let manifest_path = home.join("admin-tokens.toml");
+        let target_path = home.join("outside-admin-tokens.toml");
+        let target_contents = "version = \"1\"\n";
+        fs::write(&target_path, target_contents).expect("target admin manifest writes");
+        symlink(&target_path, &manifest_path).expect("admin token manifest symlink creates");
+
+        let error = audit_hosted_admin_tokens_file(&manifest_path, None, "127.0.0.1:0")
+            .expect_err("symlinked admin token manifest should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target_path).expect("target admin manifest reads"),
+            target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&manifest_path)
+                .expect("admin token symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn hosted_admin_dashboard_snapshots_metadata_with_admin_token() {
         let home = test_home("hosted-admin-dashboard");
@@ -9004,6 +9161,35 @@ contents_displayed = false\n",
         assert!(!manifest.contains(credential.token_sha256_hex()));
         assert!(!manifest.contains("payload-body"));
         assert!(!manifest.contains("ciphertext_body"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hosted_tenant_manifest_upsert_rejects_symlink_without_replacing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("hosted-tenant-manifest-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let tenants_path = home.join("tenants.toml");
+        let target_path = home.join("outside-tenants.toml");
+        let target_contents = "version = \"1\"\n";
+        fs::write(&target_path, target_contents).expect("target tenant manifest writes");
+        symlink(&target_path, &tenants_path).expect("tenant manifest symlink creates");
+
+        let error = upsert_hosted_tenant_in_file(&tenants_path, "account.prod")
+            .expect_err("symlinked tenant manifest should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target_path).expect("target tenant manifest reads"),
+            target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&tenants_path)
+                .expect("tenant symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
