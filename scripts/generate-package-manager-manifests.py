@@ -1735,6 +1735,8 @@ def assert_output_safe(text: str, dist: Path) -> None:
         "CONU_RELAY_TOKEN",
         "CONU_WINDOWS_SIGN_CERT",
         "CONU_MACOS_DEVELOPER_ID",
+        "PRIVATE KEY BLOCK",
+        "BEGIN OPENSSH PRIVATE KEY",
         "BEGIN PRIVATE KEY",
         "BEGIN CERTIFICATE",
         "payload_ciphertext",

@@ -332,6 +332,8 @@ def assert_no_forbidden_text(text: str, label: str, temp: Path) -> None:
         "CONU_RELAY_TOKEN",
         "token_sha256_hex",
         "payloadHex",
+        "PRIVATE KEY BLOCK",
+        "BEGIN OPENSSH PRIVATE KEY",
         "BEGIN PRIVATE KEY",
     ]
     normalized = text.replace("\\", "/")
@@ -797,6 +799,16 @@ def main() -> int:
         rootless_dist.mkdir()
         hashes = write_dist(rootless_dist, rooted_windows=False)
         generate(generator, rootless_dist, rootless_out)
+
+        for literal in ("PRIVATE KEY BLOCK", "BEGIN OPENSSH PRIVATE KEY"):
+            expect_failure(
+                f"forbidden package-manager manifest literal {literal}",
+                lambda literal=literal: generator.assert_output_safe(
+                    f"public manifest text\n{literal}\n",
+                    rootless_dist,
+                ),
+                f"forbidden literal: {literal}",
+            )
 
         expect_failure_with_limit(
             generator,
