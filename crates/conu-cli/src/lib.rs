@@ -10256,7 +10256,7 @@ fn scan_payload_safe_logs(snapshot: &StateSnapshot) -> DoctorLogScan {
                 continue;
             }
             scanned_files += 1;
-            let Ok(contents) = fs::read_to_string(&path) else {
+            let Ok(contents) = read_doctor_log_contents(&path) else {
                 issues += 1;
                 continue;
             };
@@ -10286,6 +10286,46 @@ fn is_log_or_archive(path: &Path) -> bool {
         })
 }
 
+fn read_doctor_log_contents(path: &Path) -> Result<String, ()> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+    let file_type = metadata.file_type();
+    let invalid_metadata = file_type.is_symlink()
+        || !file_type.is_file()
+        || metadata.len() > MAX_DOCTOR_LOG_SCAN_BYTES;
+    if invalid_metadata {
+        return Err(());
+    }
+
+    let mut file = fs::File::open(path).map_err(|_| ())?;
+    let path_metadata = fs::symlink_metadata(path).map_err(|_| ())?;
+    let path_file_type = path_metadata.file_type();
+    if path_file_type.is_symlink()
+        || !path_file_type.is_file()
+        || !update_input_file_metadata_matches(&metadata, &path_metadata)
+    {
+        return Err(());
+    }
+
+    let opened_metadata = file.metadata().map_err(|_| ())?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_DOCTOR_LOG_SCAN_BYTES
+        || !update_input_file_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(());
+    }
+
+    let mut contents = String::new();
+    let limit = MAX_DOCTOR_LOG_SCAN_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
+        .map_err(|_| ())?;
+    if contents.len() as u64 > MAX_DOCTOR_LOG_SCAN_BYTES {
+        return Err(());
+    }
+    Ok(contents)
+}
+
 const FORBIDDEN_LOG_TERMS: &[&str] = &[
     "private message contents",
     "Review this code",
@@ -10293,6 +10333,7 @@ const FORBIDDEN_LOG_TERMS: &[&str] = &[
     "payload_hex",
     "secret_key_hex",
 ];
+const MAX_DOCTOR_LOG_SCAN_BYTES: u64 = 1024 * 1024;
 
 fn render_start(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let json = match json_flag(args) {
@@ -13101,6 +13142,54 @@ mod tests {
                 .stdout
                 .contains("event=test private message contents")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn doctor_rejects_symlinked_logs_without_reading_targets() {
+        let home = temp_home("doctor-log-symlink");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = state::StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        let outside_log = home.join("outside-target.log");
+        fs::write(&outside_log, "event=outside relay-secret-token\n").expect("target writes");
+        std::os::unix::fs::symlink(&outside_log, paths.logs_dir.join("linked.log"))
+            .expect("symlink creates");
+
+        let output = run_with_home(["doctor", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"privacy_attention\""));
+        assert!(output.stdout.contains("\"payloadSafe\": false"));
+        assert!(output.stdout.contains("\"scannedFiles\": 1"));
+        assert!(output.stdout.contains("\"issues\": 1"));
+        assert!(!output.stdout.contains("relay-secret-token"));
+        assert_eq!(
+            fs::read_to_string(&outside_log).expect("target reads"),
+            "event=outside relay-secret-token\n"
+        );
+        let linked_metadata =
+            fs::symlink_metadata(paths.logs_dir.join("linked.log")).expect("link metadata");
+        assert!(linked_metadata.file_type().is_symlink());
+    }
+
+    #[test]
+    fn doctor_rejects_oversized_logs_without_loading_contents() {
+        let home = temp_home("doctor-log-oversized");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = state::StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        let oversized = vec![b'a'; (MAX_DOCTOR_LOG_SCAN_BYTES + 1) as usize];
+        fs::write(paths.logs_dir.join("huge.log"), oversized).expect("oversized log writes");
+
+        let output = run_with_home(["doctor", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"privacy_attention\""));
+        assert!(output.stdout.contains("\"payloadSafe\": false"));
+        assert!(output.stdout.contains("\"scannedFiles\": 1"));
+        assert!(output.stdout.contains("\"issues\": 1"));
+        assert!(!output.stdout.contains("aaaaaaaaaaaaaaaa"));
     }
 
     #[test]
