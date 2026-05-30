@@ -254,7 +254,7 @@ def write_fake_aws(temp: Path) -> Path:
     fake_py.write_text(
         "\n".join(
             [
-                "import json, os, pathlib, sys",
+                "import json, os, sys",
                 "args = sys.argv[1:]",
                 "if 's3' not in args or 'cp' not in args:",
                 "    print('expected s3 cp command', file=sys.stderr)",
@@ -263,14 +263,22 @@ def write_fake_aws(temp: Path) -> Path:
                 "    print('missing cache metadata', file=sys.stderr)",
                 "    sys.exit(3)",
                 "cp_index = args.index('cp')",
-                "source = pathlib.Path(args[cp_index + 1])",
+                "source = args[cp_index + 1]",
                 "target = args[cp_index + 2]",
-                "if not source.is_file() or not target.startswith('s3://conu-packages-fixture/public/conu/'):",
+                "if source != '-' or not target.startswith('s3://conu-packages-fixture/public/conu/'):",
                 "    print('bad source or target', file=sys.stderr)",
                 "    sys.exit(4)",
+                "if '--expected-size' not in args:",
+                "    print('missing expected upload size', file=sys.stderr)",
+                "    sys.exit(5)",
+                "body = sys.stdin.buffer.read()",
+                "expected_size = int(args[args.index('--expected-size') + 1])",
+                "if len(body) != expected_size:",
+                "    print('stdin size did not match expected upload size', file=sys.stderr)",
+                "    sys.exit(6)",
                 "log = os.environ['CONU_FAKE_AWS_LOG']",
                 "with open(log, 'a', encoding='utf-8') as handle:",
-                "    handle.write(json.dumps(args, sort_keys=True) + '\\n')",
+                "    handle.write(json.dumps({'args': args, 'stdinBytes': len(body)}, sort_keys=True) + '\\n')",
             ]
         )
         + "\n",
@@ -302,13 +310,20 @@ def assert_fake_aws_log(log: Path, expected_count: int) -> None:
     if len(rows) != expected_count:
         raise AssertionError(f"fake AWS saw {len(rows)} uploads, expected {expected_count}")
     targets = set()
-    for args in rows:
+    for row in rows:
+        args = row["args"]
         if args.count("s3") != 1 or args.count("cp") != 1:
             raise AssertionError(f"unexpected AWS command args: {args!r}")
+        source = args[args.index("cp") + 1]
+        if source != "-":
+            raise AssertionError(f"upload source was not stdin: {args!r}")
         target = args[args.index("cp") + 2]
         if target in targets:
             raise AssertionError(f"duplicate S3 target: {target}")
         targets.add(target)
+        expected_size = int(args[args.index("--expected-size") + 1])
+        if row["stdinBytes"] != expected_size:
+            raise AssertionError(f"upload body size did not match --expected-size: {args!r}")
         cache_control = args[args.index("--cache-control") + 1]
         if cache_control not in {
             "no-cache",
