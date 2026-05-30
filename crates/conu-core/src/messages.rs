@@ -977,22 +977,15 @@ fn append_message_log(
     entry: &InboxEntry,
     status: &str,
 ) -> Result<(), MessageError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| MessageError::io("create log directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let log_path = paths.logs_dir.join("messages.log");
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&log_path)
-        .map_err(|error| MessageError::io("open message log", &log_path, error))?;
     let stream_field = entry
         .stream_id
         .as_deref()
         .map(|stream_id| format!(" stream={}", sanitize_log_value(stream_id)))
         .unwrap_or_default();
 
-    writeln!(
-        file,
+    let line = format!(
         "time={} event=envelope_delivered status={} envelope={} kind={}{} from={} to={} bytes={} payload=not_observed",
         current_unix_seconds(),
         sanitize_log_value(status),
@@ -1002,8 +995,17 @@ fn append_message_log(
         sanitize_log_value(&entry.from_agent_id),
         sanitize_log_value(&entry.to_agent_id),
         entry.payload_bytes
-    )
-    .map_err(|error| MessageError::io("write message log", &log_path, error))
+    );
+
+    state::append_regular_state_file(
+        &log_path,
+        &(line + "\n"),
+        "inspect message log",
+        "create message log",
+        "open message log",
+        "write message log",
+    )?;
+    Ok(())
 }
 
 fn write_new_file(path: &Path, contents: &str) -> Result<(), MessageError> {

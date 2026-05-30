@@ -888,23 +888,24 @@ fn render_presence_request(request_id: &str, heartbeat: &PresenceHeartbeat) -> S
 }
 
 fn append_agent_log(paths: &StatePaths, event: &str, agent_id: &str) -> Result<(), AgentError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| AgentError::io("create log directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let log_path = paths.logs_dir.join("agents.log");
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&log_path)
-        .map_err(|error| AgentError::io("open agent log", &log_path, error))?;
-
-    writeln!(
-        file,
+    let line = format!(
         "time={} event={} agent={} payload=not_observed",
         current_unix_seconds(),
         event,
         sanitize_log_value(agent_id)
-    )
-    .map_err(|error| AgentError::io("write agent log", &log_path, error))
+    );
+
+    state::append_regular_state_file(
+        &log_path,
+        &(line + "\n"),
+        "inspect agent log",
+        "create agent log",
+        "open agent log",
+        "write agent log",
+    )?;
+    Ok(())
 }
 
 fn write_new_file(path: &Path, contents: &str) -> Result<(), AgentError> {

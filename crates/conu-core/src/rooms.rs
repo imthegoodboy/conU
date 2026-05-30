@@ -7,9 +7,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1370,17 +1370,10 @@ fn append_room_log(
     agent_id: Option<&str>,
     payload_bytes: usize,
 ) -> Result<(), RoomError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| RoomError::io("create logs directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let path = paths.logs_dir.join("rooms.log");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| RoomError::io("open room log", &path, error))?;
 
-    writeln!(
-        file,
+    let line = format!(
         "time={} event={} room={} agent={} bytes={} payload=not_observed",
         current_unix_seconds(),
         event,
@@ -1389,8 +1382,17 @@ fn append_room_log(
             .map(sanitize_log_value)
             .unwrap_or_else(|| "none".to_string()),
         payload_bytes
-    )
-    .map_err(|error| RoomError::io("write room log", &path, error))
+    );
+
+    state::append_regular_state_file(
+        &path,
+        &(line + "\n"),
+        "inspect room log",
+        "create room log",
+        "open room log",
+        "write room log",
+    )?;
+    Ok(())
 }
 
 fn required(values: &HashMap<String, String>, key: &'static str) -> Result<String, RoomError> {

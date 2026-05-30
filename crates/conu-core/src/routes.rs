@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -600,10 +600,9 @@ fn report_from_routes(routes: &[RouteRecord], probes_recorded: usize) -> RouteSy
 }
 
 fn ensure_route_files(paths: &StatePaths) -> Result<(), RouteError> {
-    fs::create_dir_all(&paths.routes_dir)
-        .map_err(|error| RouteError::io("create routes directory", &paths.routes_dir, error))?;
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| RouteError::io("create logs directory", &paths.logs_dir, error))
+    state::ensure_state_directory(&paths.routes_dir)?;
+    state::ensure_state_directory(&paths.logs_dir)?;
+    Ok(())
 }
 
 fn read_config(paths: &StatePaths) -> Result<HashMap<String, String>, RouteError> {
@@ -766,18 +765,11 @@ fn read_probes(paths: &StatePaths) -> Result<Vec<RouteProbe>, RouteError> {
 }
 
 fn append_route_log(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| RouteError::io("create logs directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let log_path = paths.logs_dir.join("routes.log");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|error| RouteError::io("open route log", &log_path, error))?;
     let report = report_from_routes(routes, 0);
 
-    writeln!(
-        file,
+    let line = format!(
         "event=route_sync peers={} candidates={} selected_direct={} selected_relay={} relay_fallbacks={} nat_traversal_unavailable={} payload=not_observed",
         report.peers,
         report.candidates,
@@ -785,8 +777,17 @@ fn append_route_log(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), Ro
         report.selected_relay,
         report.relay_fallbacks,
         report.nat_traversal_unavailable
-    )
-    .map_err(|error| RouteError::io("write route log", &log_path, error))
+    );
+
+    state::append_regular_state_file(
+        &log_path,
+        &(line + "\n"),
+        "inspect route log",
+        "create route log",
+        "open route log",
+        "write route log",
+    )?;
+    Ok(())
 }
 
 fn parse_routes(contents: &str) -> Result<Vec<RouteRecord>, RouteError> {

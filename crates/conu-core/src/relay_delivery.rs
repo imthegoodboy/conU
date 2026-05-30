@@ -1651,25 +1651,27 @@ fn append_relay_log(
     peer_node_id: &str,
     payload_bytes: usize,
 ) -> Result<(), RelayDeliveryError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| RelayDeliveryError::io("create log directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.logs_dir)?;
     let path = paths.logs_dir.join("relay-delivery.log");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| RelayDeliveryError::io("open relay delivery log", &path, error))?;
 
-    writeln!(
-        file,
+    let line = format!(
         "time={} event={} envelope={} peer={} bytes={} payload=not_observed",
         current_unix_seconds(),
         sanitize_log_value(event),
         sanitize_log_value(envelope_id),
         sanitize_log_value(peer_node_id),
         payload_bytes
-    )
-    .map_err(|error| RelayDeliveryError::io("write relay delivery log", &path, error))
+    );
+
+    state::append_regular_state_file(
+        &path,
+        &(line + "\n"),
+        "inspect relay delivery log",
+        "create relay delivery log",
+        "open relay delivery log",
+        "write relay delivery log",
+    )?;
+    Ok(())
 }
 
 fn count_files_with_extension(path: &Path, extension: &str) -> Result<usize, RelayDeliveryError> {
