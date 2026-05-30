@@ -7940,27 +7940,14 @@ fn install_staged_update_binaries(
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| "release update install target has invalid filename".to_string())?;
-        let temp_target = install_dir.join(format!(".{filename}.conu-update-new-{nonce}"));
-        if temp_target.exists() {
-            cleanup_update_temp_targets(&temp_targets);
-            return Err(format!(
-                "release update temporary install target already exists: {}",
-                temp_target.display()
-            ));
-        }
-        if let Err(error) = fs::copy(&report.source_file, &temp_target) {
-            cleanup_update_temp_targets(&temp_targets);
-            let _ = fs::remove_file(&temp_target);
-            return Err(format!(
-                "could not stage release update binary {}: {error}",
-                report.target_file.display()
-            ));
-        }
-        if let Err(error) = set_update_binary_permissions(&temp_target) {
-            cleanup_update_temp_targets(&temp_targets);
-            let _ = fs::remove_file(&temp_target);
-            return Err(error);
-        }
+        let temp_target =
+            match create_update_temp_install_target(report, install_dir, filename, nonce) {
+                Ok(temp_target) => temp_target,
+                Err(error) => {
+                    cleanup_update_temp_targets(&temp_targets);
+                    return Err(error);
+                }
+            };
         temp_targets.push((report.target_file.clone(), temp_target));
     }
 
@@ -8019,6 +8006,72 @@ fn install_staged_update_binaries(
     }
 
     Ok(reports)
+}
+
+fn create_update_temp_install_target(
+    report: &UpdateApplyBinaryReport,
+    install_dir: &Path,
+    filename: &str,
+    nonce: u128,
+) -> Result<PathBuf, String> {
+    for attempt in 0..1024 {
+        let temp_target =
+            install_dir.join(format!(".{filename}.conu-update-new-{nonce}-{attempt}"));
+        let mut temp_file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_target)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "could not reserve release update temporary install target {}: {error}",
+                    temp_target.display()
+                ));
+            }
+        };
+
+        let mut source_file = match fs::File::open(&report.source_file) {
+            Ok(file) => file,
+            Err(error) => {
+                drop(temp_file);
+                let _ = fs::remove_file(&temp_target);
+                return Err(format!(
+                    "could not stage release update binary {}: {error}",
+                    report.target_file.display()
+                ));
+            }
+        };
+        let copied = match io::copy(&mut source_file, &mut temp_file) {
+            Ok(copied) => copied,
+            Err(error) => {
+                drop(temp_file);
+                let _ = fs::remove_file(&temp_target);
+                return Err(format!(
+                    "could not stage release update binary {}: {error}",
+                    report.target_file.display()
+                ));
+            }
+        };
+        drop(temp_file);
+        if copied != report.bytes {
+            let _ = fs::remove_file(&temp_target);
+            return Err(format!(
+                "release update staged binary changed while preparing {}",
+                report.target_file.display()
+            ));
+        }
+        if let Err(error) = set_update_binary_permissions(&temp_target) {
+            let _ = fs::remove_file(&temp_target);
+            return Err(error);
+        }
+        return Ok(temp_target);
+    }
+
+    Err(format!(
+        "could not reserve unique release update temporary install target for {filename}"
+    ))
 }
 
 fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) {
@@ -10937,6 +10990,45 @@ mod tests {
             Some("0.1.0-42-1")
         );
         assert!(created.is_dir());
+    }
+
+    #[test]
+    fn update_apply_temp_install_target_skips_existing_candidate() {
+        let home = temp_home("update-apply-temp-target");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let stale = install_dir.join(format!(".{filename}.conu-update-new-42-0"));
+        fs::write(&stale, b"stale temp target").expect("stale temp target writes");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        fs::write(&source_file, b"new conu binary").expect("source binary writes");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file,
+            target_file: install_dir.join(&filename),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+        };
+
+        let created = create_update_temp_install_target(&report, &install_dir, &filename, 42)
+            .expect("unique temp target creates");
+
+        let expected_name = format!(".{filename}.conu-update-new-42-1");
+        assert_ne!(created, stale);
+        assert_eq!(
+            created.file_name().and_then(|value| value.to_str()),
+            Some(expected_name.as_str())
+        );
+        assert_eq!(
+            fs::read(&created).expect("created temp target reads"),
+            b"new conu binary"
+        );
+        assert_eq!(
+            fs::read(&stale).expect("stale temp target reads"),
+            b"stale temp target"
+        );
     }
 
     #[test]
