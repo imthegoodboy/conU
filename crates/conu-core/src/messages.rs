@@ -561,8 +561,18 @@ fn deliver_envelope_with_status_and_stream(
     status: &str,
     stream_id: Option<String>,
 ) -> Result<InboxEntry, MessageError> {
-    let now = current_unix_seconds();
     let receipt_id = request_id("rcpt");
+    deliver_envelope_with_status_stream_and_receipt(paths, envelope, status, stream_id, receipt_id)
+}
+
+fn deliver_envelope_with_status_stream_and_receipt(
+    paths: &StatePaths,
+    envelope: Envelope,
+    status: &str,
+    stream_id: Option<String>,
+    receipt_id: String,
+) -> Result<InboxEntry, MessageError> {
+    let now = current_unix_seconds();
     let inbox_dir = paths.message_inbox_dir.join(envelope.to.as_str());
     fs::create_dir_all(&inbox_dir)
         .map_err(|error| MessageError::io("create agent message inbox", &inbox_dir, error))?;
@@ -584,6 +594,13 @@ fn deliver_envelope_with_status_and_stream(
         delivered_at_unix: now,
         payload_bytes: envelope.payload.len(),
     };
+    let envelope_path = inbox_dir.join(format!("{}.env", entry.envelope_id));
+    let receipt_path = paths
+        .message_receipts_dir
+        .join(format!("{}.receipt", entry.receipt_id));
+    ensure_message_delivery_file_available(&envelope_path)?;
+    ensure_message_delivery_file_available(&receipt_path)?;
+
     let encrypted = security::encrypt_for_storage_from_paths(
         paths,
         envelope.payload.as_bytes(),
@@ -594,7 +611,6 @@ fn deliver_envelope_with_status_and_stream(
             entry.stream_id.as_deref(),
         ),
     )?;
-    let envelope_path = inbox_dir.join(format!("{}.env", entry.envelope_id));
     write_new_file(
         &envelope_path,
         &render_envelope_file(&entry, envelope.kind, &encrypted),
@@ -611,10 +627,10 @@ fn deliver_envelope_with_status_and_stream(
         delivered_at_unix: now,
         payload_bytes: entry.payload_bytes,
     };
-    let receipt_path = paths
-        .message_receipts_dir
-        .join(format!("{}.receipt", receipt.receipt_id));
-    write_new_file(&receipt_path, &render_receipt(&receipt))?;
+    if let Err(error) = write_new_file(&receipt_path, &render_receipt(&receipt)) {
+        let _ = fs::remove_file(&envelope_path);
+        return Err(error);
+    }
     append_message_log(paths, &entry, status)?;
 
     Ok(entry)
@@ -738,6 +754,22 @@ fn ensure_message_ipc_marker_available(path: &Path) -> Result<(), MessageError> 
         )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(MessageError::io("inspect message IPC marker", path, error)),
+    }
+}
+
+fn ensure_message_delivery_file_available(path: &Path) -> Result<(), MessageError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(MessageError::io(
+            "reserve message delivery file",
+            path,
+            io::Error::new(io::ErrorKind::AlreadyExists, "delivery file already exists"),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(MessageError::io(
+            "inspect message delivery file",
+            path,
+            error,
+        )),
     }
 }
 
@@ -1431,6 +1463,48 @@ mod tests {
         assert!(replacement.contains("recipient is not a registered local agent"));
         assert!(!replacement.contains("secret private message contents"));
         assert!(!submission.request_path.exists());
+    }
+
+    #[test]
+    fn delivery_receipt_collision_fails_before_writing_envelope() {
+        let home = test_home("receipt-collision");
+        register_agent(&home, "agent.sender");
+        register_agent(&home, "agent.receiver");
+        let paths = StatePaths::from_home(home);
+        fs::create_dir_all(&paths.message_receipts_dir).expect("receipt dir creates");
+        let receipt_id = "rcpt.collision".to_string();
+        let receipt_path = paths.message_receipts_dir.join("rcpt.collision.receipt");
+        fs::write(&receipt_path, "existing receipt marker").expect("existing receipt writes");
+        let envelope = Envelope::new(
+            "env.receipt.collision",
+            AgentId::new("agent.sender").expect("sender id"),
+            AgentId::new("agent.receiver").expect("receiver id"),
+            EnvelopeKind::Message,
+            OpaquePayload::from_bytes(b"secret private message contents".to_vec()),
+        )
+        .expect("envelope creates");
+
+        let error = deliver_envelope_with_status_stream_and_receipt(
+            &paths,
+            envelope,
+            "delivered_local",
+            None,
+            receipt_id,
+        )
+        .expect_err("existing receipt should fail before envelope write");
+
+        assert!(error.to_string().contains("reserve message delivery file"));
+        assert_eq!(
+            fs::read_to_string(&receipt_path).expect("existing receipt reads"),
+            "existing receipt marker"
+        );
+        assert!(
+            !paths
+                .message_inbox_dir
+                .join("agent.receiver")
+                .join("env.receipt.collision.env")
+                .exists()
+        );
     }
 
     #[test]
