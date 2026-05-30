@@ -22,10 +22,10 @@ const {
   validateDownloadUrl,
   validateUnverifiedDownloadBase
 } = require("../lib/download-policy");
+const { installBinary } = require("../lib/install-target");
 const {
   BINARIES,
   assetName,
-  binaryPath,
   binarySuffix,
   packageVersion,
   vendorDir
@@ -120,15 +120,6 @@ function installFromExtractedArchive(root) {
     installBinary(binaries[name], name);
   }
   console.log(`installed conU native binaries for ${asset}`);
-}
-
-function installBinary(source, name) {
-  const target = binaryPath(name);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.copyFileSync(source, target);
-  if (process.platform !== "win32") {
-    fs.chmodSync(target, 0o755);
-  }
 }
 
 function extractArchive(archivePath, destination) {
