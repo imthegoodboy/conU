@@ -4,16 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
-from typing import Mapping
+from typing import BinaryIO, Mapping
 
 from github_release_secrets import REQUIRED_RELEASE_SECRETS, find_gh, infer_repo
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+MAX_ENV_FILE_BYTES = 128 * 1024
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
 def render_env_template(names: tuple[str, ...]) -> str:
@@ -58,22 +63,15 @@ def collect_env_values(names: tuple[str, ...]) -> tuple[dict[str, str], tuple[st
 def load_env_file_values(path: Path, names: tuple[str, ...]) -> dict[str, str]:
     allowed = set(names)
     values: dict[str, str] = {}
-    try:
-        stat = path.stat()
-    except OSError as exc:
-        raise ValueError(f"env file is not readable: {path}") from exc
-    if not path.is_file():
-        raise ValueError(f"env file is not a regular file: {path}")
-    if stat.st_size > 128 * 1024:
-        raise ValueError(f"env file is too large: {path}")
 
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        env_text = read_env_file(path)
     except UnicodeDecodeError as exc:
         raise ValueError(f"env file must be UTF-8 text: {path}") from exc
     except OSError as exc:
         raise ValueError(f"env file is not readable: {path}") from exc
 
+    lines = env_text.splitlines()
     for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -97,6 +95,55 @@ def load_env_file_values(path: Path, names: tuple[str, ...]) -> dict[str, str]:
             value = value[1:-1]
         values[key] = value
     return values
+
+
+def read_env_file(path: Path) -> str:
+    handle, _size = open_env_file(path)
+    with handle:
+        data = handle.read(MAX_ENV_FILE_BYTES + 1)
+        if len(data) > MAX_ENV_FILE_BYTES:
+            raise ValueError(f"env file is too large: {path}")
+        validate_open_env_file(handle, path)
+    return data.decode("utf-8")
+
+
+def open_env_file(path: Path) -> tuple[BinaryIO, int]:
+    if path.is_symlink():
+        raise ValueError(f"env file must not be a symlink: {path}")
+    if not path.exists():
+        raise ValueError(f"env file is not readable: {path}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError(f"env file must not be a symlink: {path}") from exc
+        if not path.exists():
+            raise ValueError(f"env file is not readable: {path}") from exc
+        if not path.is_file():
+            raise ValueError(f"env file is not a regular file: {path}") from exc
+        raise
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"env file is not a regular file: {path}")
+        size = metadata.st_size
+        if size > MAX_ENV_FILE_BYTES:
+            raise ValueError(f"env file is too large: {path}")
+        return os.fdopen(fd, "rb"), size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def validate_open_env_file(handle: BinaryIO, path: Path) -> int:
+    metadata = os.fstat(handle.fileno())
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"env file is not a regular file: {path}")
+    size = metadata.st_size
+    if size > MAX_ENV_FILE_BYTES:
+        raise ValueError(f"env file is too large: {path}")
+    return size
 
 
 def missing_required_values(values: Mapping[str, str], names: tuple[str, ...]) -> tuple[str, ...]:

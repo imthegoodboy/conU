@@ -40,6 +40,14 @@ def assert_raises(func, pattern: str) -> None:
     raise AssertionError(f"expected ValueError containing {pattern!r}")
 
 
+def try_symlink(link: Path, target: Path) -> bool:
+    try:
+        link.symlink_to(target)
+        return True
+    except (NotImplementedError, OSError):
+        return False
+
+
 def with_required_env(module, value: str):
     original = {name: os.environ.get(name) for name in module.REQUIRED_RELEASE_SECRETS}
     for name in module.REQUIRED_RELEASE_SECRETS:
@@ -133,6 +141,38 @@ def run_env_file_tests(module) -> None:
             raise AssertionError("env file did not load every required secret name")
         if set(values.values()) != {SENSITIVE_SENTINEL}:
             raise AssertionError("env file did not preserve configured values")
+
+        directory_env_file = temp_path / "directory.env"
+        directory_env_file.mkdir()
+        assert_raises(
+            lambda: module.load_env_file_values(
+                directory_env_file,
+                module.REQUIRED_RELEASE_SECRETS,
+            ),
+            "regular file",
+        )
+
+        oversized = temp_path / "oversized.env"
+        oversized.write_text(
+            "NPM_TOKEN=" + ("x" * module.MAX_ENV_FILE_BYTES) + "\n",
+            encoding="utf-8",
+        )
+        assert_raises(
+            lambda: module.load_env_file_values(oversized, module.REQUIRED_RELEASE_SECRETS),
+            "too large",
+        )
+
+        symlink_target = temp_path / "real.env"
+        symlink_link = temp_path / "linked.env"
+        write_required_env_file(symlink_target, module, SENSITIVE_SENTINEL)
+        if try_symlink(symlink_link, symlink_target):
+            assert_raises(
+                lambda: module.load_env_file_values(
+                    symlink_link,
+                    module.REQUIRED_RELEASE_SECRETS,
+                ),
+                "must not be a symlink",
+            )
 
         malformed = temp_path / "malformed.env"
         malformed.write_text(f"{SENSITIVE_SENTINEL}\n", encoding="utf-8")
