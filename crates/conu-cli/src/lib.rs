@@ -11617,6 +11617,7 @@ mod tests {
         use std::os::unix::fs::{PermissionsExt, symlink};
 
         let home = temp_home("update-apply-permissions-handle");
+        fs::create_dir_all(&home).expect("home creates");
         let actual = home.join("actual-binary");
         let outside = home.join("outside-binary");
         let symlink_path = home.join("symlink-path");
