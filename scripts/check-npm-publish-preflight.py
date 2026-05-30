@@ -148,6 +148,16 @@ def check_registry_availability(npm: str, packages: tuple[PackageInfo, ...]) -> 
         )
 
 
+def validate_package_version_consistency(packages: tuple[PackageInfo, ...]) -> None:
+    versions = sorted({package.version for package in packages})
+    if len(versions) > 1:
+        details = ", ".join(f"{package.name}@{package.version}" for package in packages)
+        raise ValueError(
+            "npm package versions must match before publication: "
+            + details
+        )
+
+
 def selected_packages(names: list[str]) -> tuple[PackageRule, ...]:
     if not names:
         return PACKAGES
@@ -192,6 +202,7 @@ def main() -> int:
         os.chdir(repo)
 
         packages = tuple(validate_manifest(repo, rule) for rule in selected_packages(args.package))
+        validate_package_version_consistency(packages)
         validate_required_token(args.require_token_env or None)
 
         if args.registry_check:
