@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import hashlib
 import os
 import shutil
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import BinaryIO
 
 from linux_gpg_common import (
     add_fingerprint_env_argument,
@@ -26,6 +28,8 @@ MAX_SIGNING_KEY_BYTES = 1024 * 1024
 MAX_PUBLIC_KEY_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 HASH_CHUNK_BYTES = 1024 * 1024
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
 def main() -> int:
@@ -145,8 +149,12 @@ def write_public_key_asset(path: Path, public_key: bytes) -> None:
     prepare_public_key_output(path)
     temp_path = temporary_sibling_path(path)
     try:
-        temp_path.write_bytes(public_key)
-        temp_path.chmod(0o644)
+        write_output_bytes(
+            temp_path,
+            public_key,
+            f"temporary Linux public-key output {path.name}",
+            max_bytes=MAX_PUBLIC_KEY_BYTES,
+        )
         validate_regular_file(
             temp_path,
             f"temporary Linux public-key output {path.name}",
@@ -176,11 +184,15 @@ def write_sha256_sidecar(path: Path) -> None:
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=True,
         )
-    text = f"{sha256_file(path)}  {path.name}\n"
+    text = f"{sha256_file(path, f'Linux public-key output {path.name}')}  {path.name}\n"
     temp_path = temporary_sibling_path(sidecar)
     try:
-        temp_path.write_text(text, encoding="ascii", newline="\n")
-        temp_path.chmod(0o644)
+        write_output_bytes(
+            temp_path,
+            text.encode("ascii"),
+            f"temporary SHA-256 sidecar output {sidecar.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+        )
         validate_regular_file(
             temp_path,
             f"temporary SHA-256 sidecar output {sidecar.name}",
@@ -208,20 +220,103 @@ def validate_regular_file(
     max_bytes: int,
     allow_empty: bool,
 ) -> int:
+    handle, size = open_regular_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        allow_empty=allow_empty,
+    )
+    handle.close()
+    return size
+
+
+def open_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> tuple[BinaryIO, int]:
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(f"missing {label}: {path.name}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
     try:
-        metadata = path.stat()
+        fd = os.open(path, flags)
     except OSError as exc:
-        raise SystemExit(f"missing {label}: {path.name}") from exc
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {path.name}") from exc
+        if not path.exists():
+            raise SystemExit(f"missing {label}: {path.name}") from exc
+        if not path.is_file():
+            raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} must be a regular file: {path.name}")
+        size = metadata.st_size
+        if not allow_empty and size == 0:
+            raise SystemExit(f"{label} must not be empty: {path.name}")
+        if size > max_bytes:
+            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        return os.fdopen(fd, "rb"), size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def validate_open_regular_file(
+    handle: BinaryIO,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> int:
+    metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(f"{label} must be a regular file: {path.name}")
+        raise SystemExit(f"{label} must be a regular file")
     size = metadata.st_size
     if not allow_empty and size == 0:
-        raise SystemExit(f"{label} must not be empty: {path.name}")
+        raise SystemExit(f"{label} must not be empty")
     if size > max_bytes:
-        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
     return size
+
+
+def write_output_bytes(path: Path, data: bytes, label: str, *, max_bytes: int) -> None:
+    if len(data) > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | OPEN_BINARY | OPEN_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {path.name}") from exc
+        if path.exists() and not path.is_file():
+            raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} could not be opened: {path.name}") from exc
+    try:
+        with os.fdopen(fd, "w+b") as handle:
+            fd = -1
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise SystemExit(f"{label} must be a regular file: {path.name}")
+            handle.write(data)
+            handle.flush()
+            validate_open_regular_file(
+                handle,
+                label,
+                max_bytes=max_bytes,
+                allow_empty=False,
+            )
+        path.chmod(0o644)
+    except BaseException:
+        if fd != -1:
+            os.close(fd)
+        raise
 
 
 def temporary_sibling_path(path: Path) -> Path:
@@ -234,14 +329,53 @@ def temporary_sibling_path(path: Path) -> Path:
         return Path(handle.name)
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(
+    path: Path,
+    label: str = "Linux public-key output",
+    *,
+    max_bytes: int | None = None,
+    allow_empty: bool = False,
+) -> str:
+    effective_max_bytes = MAX_PUBLIC_KEY_BYTES if max_bytes is None else max_bytes
+    handle, _size = open_regular_file(
+        path,
+        label,
+        max_bytes=effective_max_bytes,
+        allow_empty=allow_empty,
+    )
+    with handle:
+        return sha256_open_file(
+            handle,
+            label,
+            max_bytes=effective_max_bytes,
+            allow_empty=allow_empty,
+        )
+
+
+def sha256_open_file(
+    handle: BinaryIO,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
+    handle.seek(0)
+    total = 0
+    while True:
+        chunk = handle.read(HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
+        digest.update(chunk)
+    validate_open_regular_file(
+        handle,
+        label,
+        max_bytes=max_bytes,
+        allow_empty=allow_empty,
+    )
     return digest.hexdigest()
 
 
