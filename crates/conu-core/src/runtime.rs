@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
@@ -20,6 +20,7 @@ const STALE_AFTER_SECS: u64 = 10;
 const LOCAL_ENDPOINT: &str = "file-ipc:runtime/ipc/inbox";
 const RELAY_PUMP_WAIT_MS: u64 = 850;
 const RELAY_PUMP_ERROR_BACKOFF_SECS: u64 = 5;
+const MAX_RUNTIME_CONTROL_FILE_BYTES: u64 = 1024 * 1024;
 
 /// High-level state for the local conUD runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -707,12 +708,67 @@ fn read_runtime_control_file(
     path: &Path,
     action: &'static str,
 ) -> Result<Option<String>, RuntimeError> {
-    let Some(_) = regular_runtime_control_metadata(path, action)? else {
+    let Some(metadata) = regular_runtime_control_metadata(path, action)? else {
         return Ok(None);
     };
-    fs::read_to_string(path)
-        .map(Some)
-        .map_err(|error| RuntimeError::io(action, path, error))
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| RuntimeError::io(action, path, error))?;
+    let Some(path_metadata) = regular_runtime_control_metadata(path, action)? else {
+        return Err(RuntimeError::io(
+            action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "runtime control path is missing"),
+        ));
+    };
+    if !runtime_control_metadata_matches(&metadata, &path_metadata) {
+        return Err(RuntimeError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "runtime control path changed while reading",
+            ),
+        ));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| RuntimeError::io(action, path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_RUNTIME_CONTROL_FILE_BYTES
+        || !runtime_control_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(RuntimeError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "runtime control path changed while reading",
+            ),
+        ));
+    }
+
+    let mut contents = String::new();
+    let limit = MAX_RUNTIME_CONTROL_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
+        .map_err(|error| RuntimeError::io(action, path, error))?;
+    if contents.len() as u64 > MAX_RUNTIME_CONTROL_FILE_BYTES {
+        return Err(RuntimeError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("runtime control file exceeds {MAX_RUNTIME_CONTROL_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
+
+    Ok(Some(contents))
 }
 
 fn write_runtime_control_file(
@@ -763,11 +819,49 @@ fn regular_runtime_control_metadata(
                     ),
                 ));
             }
+            if metadata.len() > MAX_RUNTIME_CONTROL_FILE_BYTES {
+                return Err(RuntimeError::io(
+                    action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "runtime control file exceeds {MAX_RUNTIME_CONTROL_FILE_BYTES} bytes"
+                        ),
+                    ),
+                ));
+            }
             Ok(Some(metadata))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(RuntimeError::io(action, path, error)),
     }
+}
+
+fn runtime_control_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.len() == current.len() && runtime_control_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn runtime_control_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    expected.dev() == current.dev() && expected.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn runtime_control_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
+        && expected.last_write_time() == current.last_write_time()
+        && expected.file_size() == current.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn runtime_control_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.modified().ok() == current.modified().ok()
 }
 
 fn append_log(
@@ -1028,6 +1122,23 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[test]
+    fn runtime_status_read_rejects_oversized_file_without_printing_contents() {
+        let home = test_home("status-read-oversized");
+        let paths = StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir creates");
+        let private_marker = "private-runtime-marker";
+        let mut contents = format!("# {private_marker}\n");
+        contents.push_str(&"a".repeat((MAX_RUNTIME_CONTROL_FILE_BYTES + 1) as usize));
+        fs::write(&paths.runtime_status, contents).expect("oversized status writes");
+
+        let error = read_runtime(Some(home)).expect_err("oversized status should fail closed");
+        let error = error.to_string();
+
+        assert!(error.contains("runtime control file exceeds"));
+        assert!(!error.contains(private_marker));
     }
 
     #[test]
