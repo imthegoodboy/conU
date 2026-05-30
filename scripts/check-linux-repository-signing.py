@@ -274,6 +274,11 @@ def run_source_file_preflights(signer) -> None:
                 "must not be a symlink",
                 "repository signing symlink source",
             )
+            expect_action_failure(
+                lambda: signer.sha256_file(linked_source),
+                "must not be a symlink",
+                "repository signing symlink hash source",
+            )
 
         symlink_sidecar = temp / "symlink-sidecar"
         symlink_sidecar.mkdir()
