@@ -286,21 +286,18 @@ def open_regular_file(
         if not path.is_file():
             raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
         raise SystemExit(f"{label} could not be opened: {path.name}") from exc
-    handle: BinaryIO | None = None
     try:
-        handle = os.fdopen(fd, "rb")
-        size = validate_open_regular_file(
-            handle,
-            label,
-            max_bytes=max_bytes,
-            allow_empty=allow_empty,
-        )
-        return handle, size
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} must be a regular file: {path.name}")
+        size = metadata.st_size
+        if not allow_empty and size == 0:
+            raise SystemExit(f"{label} must not be empty: {path.name}")
+        if size > max_bytes:
+            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        return os.fdopen(fd, "rb"), size
     except BaseException:
-        if handle is None:
-            os.close(fd)
-        else:
-            handle.close()
+        os.close(fd)
         raise
 
 
