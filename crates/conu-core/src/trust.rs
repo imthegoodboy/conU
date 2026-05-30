@@ -1065,12 +1065,13 @@ fn validate_direct_endpoint(value: String) -> Result<String, TrustError> {
 }
 
 fn configured_relay_endpoint(paths: &StatePaths) -> Result<String, TrustError> {
-    let contents = match fs::read_to_string(&paths.config) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(DEFAULT_RELAY_ENDPOINT.to_string());
-        }
-        Err(error) => return Err(TrustError::io("read conU config", &paths.config, error)),
+    let contents = match state::read_optional_regular_state_file(
+        &paths.config,
+        "inspect trust config",
+        "read trust config",
+    )? {
+        Some(contents) => contents,
+        None => return Ok(DEFAULT_RELAY_ENDPOINT.to_string()),
     };
     let values = parse_key_values(&contents);
     let endpoint = values
@@ -1351,6 +1352,34 @@ mod tests {
 
         assert_eq!(peer.source, "manual_signed_peer_card");
         assert!(peer.direct_quic_endpoint.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_config_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("trust-config-read-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let outside = init.paths.home.join("outside-config.toml");
+        fs::write(
+            &outside,
+            "version = \"1\"\ndefault_relay = \"wss://relay.example.com/conu\"\n",
+        )
+        .expect("outside config writes");
+        fs::remove_file(&init.paths.config).expect("config removes");
+        symlink(&outside, &init.paths.config).expect("config symlink creates");
+
+        let error = configured_relay_endpoint(&init.paths)
+            .expect_err("trust config symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect trust config"));
+        assert!(
+            fs::symlink_metadata(&init.paths.config)
+                .expect("config symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[cfg(unix)]
