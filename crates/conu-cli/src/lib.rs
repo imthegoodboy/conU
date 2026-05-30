@@ -9252,20 +9252,72 @@ fn write_downloaded_update_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<
     Ok(path)
 }
 
-fn read_limited_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|error| {
+fn update_input_file_metadata(path: &Path, label: &str) -> Result<fs::Metadata, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
         format!(
             "{label} file is not readable at {}: {error}",
             path.display()
         )
     })?;
-    if !metadata.is_file() {
-        return Err(format!("{label} path is not a file: {}", path.display()));
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "{label} path is not a regular file: {}",
+            path.display()
+        ));
     }
+    Ok(metadata)
+}
+
+fn read_limited_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>, String> {
+    let metadata = update_input_file_metadata(path, label)?;
     if metadata.len() > max_bytes {
         return Err(format!("{label} file is too large: {}", path.display()));
     }
-    fs::read(path).map_err(|error| format!("{label} file could not be read: {error}"))
+
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("{label} file could not be read: {error}"))?;
+    let path_metadata = update_input_file_metadata(path, label)?;
+    if path_metadata.len() != metadata.len() {
+        return Err(format!(
+            "{label} file changed while opening: {}",
+            path.display()
+        ));
+    }
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| format!("{label} file metadata could not be read: {error}"))?;
+    if !opened_metadata.is_file() {
+        return Err(format!(
+            "{label} path is not a regular file: {}",
+            path.display()
+        ));
+    }
+    if opened_metadata.len() > max_bytes {
+        return Err(format!("{label} file is too large: {}", path.display()));
+    }
+    if opened_metadata.len() != path_metadata.len() {
+        return Err(format!(
+            "{label} file changed while opening: {}",
+            path.display()
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    let limit = max_bytes.saturating_add(1);
+    let read = std::io::Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{label} file could not be read: {error}"))?;
+    if read as u64 > max_bytes || bytes.len() as u64 > max_bytes {
+        return Err(format!("{label} file is too large: {}", path.display()));
+    }
+    if bytes.len() as u64 != opened_metadata.len() {
+        return Err(format!(
+            "{label} file changed while reading: {}",
+            path.display()
+        ));
+    }
+    Ok(bytes)
 }
 
 fn verify_update_sha256_sidecar(
@@ -10934,6 +10986,35 @@ mod tests {
         ]);
 
         assert_eq!(output.code, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_check_rejects_symlinked_policy_file_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-check-symlink-policy");
+        let target = home.join("outside-policy-target");
+        let policy = home.join("conu-0.1.0-update-policy.json");
+        fs::write(&target, b"private message contents").expect("target writes");
+        symlink(&target, &policy).expect("policy symlink creates");
+
+        let output = run([
+            "update",
+            "check",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("path is not a regular file"));
+        assert!(!output.stderr.contains("private message contents"));
+        assert!(
+            fs::symlink_metadata(&policy)
+                .expect("policy symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
