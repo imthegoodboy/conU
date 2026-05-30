@@ -31,6 +31,7 @@ use conu_relay::{
 const ABUSE_THRESHOLD_POLICY_FILE_VERSION: &str = "1";
 const MAILBOX_RETENTION_POLICY_FILE_VERSION: &str = "1";
 const HOSTED_FLEET_DASHBOARD_FILE_VERSION: &str = "1";
+const MAX_RELAY_CLI_FILE_BYTES: u64 = 1024 * 1024;
 
 fn read_required_regular_cli_file(path: &Path, label: &'static str) -> Result<String, String> {
     let metadata =
@@ -39,12 +40,71 @@ fn read_required_regular_cli_file(path: &Path, label: &'static str) -> Result<St
     if file_type.is_symlink() || !file_type.is_file() {
         return Err(format!("inspect {label} file: path is not a regular file"));
     }
+    if metadata.len() > MAX_RELAY_CLI_FILE_BYTES {
+        return Err(format!(
+            "inspect {label} file: file exceeds {MAX_RELAY_CLI_FILE_BYTES} bytes"
+        ));
+    }
 
     let mut file = fs::File::open(path).map_err(|error| format!("read {label} file: {error}"))?;
+    let path_metadata =
+        fs::symlink_metadata(path).map_err(|error| format!("inspect {label} file: {error}"))?;
+    let path_file_type = path_metadata.file_type();
+    if path_file_type.is_symlink()
+        || !path_file_type.is_file()
+        || !relay_cli_file_metadata_matches(&metadata, &path_metadata)
+    {
+        return Err(format!("inspect {label} file: path changed while reading"));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect {label} file: {error}"))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_RELAY_CLI_FILE_BYTES
+        || !relay_cli_file_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(format!("read {label} file: path changed while reading"));
+    }
+
     let mut contents = String::new();
-    file.read_to_string(&mut contents)
+    let limit = MAX_RELAY_CLI_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
         .map_err(|error| format!("read {label} file: {error}"))?;
+    if contents.len() as u64 > MAX_RELAY_CLI_FILE_BYTES {
+        return Err(format!(
+            "read {label} file: file exceeds {MAX_RELAY_CLI_FILE_BYTES} bytes"
+        ));
+    }
     Ok(contents)
+}
+
+fn relay_cli_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.len() == current.len() && relay_cli_file_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn relay_cli_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    expected.dev() == current.dev() && expected.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn relay_cli_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
+        && expected.last_write_time() == current.last_write_time()
+        && expected.file_size() == current.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn relay_cli_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.modified().ok() == current.modified().ok()
 }
 
 fn main() -> ExitCode {
@@ -13300,7 +13360,6 @@ mod tests {
         path
     }
 
-    #[cfg(unix)]
     fn unique_temp_path(label: &str, file_name: &str) -> PathBuf {
         let counter = TEST_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
@@ -13313,6 +13372,16 @@ mod tests {
                 std::process::id(),
             ))
             .join(file_name)
+    }
+
+    fn write_oversized_cli_file(label: &str, file_name: &str, secret: &str) -> PathBuf {
+        let path = unique_temp_path(label, file_name);
+        fs::create_dir_all(path.parent().expect("oversized file parent"))
+            .expect("create oversized file dir");
+        let mut contents = format!("# {secret}\n");
+        contents.push_str(&"a".repeat((MAX_RELAY_CLI_FILE_BYTES + 1) as usize));
+        fs::write(&path, contents).expect("write oversized file");
+        path
     }
 
     #[cfg(unix)]
@@ -13399,6 +13468,48 @@ mod tests {
                     .is_symlink()
             );
         }
+    }
+
+    #[test]
+    fn relay_cli_policy_file_reads_reject_oversized_files_without_reading_contents() {
+        let abuse_secret = "relay-secret-token-abuse-oversized";
+        let abuse_path =
+            write_oversized_cli_file("abuse-policy-oversized", "policy.toml", abuse_secret);
+        let abuse_error = parse_abuse_threshold_report_args(vec![
+            "--abuse-dir".to_string(),
+            "abuse".to_string(),
+            "--thresholds-file".to_string(),
+            abuse_path.to_string_lossy().to_string(),
+        ])
+        .expect_err("oversized abuse threshold policy should fail closed");
+        assert!(abuse_error.contains("abuse threshold policy file"));
+        assert!(abuse_error.contains("exceeds"));
+        assert!(!abuse_error.contains(abuse_secret));
+
+        let retention_secret = "relay-secret-token-retention-oversized";
+        let retention_path = write_oversized_cli_file(
+            "retention-policy-oversized",
+            "policy.toml",
+            retention_secret,
+        );
+        let retention_error = parse_mailbox_audit_args(vec![
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--retention-policy-file".to_string(),
+            retention_path.to_string_lossy().to_string(),
+        ])
+        .expect_err("oversized retention policy should fail closed");
+        assert!(retention_error.contains("mailbox retention policy file"));
+        assert!(retention_error.contains("exceeds"));
+        assert!(!retention_error.contains(retention_secret));
+
+        let fleet_secret = "relay-secret-token-fleet-oversized";
+        let fleet_path = write_oversized_cli_file("fleet-oversized", "fleet.toml", fleet_secret);
+        let fleet_error = parse_hosted_fleet_dashboard_file(&fleet_path)
+            .expect_err("oversized fleet file should fail closed");
+        assert!(fleet_error.contains("hosted fleet dashboard file"));
+        assert!(fleet_error.contains("exceeds"));
+        assert!(!fleet_error.contains(fleet_secret));
     }
 
     #[test]
