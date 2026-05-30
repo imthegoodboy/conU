@@ -6242,6 +6242,7 @@ struct UpdateApplyBinaryReport {
     target_file: PathBuf,
     backup_file: Option<PathBuf>,
     bytes: u64,
+    sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6266,6 +6267,7 @@ struct StagedUpdateBinary {
     name: String,
     source_file: PathBuf,
     bytes: u64,
+    sha256: String,
 }
 
 #[derive(Debug)]
@@ -7406,8 +7408,9 @@ fn stage_update_zip_archive(
             let path = staging_dir
                 .path()
                 .join(update_binary_filename(&binary_name));
-            write_update_staged_binary(&path, &mut file, size, archive_name, &binary_name)?;
-            scan.record_binary(&binary_name, path, size)?;
+            let sha256 =
+                write_update_staged_binary(&path, &mut file, size, archive_name, &binary_name)?;
+            scan.record_binary(&binary_name, path, size, sha256)?;
         }
     }
 
@@ -7470,8 +7473,9 @@ fn stage_update_tar_gz_archive(
             let path = staging_dir
                 .path()
                 .join(update_binary_filename(&binary_name));
-            write_update_staged_binary(&path, &mut entry, size, archive_name, &binary_name)?;
-            scan.record_binary(&binary_name, path, size)?;
+            let sha256 =
+                write_update_staged_binary(&path, &mut entry, size, archive_name, &binary_name)?;
+            scan.record_binary(&binary_name, path, size, sha256)?;
         }
     }
 
@@ -7628,6 +7632,7 @@ impl UpdateArchiveScan {
         name: &str,
         source_file: PathBuf,
         bytes: u64,
+        sha256: String,
     ) -> Result<(), String> {
         if self.binaries.iter().any(|binary| binary.name == name) {
             return Err(format!("release update archive duplicated binary: {name}"));
@@ -7636,6 +7641,7 @@ impl UpdateArchiveScan {
             name: name.to_string(),
             source_file,
             bytes,
+            sha256,
         });
         Ok(())
     }
@@ -7770,7 +7776,7 @@ fn write_update_staged_binary<R: Read>(
     expected_bytes: u64,
     archive_name: &str,
     binary_name: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -7780,8 +7786,8 @@ fn write_update_staged_binary<R: Read>(
                 "could not stage {binary_name} from release update archive {archive_name}: {error}"
             )
         })?;
-    let copied = match io::copy(reader, &mut file) {
-        Ok(copied) => copied,
+    let (copied, sha256) = match copy_update_binary_with_sha256(reader, &mut file) {
+        Ok(result) => result,
         Err(error) => {
             drop(file);
             let _ = fs::remove_file(path);
@@ -7797,7 +7803,35 @@ fn write_update_staged_binary<R: Read>(
             "release update archive {binary_name} size changed while staging"
         ));
     }
-    Ok(())
+    Ok(sha256)
+}
+
+fn copy_update_binary_with_sha256<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+) -> io::Result<(u64, String)> {
+    let mut hasher = Sha256::new();
+    let mut copied = 0u64;
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        writer.write_all(&buffer[..read])?;
+        copied = copied
+            .checked_add(read as u64)
+            .ok_or_else(|| io::Error::other("release update binary size overflowed"))?;
+    }
+
+    let digest = hasher.finalize();
+    let sha256 = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok((copied, sha256))
 }
 
 fn parse_update_archive_manifest_target(text: &str) -> Option<String> {
@@ -7911,6 +7945,7 @@ fn plan_staged_update_binaries(
             target_file,
             backup_file,
             bytes: binary.bytes,
+            sha256: binary.sha256.clone(),
         });
     }
     Ok(reports)
@@ -8122,6 +8157,15 @@ fn create_update_temp_install_target(
     filename: &str,
     nonce: u128,
 ) -> Result<PathBuf, String> {
+    let source_label = "release update staged binary";
+    let source_metadata = update_input_file_metadata(&report.source_file, source_label)?;
+    if source_metadata.len() != report.bytes {
+        return Err(format!(
+            "release update staged binary changed while preparing {}",
+            report.target_file.display()
+        ));
+    }
+
     for attempt in 0..1024 {
         let temp_target =
             install_dir.join(format!(".{filename}.conu-update-new-{nonce}-{attempt}"));
@@ -8140,6 +8184,22 @@ fn create_update_temp_install_target(
             }
         };
 
+        let path_metadata = match update_input_file_metadata(&report.source_file, source_label) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                drop(temp_file);
+                let _ = fs::remove_file(&temp_target);
+                return Err(error);
+            }
+        };
+        if !update_input_file_metadata_matches(&source_metadata, &path_metadata) {
+            drop(temp_file);
+            let _ = fs::remove_file(&temp_target);
+            return Err(format!(
+                "release update staged binary changed while preparing {}",
+                report.target_file.display()
+            ));
+        }
         let mut source_file = match fs::File::open(&report.source_file) {
             Ok(file) => file,
             Err(error) => {
@@ -8151,19 +8211,88 @@ fn create_update_temp_install_target(
                 ));
             }
         };
-        let copied = match io::copy(&mut source_file, &mut temp_file) {
-            Ok(copied) => copied,
+        let opened_path_metadata =
+            match update_input_file_metadata(&report.source_file, source_label) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    drop(temp_file);
+                    let _ = fs::remove_file(&temp_target);
+                    return Err(error);
+                }
+            };
+        if !update_input_file_metadata_matches(&source_metadata, &opened_path_metadata) {
+            drop(temp_file);
+            let _ = fs::remove_file(&temp_target);
+            return Err(format!(
+                "release update staged binary changed while preparing {}",
+                report.target_file.display()
+            ));
+        }
+        let opened_metadata = match source_file.metadata() {
+            Ok(metadata) => metadata,
             Err(error) => {
                 drop(temp_file);
                 let _ = fs::remove_file(&temp_target);
                 return Err(format!(
-                    "could not stage release update binary {}: {error}",
-                    report.target_file.display()
+                    "release update staged binary metadata could not be read: {error}"
                 ));
             }
         };
+        if !opened_metadata.is_file()
+            || !update_input_file_metadata_matches(&source_metadata, &opened_metadata)
+        {
+            drop(temp_file);
+            let _ = fs::remove_file(&temp_target);
+            return Err(format!(
+                "release update staged binary changed while preparing {}",
+                report.target_file.display()
+            ));
+        }
+        let (copied, copied_sha256) =
+            match copy_update_binary_with_sha256(&mut source_file, &mut temp_file) {
+                Ok(result) => result,
+                Err(error) => {
+                    drop(temp_file);
+                    let _ = fs::remove_file(&temp_target);
+                    return Err(format!(
+                        "could not stage release update binary {}: {error}",
+                        report.target_file.display()
+                    ));
+                }
+            };
         drop(temp_file);
-        if copied != report.bytes {
+        if copied != report.bytes || copied_sha256 != report.sha256 {
+            let _ = fs::remove_file(&temp_target);
+            return Err(format!(
+                "release update staged binary changed while preparing {}",
+                report.target_file.display()
+            ));
+        }
+        let final_source_metadata =
+            match update_input_file_metadata(&report.source_file, source_label) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    let _ = fs::remove_file(&temp_target);
+                    return Err(error);
+                }
+            };
+        if !update_input_file_metadata_matches(&source_metadata, &final_source_metadata) {
+            let _ = fs::remove_file(&temp_target);
+            return Err(format!(
+                "release update staged binary changed while preparing {}",
+                report.target_file.display()
+            ));
+        }
+        let final_opened_metadata = match source_file.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let _ = fs::remove_file(&temp_target);
+                return Err(format!(
+                    "release update staged binary metadata could not be read: {error}"
+                ));
+            }
+        };
+        if !update_input_file_metadata_matches(&source_metadata, &final_opened_metadata) {
             let _ = fs::remove_file(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
@@ -11410,6 +11539,7 @@ mod tests {
             target_file: install_dir.join(&filename),
             backup_file: None,
             bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
         };
 
         let created = create_update_temp_install_target(&report, &install_dir, &filename, 42)
@@ -11429,6 +11559,109 @@ mod tests {
             fs::read(&stale).expect("stale temp target reads"),
             b"stale temp target"
         );
+    }
+
+    #[test]
+    fn update_apply_temp_install_target_rejects_same_length_source_tamper() {
+        let home = temp_home("update-apply-temp-source-tamper");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        fs::write(&source_file, b"bad conu binary").expect("tampered source writes");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file,
+            target_file: install_dir.join(&filename),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
+        };
+
+        let error = create_update_temp_install_target(&report, &install_dir, &filename, 42)
+            .expect_err("same-length staged source tamper should fail closed");
+
+        assert!(error.contains("release update staged binary changed while preparing"));
+        let entries = fs::read_dir(&install_dir)
+            .expect("install dir reads")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("install entries read");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn update_apply_temp_install_target_rejects_directory_source() {
+        let home = temp_home("update-apply-temp-directory-source");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let source_file = home.join("staged").join(&filename);
+        fs::create_dir_all(&source_file).expect("directory source creates");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file,
+            target_file: install_dir.join(&filename),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
+        };
+
+        let error = create_update_temp_install_target(&report, &install_dir, &filename, 42)
+            .expect_err("directory staged source should fail closed");
+
+        assert!(error.contains("release update staged binary path is not a regular file"));
+        let entries = fs::read_dir(&install_dir)
+            .expect("install dir reads")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("install entries read");
+        assert!(entries.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_temp_install_target_rejects_symlink_source_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-temp-symlink-source");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        let outside_source = home.join("outside-staged-source");
+        fs::write(&outside_source, b"new conu binary").expect("outside source writes");
+        symlink(&outside_source, &source_file).expect("source symlink creates");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file: source_file.clone(),
+            target_file: install_dir.join(&filename),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
+        };
+
+        let error = create_update_temp_install_target(&report, &install_dir, &filename, 42)
+            .expect_err("symlink staged source should fail closed");
+
+        assert!(error.contains("release update staged binary path is not a regular file"));
+        assert_eq!(
+            fs::read(&outside_source).expect("outside source reads"),
+            b"new conu binary"
+        );
+        assert!(
+            fs::symlink_metadata(&source_file)
+                .expect("source symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+        let entries = fs::read_dir(&install_dir)
+            .expect("install dir reads")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("install entries read");
+        assert!(entries.is_empty());
     }
 
     #[test]
@@ -11512,6 +11745,7 @@ mod tests {
             target_file: target_file.clone(),
             backup_file: None,
             bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
         };
 
         let error = back_up_existing_update_binaries(&[report])
@@ -11541,6 +11775,7 @@ mod tests {
             target_file: target_file.clone(),
             backup_file: Some(backup_file.clone()),
             bytes: b"current binary".len() as u64,
+            sha256: sha256_hex(b"current binary"),
         };
 
         let error = back_up_existing_update_binaries(&[report])
@@ -11578,6 +11813,7 @@ mod tests {
             target_file: target_file.clone(),
             backup_file: Some(backup_file.clone()),
             bytes: b"current binary".len() as u64,
+            sha256: sha256_hex(b"current binary"),
         };
 
         let error = back_up_existing_update_binaries(&[report])
