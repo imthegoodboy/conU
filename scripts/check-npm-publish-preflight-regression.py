@@ -65,6 +65,23 @@ def run_registry_tests(module) -> None:
     )
 
 
+def run_version_consistency_tests(module) -> None:
+    packages = (
+        module.PackageInfo("@conu/cli", "0.1.0", Path("packaging/npm/conu-cli")),
+        module.PackageInfo("@conu/sdk", "0.1.0", Path("sdk/typescript")),
+    )
+    module.validate_package_version_consistency(packages)
+
+    mismatched = (
+        module.PackageInfo("@conu/cli", "0.1.0", Path("packaging/npm/conu-cli")),
+        module.PackageInfo("@conu/sdk", "0.2.0", Path("sdk/typescript")),
+    )
+    assert_raises(
+        lambda: module.validate_package_version_consistency(mismatched),
+        "versions must match",
+    )
+
+
 def run_token_tests(module) -> None:
     env_name = "CONU_TEST_NPM_TOKEN"
     original = os.environ.pop(env_name, None)
@@ -87,6 +104,7 @@ def main() -> int:
     original_run = subprocess.run
     try:
         run_registry_tests(module)
+        run_version_consistency_tests(module)
         run_token_tests(module)
     finally:
         module.subprocess.run = original_run
