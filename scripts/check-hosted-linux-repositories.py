@@ -64,6 +64,22 @@ def main() -> int:
             "missing detached signature",
         )
 
+        private_key_signature = temp / "private-key-signature"
+        shutil.copytree(dist, private_key_signature)
+        (private_key_signature / f"{DEBIAN_PACKAGES[0]}.asc").write_text(
+            "-----BEGIN PGP SIGNATURE-----\nfixture\n"
+            "-----END PGP SIGNATURE-----\n"
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\nfixture\n"
+            "-----END PGP PRIVATE KEY BLOCK-----\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_failure(
+            "private key signature sidecar",
+            private_key_signature,
+            "private key material",
+        )
+
         symlink_dist = temp / "symlink-dist"
         if try_symlink(dist, symlink_dist, target_is_directory=True):
             expect_failure_at_output(

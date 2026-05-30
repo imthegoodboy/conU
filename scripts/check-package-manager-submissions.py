@@ -552,6 +552,37 @@ def main() -> int:
             "forbidden literal",
         )
 
+        private_key_signature = temp / "private-key-signature"
+        manifest_check.generate(
+            generator,
+            dist,
+            private_key_signature,
+            build_apt_repository_metadata=True,
+        )
+        write_signed_release_extras(private_key_signature)
+        (private_key_signature / "conu_0.1.0_amd64.deb.asc").write_text(
+            "-----BEGIN PGP SIGNATURE-----\n"
+            "fixture\n"
+            "-----END PGP SIGNATURE-----\n"
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "fixture\n"
+            "-----END PGP PRIVATE KEY BLOCK-----\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_failure(
+            "private key material in signature sidecar",
+            lambda: preparer.prepare_submission_bundle(
+                private_key_signature,
+                temp / "private-key-signature-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "forbidden literal",
+        )
+
         private_key_public_asset = temp / "private-key-public-asset"
         manifest_check.generate(
             generator,
