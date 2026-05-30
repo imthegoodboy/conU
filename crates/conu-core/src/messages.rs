@@ -283,8 +283,11 @@ pub fn read_message_payload(
         .message_inbox_dir
         .join(agent_id)
         .join(format!("{envelope_id}.env"));
-    let contents = fs::read_to_string(&path)
-        .map_err(|error| MessageError::io("read local message", &path, error))?;
+    let contents = state::read_required_regular_state_file(
+        &path,
+        "inspect local message",
+        "read local message",
+    )?;
     let values = parse_key_values(&contents);
     let payload =
         payload_from_values(&paths, &values, &message_envelope_aad_from_values(&values)?)?;
@@ -777,8 +780,11 @@ fn ensure_message_delivery_file_available(path: &Path) -> Result<(), MessageErro
 }
 
 fn read_inbox_entry(path: &Path) -> Result<InboxEntry, MessageError> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| MessageError::io("read inbox metadata", path, error))?;
+    let contents = state::read_required_regular_state_file(
+        path,
+        "inspect inbox metadata",
+        "read inbox metadata",
+    )?;
     let values = parse_key_values(&contents);
 
     Ok(InboxEntry {
@@ -803,8 +809,11 @@ fn read_inbox_entry(path: &Path) -> Result<InboxEntry, MessageError> {
 }
 
 fn read_receipt(path: &Path) -> Result<DeliveryReceipt, MessageError> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| MessageError::io("read message receipt", path, error))?;
+    let contents = state::read_required_regular_state_file(
+        path,
+        "inspect message receipt",
+        "read message receipt",
+    )?;
     let values = parse_key_values(&contents);
 
     Ok(DeliveryReceipt {
@@ -1536,6 +1545,104 @@ mod tests {
                 .join("agent.receiver")
                 .join("env.receipt.collision.env")
                 .exists()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inbox_entry_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("inbox-read-symlink");
+        register_agent(&home, "agent.sender");
+        register_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        submit_local_message(Some(home.clone()), message).expect("message submits");
+        process_message_requests(Some(home.clone())).expect("message processes");
+        let entry = list_agent_inbox(Some(home.clone()), "agent.receiver")
+            .expect("inbox reads")
+            .pop()
+            .expect("inbox entry exists");
+        let paths = StatePaths::from_home(home.clone());
+        let envelope_path = paths
+            .message_inbox_dir
+            .join("agent.receiver")
+            .join(format!("{}.env", entry.envelope_id));
+        let outside = paths.home.join("outside-message.env");
+        let outside_contents = "version = \"1\"\npayload = \"secret private message contents\"\n";
+        fs::write(&outside, outside_contents).expect("outside message writes");
+        fs::remove_file(&envelope_path).expect("envelope removes");
+        symlink(&outside, &envelope_path).expect("envelope symlink creates");
+
+        let metadata_error = list_agent_inbox(Some(home.clone()), "agent.receiver")
+            .expect_err("inbox symlink should fail closed");
+        let payload_error = read_message_payload(Some(home), "agent.receiver", &entry.envelope_id)
+            .expect_err("payload symlink should fail closed");
+
+        assert!(
+            metadata_error
+                .to_string()
+                .contains("inspect inbox metadata")
+        );
+        assert!(payload_error.to_string().contains("inspect local message"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside message reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&envelope_path)
+                .expect("envelope symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn receipt_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("receipt-read-symlink");
+        register_agent(&home, "agent.sender");
+        register_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        submit_local_message(Some(home.clone()), message).expect("message submits");
+        process_message_requests(Some(home.clone())).expect("message processes");
+        let paths = StatePaths::from_home(home.clone());
+        let receipt_path = fs::read_dir(&paths.message_receipts_dir)
+            .expect("receipt dir reads")
+            .next()
+            .expect("receipt exists")
+            .expect("receipt entry")
+            .path();
+        let outside = paths.home.join("outside-message.receipt");
+        let outside_contents = "version = \"1\"\nstatus = \"delivered_local\"\npayload = \"secret private message contents\"\n";
+        fs::write(&outside, outside_contents).expect("outside receipt writes");
+        fs::remove_file(&receipt_path).expect("receipt removes");
+        symlink(&outside, &receipt_path).expect("receipt symlink creates");
+
+        let error = list_receipts(Some(home)).expect_err("receipt symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect message receipt"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside receipt reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&receipt_path)
+                .expect("receipt symlink metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 
