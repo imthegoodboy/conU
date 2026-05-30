@@ -40,6 +40,7 @@ const SECRET_WRAP_KEY_FILE_ENV: &str = "CONU_SECRET_WRAP_KEY_FILE";
 #[cfg(not(windows))]
 const DISABLE_OS_SECRET_BACKEND_ENV: &str = "CONU_DISABLE_OS_SECRET_BACKEND";
 const MAX_SECURITY_KEY_FILE_BYTES: u64 = 64 * 1024;
+const MAX_SECRET_WRAP_KEY_FILE_BYTES: u64 = 4 * 1024;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2357,9 +2358,7 @@ fn user_managed_wrap_key() -> Result<[u8; 32], SecurityError> {
     if let Ok(path_value) = std::env::var(SECRET_WRAP_KEY_FILE_ENV) {
         if !path_value.trim().is_empty() {
             let path = PathBuf::from(path_value);
-            let contents = fs::read_to_string(&path).map_err(|error| {
-                SecurityError::io("read user-managed secret wrap key file", &path, error)
-            })?;
+            let contents = read_user_managed_secret_wrap_key_file(&path)?;
             let value = contents
                 .lines()
                 .map(str::trim)
@@ -2382,6 +2381,81 @@ fn parse_user_managed_wrap_key(value: &str) -> Result<[u8; 32], SecurityError> {
     hex_decode_exact::<32>(value.trim()).map_err(|reason| SecurityError::InvalidPayload {
         reason: format!("user-managed secret wrap key must be 32 bytes of hex: {reason}"),
     })
+}
+
+fn read_user_managed_secret_wrap_key_file(path: &Path) -> Result<String, SecurityError> {
+    let metadata = regular_user_managed_secret_wrap_key_file_metadata(
+        path,
+        "inspect user-managed secret wrap key file",
+    )?;
+    let mut file = OpenOptions::new().read(true).open(path).map_err(|error| {
+        SecurityError::io("read user-managed secret wrap key file", path, error)
+    })?;
+    let path_metadata = regular_user_managed_secret_wrap_key_file_metadata(
+        path,
+        "inspect user-managed secret wrap key file",
+    )?;
+    if !secret_file_metadata_matches(&metadata, &path_metadata) {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "user-managed secret wrap key file changed while reading".to_string(),
+        });
+    }
+
+    let opened_metadata = file.metadata().map_err(|error| {
+        SecurityError::io("inspect user-managed secret wrap key file", path, error)
+    })?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_SECRET_WRAP_KEY_FILE_BYTES
+        || !secret_file_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "user-managed secret wrap key file changed while reading".to_string(),
+        });
+    }
+
+    let mut contents = String::new();
+    let limit = MAX_SECRET_WRAP_KEY_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
+        .map_err(|error| {
+            SecurityError::io("read user-managed secret wrap key file", path, error)
+        })?;
+    if contents.len() as u64 > MAX_SECRET_WRAP_KEY_FILE_BYTES {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: format!(
+                "user-managed secret wrap key file exceeds {MAX_SECRET_WRAP_KEY_FILE_BYTES} bytes"
+            ),
+        });
+    }
+
+    Ok(contents)
+}
+
+fn regular_user_managed_secret_wrap_key_file_metadata(
+    path: &Path,
+    action: &'static str,
+) -> Result<fs::Metadata, SecurityError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| SecurityError::io(action, path, error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "user-managed secret wrap key file is not a regular file".to_string(),
+        });
+    }
+    if metadata.len() > MAX_SECRET_WRAP_KEY_FILE_BYTES {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: format!(
+                "user-managed secret wrap key file exceeds {MAX_SECRET_WRAP_KEY_FILE_BYTES} bytes"
+            ),
+        });
+    }
+    Ok(metadata)
 }
 
 #[cfg(all(test, not(windows)))]
@@ -3306,6 +3380,46 @@ mod tests {
         assert!(error.contains("security key file exceeds"));
         assert!(!error.contains(private_marker));
         assert!(!key_file_is_readable(&path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn user_managed_secret_wrap_key_file_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("wrap-key-symlink");
+        fs::create_dir_all(&home).expect("home directory created");
+        let target = home.join("outside-wrap-key-target");
+        let link = home.join("wrap.key");
+        fs::write(&target, "private-wrap-key-target\n").expect("target writes");
+        symlink(&target, &link).expect("symlink creates");
+
+        let error = read_user_managed_secret_wrap_key_file(&link)
+            .expect_err("symlink wrap key read fails closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "private-wrap-key-target\n"
+        );
+    }
+
+    #[test]
+    fn user_managed_secret_wrap_key_file_rejects_oversized_file_without_printing_contents() {
+        let home = test_home("wrap-key-oversized");
+        fs::create_dir_all(&home).expect("home directory created");
+        let path = home.join("wrap.key");
+        let private_marker = "private-wrap-key-marker";
+        let mut contents = format!("# {private_marker}\n");
+        contents.push_str(&"a".repeat((MAX_SECRET_WRAP_KEY_FILE_BYTES + 1) as usize));
+        fs::write(&path, contents).expect("oversized wrap key writes");
+
+        let error = read_user_managed_secret_wrap_key_file(&path)
+            .expect_err("oversized wrap key read fails closed");
+        let error = error.to_string();
+
+        assert!(error.contains("user-managed secret wrap key file exceeds"));
+        assert!(!error.contains(private_marker));
     }
 
     #[cfg(unix)]
