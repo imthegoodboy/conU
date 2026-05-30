@@ -10,7 +10,7 @@ use std::env;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -297,7 +297,8 @@ pub fn init_state(home_override: Option<PathBuf>) -> Result<InitReport, StateErr
     let paths = StatePaths::resolve(home_override)?;
     create_layout(&paths)?;
 
-    let (node, node_created) = if paths.node_identity.exists() {
+    let node_identity_exists = state_file_exists(&paths.node_identity, "inspect node identity")?;
+    let (node, node_created) = if node_identity_exists {
         (read_node_identity(&paths.node_identity)?, false)
     } else {
         let node = NodeIdentity::new(default_display_name(), current_unix_seconds());
@@ -310,10 +311,23 @@ pub fn init_state(home_override: Option<PathBuf>) -> Result<InitReport, StateErr
         }
     };
 
-    let config_created = write_if_missing(&paths.config, &render_config(&node))?;
-    let trust_store_created = write_if_missing(&paths.trust_store, &render_trust_store())?;
-    write_if_missing(&paths.policy_store, &render_policy_store())?;
-    let agent_registry_created = write_if_missing(&paths.agent_registry, &render_agent_registry())?;
+    let config_created =
+        write_if_missing(&paths.config, &render_config(&node), "inspect config file")?;
+    let trust_store_created = write_if_missing(
+        &paths.trust_store,
+        &render_trust_store(),
+        "inspect trust store",
+    )?;
+    write_if_missing(
+        &paths.policy_store,
+        &render_policy_store(),
+        "inspect policy store",
+    )?;
+    let agent_registry_created = write_if_missing(
+        &paths.agent_registry,
+        &render_agent_registry(),
+        "inspect agent registry",
+    )?;
 
     Ok(InitReport {
         paths,
@@ -328,15 +342,19 @@ pub fn init_state(home_override: Option<PathBuf>) -> Result<InitReport, StateErr
 /// Read the current local state without creating missing files.
 pub fn read_state(home_override: Option<PathBuf>) -> Result<StateSnapshot, StateError> {
     let paths = StatePaths::resolve(home_override)?;
-    let node = match paths.node_identity.exists() {
+    let node = match state_file_exists(&paths.node_identity, "inspect node identity")? {
         true => Some(read_node_identity(&paths.node_identity)?),
         false => None,
     };
 
+    let config_exists = state_file_exists(&paths.config, "inspect config file")?;
+    let trust_store_exists = state_file_exists(&paths.trust_store, "inspect trust store")?;
+    let agent_registry_exists = state_file_exists(&paths.agent_registry, "inspect agent registry")?;
+
     Ok(StateSnapshot {
-        config_exists: paths.config.exists(),
-        trust_store_exists: paths.trust_store.exists(),
-        agent_registry_exists: paths.agent_registry.exists(),
+        config_exists,
+        trust_store_exists,
+        agent_registry_exists,
         paths,
         node,
     })
@@ -392,11 +410,29 @@ fn create_layout(paths: &StatePaths) -> Result<(), StateError> {
     Ok(())
 }
 
-fn write_if_missing(path: &Path, contents: &str) -> Result<bool, StateError> {
+fn write_if_missing(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+) -> Result<bool, StateError> {
+    if regular_state_file_metadata(path, inspect_action)?.is_some() {
+        return Ok(false);
+    }
+
     match write_new_file(path, contents) {
         Ok(()) => Ok(true),
         Err(StateError::Io { source, .. }) if source.kind() == io::ErrorKind::AlreadyExists => {
-            Ok(false)
+            match regular_state_file_metadata(path, inspect_action)? {
+                Some(_) => Ok(false),
+                None => Err(StateError::io(
+                    inspect_action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "state file disappeared after create collision",
+                    ),
+                )),
+            }
         }
         Err(error) => Err(error),
     }
@@ -414,8 +450,7 @@ fn write_new_file(path: &Path, contents: &str) -> Result<(), StateError> {
 }
 
 fn read_node_identity(path: &Path) -> Result<NodeIdentity, StateError> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| StateError::io("read node identity", path, error))?;
+    let contents = read_existing_state_file(path, "inspect node identity", "read node identity")?;
     let values = parse_key_values(&contents);
 
     let node_id = required_field(path, &values, "node_id")?;
@@ -441,6 +476,50 @@ fn read_node_identity(path: &Path) -> Result<NodeIdentity, StateError> {
         created_at_unix,
         protocol_version,
     })
+}
+
+fn read_existing_state_file(
+    path: &Path,
+    inspect_action: &'static str,
+    read_action: &'static str,
+) -> Result<String, StateError> {
+    regular_state_file_metadata(path, inspect_action)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| StateError::io(read_action, path, error))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|error| StateError::io(read_action, path, error))?;
+    Ok(contents)
+}
+
+fn state_file_exists(path: &Path, inspect_action: &'static str) -> Result<bool, StateError> {
+    regular_state_file_metadata(path, inspect_action).map(|metadata| metadata.is_some())
+}
+
+fn regular_state_file_metadata(
+    path: &Path,
+    action: &'static str,
+) -> Result<Option<fs::Metadata>, StateError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !file_type.is_file() {
+                return Err(StateError::io(
+                    action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "state file path is not a regular file",
+                    ),
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(StateError::io(action, path, error)),
+    }
 }
 
 fn required_field(
@@ -665,6 +744,106 @@ mod tests {
         assert!(!snapshot.is_initialized());
         assert!(snapshot.node.is_none());
         assert!(!home.exists());
+    }
+
+    #[test]
+    fn init_rejects_directory_required_state_file() {
+        let home = test_home("directory-config");
+        let report = init_state(Some(home.clone())).expect("state initializes");
+        fs::remove_file(&report.paths.config).expect("config removes");
+        fs::create_dir_all(&report.paths.config).expect("config directory creates");
+
+        let error = init_state(Some(home)).expect_err("directory config should fail closed");
+
+        assert!(error.to_string().contains("inspect config file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_node_identity_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("node-symlink-init");
+        fs::create_dir_all(&home).expect("home creates");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.join("outside-node.toml");
+        let outside_contents = render_node_identity(&NodeIdentity {
+            node_id: "node_outside".to_string(),
+            display_name: "outside".to_string(),
+            created_at_unix: 1,
+            protocol_version: PROTOCOL_VERSION.to_string(),
+        });
+        fs::write(&outside, &outside_contents).expect("outside writes");
+        symlink(&outside, &paths.node_identity).expect("node identity symlink creates");
+
+        let error = init_state(Some(home)).expect_err("node identity symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect node identity"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.node_identity)
+                .expect("node identity symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_state_rejects_symlinked_node_identity_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("node-symlink-read");
+        fs::create_dir_all(&home).expect("home creates");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.join("outside-node.toml");
+        let outside_contents = render_node_identity(&NodeIdentity {
+            node_id: "node_outside".to_string(),
+            display_name: "outside".to_string(),
+            created_at_unix: 1,
+            protocol_version: PROTOCOL_VERSION.to_string(),
+        });
+        fs::write(&outside, &outside_contents).expect("outside writes");
+        symlink(&outside, &paths.node_identity).expect("node identity symlink creates");
+
+        let error = read_state(Some(home)).expect_err("node identity symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect node identity"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            outside_contents
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_rejects_symlinked_required_state_file_without_reusing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("config-symlink-init");
+        let report = init_state(Some(home.clone())).expect("state initializes");
+        let outside = home.join("outside-config.toml");
+        fs::write(&outside, "version = \"1\"\nruntime_name = \"outside\"\n")
+            .expect("outside writes");
+        fs::remove_file(&report.paths.config).expect("config removes");
+        symlink(&outside, &report.paths.config).expect("config symlink creates");
+
+        let error = init_state(Some(home)).expect_err("config symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect config file"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            "version = \"1\"\nruntime_name = \"outside\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&report.paths.config)
+                .expect("config symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     fn test_home(label: &str) -> PathBuf {
