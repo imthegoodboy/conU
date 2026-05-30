@@ -2694,6 +2694,12 @@ pub fn audit_relay_accounting_dir(
         if path.extension().and_then(|extension| extension.to_str()) != Some("accounting") {
             continue;
         }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
 
         let Some(record) = read_accounting_file(&path)? else {
             continue;
@@ -2922,6 +2928,12 @@ pub fn audit_relay_abuse_dir(
         let entry = entry.map_err(|error| RelayError::io("read relay abuse entry", error))?;
         let path = entry.path();
         if path.extension().and_then(|extension| extension.to_str()) != Some("abuse") {
+            continue;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
             continue;
         }
 
@@ -3236,9 +3248,23 @@ fn read_optional_regular_relay_file(
         return Ok(None);
     }
 
-    fs::read_to_string(path)
-        .map(Some)
-        .map_err(|error| RelayError::io(read_action, error))
+    read_existing_regular_relay_file(path, inspect_action, read_action).map(Some)
+}
+
+fn read_existing_regular_relay_file(
+    path: &Path,
+    inspect_action: &'static str,
+    read_action: &'static str,
+) -> Result<String, RelayError> {
+    regular_relay_file_exists(path, inspect_action)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| RelayError::io(read_action, error))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|error| RelayError::io(read_action, error))?;
+    Ok(contents)
 }
 
 fn regular_relay_file_exists(
@@ -5736,6 +5762,15 @@ impl RelayHubState {
                 if path.extension().and_then(|extension| extension.to_str()) != Some("mailbox") {
                     continue;
                 }
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if !file_type.is_file() {
+                    remove_mailbox_file(&path).map_err(|error| {
+                        RelayError::io("remove invalid relay mailbox envelope", error)
+                    })?;
+                    continue;
+                }
 
                 let Some(envelope) = (match read_mailbox_file(&path) {
                     Ok(envelope) => envelope,
@@ -5881,6 +5916,13 @@ impl RelaySessionState {
                 entry.map_err(|error| RelayError::io("read relay session state entry", error))?;
             let path = entry.path();
             if path.extension().and_then(|extension| extension.to_str()) != Some("session") {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_file() {
+                let _ = remove_mailbox_file(&path);
                 continue;
             }
             let Some(record) = read_session_file(&path)? else {
@@ -6038,6 +6080,13 @@ impl RelayAccountingState {
                 entry.map_err(|error| RelayError::io("read relay accounting entry", error))?;
             let path = entry.path();
             if path.extension().and_then(|extension| extension.to_str()) != Some("accounting") {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_file() {
+                let _ = remove_mailbox_file(&path);
                 continue;
             }
             let Some(record) = read_accounting_file(&path)? else {
@@ -6210,6 +6259,13 @@ impl RelayAbuseState {
             let entry = entry.map_err(|error| RelayError::io("read relay abuse entry", error))?;
             let path = entry.path();
             if path.extension().and_then(|extension| extension.to_str()) != Some("abuse") {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_file() {
+                let _ = remove_mailbox_file(&path);
                 continue;
             }
             let Some(record) = read_abuse_file(&path)? else {
@@ -6654,8 +6710,11 @@ fn render_mailbox_file(entry: &QueuedRelayEnvelope) -> String {
 }
 
 fn read_mailbox_file(path: &Path) -> Result<Option<QueuedRelayEnvelope>, RelayError> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay mailbox file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay mailbox file",
+        "read relay mailbox file",
+    )?;
     let version = mailbox_value(&contents, "version").unwrap_or_default();
     if version != RELAY_MAILBOX_FILE_VERSION {
         return Ok(None);
@@ -6706,6 +6765,14 @@ fn audit_mailbox_node_dir(
 
         node_records = node_records.saturating_add(1);
         audit.records = audit.records.saturating_add(1);
+        let Ok(file_type) = entry.file_type() else {
+            audit.invalid_records = audit.invalid_records.saturating_add(1);
+            continue;
+        };
+        if !file_type.is_file() {
+            audit.invalid_records = audit.invalid_records.saturating_add(1);
+            continue;
+        }
         let byte_len = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         audit.bytes = audit.bytes.saturating_add(byte_len);
 
@@ -6748,8 +6815,11 @@ fn audit_mailbox_node_dir(
 }
 
 fn read_mailbox_audit_timestamp(path: &Path) -> Result<Option<u128>, RelayError> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay mailbox file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay mailbox file",
+        "read relay mailbox file",
+    )?;
     let version = mailbox_value(&contents, "version").unwrap_or_default();
     if version != RELAY_MAILBOX_FILE_VERSION {
         return Ok(None);
@@ -6880,8 +6950,11 @@ fn render_session_file(record: &RelaySessionRecord) -> String {
 }
 
 fn read_session_file(path: &Path) -> Result<Option<RelaySessionRecord>, RelayError> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay session state file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay session state file",
+        "read relay session state file",
+    )?;
     let version = mailbox_value(&contents, "version").unwrap_or_default();
     if version != RELAY_SESSION_FILE_VERSION {
         return Ok(None);
@@ -6963,8 +7036,11 @@ fn render_accounting_file(record: &RelayAccountingRecord) -> String {
 }
 
 fn read_accounting_file(path: &Path) -> Result<Option<RelayAccountingRecord>, RelayError> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| RelayError::io("read relay accounting file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay accounting file",
+        "read relay accounting file",
+    )?;
     let version = mailbox_value(&contents, "version").unwrap_or_default();
     if version != RELAY_ACCOUNTING_FILE_VERSION {
         return Ok(None);
@@ -7100,8 +7176,11 @@ fn render_abuse_file(record: &RelayAbuseRecord) -> String {
 }
 
 fn read_abuse_file(path: &Path) -> Result<Option<RelayAbuseRecord>, RelayError> {
-    let contents =
-        fs::read_to_string(path).map_err(|error| RelayError::io("read relay abuse file", error))?;
+    let contents = read_required_regular_relay_file(
+        path,
+        "inspect relay abuse file",
+        "read relay abuse file",
+    )?;
     let version = mailbox_value(&contents, "version").unwrap_or_default();
     if version != RELAY_ABUSE_FILE_VERSION {
         return Ok(None);
@@ -10833,6 +10912,124 @@ token_displayed = true\n",
         assert!(!debug.contains("ENVELOPE from=node.a"));
         assert!(!debug.contains("relay_node.hosted_123456789"));
         assert!(!debug.contains("token_sha256_hex"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_metadata_reads_reject_symlinks_without_reading_targets() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-metadata-read-symlink");
+        let now_millis = current_unix_millis();
+        let now_unix = current_unix_seconds();
+
+        let mailbox_dir = home.join("relay-mailbox");
+        let mailbox_node_dir = mailbox_dir.join("node.b");
+        fs::create_dir_all(&mailbox_node_dir).expect("mailbox node dir");
+        let mailbox_entry = QueuedRelayEnvelope {
+            queued_at_millis: now_millis,
+            queued_at_nanos: now_millis.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.b", "env.symlink.mailbox"),
+            ),
+        };
+        let mailbox_target = home.join("outside.mailbox");
+        let mailbox_target_contents =
+            render_mailbox_file(&mailbox_entry) + "secret_payload = \"private message contents\"\n";
+        fs::write(&mailbox_target, &mailbox_target_contents).expect("mailbox target writes");
+        let mailbox_link = mailbox_node_dir.join("linked.mailbox");
+        symlink(&mailbox_target, &mailbox_link).expect("mailbox symlink creates");
+
+        let mailbox_audit =
+            audit_relay_mailbox_dir(&mailbox_dir, None, None).expect("mailbox audit reads");
+        assert_eq!(mailbox_audit.records, 1);
+        assert_eq!(mailbox_audit.invalid_records, 1);
+        assert!(mailbox_audit.oldest_queued_unix_millis.is_none());
+        assert!(mailbox_audit.newest_queued_unix_millis.is_none());
+
+        let storage =
+            RelayMailboxStorage::file_backed(mailbox_dir.clone()).expect("mailbox storage");
+        let mailbox_policy =
+            RelayMailboxPolicy::new(4, Duration::from_secs(60)).expect("mailbox policy");
+        let mut loaded = RelayHubState::load(&storage, mailbox_policy).expect("mailbox loads");
+        let drained = loaded
+            .drain_mailbox("node.b", mailbox_policy, &storage)
+            .expect("mailbox drains");
+        assert!(drained.is_empty());
+        assert!(fs::symlink_metadata(&mailbox_link).is_err());
+        assert_eq!(
+            fs::read_to_string(&mailbox_target).expect("mailbox target reads"),
+            mailbox_target_contents
+        );
+
+        let session_dir = home.join("sessions");
+        fs::create_dir_all(&session_dir).expect("session dir");
+        let session_record = RelaySessionRecord::new(
+            "node.a",
+            &session_id("node.a"),
+            now_millis.min(u64::MAX as u128) as u64,
+            RelaySessionPolicy::default(),
+        );
+        let session_target = home.join("outside.session");
+        let session_target_contents =
+            render_session_file(&session_record) + "secret_payload = \"private session\"\n";
+        fs::write(&session_target, &session_target_contents).expect("session target writes");
+        let session_link = session_dir.join("node.a.session");
+        symlink(&session_target, &session_link).expect("session symlink creates");
+        let session_audit =
+            audit_relay_session_state_dir(&session_dir, None).expect("session audit reads");
+        assert_eq!(session_audit.records, 0);
+        assert_eq!(session_audit.invalid_records, 1);
+        assert_eq!(
+            fs::read_to_string(&session_target).expect("session target reads"),
+            session_target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&session_link)
+                .expect("session symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+
+        let accounting_dir = home.join("accounting");
+        fs::create_dir_all(&accounting_dir).expect("accounting dir");
+        let mut accounting_record = RelayAccountingRecord::new("node.a", now_unix);
+        accounting_record.sessions_authenticated = 7;
+        let accounting_target = home.join("outside.accounting");
+        let accounting_target_contents = render_accounting_file(&accounting_record)
+            + "secret_payload = \"private accounting\"\n";
+        fs::write(&accounting_target, &accounting_target_contents)
+            .expect("accounting target writes");
+        let accounting_link = accounting_dir.join("node.a.accounting");
+        symlink(&accounting_target, &accounting_link).expect("accounting symlink creates");
+        let accounting_audit =
+            audit_relay_accounting_dir(&accounting_dir, None).expect("accounting audit reads");
+        assert_eq!(accounting_audit.records, 0);
+        assert_eq!(accounting_audit.sessions_authenticated, 0);
+        assert_eq!(
+            fs::read_to_string(&accounting_target).expect("accounting target reads"),
+            accounting_target_contents
+        );
+
+        let abuse_dir = home.join("abuse");
+        fs::create_dir_all(&abuse_dir).expect("abuse dir");
+        let mut abuse_record = RelayAbuseRecord::new(Some("node.a".to_string()), now_unix);
+        abuse_record.record(RelayAbuseKind::RateLimitedSession);
+        let abuse_target = home.join("outside.abuse");
+        let abuse_target_contents =
+            render_abuse_file(&abuse_record) + "secret_payload = \"private abuse\"\n";
+        fs::write(&abuse_target, &abuse_target_contents).expect("abuse target writes");
+        let abuse_link = abuse_dir.join("node-node.a.abuse");
+        symlink(&abuse_target, &abuse_link).expect("abuse symlink creates");
+        let abuse_audit = audit_relay_abuse_dir(&abuse_dir, None).expect("abuse audit reads");
+        assert_eq!(abuse_audit.records, 0);
+        assert_eq!(abuse_audit.rate_limited_sessions, 0);
+        assert_eq!(
+            fs::read_to_string(&abuse_target).expect("abuse target reads"),
+            abuse_target_contents
+        );
     }
 
     #[test]
