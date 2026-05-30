@@ -7897,16 +7897,9 @@ fn plan_staged_update_binaries(
                 target_file.display()
             ));
         }
-        if let Ok(metadata) = fs::symlink_metadata(&target_file) {
-            if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(format!(
-                    "release update install target is not a regular file: {}",
-                    target_file.display()
-                ));
-            }
-        }
+        let target_exists = inspect_update_install_target(&target_file)?;
         let backup_file = backup_dir.and_then(|dir| {
-            if target_file.exists() {
+            if target_exists {
                 Some(dir.join(&filename))
             } else {
                 None
@@ -7977,18 +7970,10 @@ fn install_staged_update_binaries(
             .iter()
             .find(|report| report.target_file == *target_file)
             .and_then(|report| report.backup_file.clone());
-        if target_file.exists() {
-            if let Err(error) = fs::remove_file(target_file) {
-                let recovery_errors = rollback_update_install(&installed).err();
-                cleanup_update_temp_targets(&temp_targets);
-                return Err(with_update_recovery_error(
-                    format!(
-                        "could not replace release update binary {}: {error}",
-                        target_file.display()
-                    ),
-                    recovery_errors,
-                ));
-            }
+        if let Err(error) = remove_existing_update_install_target(target_file) {
+            let recovery_errors = rollback_update_install(&installed).err();
+            cleanup_update_temp_targets(&temp_targets);
+            return Err(with_update_recovery_error(error, recovery_errors));
         }
         if let Err(error) = fs::rename(temp_target, target_file) {
             let mut recovery_errors = Vec::new();
@@ -8013,6 +7998,37 @@ fn install_staged_update_binaries(
     }
 
     Ok(reports)
+}
+
+fn inspect_update_install_target(target_file: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(target_file) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "release update install target is not a regular file: {}",
+                    target_file.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "could not inspect release update install target {}: {error}",
+            target_file.display()
+        )),
+    }
+}
+
+fn remove_existing_update_install_target(target_file: &Path) -> Result<(), String> {
+    if !inspect_update_install_target(target_file)? {
+        return Ok(());
+    }
+    fs::remove_file(target_file).map_err(|error| {
+        format!(
+            "could not replace release update binary {}: {error}",
+            target_file.display()
+        )
+    })
 }
 
 fn with_update_recovery_error(error: String, recovery_error: Option<String>) -> String {
@@ -11436,6 +11452,45 @@ mod tests {
         assert_eq!(
             fs::read(&staged).expect("existing staged file reads"),
             b"existing staged binary"
+        );
+    }
+
+    #[test]
+    fn update_apply_final_replacement_rejects_directory_target() {
+        let home = temp_home("update-apply-final-directory-target");
+        let install_dir = home.join("install-bin");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        fs::create_dir_all(&target_file).expect("directory target creates");
+
+        let error = remove_existing_update_install_target(&target_file)
+            .expect_err("directory final install target should fail closed");
+
+        assert!(error.contains("release update install target is not a regular file"));
+        assert!(target_file.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_final_replacement_rejects_symlink_target_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-final-symlink-target");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        let outside_target = home.join("outside-final-target");
+        symlink(&outside_target, &target_file).expect("target symlink creates");
+
+        let error = remove_existing_update_install_target(&target_file)
+            .expect_err("symlink final install target should fail closed");
+
+        assert!(error.contains("release update install target is not a regular file"));
+        assert!(!outside_target.exists());
+        assert!(
+            fs::symlink_metadata(&target_file)
+                .expect("target symlink metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 
