@@ -7771,13 +7771,28 @@ fn write_update_staged_binary<R: Read>(
     archive_name: &str,
     binary_name: &str,
 ) -> Result<(), String> {
-    let mut file = fs::File::create(path).map_err(|error| {
-        format!("could not stage {binary_name} from release update archive {archive_name}: {error}")
-    })?;
-    let copied = io::copy(reader, &mut file).map_err(|error| {
-        format!("could not read {binary_name} from release update archive {archive_name}: {error}")
-    })?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            format!(
+                "could not stage {binary_name} from release update archive {archive_name}: {error}"
+            )
+        })?;
+    let copied = match io::copy(reader, &mut file) {
+        Ok(copied) => copied,
+        Err(error) => {
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(format!(
+                "could not read {binary_name} from release update archive {archive_name}: {error}"
+            ));
+        }
+    };
+    drop(file);
     if copied != expected_bytes {
+        let _ = fs::remove_file(path);
         return Err(format!(
             "release update archive {binary_name} size changed while staging"
         ));
@@ -8260,12 +8275,33 @@ fn write_update_output_file(
             path.display()
         ));
     }
-    fs::write(&path, bytes).map_err(|error| {
-        format!(
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(format!(
+                "release update artifact {label} output already exists: {}",
+                path.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not reserve release update artifact {label} {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(format!(
             "could not write release update artifact {label} {}: {error}",
             path.display()
-        )
-    })?;
+        ));
+    }
     Ok(path)
 }
 
@@ -10963,6 +10999,24 @@ mod tests {
     }
 
     #[test]
+    fn update_download_output_write_rejects_existing_file_without_overwrite() {
+        let output_dir = temp_home("update-download-existing-output");
+        fs::create_dir_all(&output_dir).expect("output dir creates");
+        let filename = "conu-0.1.0-linux-x64.tar.gz";
+        let existing = output_dir.join(filename);
+        fs::write(&existing, b"existing public archive").expect("existing output writes");
+
+        let error = write_update_output_file(&output_dir, filename, b"new archive", "archive")
+            .expect_err("existing output should fail closed");
+
+        assert!(error.contains("output already exists"));
+        assert_eq!(
+            fs::read(&existing).expect("existing output reads"),
+            b"existing public archive"
+        );
+    }
+
+    #[test]
     fn update_download_requires_output_dir() {
         let output = run([
             "update",
@@ -11120,6 +11174,30 @@ mod tests {
         assert_eq!(
             fs::read(&stale).expect("stale temp target reads"),
             b"stale temp target"
+        );
+    }
+
+    #[test]
+    fn update_apply_staged_binary_rejects_existing_path_without_overwrite() {
+        let home = temp_home("update-apply-existing-staged");
+        fs::create_dir_all(&home).expect("staging dir creates");
+        let staged = home.join(update_binary_filename("conu"));
+        fs::write(&staged, b"existing staged binary").expect("existing staged file writes");
+        let mut reader = &b"new staged binary"[..];
+
+        let error = write_update_staged_binary(
+            &staged,
+            &mut reader,
+            b"new staged binary".len() as u64,
+            "conu-0.1.0-linux-x64.tar.gz",
+            "conu",
+        )
+        .expect_err("existing staged path should fail closed");
+
+        assert!(error.contains("could not stage conu"));
+        assert_eq!(
+            fs::read(&staged).expect("existing staged file reads"),
+            b"existing staged binary"
         );
     }
 
