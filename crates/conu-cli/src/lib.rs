@@ -8260,8 +8260,8 @@ fn create_update_temp_install_target(
                     ));
                 }
             };
-        drop(temp_file);
         if copied != report.bytes || copied_sha256 != report.sha256 {
+            drop(temp_file);
             let _ = fs::remove_file(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
@@ -8272,11 +8272,13 @@ fn create_update_temp_install_target(
             match update_input_file_metadata(&report.source_file, source_label) {
                 Ok(metadata) => metadata,
                 Err(error) => {
+                    drop(temp_file);
                     let _ = fs::remove_file(&temp_target);
                     return Err(error);
                 }
             };
         if !update_input_file_metadata_matches(&source_metadata, &final_source_metadata) {
+            drop(temp_file);
             let _ = fs::remove_file(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
@@ -8286,6 +8288,7 @@ fn create_update_temp_install_target(
         let final_opened_metadata = match source_file.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
+                drop(temp_file);
                 let _ = fs::remove_file(&temp_target);
                 return Err(format!(
                     "release update staged binary metadata could not be read: {error}"
@@ -8293,16 +8296,19 @@ fn create_update_temp_install_target(
             }
         };
         if !update_input_file_metadata_matches(&source_metadata, &final_opened_metadata) {
+            drop(temp_file);
             let _ = fs::remove_file(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
                 report.target_file.display()
             ));
         }
-        if let Err(error) = set_update_binary_permissions(&temp_target) {
+        if let Err(error) = set_update_binary_file_permissions(&temp_file, &temp_target) {
+            drop(temp_file);
             let _ = fs::remove_file(&temp_target);
             return Err(error);
         }
+        drop(temp_file);
         return Ok(temp_target);
     }
 
@@ -8385,15 +8391,21 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
             ));
         }
     };
-    drop(target);
     if copied != metadata.len() {
+        drop(target);
         let _ = fs::remove_file(target_file);
         return Err(format!(
             "release update backup changed while restoring {}",
             backup_file.display()
         ));
     }
-    set_update_binary_permissions(target_file)
+    if let Err(error) = set_update_binary_file_permissions(&target, target_file) {
+        drop(target);
+        let _ = fs::remove_file(target_file);
+        return Err(error);
+    }
+    drop(target);
+    Ok(())
 }
 
 fn cleanup_update_temp_targets(temp_targets: &[(PathBuf, PathBuf)]) {
@@ -8403,19 +8415,24 @@ fn cleanup_update_temp_targets(temp_targets: &[(PathBuf, PathBuf)]) {
 }
 
 #[cfg(unix)]
-fn set_update_binary_permissions(path: &Path) -> Result<(), String> {
+fn set_update_binary_file_permissions(file: &fs::File, path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
-    let mut permissions = fs::metadata(path)
-        .map_err(|error| {
-            format!(
-                "could not read release update binary permissions {}: {error}",
-                path.display()
-            )
-        })?
-        .permissions();
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "could not read release update binary permissions {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "release update binary is not a regular file: {}",
+            path.display()
+        ));
+    }
+    let mut permissions = metadata.permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).map_err(|error| {
+    file.set_permissions(permissions).map_err(|error| {
         format!(
             "could not set release update binary permissions {}: {error}",
             path.display()
@@ -8424,7 +8441,7 @@ fn set_update_binary_permissions(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
-fn set_update_binary_permissions(_path: &Path) -> Result<(), String> {
+fn set_update_binary_file_permissions(_file: &fs::File, _path: &Path) -> Result<(), String> {
     Ok(())
 }
 
@@ -11558,6 +11575,85 @@ mod tests {
         assert_eq!(
             fs::read(&stale).expect("stale temp target reads"),
             b"stale temp target"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_temp_install_target_sets_executable_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = temp_home("update-apply-temp-target-permissions");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        fs::write(&source_file, b"new conu binary").expect("source binary writes");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file,
+            target_file: install_dir.join(&filename),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
+        };
+
+        let created = create_update_temp_install_target(&report, &install_dir, &filename, 42)
+            .expect("temp target creates");
+
+        let mode = fs::metadata(&created)
+            .expect("created temp target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_permission_setter_uses_open_file_handle_not_path() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let home = temp_home("update-apply-permissions-handle");
+        fs::create_dir_all(&home).expect("home creates");
+        let actual = home.join("actual-binary");
+        let outside = home.join("outside-binary");
+        let symlink_path = home.join("symlink-path");
+        fs::write(&actual, b"actual").expect("actual writes");
+        fs::write(&outside, b"outside").expect("outside writes");
+        fs::set_permissions(&actual, fs::Permissions::from_mode(0o600))
+            .expect("actual permissions set");
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o600))
+            .expect("outside permissions set");
+        symlink(&outside, &symlink_path).expect("symlink creates");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&actual)
+            .expect("actual opens");
+
+        set_update_binary_file_permissions(&file, &symlink_path)
+            .expect("permissions set through file handle");
+
+        let actual_mode = fs::metadata(&actual)
+            .expect("actual metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let outside_mode = fs::metadata(&outside)
+            .expect("outside metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(actual_mode, 0o755);
+        assert_eq!(outside_mode, 0o600);
+        assert!(
+            fs::symlink_metadata(&symlink_path)
+                .expect("symlink metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 
