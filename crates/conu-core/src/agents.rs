@@ -429,8 +429,11 @@ fn process_one_request(
     node_id: &str,
     request_path: &Path,
 ) -> Result<ProcessedRequest, AgentError> {
-    let contents = fs::read_to_string(request_path)
-        .map_err(|error| AgentError::io("read IPC request", request_path, error))?;
+    let contents = state::read_required_regular_state_file(
+        request_path,
+        "inspect IPC request",
+        "read IPC request",
+    )?;
     let values = parse_key_values(&contents);
 
     if value_or_empty(&values, "version") != REQUEST_VERSION {
@@ -1224,6 +1227,38 @@ mod tests {
         assert!(rejected >= 1);
         assert!(error_text.contains("unsupported request type"));
         assert!(!error_text.contains("secret private message contents"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_request_is_rejected_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("request-read-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let outside = init.paths.home.join("outside-agent-request.req");
+        let outside_contents = "version = \"1\"\ntype = \"register_agent\"\nrequest_id = \"outside\"\nagent_id = \"agent.outside\"\ndisplay_name = \"Outside\"\nkind = \"test\"\n";
+        fs::write(&outside, outside_contents).expect("outside request writes");
+        let request = init.paths.ipc_inbox_dir.join("linked.req");
+        symlink(&outside, &request).expect("request symlink creates");
+
+        let report = process_gateway_requests(Some(home.clone())).expect("requests process");
+        let rejected_request = init.paths.ipc_rejected_dir.join("linked.req");
+        let error_text = fs::read_to_string(init.paths.ipc_rejected_dir.join("linked.error"))
+            .expect("rejection reason reads");
+
+        assert_eq!(report.rejected, 1);
+        assert!(error_text.contains("inspect IPC request"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside request reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&rejected_request)
+                .expect("rejected request symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

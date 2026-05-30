@@ -414,8 +414,11 @@ fn process_one_message_request(
     paths: &StatePaths,
     request_path: &Path,
 ) -> Result<InboxEntry, MessageError> {
-    let contents = fs::read_to_string(request_path)
-        .map_err(|error| MessageError::io("read message IPC request", request_path, error))?;
+    let contents = state::read_required_regular_state_file(
+        request_path,
+        "inspect message IPC request",
+        "read message IPC request",
+    )?;
     let values = parse_key_values(&contents);
 
     if value_or_empty(&values, "version") != REQUEST_VERSION {
@@ -1395,6 +1398,33 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_message_request_is_rejected_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("message-request-read-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let outside = init.paths.home.join("outside-message-request.msg");
+        let outside_contents = "version = \"1\"\ntype = \"send_message\"\npayload = \"secret private message contents\"\n";
+        fs::write(&outside, outside_contents).expect("outside request writes");
+        let request = init.paths.message_ipc_inbox_dir.join("linked.msg");
+        symlink(&outside, &request).expect("message request symlink creates");
+
+        let report = process_message_requests(Some(home.clone())).expect("message processes");
+        let error_path = init.paths.message_ipc_rejected_dir.join("linked.error");
+        let error_text = fs::read_to_string(error_path).expect("rejection reason reads");
+
+        assert_eq!(report.rejected, 1);
+        assert!(error_text.contains("inspect message IPC request"));
+        assert!(!error_text.contains("secret private message contents"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside request reads"),
+            outside_contents
+        );
+        assert!(!request.exists());
     }
 
     #[test]
