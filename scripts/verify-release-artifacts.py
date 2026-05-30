@@ -43,10 +43,14 @@ FORBIDDEN_PARTS = {
     "vendor",
 }
 FORBIDDEN_NAMES = {
+    ".env",
+    ".env.local",
+    ".npmrc",
     "node.toml",
     "runtime.toml",
     "trust.toml",
 }
+FORBIDDEN_SUFFIXES = (".key", ".pem", ".p12", ".pfx", ".token")
 REQUIRED_BINARIES = {"conu", "conud", "conu-relay", "conu-mcp"}
 REQUIRED_PACKAGING_FILES = {
     "packaging/README.md",
@@ -513,10 +517,8 @@ def verify_members(archive: Path, members: ArchiveMembers) -> None:
         )
 
     for path in sorted(paths):
-        member_path = PurePosixPath(path)
-        parts = set(member_path.parts)
-        if parts & FORBIDDEN_PARTS or member_path.name in FORBIDDEN_NAMES:
-            raise SystemExit(f"{archive.name} contains forbidden state path: {path}")
+        if is_forbidden_release_path(path):
+            raise SystemExit(f"{archive.name} contains forbidden release archive path: {path}")
 
 
 def required_binary_paths(paths: set[str]) -> set[str]:
@@ -524,6 +526,18 @@ def required_binary_paths(paths: set[str]) -> set[str]:
     if windows_bins <= paths:
         return windows_bins
     return {f"bin/{binary}" for binary in REQUIRED_BINARIES}
+
+
+def is_forbidden_release_path(path: str) -> bool:
+    member_path = PurePosixPath(path)
+    lower_parts = {part.lower() for part in member_path.parts}
+    if lower_parts & FORBIDDEN_PARTS:
+        return True
+
+    name = member_path.name.lower()
+    if name in FORBIDDEN_NAMES or name.startswith(".env."):
+        return True
+    return name.endswith(FORBIDDEN_SUFFIXES)
 
 
 if __name__ == "__main__":

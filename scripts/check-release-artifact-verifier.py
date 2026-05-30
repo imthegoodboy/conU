@@ -303,7 +303,7 @@ def main() -> int:
         expect_failure(
             "forbidden state path",
             lambda: verify_archive(verifier, forbidden),
-            "forbidden state path",
+            "forbidden release archive path",
         )
 
         forbidden_dir = root / "conu-0.1.0-forbidden-dir.zip"
@@ -311,7 +311,26 @@ def main() -> int:
         expect_failure(
             "forbidden state directory",
             lambda: verify_archive(verifier, forbidden_dir),
-            "forbidden state path",
+            "forbidden release archive path",
+        )
+
+        forbidden_env = root / "conu-0.1.0-forbidden-env.zip"
+        write_zip(forbidden_env, {f"{archive_prefix(forbidden_env)}/docs/.env.release": b"secret"})
+        expect_failure(
+            "forbidden env file",
+            lambda: verify_archive(verifier, forbidden_env),
+            "forbidden release archive path",
+        )
+
+        forbidden_secret_suffix = root / "conu-0.1.0-forbidden-secret-suffix.zip"
+        write_zip(
+            forbidden_secret_suffix,
+            {f"{archive_prefix(forbidden_secret_suffix)}/docs/signing.p12": b"secret"},
+        )
+        expect_failure(
+            "forbidden secret suffix",
+            lambda: verify_archive(verifier, forbidden_secret_suffix),
+            "forbidden release archive path",
         )
 
         wrong_root = root / "conu-0.1.0-wrong-root.zip"
