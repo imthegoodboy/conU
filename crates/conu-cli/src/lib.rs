@@ -8203,9 +8203,35 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
             backup_file.display()
         ));
     }
-    let copied = match fs::copy(backup_file, target_file) {
+    let mut backup = fs::File::open(backup_file).map_err(|error| {
+        format!(
+            "could not open release update backup file {}: {error}",
+            backup_file.display()
+        )
+    })?;
+    let mut target = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target_file)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(format!(
+                "release update restore target already exists: {}",
+                target_file.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not reserve release update restore target {}: {error}",
+                target_file.display()
+            ));
+        }
+    };
+    let copied = match io::copy(&mut backup, &mut target) {
         Ok(copied) => copied,
         Err(error) => {
+            drop(target);
             let _ = fs::remove_file(target_file);
             return Err(format!(
                 "could not restore release update backup {} to {}: {error}",
@@ -8214,6 +8240,7 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
             ));
         }
     };
+    drop(target);
     if copied != metadata.len() {
         let _ = fs::remove_file(target_file);
         return Err(format!(
@@ -11349,6 +11376,55 @@ mod tests {
         assert_eq!(
             fs::read(&target_file).expect("target remains readable"),
             b"partial update target"
+        );
+    }
+
+    #[test]
+    fn update_apply_restore_backup_rejects_existing_target_without_overwrite() {
+        let home = temp_home("update-apply-existing-restore-target");
+        let install_dir = home.join("install-bin");
+        let backup_dir = install_dir.join(".conu-update-backups").join("restore");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        let backup_file = backup_dir.join(update_binary_filename("conu"));
+        fs::write(&target_file, b"unexpected restore target").expect("target writes");
+        fs::write(&backup_file, b"backup binary").expect("backup writes");
+
+        let error = restore_update_backup(&target_file, &backup_file)
+            .expect_err("existing restore target should fail closed");
+
+        assert!(error.contains("release update restore target already exists"));
+        assert_eq!(
+            fs::read(&target_file).expect("target remains readable"),
+            b"unexpected restore target"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_restore_backup_rejects_symlink_target_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-symlink-restore-target");
+        let install_dir = home.join("install-bin");
+        let backup_dir = install_dir.join(".conu-update-backups").join("restore");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        let backup_file = backup_dir.join(update_binary_filename("conu"));
+        let outside_target = home.join("outside-restore-target");
+        fs::write(&backup_file, b"backup binary").expect("backup writes");
+        symlink(&outside_target, &target_file).expect("restore target symlink creates");
+
+        let error = restore_update_backup(&target_file, &backup_file)
+            .expect_err("symlink restore target should fail closed");
+
+        assert!(error.contains("release update restore target already exists"));
+        assert!(!outside_target.exists());
+        assert!(
+            fs::symlink_metadata(&target_file)
+                .expect("restore symlink metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 
