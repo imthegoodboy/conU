@@ -41,6 +41,7 @@ const SECRET_WRAP_KEY_FILE_ENV: &str = "CONU_SECRET_WRAP_KEY_FILE";
 const DISABLE_OS_SECRET_BACKEND_ENV: &str = "CONU_DISABLE_OS_SECRET_BACKEND";
 const MAX_SECURITY_KEY_FILE_BYTES: u64 = 64 * 1024;
 const MAX_SECRET_WRAP_KEY_FILE_BYTES: u64 = 4 * 1024;
+const MAX_LOCAL_ENCRYPTED_PAYLOAD_FILE_BYTES: u64 = 256 * 1024;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1700,9 +1701,7 @@ fn collect_files_with_extension(
 fn local_storage_payload_file(
     path: &Path,
 ) -> Result<Option<LocalStoragePayloadFile>, SecurityError> {
-    ensure_regular_local_payload_file(path)?;
-    let contents = fs::read_to_string(path)
-        .map_err(|error| SecurityError::io("read local encrypted payload file", path, error))?;
+    let contents = read_local_storage_payload_file(path)?;
     let values = parse_key_values(&contents);
     if !values.contains_key("payload_ciphertext_hex") {
         return Ok(None);
@@ -1739,6 +1738,49 @@ fn rewrite_local_storage_payload_file(path: &Path, contents: &str) -> Result<(),
     Ok(())
 }
 
+fn read_local_storage_payload_file(path: &Path) -> Result<String, SecurityError> {
+    let metadata = regular_local_payload_file_metadata(path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| SecurityError::io("read local encrypted payload file", path, error))?;
+    let path_metadata = regular_local_payload_file_metadata(path)?;
+    if !secret_file_metadata_matches(&metadata, &path_metadata) {
+        return Err(invalid_local_payload_path(
+            path,
+            "local encrypted payload file changed while reading",
+        ));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| SecurityError::io("inspect local encrypted payload file", path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_LOCAL_ENCRYPTED_PAYLOAD_FILE_BYTES
+        || !secret_file_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(invalid_local_payload_path(
+            path,
+            "local encrypted payload file changed while reading",
+        ));
+    }
+
+    let mut contents = String::new();
+    let limit = MAX_LOCAL_ENCRYPTED_PAYLOAD_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
+        .map_err(|error| SecurityError::io("read local encrypted payload file", path, error))?;
+    if contents.len() as u64 > MAX_LOCAL_ENCRYPTED_PAYLOAD_FILE_BYTES {
+        return Err(invalid_local_payload_path(
+            path,
+            "local encrypted payload file exceeds size limit",
+        ));
+    }
+
+    Ok(contents)
+}
+
 fn local_payload_directory_exists(path: &Path) -> Result<bool, SecurityError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -1759,7 +1801,7 @@ fn local_payload_directory_exists(path: &Path) -> Result<bool, SecurityError> {
     }
 }
 
-fn ensure_regular_local_payload_file(path: &Path) -> Result<(), SecurityError> {
+fn regular_local_payload_file_metadata(path: &Path) -> Result<fs::Metadata, SecurityError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| SecurityError::io("inspect local encrypted payload file", path, error))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -1768,7 +1810,13 @@ fn ensure_regular_local_payload_file(path: &Path) -> Result<(), SecurityError> {
             "local payload path is not a regular file",
         ));
     }
-    Ok(())
+    if metadata.len() > MAX_LOCAL_ENCRYPTED_PAYLOAD_FILE_BYTES {
+        return Err(invalid_local_payload_path(
+            path,
+            "local encrypted payload file exceeds size limit",
+        ));
+    }
+    Ok(metadata)
 }
 
 fn invalid_local_payload_path(path: &Path, reason: &'static str) -> SecurityError {
@@ -4087,6 +4135,56 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_payload_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("storage-payload-read-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let outside = home.join("outside-payload-target.msg");
+        let link = home.join("payload.msg");
+        let outside_contents = "outside payload marker\n";
+        fs::write(&outside, outside_contents).expect("outside target writes");
+        symlink(&outside, &link).expect("payload symlink creates");
+
+        let error = match local_storage_payload_file(&link) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("symlinked payload read should fail closed"),
+        };
+
+        assert!(error.contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside target reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("payload link metadata reads")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn storage_payload_read_rejects_oversized_file_without_printing_contents() {
+        let home = test_home("storage-payload-read-oversized");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("payload.msg");
+        let private_marker = "private-local-payload-marker";
+        let mut contents = format!("# {private_marker}\n");
+        contents.push_str(&"a".repeat((MAX_LOCAL_ENCRYPTED_PAYLOAD_FILE_BYTES + 1) as usize));
+        fs::write(&path, contents).expect("oversized payload writes");
+
+        let error = match local_storage_payload_file(&path) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("oversized payload read should fail closed"),
+        };
+
+        assert!(error.contains("local encrypted payload file exceeds size limit"));
+        assert!(!error.contains(private_marker));
     }
 
     #[cfg(unix)]
