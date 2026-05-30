@@ -19,6 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 MAX_ENV_FILE_BYTES = 128 * 1024
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+POSIX_ENV_FILE_FORBIDDEN_MODE = stat.S_IRWXG | stat.S_IRWXO
 
 
 def render_env_template(names: tuple[str, ...]) -> str:
@@ -127,6 +128,7 @@ def open_env_file(path: Path) -> tuple[BinaryIO, int]:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError(f"env file is not a regular file: {path}")
+        validate_env_file_permissions(metadata.st_mode, path)
         size = metadata.st_size
         if size > MAX_ENV_FILE_BYTES:
             raise ValueError(f"env file is too large: {path}")
@@ -140,10 +142,21 @@ def validate_open_env_file(handle: BinaryIO, path: Path) -> int:
     metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
         raise ValueError(f"env file is not a regular file: {path}")
+    validate_env_file_permissions(metadata.st_mode, path)
     size = metadata.st_size
     if size > MAX_ENV_FILE_BYTES:
         raise ValueError(f"env file is too large: {path}")
     return size
+
+
+def validate_env_file_permissions(mode: int, path: Path) -> None:
+    if os.name != "posix":
+        return
+    if mode & POSIX_ENV_FILE_FORBIDDEN_MODE:
+        raise ValueError(
+            "env file permissions must not allow group or other access: "
+            f"{path}"
+        )
 
 
 def missing_required_values(values: Mapping[str, str], names: tuple[str, ...]) -> tuple[str, ...]:
