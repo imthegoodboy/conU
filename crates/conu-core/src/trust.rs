@@ -9,7 +9,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,6 +21,7 @@ const TRUST_VERSION: &str = "1";
 const PAIRING_VERSION: &str = "1";
 const PAIRING_TTL_SECS: u64 = 10 * 60;
 const DEFAULT_RELAY_ENDPOINT: &str = "ws://127.0.0.1:8787";
+const MAX_TRUST_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Lifecycle state for a local pairing invitation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -654,13 +655,67 @@ fn read_trust_file(
     inspect_action: &'static str,
     read_action: &'static str,
 ) -> Result<Option<String>, TrustError> {
-    let Some(_metadata) = regular_trust_file_metadata(path, inspect_action)? else {
+    let Some(metadata) = regular_trust_file_metadata(path, inspect_action)? else {
         return Ok(None);
     };
 
-    fs::read_to_string(path)
-        .map(Some)
-        .map_err(|error| TrustError::io(read_action, path, error))
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| TrustError::io(read_action, path, error))?;
+    let Some(path_metadata) = regular_trust_file_metadata(path, inspect_action)? else {
+        return Err(TrustError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "trust file path is missing"),
+        ));
+    };
+    if !trust_file_metadata_matches(&metadata, &path_metadata) {
+        return Err(TrustError::io(
+            inspect_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trust file path changed while reading",
+            ),
+        ));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| TrustError::io(inspect_action, path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_TRUST_FILE_BYTES
+        || !trust_file_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(TrustError::io(
+            read_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trust file path changed while reading",
+            ),
+        ));
+    }
+
+    let mut contents = String::new();
+    let limit = MAX_TRUST_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
+        .map_err(|error| TrustError::io(read_action, path, error))?;
+    if contents.len() as u64 > MAX_TRUST_FILE_BYTES {
+        return Err(TrustError::io(
+            read_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("trust file exceeds {MAX_TRUST_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
+
+    Ok(Some(contents))
 }
 
 fn write_trust_file(
@@ -705,11 +760,47 @@ fn regular_trust_file_metadata(
                     ),
                 ));
             }
+            if metadata.len() > MAX_TRUST_FILE_BYTES {
+                return Err(TrustError::io(
+                    action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("trust file exceeds {MAX_TRUST_FILE_BYTES} bytes"),
+                    ),
+                ));
+            }
             Ok(Some(metadata))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(TrustError::io(action, path, error)),
     }
+}
+
+fn trust_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.len() == current.len() && trust_file_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn trust_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    expected.dev() == current.dev() && expected.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn trust_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
+        && expected.last_write_time() == current.last_write_time()
+        && expected.file_size() == current.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn trust_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.modified().ok() == current.modified().ok()
 }
 
 fn parse_trust_store(contents: &str) -> Result<Vec<TrustedPeer>, TrustError> {
@@ -1265,6 +1356,44 @@ mod tests {
         assert!(report.changed);
         assert_eq!(report.peer.status, TrustStatus::Revoked);
         assert_eq!(peers[0].status, TrustStatus::Revoked);
+    }
+
+    #[test]
+    fn trust_store_read_rejects_oversized_file_without_printing_contents() {
+        let home = test_home("trust-store-read-oversized");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let paths = init.paths;
+        let private_marker = "private-trust-marker";
+        let mut contents = format!("# {private_marker}\n");
+        contents.push_str(&"a".repeat((MAX_TRUST_FILE_BYTES + 1) as usize));
+        fs::write(&paths.trust_store, contents).expect("oversized trust store writes");
+
+        let error = read_trust_store(&paths).expect_err("oversized trust store should fail closed");
+        let error = error.to_string();
+
+        assert!(error.contains("trust file exceeds"));
+        assert!(!error.contains(private_marker));
+    }
+
+    #[test]
+    fn pairing_invite_read_rejects_oversized_file_without_printing_contents() {
+        let home = test_home("pairing-invite-read-oversized");
+        let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let paths = StatePaths::from_home(home);
+        let invite_path = paths
+            .pairing_invites_dir
+            .join(format!("{}.pair", invite.code));
+        let private_marker = "private-invite-marker";
+        let mut contents = format!("# {private_marker}\n");
+        contents.push_str(&"a".repeat((MAX_TRUST_FILE_BYTES + 1) as usize));
+        fs::write(invite_path, contents).expect("oversized pairing invite writes");
+
+        let error = read_pairing_invite(&paths, &invite.code)
+            .expect_err("oversized pairing invite should fail closed");
+        let error = error.to_string();
+
+        assert!(error.contains("trust file exceeds"));
+        assert!(!error.contains(private_marker));
     }
 
     #[test]
