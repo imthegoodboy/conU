@@ -8488,19 +8488,30 @@ struct UpdateDownloadDir {
 
 impl UpdateDownloadDir {
     fn create() -> Result<Self, String> {
+        let temp_root = env::temp_dir();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
-        let path =
-            env::temp_dir().join(format!("conu-update-check-{}-{nonce}", std::process::id()));
-        fs::create_dir_all(&path).map_err(|error| {
-            format!(
-                "could not create temporary update check directory {}: {error}",
-                path.display()
-            )
-        })?;
-        Ok(Self { path })
+
+        for attempt in 0..1024 {
+            let path = temp_root.join(format!(
+                "conu-update-check-{}-{nonce}-{attempt}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "could not create temporary update check directory {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+
+        Err("could not create unique temporary update check directory".to_string())
     }
 
     fn path(&self) -> &Path {

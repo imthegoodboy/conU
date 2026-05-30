@@ -52,12 +52,26 @@ class PackageRule:
     name: str
     directory: Path
     allowed_files: frozenset[str]
+    package_files: frozenset[str]
+    bin_entries: dict[str, str] | None = None
+    manifest_values: dict[str, Any] | None = None
+    script_entries: dict[str, str] | None = None
+    engines: dict[str, str] | None = None
 
 
 PACKAGES = (
     PackageRule(
         name="@conu/cli",
         directory=Path("packaging/npm/conu-cli"),
+        package_files=frozenset({"bin/", "lib/", "scripts/", "README.md"}),
+        bin_entries={
+            "conu": "bin/conu.js",
+            "conud": "bin/conud.js",
+            "conu-relay": "bin/conu-relay.js",
+            "conu-mcp": "bin/conu-mcp.js",
+        },
+        script_entries={"postinstall": "node scripts/install.js"},
+        engines={"node": ">=22 <23 || >=24 <25"},
         allowed_files=frozenset(
             {
                 "README.md",
@@ -89,6 +103,32 @@ PACKAGES = (
     PackageRule(
         name="@conu/sdk",
         directory=Path("sdk/typescript"),
+        package_files=frozenset({"src", "README.md"}),
+        manifest_values={
+            "type": "module",
+            "main": "./src/index.js",
+            "types": "./src/index.d.ts",
+            "browser": "./src/browser.js",
+            "exports": {
+                ".": {
+                    "browser": {
+                        "types": "./src/browser.d.ts",
+                        "default": "./src/browser.js",
+                    },
+                    "node": {
+                        "types": "./src/index.d.ts",
+                        "default": "./src/index.js",
+                    },
+                    "types": "./src/index.d.ts",
+                    "default": "./src/index.js",
+                },
+                "./browser": {
+                    "types": "./src/browser.d.ts",
+                    "default": "./src/browser.js",
+                },
+            },
+        },
+        engines={"node": ">=22 <23 || >=24 <25"},
         allowed_files=frozenset(
             {
                 "README.md",
@@ -179,6 +219,80 @@ def validate_size(field: str, value: Any, limit: int, context: str) -> None:
         raise ValueError(f"{context} reported {field} above {limit} bytes")
 
 
+def validate_manifest_string_set(
+    value: Any,
+    expected: frozenset[str],
+    *,
+    field: str,
+    context: Path,
+) -> None:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise ValueError(f"{context} {field} must be a non-empty string list")
+    actual = frozenset(value)
+    if len(actual) != len(value):
+        raise ValueError(f"{context} {field} must not contain duplicate entries")
+    if actual != expected:
+        details: list[str] = []
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if extra:
+            details.append("unexpected " + ", ".join(extra))
+        raise ValueError(f"{context} {field} changed: {'; '.join(details)}")
+
+
+def validate_manifest_mapping(
+    value: Any,
+    expected: dict[str, str],
+    *,
+    field: str,
+    context: Path,
+) -> None:
+    if value != expected:
+        raise ValueError(f"{context} {field} must match expected public metadata")
+
+
+def validate_manifest_public_surface(rule: PackageRule, manifest: dict[str, Any]) -> None:
+    context = rule.directory / "package.json"
+    validate_manifest_string_set(
+        manifest.get("files"),
+        rule.package_files,
+        field="files",
+        context=context,
+    )
+
+    if rule.bin_entries is not None:
+        validate_manifest_mapping(
+            manifest.get("bin"),
+            rule.bin_entries,
+            field="bin",
+            context=context,
+        )
+
+    for field, expected in (rule.manifest_values or {}).items():
+        if manifest.get(field) != expected:
+            raise ValueError(f"{context} {field} must match expected public metadata")
+
+    scripts = manifest.get("scripts")
+    if rule.script_entries is not None:
+        if not isinstance(scripts, dict):
+            raise ValueError(f"{context} scripts must contain required public commands")
+        for name, expected in rule.script_entries.items():
+            if scripts.get(name) != expected:
+                raise ValueError(f"{context} scripts.{name} must be {expected!r}")
+
+    engines = manifest.get("engines")
+    if rule.engines is not None:
+        if not isinstance(engines, dict):
+            raise ValueError(f"{context} engines must contain required runtime ranges")
+        for name, expected in rule.engines.items():
+            if engines.get(name) != expected:
+                raise ValueError(f"{context} engines.{name} must be {expected!r}")
+
+
 def validate_package(repo: Path, npm: str, rule: PackageRule) -> int:
     package_dir = repo / rule.directory
     manifest = load_json(package_dir / "package.json")
@@ -187,6 +301,7 @@ def validate_package(repo: Path, npm: str, rule: PackageRule) -> int:
     version = manifest.get("version")
     if not isinstance(version, str) or not version:
         raise ValueError(f"{rule.directory}/package.json must contain a non-empty version")
+    validate_manifest_public_surface(rule, manifest)
 
     report = run_npm_pack(npm, package_dir)
     if report.get("name") != rule.name:
