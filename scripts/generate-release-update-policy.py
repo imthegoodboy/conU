@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -12,7 +13,7 @@ import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import quote, urlparse, urlunparse
 
 
@@ -28,6 +29,8 @@ MAX_SOURCE_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_SOURCE_BYTES = 10 * 1024 * 1024 * 1024
 UPDATE_POLICY_SCHEMA = "conu.releaseUpdatePolicy.v1"
 NPM_REGISTRY = "https://registry.npmjs.org"
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 PLATFORM_ARCHIVES = {
     "windows-x64": "zip",
     "macos-x64": "zip",
@@ -115,7 +118,7 @@ def main() -> int:
     output_dir = args.output_dir.resolve()
     if not dist.exists() or not dist.is_dir():
         raise SystemExit(f"release dist directory does not exist: {dist}")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_directory(output_dir)
 
     policy = build_update_policy(
         dist=dist,
@@ -128,7 +131,7 @@ def main() -> int:
     text = json.dumps(policy, indent=2, sort_keys=True) + "\n"
     assert_output_safe(text)
     output = output_dir / update_policy_filename(version)
-    output.write_text(text, encoding="ascii", newline="\n")
+    write_text_output(output, "release update policy", text, max_bytes=MAX_TEXT_ASSET_BYTES)
     write_sha256_sidecar(output)
     print(f"generated release update policy: {output.name}, {output.name}.sha256")
     return 0
@@ -437,18 +440,22 @@ def release_asset(
     source_budget: SourceBudget,
 ) -> ReleaseAsset:
     path = dist / filename
-    validate_source_file(
+    label = f"release update policy asset {filename}"
+    max_bytes = MAX_TEXT_ASSET_BYTES if is_text_asset(filename) else MAX_SOURCE_ASSET_BYTES
+    asset_file, _size = open_source_file(
         path,
-        f"release update policy asset {filename}",
-        MAX_TEXT_ASSET_BYTES if is_text_asset(filename) else MAX_SOURCE_ASSET_BYTES,
-        source_budget,
+        label,
+        max_bytes=max_bytes,
+        source_budget=source_budget,
     )
-    if is_text_asset(filename):
-        assert_file_text_safe(path)
+    with asset_file:
+        if is_text_asset(filename):
+            assert_open_file_text_safe(asset_file, filename, label, max_bytes=max_bytes)
+        actual_sha256 = sha256_open_file(asset_file, label, max_bytes=max_bytes)
     sha256 = (
-        verify_sha256_sidecar(path, kind, source_budget)
+        verify_sha256_sidecar(path, kind, source_budget, actual_sha256)
         if require_sidecar
-        else sha256_file(path)
+        else actual_sha256
     )
     signature_url = None
     if require_signature:
@@ -466,16 +473,21 @@ def release_asset(
     )
 
 
-def verify_sha256_sidecar(path: Path, label: str, source_budget: SourceBudget) -> str:
+def verify_sha256_sidecar(
+    path: Path,
+    label: str,
+    source_budget: SourceBudget,
+    actual: str,
+) -> str:
     sidecar = path.with_name(f"{path.name}.sha256")
-    validate_source_file(
-        sidecar,
-        f"SHA-256 sidecar for {label} {path.name}",
-        MAX_CHECKSUM_BYTES,
-        source_budget,
-    )
     try:
-        checksum_text = sidecar.read_text(encoding="ascii")
+        checksum_text = read_text_file(
+            sidecar,
+            f"SHA-256 sidecar for {label} {path.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            source_budget=source_budget,
+            encoding="ascii",
+        )
     except UnicodeDecodeError as exc:
         raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
     match = CHECKSUM_RE.fullmatch(checksum_text)
@@ -486,7 +498,6 @@ def verify_sha256_sidecar(path: Path, label: str, source_budget: SourceBudget) -
             f"SHA-256 sidecar for {label} {path.name} names wrong file: {match.group(2)}"
         )
     expected = match.group(1).lower()
-    actual = sha256_file(path)
     if expected != actual:
         raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
     return expected
@@ -494,14 +505,14 @@ def verify_sha256_sidecar(path: Path, label: str, source_budget: SourceBudget) -
 
 def require_detached_signature(path: Path, source_budget: SourceBudget) -> None:
     signature = path.with_name(f"{path.name}.asc")
-    validate_source_file(
-        signature,
-        f"detached signature for release update policy asset {path.name}",
-        MAX_SIGNATURE_BYTES,
-        source_budget,
-    )
     try:
-        signature_text = signature.read_text(encoding="ascii")
+        signature_text = read_text_file(
+            signature,
+            f"detached signature for release update policy asset {path.name}",
+            max_bytes=MAX_SIGNATURE_BYTES,
+            source_budget=source_budget,
+            encoding="ascii",
+        )
     except UnicodeDecodeError as exc:
         raise SystemExit(f"detached signature is not ASCII-armored: {signature.name}") from exc
     if "BEGIN PGP SIGNATURE" not in signature_text:
@@ -524,14 +535,30 @@ def rpm_version(version: str) -> str:
     return version.replace("-", "~").replace("+", "_")
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(
+    path: Path,
+    label: str = "release update policy file",
+    *,
+    max_bytes: int = MAX_SOURCE_ASSET_BYTES,
+) -> str:
+    handle, _size = open_regular_file(path, label, max_bytes=max_bytes)
+    with handle:
+        return sha256_open_file(handle, label, max_bytes=max_bytes)
+
+
+def sha256_open_file(handle: BinaryIO, label: str, *, max_bytes: int) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
+    handle.seek(0)
+    total = 0
+    while True:
+        chunk = handle.read(HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
+        digest.update(chunk)
+    validate_open_regular_file(handle, label, max_bytes=max_bytes)
     return digest.hexdigest()
 
 
@@ -541,27 +568,168 @@ def validate_source_file(
     max_bytes: int,
     source_budget: SourceBudget | None = None,
 ) -> int:
-    if path.is_symlink():
-        raise SystemExit(f"{label} must not be a symlink: {path.name}")
-    try:
-        metadata = path.stat()
-    except OSError as exc:
-        raise SystemExit(f"missing {label}: {path.name}") from exc
-    if not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(f"{label} must be a regular file: {path.name}")
-    size = metadata.st_size
-    if size > max_bytes:
-        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    handle, size = open_source_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        source_budget=source_budget,
+    )
+    handle.close()
+    return size
+
+
+def open_source_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    source_budget: SourceBudget | None = None,
+) -> tuple[BinaryIO, int]:
+    handle, size = open_regular_file(path, label, max_bytes=max_bytes)
     if source_budget is not None:
         source_budget.add(size)
+    return handle, size
+
+
+def open_regular_file(path: Path, label: str, *, max_bytes: int) -> tuple[BinaryIO, int]:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(f"missing {label}: {path.name}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {path.name}") from exc
+        if not path.exists():
+            raise SystemExit(f"missing {label}: {path.name}") from exc
+        if not path.is_file():
+            raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} must be a regular file: {path.name}")
+        size = metadata.st_size
+        if size > max_bytes:
+            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        return os.fdopen(fd, "rb"), size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    source_budget: SourceBudget | None = None,
+) -> bytes:
+    handle, _size = open_source_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        source_budget=source_budget,
+    )
+    with handle:
+        data = handle.read(max_bytes + 1)
+        validate_open_regular_file(handle, label, max_bytes=max_bytes)
+    if len(data) > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    return data
+
+
+def read_text_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    source_budget: SourceBudget | None = None,
+    encoding: str,
+) -> str:
+    return read_regular_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        source_budget=source_budget,
+    ).decode(encoding)
+
+
+def prepare_output_directory(path: Path) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"release update policy output directory must not be a symlink: {path}")
+    if path.exists() and not path.is_dir():
+        raise SystemExit(f"release update policy output path must be a directory: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_output_file(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} output must not be a symlink: {path.name}")
+    if path.exists():
+        try:
+            metadata = path.stat()
+        except OSError as exc:
+            raise SystemExit(f"{label} output could not be inspected: {path.name}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+
+
+def open_output_file(path: Path, label: str) -> BinaryIO:
+    validate_output_file(path, label)
+    flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | OPEN_BINARY | OPEN_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} output must not be a symlink: {path.name}") from exc
+        if path.exists() and not path.is_file():
+            raise SystemExit(f"{label} output must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} output could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+        return os.fdopen(fd, "w+b")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def write_text_output(path: Path, label: str, text: str, *, max_bytes: int) -> None:
+    data = text.encode("ascii")
+    if len(data) > max_bytes:
+        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+    with open_output_file(path, label) as handle:
+        handle.write(data)
+        handle.flush()
+        validate_open_regular_file(handle, label, max_bytes=max_bytes)
+    validate_source_file(path, label, max_bytes=max_bytes)
+
+
+def validate_open_regular_file(handle: BinaryIO, label: str, *, max_bytes: int) -> int:
+    metadata = os.fstat(handle.fileno())
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"{label} must be a regular file")
+    size = metadata.st_size
+    if size > max_bytes:
+        raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
     return size
 
 
 def write_sha256_sidecar(path: Path) -> None:
-    path.with_name(f"{path.name}.sha256").write_text(
-        f"{sha256_file(path)}  {path.name}\n",
-        encoding="ascii",
-        newline="\n",
+    digest = sha256_file(
+        path,
+        f"release update policy output {path.name}",
+        max_bytes=MAX_TEXT_ASSET_BYTES,
+    )
+    write_text_output(
+        path.with_name(f"{path.name}.sha256"),
+        f"SHA-256 sidecar for {path.name}",
+        f"{digest}  {path.name}\n",
+        max_bytes=MAX_CHECKSUM_BYTES,
     )
 
 
@@ -581,15 +749,26 @@ def is_text_asset(filename: str) -> bool:
     return filename.endswith((".rb", ".json", ".yaml", ".yml", ".spec", ".asc"))
 
 
-def assert_file_text_safe(path: Path) -> None:
-    validate_source_file(path, f"text release update policy asset {path.name}", MAX_TEXT_ASSET_BYTES)
+def assert_open_file_text_safe(
+    handle: BinaryIO,
+    filename: str,
+    label: str,
+    *,
+    max_bytes: int,
+) -> None:
+    handle.seek(0)
+    data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise SystemExit(f"{label} is too large: {filename} exceeds {max_bytes} bytes")
     try:
-        text = path.read_text(encoding="utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise SystemExit(f"{path.name} is not UTF-8 text") from exc
+        raise SystemExit(f"{filename} is not UTF-8 text") from exc
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise SystemExit(f"{path.name} contains forbidden text: {forbidden}")
+            raise SystemExit(f"{filename} contains forbidden text: {forbidden}")
+    validate_open_regular_file(handle, label, max_bytes=max_bytes)
+    handle.seek(0)
 
 
 if __name__ == "__main__":

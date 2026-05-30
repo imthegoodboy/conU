@@ -114,6 +114,16 @@ def main() -> int:
                 ),
                 "must not be a symlink",
             )
+            expect_module_failure(
+                "symlinked output directory",
+                lambda: generator.prepare_output_directory(output),
+                "output directory must not be a symlink",
+            )
+            expect_module_failure(
+                "symlinked output file",
+                lambda: generator.validate_output_file(output / POLICY, "release update policy"),
+                "output must not be a symlink",
+            )
 
         missing_signature = temp / "missing-signature"
         shutil.copytree(dist, missing_signature)
