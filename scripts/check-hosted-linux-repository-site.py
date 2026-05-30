@@ -159,6 +159,25 @@ def main() -> int:
             "missing detached signature",
         )
 
+        private_key_signature = temp / "private-key-signature"
+        shutil.copytree(dist, private_key_signature)
+        (private_key_signature / f"{HOSTED_BUNDLE}.asc").write_text(
+            "-----BEGIN PGP SIGNATURE-----\n"
+            "fixture\n"
+            "-----END PGP SIGNATURE-----\n"
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "fixture\n"
+            "-----END PGP PRIVATE KEY BLOCK-----\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_failure(
+            "private key hosted bundle signature",
+            private_key_signature,
+            BASE_URL,
+            "private key material",
+        )
+
         symlink_dist = temp / "symlink-dist"
         if try_symlink(dist, symlink_dist, target_is_directory=True):
             expect_failure_at_output(
