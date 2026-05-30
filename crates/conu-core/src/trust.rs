@@ -436,14 +436,16 @@ fn upsert_manual_trusted_peer(
 
 fn read_pairing_invite(paths: &StatePaths, code: &str) -> Result<PairingInvite, TrustError> {
     let path = paths.pairing_invites_dir.join(format!("{code}.pair"));
-    if !path.exists() {
+    let Some(contents) = read_trust_file(
+        &path,
+        "inspect pairing invitation",
+        "read pairing invitation",
+    )?
+    else {
         return Err(TrustError::InvalidRequest {
             reason: "pairing code is not available locally until relay pairing arrives".to_string(),
         });
-    }
-
-    let contents = fs::read_to_string(&path)
-        .map_err(|error| TrustError::io("read pairing invitation", &path, error))?;
+    };
     let values = parse_key_values(&contents);
 
     Ok(PairingInvite {
@@ -500,8 +502,13 @@ fn write_pairing_invite_with_mode(
             "write pairing invitation",
         )
     } else {
-        fs::write(&path, contents)
-            .map_err(|error| TrustError::io("write pairing invitation", &path, error))
+        write_trust_file(
+            &path,
+            &contents,
+            "create pairing invitation",
+            "open pairing invitation",
+            "write pairing invitation",
+        )
     }
 }
 
@@ -566,13 +573,14 @@ fn write_new_file(
 }
 
 fn read_trust_store(paths: &StatePaths) -> Result<Vec<TrustedPeer>, TrustError> {
-    if !paths.trust_store.exists() {
-        return Ok(Vec::new());
+    match read_trust_file(
+        &paths.trust_store,
+        "inspect trust store",
+        "read trust store",
+    )? {
+        Some(contents) => parse_trust_store(&contents),
+        None => Ok(Vec::new()),
     }
-
-    let contents = fs::read_to_string(&paths.trust_store)
-        .map_err(|error| TrustError::io("read trust store", &paths.trust_store, error))?;
-    parse_trust_store(&contents)
 }
 
 fn write_trust_store(paths: &StatePaths, peers: &[TrustedPeer]) -> Result<(), TrustError> {
@@ -632,8 +640,76 @@ fn write_trust_store(paths: &StatePaths, peers: &[TrustedPeer]) -> Result<(), Tr
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.trust_store, contents)
-        .map_err(|error| TrustError::io("write trust store", &paths.trust_store, error))
+    write_trust_file(
+        &paths.trust_store,
+        &contents,
+        "create trust store",
+        "open trust store",
+        "write trust store",
+    )
+}
+
+fn read_trust_file(
+    path: &Path,
+    inspect_action: &'static str,
+    read_action: &'static str,
+) -> Result<Option<String>, TrustError> {
+    let Some(_metadata) = regular_trust_file_metadata(path, inspect_action)? else {
+        return Ok(None);
+    };
+
+    fs::read_to_string(path)
+        .map(Some)
+        .map_err(|error| TrustError::io(read_action, path, error))
+}
+
+fn write_trust_file(
+    path: &Path,
+    contents: &str,
+    create_action: &'static str,
+    open_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), TrustError> {
+    let mut file = if regular_trust_file_metadata(path, open_action)?.is_some() {
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|error| TrustError::io(open_action, path, error))?
+    } else {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| TrustError::io(create_action, path, error))?
+    };
+
+    file.write_all(contents.as_bytes())
+        .map_err(|error| TrustError::io(write_action, path, error))
+}
+
+fn regular_trust_file_metadata(
+    path: &Path,
+    action: &'static str,
+) -> Result<Option<fs::Metadata>, TrustError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !file_type.is_file() {
+                return Err(TrustError::io(
+                    action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "trust file path is not a regular file",
+                    ),
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(TrustError::io(action, path, error)),
+    }
 }
 
 fn parse_trust_store(contents: &str) -> Result<Vec<TrustedPeer>, TrustError> {
@@ -1275,6 +1351,144 @@ mod tests {
 
         assert_eq!(peer.source, "manual_signed_peer_card");
         assert!(peer.direct_quic_endpoint.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_store_write_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("trust-store-write-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let paths = init.paths;
+        let outside = paths.home.join("outside-trust-store.toml");
+        fs::write(&outside, "outside trust store\n").expect("outside writes");
+        fs::remove_file(&paths.trust_store).expect("trust store removes");
+        symlink(&outside, &paths.trust_store).expect("trust store symlink creates");
+
+        let error = write_trust_store(&paths, &[test_peer("peer_symlink")])
+            .expect_err("trust store symlink should fail closed");
+
+        assert!(error.to_string().contains("open trust store"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            "outside trust store\n"
+        );
+        assert!(
+            fs::symlink_metadata(&paths.trust_store)
+                .expect("trust store symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_store_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("trust-store-read-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let paths = init.paths;
+        let outside = paths.home.join("outside-trust-store.toml");
+        let outside_contents =
+            "# conU trust store\nversion = \"1\"\n\n[[peer]]\npeer_node_id = \"peer_outside\"\n";
+        fs::write(&outside, outside_contents).expect("outside writes");
+        fs::remove_file(&paths.trust_store).expect("trust store removes");
+        symlink(&outside, &paths.trust_store).expect("trust store symlink creates");
+
+        let error = read_trust_store(&paths).expect_err("trust store symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect trust store"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            outside_contents
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pairing_invite_write_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("pairing-invite-write-symlink");
+        let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let paths = StatePaths::from_home(home);
+        let invite_path = paths
+            .pairing_invites_dir
+            .join(format!("{}.pair", invite.code));
+        let outside = paths.home.join("outside-pairing-invite.toml");
+        fs::write(&outside, "outside invite\n").expect("outside writes");
+        fs::remove_file(&invite_path).expect("invite removes");
+        symlink(&outside, &invite_path).expect("invite symlink creates");
+        let mut replacement = invite.clone();
+        replacement.status = PairingStatus::Used;
+
+        let error = write_pairing_invite(&paths, &replacement)
+            .expect_err("pairing invite symlink should fail closed");
+
+        assert!(error.to_string().contains("open pairing invitation"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            "outside invite\n"
+        );
+        assert!(
+            fs::symlink_metadata(&invite_path)
+                .expect("invite symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pairing_invite_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("pairing-invite-read-symlink");
+        let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let paths = StatePaths::from_home(home);
+        let invite_path = paths
+            .pairing_invites_dir
+            .join(format!("{}.pair", invite.code));
+        let outside = paths.home.join("outside-pairing-invite.toml");
+        fs::write(
+            &outside,
+            "version = \"1\"\ncode = \"123456\"\nlocal_node_id = \"node_outside\"\n",
+        )
+        .expect("outside writes");
+        fs::remove_file(&invite_path).expect("invite removes");
+        symlink(&outside, &invite_path).expect("invite symlink creates");
+
+        let error = read_pairing_invite(&paths, &invite.code)
+            .expect_err("pairing invite symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect pairing invitation"));
+        assert!(
+            fs::read_to_string(&outside)
+                .expect("outside reads")
+                .contains("node_outside")
+        );
+    }
+
+    #[cfg(unix)]
+    fn test_peer(peer_node_id: &str) -> TrustedPeer {
+        TrustedPeer {
+            peer_node_id: peer_node_id.to_string(),
+            display_name: peer_node_id.to_string(),
+            status: TrustStatus::Trusted,
+            source: "test".to_string(),
+            pairing_code_hash: "pair_test".to_string(),
+            exchange_public_key_hex: None,
+            relay_endpoint: None,
+            direct_quic_endpoint: None,
+            signing_public_key_hex: None,
+            signature_algorithm: None,
+            signature_key_id: None,
+            signature_hex: None,
+            created_at_unix: 1,
+            updated_at_unix: 1,
+        }
     }
 
     fn test_home(label: &str) -> PathBuf {
