@@ -613,12 +613,14 @@ fn signed_agent_card_from_record(agent: &LocalAgentRecord) -> Result<SignedAgent
 }
 
 fn read_registry(paths: &StatePaths) -> Result<Vec<LocalAgentRecord>, AgentError> {
-    if !paths.agent_registry.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.agent_registry,
+        "inspect agent registry",
+        "read agent registry",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.agent_registry)
-        .map_err(|error| AgentError::io("read agent registry", &paths.agent_registry, error))?;
+    };
     parse_registry(&contents)
 }
 
@@ -675,8 +677,15 @@ fn write_registry(paths: &StatePaths, agents: &[LocalAgentRecord]) -> Result<(),
         }
     }
 
-    fs::write(&paths.agent_registry, contents)
-        .map_err(|error| AgentError::io("write agent registry", &paths.agent_registry, error))
+    state::write_regular_state_file(
+        &paths.agent_registry,
+        &contents,
+        "inspect agent registry",
+        "create agent registry",
+        "open agent registry",
+        "write agent registry",
+    )?;
+    Ok(())
 }
 
 fn parse_registry(contents: &str) -> Result<Vec<LocalAgentRecord>, AgentError> {

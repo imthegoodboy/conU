@@ -456,12 +456,14 @@ fn remote_peer_for_stream_target(
 }
 
 fn read_streams(paths: &StatePaths) -> Result<Vec<StreamRecord>, StreamError> {
-    if !paths.stream_registry.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.stream_registry,
+        "inspect stream registry",
+        "read stream registry",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.stream_registry)
-        .map_err(|error| StreamError::io("read stream registry", &paths.stream_registry, error))?;
+    };
     parse_streams(&contents)
 }
 
@@ -503,8 +505,15 @@ fn write_streams(paths: &StatePaths, streams: &[StreamRecord]) -> Result<(), Str
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.stream_registry, contents)
-        .map_err(|error| StreamError::io("write stream registry", &paths.stream_registry, error))
+    state::write_regular_state_file(
+        &paths.stream_registry,
+        &contents,
+        "inspect stream registry",
+        "create stream registry",
+        "open stream registry",
+        "write stream registry",
+    )?;
+    Ok(())
 }
 
 fn append_event(paths: &StatePaths, event: StreamEvent) -> Result<(), StreamError> {
@@ -516,12 +525,14 @@ fn append_event(paths: &StatePaths, event: StreamEvent) -> Result<(), StreamErro
 }
 
 fn read_events(paths: &StatePaths) -> Result<Vec<StreamEvent>, StreamError> {
-    if !paths.stream_events.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.stream_events,
+        "inspect stream events",
+        "read stream events",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.stream_events)
-        .map_err(|error| StreamError::io("read stream events", &paths.stream_events, error))?;
+    };
     parse_events(&contents)
 }
 
@@ -562,8 +573,15 @@ fn write_events(paths: &StatePaths, events: &[StreamEvent]) -> Result<(), Stream
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.stream_events, contents)
-        .map_err(|error| StreamError::io("write stream events", &paths.stream_events, error))
+    state::write_regular_state_file(
+        &paths.stream_events,
+        &contents,
+        "inspect stream events",
+        "create stream events",
+        "open stream events",
+        "write stream events",
+    )?;
+    Ok(())
 }
 
 fn parse_streams(contents: &str) -> Result<Vec<StreamRecord>, StreamError> {
@@ -844,6 +862,36 @@ mod tests {
         .expect_err("oversized chunk fails");
 
         assert!(error.to_string().contains("backpressure"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_registry_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("registry-symlink");
+        register_agent(&home, "agent.a");
+        register_agent(&home, "agent.b");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-stream-registry");
+        let outside_contents = "outside stream registry\n";
+        fs::write(&outside, outside_contents).expect("outside registry writes");
+        symlink(&outside, &paths.stream_registry).expect("stream registry symlink creates");
+
+        let error = open_stream(Some(home), "agent.a", "agent.b", "message")
+            .expect_err("symlinked stream registry fails closed");
+
+        assert!(error.to_string().contains("inspect stream registry"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside registry reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.stream_registry)
+                .expect("stream registry metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
