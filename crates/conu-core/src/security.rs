@@ -347,16 +347,15 @@ pub fn store_relay_credential_from_paths(
     token: &str,
 ) -> Result<RelayCredentialStatus, SecurityError> {
     validate_relay_token(token)?;
-    fs::create_dir_all(&paths.security_dir).map_err(|error| {
-        SecurityError::io("create security directory", &paths.security_dir, error)
-    })?;
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.security_dir)?;
     let created_at = read_key_values(&paths.relay_credential)
         .ok()
         .and_then(|values| values.get("created_at_unix").cloned())
         .unwrap_or_else(|| current_unix_seconds().to_string());
     let contents = render_relay_credential_file(token, &created_at)?;
 
-    if paths.relay_credential.exists() {
+    if secret_file_exists(&paths.relay_credential)? {
         replace_secret_file(&paths.relay_credential, &contents)?;
     } else {
         write_new_secret_file(&paths.relay_credential, &contents)?;
@@ -397,7 +396,7 @@ pub fn relay_credential_status(
 pub fn read_relay_credential_from_paths(
     paths: &StatePaths,
 ) -> Result<Option<String>, SecurityError> {
-    if !paths.relay_credential.exists() {
+    if !secret_file_exists(&paths.relay_credential)? {
         return Ok(None);
     }
     migrate_relay_credential_to_secret_protection(paths)?;
@@ -934,7 +933,7 @@ pub fn record_replay_id_from_paths(
 }
 
 fn ensure_identity_signing_key(paths: &StatePaths) -> Result<bool, SecurityError> {
-    if paths.identity_signing_key.exists() {
+    if secret_file_exists(&paths.identity_signing_key)? {
         migrate_identity_signing_key_to_os_protection(paths)?;
         return Ok(false);
     }
@@ -950,7 +949,7 @@ fn ensure_identity_signing_key(paths: &StatePaths) -> Result<bool, SecurityError
 }
 
 fn ensure_identity_exchange_key(paths: &StatePaths) -> Result<bool, SecurityError> {
-    if paths.identity_exchange_key.exists() {
+    if secret_file_exists(&paths.identity_exchange_key)? {
         migrate_identity_exchange_key_to_os_protection(paths)?;
         return Ok(false);
     }
@@ -991,7 +990,7 @@ fn generate_identity_exchange_key() -> ExchangeKeyRecord {
 }
 
 fn ensure_storage_key(paths: &StatePaths) -> Result<bool, SecurityError> {
-    if paths.storage_key.exists() {
+    if secret_file_exists(&paths.storage_key)? {
         migrate_storage_key_to_os_protection(paths)?;
         return Ok(false);
     }
@@ -1050,7 +1049,7 @@ fn migrate_identity_exchange_key_to_os_protection(paths: &StatePaths) -> Result<
 }
 
 fn migrate_identity_signing_key_file_to_os_protection(path: &Path) -> Result<(), SecurityError> {
-    if !secret_protection_available() || !path.exists() {
+    if !secret_protection_available() || !secret_file_exists(path)? {
         return Ok(());
     }
     let values = read_key_values(path)?;
@@ -1069,7 +1068,7 @@ fn migrate_identity_signing_key_file_to_os_protection(path: &Path) -> Result<(),
 }
 
 fn migrate_identity_exchange_key_file_to_os_protection(path: &Path) -> Result<(), SecurityError> {
-    if !secret_protection_available() || !path.exists() {
+    if !secret_protection_available() || !secret_file_exists(path)? {
         return Ok(());
     }
     let values = read_key_values(path)?;
@@ -1102,17 +1101,11 @@ fn migrate_storage_key_to_os_protection(paths: &StatePaths) -> Result<(), Securi
 }
 
 fn archive_storage_key(paths: &StatePaths, key: &StorageKeyRecord) -> Result<bool, SecurityError> {
-    fs::create_dir_all(&paths.storage_key_archive_dir).map_err(|error| {
-        SecurityError::io(
-            "create storage key archive directory",
-            &paths.storage_key_archive_dir,
-            error,
-        )
-    })?;
+    state::ensure_state_directory(&paths.storage_key_archive_dir)?;
     let archive_path = paths
         .storage_key_archive_dir
         .join(format!("{}.key", key.key_id));
-    if archive_path.exists() {
+    if secret_file_exists(&archive_path)? {
         migrate_storage_key_file_to_os_protection(&archive_path)?;
         return Ok(false);
     }
@@ -1127,11 +1120,9 @@ fn archive_identity_signing_key(
     key: &SigningKeyRecord,
 ) -> Result<bool, SecurityError> {
     let archive_dir = identity_key_archive_dir(paths);
-    fs::create_dir_all(&archive_dir).map_err(|error| {
-        SecurityError::io("create identity key archive directory", &archive_dir, error)
-    })?;
+    state::ensure_state_directory(&archive_dir)?;
     let archive_path = archive_dir.join(format!("{}.signing.key", key.key_id));
-    if archive_path.exists() {
+    if secret_file_exists(&archive_path)? {
         migrate_identity_signing_key_file_to_os_protection(&archive_path)?;
         return Ok(false);
     }
@@ -1151,11 +1142,9 @@ fn archive_identity_exchange_key(
     key: &ExchangeKeyRecord,
 ) -> Result<bool, SecurityError> {
     let archive_dir = identity_key_archive_dir(paths);
-    fs::create_dir_all(&archive_dir).map_err(|error| {
-        SecurityError::io("create identity key archive directory", &archive_dir, error)
-    })?;
+    state::ensure_state_directory(&archive_dir)?;
     let archive_path = archive_dir.join(format!("{}.exchange.key", key.key_id));
-    if archive_path.exists() {
+    if secret_file_exists(&archive_path)? {
         migrate_identity_exchange_key_file_to_os_protection(&archive_path)?;
         return Ok(false);
     }
@@ -1175,7 +1164,7 @@ fn identity_key_archive_dir(paths: &StatePaths) -> PathBuf {
 }
 
 fn migrate_storage_key_file_to_os_protection(path: &Path) -> Result<(), SecurityError> {
-    if !secret_protection_available() || !path.exists() {
+    if !secret_protection_available() || !secret_file_exists(path)? {
         return Ok(());
     }
     let values = read_key_values(path)?;
@@ -1314,7 +1303,7 @@ fn created_at_value(values: &HashMap<String, String>) -> String {
 fn relay_credential_status_from_paths(
     paths: &StatePaths,
 ) -> Result<RelayCredentialStatus, SecurityError> {
-    if !paths.relay_credential.exists() {
+    if !secret_file_exists(&paths.relay_credential)? {
         return Ok(RelayCredentialStatus {
             configured: false,
             secret_storage_backend: secret_storage_backend().to_string(),
@@ -1339,7 +1328,7 @@ fn relay_credential_status_from_paths(
 }
 
 fn migrate_relay_credential_to_secret_protection(paths: &StatePaths) -> Result<(), SecurityError> {
-    if !secret_protection_available() || !paths.relay_credential.exists() {
+    if !secret_protection_available() || !secret_file_exists(&paths.relay_credential)? {
         return Ok(());
     }
     let values = read_key_values(&paths.relay_credential)?;
@@ -1361,7 +1350,7 @@ fn migrate_relay_credential_to_secret_protection(paths: &StatePaths) -> Result<(
 }
 
 fn delete_secret_references(path: &Path, field: &'static str) -> Result<(), SecurityError> {
-    if !path.exists() {
+    if !secret_file_exists(path)? {
         return Ok(());
     }
     let values = read_key_values(path)?;
@@ -1575,7 +1564,7 @@ fn read_storage_key_for_id(
 }
 
 fn archived_storage_key_files(paths: &StatePaths) -> Result<Vec<PathBuf>, SecurityError> {
-    if !paths.storage_key_archive_dir.exists() {
+    if !security_directory_exists(&paths.storage_key_archive_dir)? {
         return Ok(Vec::new());
     }
 
@@ -1617,7 +1606,7 @@ fn archived_identity_exchange_key_files(paths: &StatePaths) -> Result<Vec<PathBu
 
 fn archived_identity_key_files(paths: &StatePaths) -> Result<Vec<PathBuf>, SecurityError> {
     let archive_dir = identity_key_archive_dir(paths);
-    if !archive_dir.exists() {
+    if !security_directory_exists(&archive_dir)? {
         return Ok(Vec::new());
     }
 
@@ -2819,6 +2808,38 @@ fn ensure_regular_secret_file(path: &Path, action: &'static str) -> Result<(), S
     Ok(())
 }
 
+fn secret_file_exists(path: &Path) -> Result<bool, SecurityError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(SecurityError::InvalidKey {
+                    path: path.to_path_buf(),
+                    reason: "security file path is not a regular file".to_string(),
+                });
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(SecurityError::io("inspect security file", path, error)),
+    }
+}
+
+fn security_directory_exists(path: &Path) -> Result<bool, SecurityError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(SecurityError::InvalidKey {
+                    path: path.to_path_buf(),
+                    reason: "security directory path is not a directory".to_string(),
+                });
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(SecurityError::io("inspect security directory", path, error)),
+    }
+}
+
 fn write_new_file(path: &Path, contents: &str) -> Result<bool, SecurityError> {
     match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(mut file) => {
@@ -3118,6 +3139,29 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn relay_credential_status_rejects_broken_symlink_instead_of_absent() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-credential-broken-symlink");
+        let paths = StatePaths::from_home(home);
+        fs::create_dir_all(&paths.security_dir).expect("security dir created");
+        let missing_target = paths.security_dir.join("missing-relay-token-target");
+        symlink(&missing_target, &paths.relay_credential).expect("credential symlink creates");
+
+        let error = relay_credential_status_from_paths(&paths)
+            .expect_err("credential symlink should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert!(
+            fs::symlink_metadata(&paths.relay_credential)
+                .expect("credential link metadata reads")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn existing_plaintext_secret_files_are_read_and_migrated_when_supported() {
         let home = test_home("plaintext-migration");
@@ -3214,6 +3258,37 @@ mod tests {
         let cleared = clear_relay_credential(Some(home)).expect("relay credential clears");
         assert!(!cleared.configured);
         assert!(!paths.relay_credential.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_rotation_rejects_symlinked_archive_directory() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("identity-archive-dir-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        ensure_security_state_from_paths(&paths).expect("security state initializes");
+        let outside = home.join("outside-identity-archives");
+        fs::create_dir_all(&outside).expect("outside archive directory creates");
+        let archive_dir = identity_key_archive_dir(&paths);
+        symlink(&outside, &archive_dir).expect("identity archive symlink creates");
+
+        let error = rotate_identity_keys_from_paths(&paths)
+            .expect_err("symlinked identity archive directory fails closed");
+
+        assert!(error.to_string().contains("not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside)
+                .expect("outside archive dir reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&archive_dir)
+                .expect("archive link metadata reads")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[cfg(not(windows))]
