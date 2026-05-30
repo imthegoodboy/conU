@@ -63,12 +63,18 @@ def restore_env(original: dict[str, str | None]) -> None:
             os.environ[name] = value
 
 
+def secure_write_text(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    if os.name == "posix":
+        path.chmod(0o600)
+
+
 def write_required_env_file(path: Path, module, value: str) -> None:
     lines = ["# local release secrets for regression"]
     for index, name in enumerate(module.REQUIRED_RELEASE_SECRETS):
         prefix = "export " if index == 0 else ""
         lines.append(f"{prefix}{name}={value}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    secure_write_text(path, "\n".join(lines) + "\n")
 
 
 def run_env_template_tests(module) -> None:
@@ -153,14 +159,26 @@ def run_env_file_tests(module) -> None:
         )
 
         oversized = temp_path / "oversized.env"
-        oversized.write_text(
+        secure_write_text(
+            oversized,
             "NPM_TOKEN=" + ("x" * module.MAX_ENV_FILE_BYTES) + "\n",
-            encoding="utf-8",
         )
         assert_raises(
             lambda: module.load_env_file_values(oversized, module.REQUIRED_RELEASE_SECRETS),
             "too large",
         )
+
+        if os.name == "posix":
+            permissive = temp_path / "permissive.env"
+            secure_write_text(permissive, "NPM_TOKEN=value\n")
+            permissive.chmod(0o644)
+            assert_raises(
+                lambda: module.load_env_file_values(
+                    permissive,
+                    module.REQUIRED_RELEASE_SECRETS,
+                ),
+                "permissions",
+            )
 
         symlink_target = temp_path / "real.env"
         symlink_link = temp_path / "linked.env"
@@ -175,21 +193,21 @@ def run_env_file_tests(module) -> None:
             )
 
         malformed = temp_path / "malformed.env"
-        malformed.write_text(f"{SENSITIVE_SENTINEL}\n", encoding="utf-8")
+        secure_write_text(malformed, f"{SENSITIVE_SENTINEL}\n")
         assert_raises(
             lambda: module.load_env_file_values(malformed, module.REQUIRED_RELEASE_SECRETS),
             "line 1",
         )
 
         unsupported = temp_path / "unsupported.env"
-        unsupported.write_text("UNRELATED_SECRET=value\n", encoding="utf-8")
+        secure_write_text(unsupported, "UNRELATED_SECRET=value\n")
         assert_raises(
             lambda: module.load_env_file_values(unsupported, module.REQUIRED_RELEASE_SECRETS),
             "unsupported key",
         )
 
         duplicate = temp_path / "duplicate.env"
-        duplicate.write_text("NPM_TOKEN=one\nNPM_TOKEN=two\n", encoding="utf-8")
+        secure_write_text(duplicate, "NPM_TOKEN=one\nNPM_TOKEN=two\n")
         assert_raises(
             lambda: module.load_env_file_values(duplicate, module.REQUIRED_RELEASE_SECRETS),
             "duplicates key",
@@ -456,7 +474,7 @@ def run_env_file_main_tests(module) -> None:
                     for name in module.REQUIRED_RELEASE_SECRETS
                     if name != missing_name
                 ]
-                partial_env_file.write_text("\n".join(partial_lines) + "\n", encoding="utf-8")
+                secure_write_text(partial_env_file, "\n".join(partial_lines) + "\n")
                 exit_code, rendered = call_main(
                     [
                         "set-github-release-secrets.py",
