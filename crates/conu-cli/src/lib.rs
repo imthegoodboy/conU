@@ -9277,7 +9277,7 @@ fn read_limited_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>
     let mut file =
         fs::File::open(path).map_err(|error| format!("{label} file could not be read: {error}"))?;
     let path_metadata = update_input_file_metadata(path, label)?;
-    if path_metadata.len() != metadata.len() {
+    if !update_input_file_metadata_matches(&metadata, &path_metadata) {
         return Err(format!(
             "{label} file changed while opening: {}",
             path.display()
@@ -9295,7 +9295,7 @@ fn read_limited_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>
     if opened_metadata.len() > max_bytes {
         return Err(format!("{label} file is too large: {}", path.display()));
     }
-    if opened_metadata.len() != path_metadata.len() {
+    if !update_input_file_metadata_matches(&metadata, &opened_metadata) {
         return Err(format!(
             "{label} file changed while opening: {}",
             path.display()
@@ -9311,13 +9311,51 @@ fn read_limited_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>
     if read as u64 > max_bytes || bytes.len() as u64 > max_bytes {
         return Err(format!("{label} file is too large: {}", path.display()));
     }
-    if bytes.len() as u64 != opened_metadata.len() {
+    let final_path_metadata = update_input_file_metadata(path, label)?;
+    if !update_input_file_metadata_matches(&metadata, &final_path_metadata) {
+        return Err(format!(
+            "{label} file changed while reading: {}",
+            path.display()
+        ));
+    }
+    let final_opened_metadata = file
+        .metadata()
+        .map_err(|error| format!("{label} file metadata could not be read: {error}"))?;
+    if !update_input_file_metadata_matches(&metadata, &final_opened_metadata)
+        || bytes.len() as u64 != final_opened_metadata.len()
+    {
         return Err(format!(
             "{label} file changed while reading: {}",
             path.display()
         ));
     }
     Ok(bytes)
+}
+
+fn update_input_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.len() == current.len() && update_input_file_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn update_input_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    expected.dev() == current.dev() && expected.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn update_input_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
+        && expected.last_write_time() == current.last_write_time()
+        && expected.file_size() == current.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn update_input_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.modified().ok() == current.modified().ok()
 }
 
 fn verify_update_sha256_sidecar(
@@ -10996,6 +11034,7 @@ mod tests {
         let home = temp_home("update-check-symlink-policy");
         let target = home.join("outside-policy-target");
         let policy = home.join("conu-0.1.0-update-policy.json");
+        fs::create_dir_all(&home).expect("home creates");
         fs::write(&target, b"private message contents").expect("target writes");
         symlink(&target, &policy).expect("policy symlink creates");
 
