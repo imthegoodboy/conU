@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fnmatch
 import importlib.util
 import json
@@ -17,7 +18,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urlparse, urlunparse
 
 
@@ -32,6 +33,8 @@ MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CACHE_CONTROL_BYTES = 256
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,253}[A-Za-z0-9]$")
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 FORBIDDEN_SEGMENTS = {
     ".conu",
     ".git",
@@ -445,7 +448,10 @@ def collect_files(
             raise PublicationError("site directory has too many files to publish")
         if is_text_member(relative_path):
             try:
-                assert_no_forbidden_text(path.read_text(encoding="utf-8"), relative_path)
+                assert_no_forbidden_text(
+                    read_text_file(path, relative_path, max_bytes=MAX_FILE_BYTES),
+                    relative_path,
+                )
             except UnicodeDecodeError as exc:
                 raise PublicationError(f"{relative_path} must be UTF-8 text") from exc
         cache_control = cache_control_for_path(f"/{relative_path}", rules)
@@ -502,26 +508,62 @@ def validate_cache_control_value(value: str, label: str) -> None:
 
 
 def read_bounded_ascii_file(path: Path, label: str, *, max_bytes: int) -> str:
-    validate_regular_file(path, label, max_bytes=max_bytes)
-    with path.open("rb") as handle:
-        data = handle.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise PublicationError(f"{label} is larger than {max_bytes} bytes")
+    data = read_regular_file(path, label, max_bytes=max_bytes)
     try:
         return data.decode("ascii")
     except UnicodeDecodeError as exc:
         raise PublicationError(f"{label} must be ASCII") from exc
 
 
+def read_text_file(path: Path, label: str, *, max_bytes: int) -> str:
+    data = read_regular_file(path, label, max_bytes=max_bytes)
+    return data.decode("utf-8")
+
+
+def read_regular_file(path: Path, label: str, *, max_bytes: int) -> bytes:
+    handle, _size = open_regular_file(path, label, max_bytes=max_bytes)
+    with handle:
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise PublicationError(f"{label} is larger than {max_bytes} bytes")
+    return data
+
+
 def validate_regular_file(path: Path, label: str, *, max_bytes: int) -> int:
+    handle, size = open_regular_file(path, label, max_bytes=max_bytes)
+    handle.close()
+    return size
+
+
+def open_regular_file(path: Path, label: str, *, max_bytes: int) -> tuple[BinaryIO, int]:
     if path.is_symlink():
-        raise PublicationError(f"{label} must not be a symlink")
+        raise PublicationError(f"{label} must not be a symlink: {path.name}")
     if not path.exists():
         raise PublicationError(f"missing {label} in site directory")
     try:
-        metadata = path.stat()
+        fd = os.open(path, os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW)
     except OSError as exc:
-        raise PublicationError(f"{label} could not be inspected") from exc
+        if exc.errno == errno.ELOOP:
+            raise PublicationError(f"{label} must not be a symlink: {path.name}") from exc
+        if not path.exists():
+            raise PublicationError(f"missing {label} in site directory") from exc
+        if not path.is_file():
+            raise PublicationError(f"{label} must be a regular file") from exc
+        raise PublicationError(f"{label} could not be opened") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise PublicationError(f"{label} must be a regular file")
+        if metadata.st_size > max_bytes:
+            raise PublicationError(f"{label} is larger than {max_bytes} bytes")
+        return os.fdopen(fd, "rb"), metadata.st_size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def validate_open_regular_file(handle: BinaryIO, label: str, *, max_bytes: int) -> int:
+    metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
         raise PublicationError(f"{label} must be a regular file")
     if metadata.st_size > max_bytes:
@@ -568,20 +610,37 @@ def publish_plan(plan: PublishPlan, args: argparse.Namespace) -> None:
     if args.region.strip():
         global_args.extend(["--region", args.region.strip()])
     for file in plan.files:
-        command = [
-            *aws_command,
-            *global_args,
-            "s3",
-            "cp",
-            str(file.path),
-            file.s3_uri,
-            "--cache-control",
-            file.cache_control,
-            "--content-type",
-            file.content_type,
-            "--only-show-errors",
-        ]
-        subprocess.run(command, check=True)
+        label = f"site file {file.relative_path}"
+        handle, size = open_regular_file(file.path, label, max_bytes=MAX_FILE_BYTES)
+        with handle:
+            if size != file.size:
+                raise PublicationError(f"{label} changed after publication planning")
+            if is_text_member(file.relative_path):
+                try:
+                    assert_no_forbidden_text(
+                        handle.read(MAX_FILE_BYTES + 1).decode("utf-8"),
+                        file.relative_path,
+                    )
+                except UnicodeDecodeError as exc:
+                    raise PublicationError(f"{file.relative_path} must be UTF-8 text") from exc
+                validate_open_regular_file(handle, label, max_bytes=MAX_FILE_BYTES)
+                handle.seek(0)
+            command = [
+                *aws_command,
+                *global_args,
+                "s3",
+                "cp",
+                "-",
+                file.s3_uri,
+                "--cache-control",
+                file.cache_control,
+                "--content-type",
+                file.content_type,
+                "--expected-size",
+                str(file.size),
+                "--only-show-errors",
+            ]
+            subprocess.run(command, stdin=handle, check=True)
 
 
 def parse_aws_cli(raw: str) -> list[str]:
