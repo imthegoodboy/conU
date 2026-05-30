@@ -221,6 +221,9 @@ pub fn process_message_requests_from_paths(
     };
 
     for request_path in pending_message_requests(paths)? {
+        ensure_message_ipc_marker_available(&processed_marker_path(paths, &request_path))?;
+        ensure_message_ipc_marker_available(&rejected_marker_path(paths, &request_path))?;
+
         match process_one_message_request(paths, &request_path) {
             Ok(delivery) => {
                 report.delivered += 1;
@@ -673,9 +676,7 @@ fn write_processed_marker(
             error,
         )
     })?;
-    let marker_path = paths
-        .message_ipc_processed_dir
-        .join(replace_extension(request_path, "meta"));
+    let marker_path = processed_marker_path(paths, request_path);
     let contents = format!(
         "version = \"{}\"\ntype = \"send_message\"\nrequest_id = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nstatus = \"delivered_local\"\npayload_len = {}\npayload_displayed = false\n",
         REQUEST_VERSION,
@@ -686,9 +687,12 @@ fn write_processed_marker(
         delivery.payload_bytes
     );
 
-    fs::write(&marker_path, contents).map_err(|error| {
-        MessageError::io("write message IPC processed marker", &marker_path, error)
-    })
+    write_new_file_with_action(
+        &marker_path,
+        &contents,
+        "create message IPC processed marker",
+        "write message IPC processed marker",
+    )
 }
 
 fn reject_message_request(
@@ -703,13 +707,38 @@ fn reject_message_request(
             error,
         )
     })?;
-    let error_path = paths
-        .message_ipc_rejected_dir
-        .join(replace_extension(request_path, "error"));
-    fs::write(&error_path, format!("{error}\n")).map_err(|error| {
-        MessageError::io("write message IPC rejection reason", &error_path, error)
-    })?;
+    let error_path = rejected_marker_path(paths, request_path);
+    write_new_file_with_action(
+        &error_path,
+        &format!("{error}\n"),
+        "create message IPC rejection reason",
+        "write message IPC rejection reason",
+    )?;
     remove_file_if_exists(request_path)
+}
+
+fn processed_marker_path(paths: &StatePaths, request_path: &Path) -> PathBuf {
+    paths
+        .message_ipc_processed_dir
+        .join(replace_extension(request_path, "meta"))
+}
+
+fn rejected_marker_path(paths: &StatePaths, request_path: &Path) -> PathBuf {
+    paths
+        .message_ipc_rejected_dir
+        .join(replace_extension(request_path, "error"))
+}
+
+fn ensure_message_ipc_marker_available(path: &Path) -> Result<(), MessageError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(MessageError::io(
+            "reserve message IPC marker",
+            path,
+            io::Error::new(io::ErrorKind::AlreadyExists, "marker already exists"),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(MessageError::io("inspect message IPC marker", path, error)),
+    }
 }
 
 fn read_inbox_entry(path: &Path) -> Result<InboxEntry, MessageError> {
@@ -946,14 +975,23 @@ fn append_message_log(
 }
 
 fn write_new_file(path: &Path, contents: &str) -> Result<(), MessageError> {
+    write_new_file_with_action(path, contents, "create message file", "write message file")
+}
+
+fn write_new_file_with_action(
+    path: &Path,
+    contents: &str,
+    create_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), MessageError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|error| MessageError::io("create message file", path, error))?;
+        .map_err(|error| MessageError::io(create_action, path, error))?;
 
     file.write_all(contents.as_bytes())
-        .map_err(|error| MessageError::io("write message file", path, error))
+        .map_err(|error| MessageError::io(write_action, path, error))
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), MessageError> {
@@ -1323,6 +1361,76 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn processed_message_marker_collision_fails_before_delivery() {
+        let home = test_home("processed-marker-collision");
+        register_agent(&home, "agent.sender");
+        register_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        let submission =
+            submit_local_message(Some(home.clone()), message).expect("message submits");
+        let paths = StatePaths::from_home(home.clone());
+        let marker_path = processed_marker_path(&paths, &submission.request_path);
+        fs::write(&marker_path, "existing processed marker").expect("existing marker writes");
+
+        let error = process_message_requests(Some(home.clone()))
+            .expect_err("existing processed marker should fail closed");
+
+        assert!(error.to_string().contains("reserve message IPC marker"));
+        assert_eq!(
+            fs::read_to_string(&marker_path).expect("existing marker reads"),
+            "existing processed marker"
+        );
+        assert!(submission.request_path.exists());
+        assert!(
+            list_agent_inbox(Some(home), "agent.receiver")
+                .expect("inbox reads")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rejected_message_marker_collision_fails_before_processing() {
+        let home = test_home("rejected-marker-collision");
+        register_agent(&home, "agent.sender");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"secret private message contents".to_vec()),
+        )
+        .expect("message valid");
+        let submission =
+            submit_local_message(Some(home.clone()), message).expect("message submits");
+        let paths = StatePaths::from_home(home.clone());
+        let marker_path = rejected_marker_path(&paths, &submission.request_path);
+        fs::write(&marker_path, "existing rejection reason").expect("existing marker writes");
+
+        let error = process_message_requests(Some(home.clone()))
+            .expect_err("existing rejection marker should fail closed");
+
+        assert!(error.to_string().contains("reserve message IPC marker"));
+        assert_eq!(
+            fs::read_to_string(&marker_path).expect("existing marker reads"),
+            "existing rejection reason"
+        );
+        assert!(submission.request_path.exists());
+
+        fs::remove_file(&marker_path).expect("existing marker removes");
+        let report = process_message_requests(Some(home.clone()))
+            .expect("request processes after collision is cleared");
+        let replacement = fs::read_to_string(&marker_path).expect("new rejection reason reads");
+
+        assert_eq!(report.rejected, 1);
+        assert!(replacement.contains("recipient is not a registered local agent"));
+        assert!(!replacement.contains("secret private message contents"));
+        assert!(!submission.request_path.exists());
     }
 
     #[test]
