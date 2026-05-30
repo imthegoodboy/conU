@@ -7273,7 +7273,9 @@ fn apply_release_update_artifact(args: &UpdateApplyArgs) -> Result<UpdateApplyRe
     }
 
     let (binaries, backup_dir, update_applied) = if args.confirm {
-        let backup_dir = update_apply_backup_dir(&args.install_dir, &validated.report.version)?;
+        plan_staged_update_binaries(&staged.binaries, &args.install_dir, None, true)?;
+        let backup_dir =
+            create_update_apply_backup_dir(&args.install_dir, &validated.report.version)?;
         let reports =
             install_staged_update_binaries(&staged.binaries, &args.install_dir, Some(&backup_dir))?;
         (reports, Some(backup_dir), true)
@@ -7815,15 +7817,44 @@ fn update_binary_filename(name: &str) -> String {
     format!("{}{}", name, env::consts::EXE_SUFFIX)
 }
 
-fn update_apply_backup_dir(install_dir: &Path, version: &str) -> Result<PathBuf, String> {
+fn create_update_apply_backup_dir(install_dir: &Path, version: &str) -> Result<PathBuf, String> {
     validate_public_asset_name(version, "release update version")?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    Ok(install_dir
-        .join(".conu-update-backups")
-        .join(format!("{version}-{nonce}")))
+    create_update_apply_backup_dir_with_nonce(install_dir, version, nonce)
+}
+
+fn create_update_apply_backup_dir_with_nonce(
+    install_dir: &Path,
+    version: &str,
+    nonce: u128,
+) -> Result<PathBuf, String> {
+    validate_public_asset_name(version, "release update version")?;
+    let backup_root = install_dir.join(".conu-update-backups");
+    fs::create_dir_all(&backup_root).map_err(|error| {
+        format!(
+            "could not create release update backup root {}: {error}",
+            backup_root.display()
+        )
+    })?;
+
+    for attempt in 0..1024 {
+        let backup_dir = backup_root.join(format!("{version}-{nonce}-{attempt}"));
+        match fs::create_dir(&backup_dir) {
+            Ok(()) => return Ok(backup_dir),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "could not create release update backup directory {}: {error}",
+                    backup_dir.display()
+                ));
+            }
+        }
+    }
+
+    Err("could not create unique release update backup directory".to_string())
 }
 
 fn plan_staged_update_binaries(
@@ -10888,6 +10919,24 @@ mod tests {
         );
         assert!(!output.stdout.contains("old conu binary"));
         assert!(!output.stdout.contains("fixture binary bytes"));
+    }
+
+    #[test]
+    fn update_apply_backup_dir_skips_existing_candidate() {
+        let home = temp_home("update-apply-backup-dir");
+        let install_dir = home.join("install-bin");
+        let stale = install_dir.join(".conu-update-backups").join("0.1.0-42-0");
+        fs::create_dir_all(&stale).expect("stale backup dir creates");
+
+        let created = create_update_apply_backup_dir_with_nonce(&install_dir, "0.1.0", 42)
+            .expect("unique backup dir creates");
+
+        assert_ne!(created, stale);
+        assert_eq!(
+            created.file_name().and_then(|value| value.to_str()),
+            Some("0.1.0-42-1")
+        );
+        assert!(created.is_dir());
     }
 
     #[test]
