@@ -134,6 +134,26 @@ def main() -> int:
             "missing detached signature",
         )
 
+        private_key_signature = temp / "private-key-signature"
+        shutil.copytree(dist, private_key_signature)
+        (
+            private_key_signature / f"conu-{VERSION}-linux-x64.tar.gz.asc"
+        ).write_text(
+            "-----BEGIN PGP SIGNATURE-----\n"
+            "fixture\n"
+            "-----END PGP SIGNATURE-----\n"
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            "fixture\n"
+            "-----END PGP PRIVATE KEY BLOCK-----\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_failure(
+            "private key Linux archive signature",
+            private_key_signature,
+            "private key material",
+        )
+
         bad_checksum_name = temp / "bad-checksum-name"
         shutil.copytree(dist, bad_checksum_name)
         archive = bad_checksum_name / f"conu-{VERSION}-windows-x64.zip"
