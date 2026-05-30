@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import hashlib
 import os
 import re
@@ -15,6 +16,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 from linux_gpg_common import (
     add_fingerprint_env_argument,
@@ -31,6 +33,8 @@ HASH_CHUNK_BYTES = 1024 * 1024
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
 RPM_PACKAGE_RE = re.compile(r"^conu-[0-9A-Za-z.+_~-]+-1\.(x86_64|aarch64)\.rpm$")
 SIGNATURE_OUTPUT_RE = re.compile(r"(signature|pgp|rsa|dsa|openpgp)", re.IGNORECASE)
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
 @dataclass
@@ -161,14 +165,14 @@ def rpm_package_assets(dist: Path) -> tuple[Path, ...]:
 
 def verify_sha256_sidecar(path: Path, label: str) -> str:
     sidecar = path.with_name(f"{path.name}.sha256")
-    validate_regular_file(
-        sidecar,
-        f"SHA-256 sidecar for {label} {path.name}",
-        max_bytes=MAX_CHECKSUM_BYTES,
-        allow_empty=False,
-    )
     try:
-        checksum_text = sidecar.read_text(encoding="ascii")
+        checksum_text = read_text_file(
+            sidecar,
+            f"SHA-256 sidecar for {label} {path.name}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+            allow_empty=False,
+            encoding="ascii",
+        )
     except UnicodeDecodeError as exc:
         raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
     match = CHECKSUM_RE.fullmatch(checksum_text)
@@ -178,7 +182,12 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
     if named_path != path.name:
         raise SystemExit(f"SHA-256 sidecar for {label} {path.name} names wrong file: {named_path}")
     expected = match.group(1).lower()
-    actual = sha256_file(path)
+    actual = sha256_file(
+        path,
+        f"{label} {path.name}",
+        max_bytes=MAX_RPM_PACKAGE_BYTES,
+        allow_empty=False,
+    )
     if expected != actual:
         raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
     return expected
@@ -193,7 +202,12 @@ def write_sha256_sidecar(path: Path) -> None:
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=True,
         )
-    text = f"{sha256_file(path)}  {path.name}\n"
+    digest = sha256_file(
+        path,
+        f"RPM package asset {path.name}",
+        max_bytes=MAX_RPM_PACKAGE_BYTES,
+    )
+    text = f"{digest}  {path.name}\n"
     temp_path = temporary_sibling_path(sidecar)
     try:
         temp_path.write_text(text, encoding="ascii", newline="\n")
@@ -240,20 +254,96 @@ def validate_regular_file(
     max_bytes: int,
     allow_empty: bool,
 ) -> int:
+    handle, size = open_regular_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        allow_empty=allow_empty,
+    )
+    handle.close()
+    return size
+
+
+def open_regular_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> tuple[BinaryIO, int]:
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(f"missing {label}: {path.name}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
     try:
-        metadata = path.stat()
+        fd = os.open(path, flags)
     except OSError as exc:
-        raise SystemExit(f"missing {label}: {path.name}") from exc
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {path.name}") from exc
+        if not path.exists():
+            raise SystemExit(f"missing {label}: {path.name}") from exc
+        if not path.is_file():
+            raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} must be a regular file: {path.name}")
+        size = metadata.st_size
+        if not allow_empty and size == 0:
+            raise SystemExit(f"{label} must not be empty: {path.name}")
+        if size > max_bytes:
+            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        return os.fdopen(fd, "rb"), size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def validate_open_regular_file(
+    handle: BinaryIO,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> int:
+    metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(f"{label} must be a regular file: {path.name}")
+        raise SystemExit(f"{label} must be a regular file")
     size = metadata.st_size
     if not allow_empty and size == 0:
-        raise SystemExit(f"{label} must not be empty: {path.name}")
+        raise SystemExit(f"{label} must not be empty")
     if size > max_bytes:
-        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
     return size
+
+
+def read_text_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+    encoding: str,
+) -> str:
+    handle, _size = open_regular_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        allow_empty=allow_empty,
+    )
+    with handle:
+        data = handle.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        validate_open_regular_file(
+            handle,
+            label,
+            max_bytes=max_bytes,
+            allow_empty=allow_empty,
+        )
+    return data.decode(encoding)
 
 
 def temporary_sibling_path(path: Path) -> Path:
@@ -266,14 +356,52 @@ def temporary_sibling_path(path: Path) -> Path:
         return Path(handle.name)
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(
+    path: Path,
+    label: str = "RPM package asset",
+    *,
+    max_bytes: int = MAX_RPM_PACKAGE_BYTES,
+    allow_empty: bool = False,
+) -> str:
+    handle, _size = open_regular_file(
+        path,
+        label,
+        max_bytes=max_bytes,
+        allow_empty=allow_empty,
+    )
+    with handle:
+        return sha256_open_file(
+            handle,
+            label,
+            max_bytes=max_bytes,
+            allow_empty=allow_empty,
+        )
+
+
+def sha256_open_file(
+    handle: BinaryIO,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
+    handle.seek(0)
+    total = 0
+    while True:
+        chunk = handle.read(HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
+        digest.update(chunk)
+    validate_open_regular_file(
+        handle,
+        label,
+        max_bytes=max_bytes,
+        allow_empty=allow_empty,
+    )
     return digest.hexdigest()
 
 

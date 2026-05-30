@@ -290,6 +290,11 @@ def run_source_file_preflights() -> None:
                 "must not be a symlink",
                 "RPM signing symlink source",
             )
+            expect_action_failure(
+                lambda: signer.sha256_file(linked_source),
+                "must not be a symlink",
+                "RPM signing symlink hash source",
+            )
 
         symlink_sidecar = temp / "symlink-sidecar"
         symlink_sidecar.mkdir()
