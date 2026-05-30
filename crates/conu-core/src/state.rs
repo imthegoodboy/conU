@@ -591,6 +591,22 @@ pub(crate) fn rewrite_existing_regular_state_file(
         .map_err(|error| StateError::io(write_action, path, error))
 }
 
+pub(crate) fn remove_existing_regular_state_file(
+    path: &Path,
+    inspect_action: &'static str,
+    remove_action: &'static str,
+) -> Result<(), StateError> {
+    if regular_state_file_metadata(path, inspect_action)?.is_none() {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    }
+
+    fs::remove_file(path).map_err(|error| StateError::io(remove_action, path, error))
+}
+
 pub(crate) fn append_regular_state_file(
     path: &Path,
     contents: &str,
@@ -894,6 +910,39 @@ mod tests {
     }
 
     #[test]
+    fn remove_existing_regular_state_file_removes_regular_file() {
+        let home = test_home("remove-regular-state-file");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("state.toml");
+        fs::write(&path, "version = \"1\"\n").expect("state file writes");
+
+        remove_existing_regular_state_file(&path, "inspect removable state", "remove state file")
+            .expect("regular state file removes");
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_existing_regular_state_file_rejects_missing_file() {
+        let home = test_home("remove-missing-state-file");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("missing.toml");
+
+        let error = remove_existing_regular_state_file(
+            &path,
+            "inspect removable missing state",
+            "remove missing state file",
+        )
+        .expect_err("missing state file should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("inspect removable missing state")
+        );
+    }
+
+    #[test]
     fn init_rejects_directory_required_state_file() {
         let home = test_home("directory-config");
         let report = init_state(Some(home.clone())).expect("state initializes");
@@ -974,6 +1023,38 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&outside).expect("outside reads"),
             outside_contents
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_existing_regular_state_file_rejects_symlink_without_deleting_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("remove-state-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let target = home.join("outside-state.toml");
+        let link = home.join("linked-state.toml");
+        fs::write(&target, "version = \"1\"\n").expect("outside state writes");
+        symlink(&target, &link).expect("state symlink creates");
+
+        let error = remove_existing_regular_state_file(
+            &link,
+            "inspect symlinked state removal",
+            "remove symlinked state",
+        )
+        .expect_err("symlinked state file should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("outside state reads"),
+            "version = \"1\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("state symlink metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 

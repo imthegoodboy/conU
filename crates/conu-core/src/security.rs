@@ -369,17 +369,13 @@ pub fn clear_relay_credential(
     home_override: Option<PathBuf>,
 ) -> Result<RelayCredentialStatus, SecurityError> {
     let paths = StatePaths::resolve(home_override)?;
-    delete_secret_references(&paths.relay_credential, "token")?;
-    match fs::remove_file(&paths.relay_credential) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(SecurityError::io(
-                "remove relay credential",
-                &paths.relay_credential,
-                error,
-            ));
-        }
+    if secret_file_exists(&paths.relay_credential)? {
+        delete_secret_references(&paths.relay_credential, "token")?;
+        remove_existing_secret_file(
+            &paths.relay_credential,
+            "inspect relay credential removal",
+            "remove relay credential",
+        )?;
     }
     relay_credential_status_from_paths(&paths)
 }
@@ -542,9 +538,11 @@ pub fn retire_unused_storage_keys_from_paths(
             continue;
         }
 
-        fs::remove_file(&archive_path).map_err(|error| {
-            SecurityError::io("remove unused archived storage key", &archive_path, error)
-        })?;
+        state::remove_existing_regular_state_file(
+            &archive_path,
+            "inspect archived storage key removal",
+            "remove unused archived storage key",
+        )?;
         report.retired_storage_keys += 1;
     }
 
@@ -583,9 +581,11 @@ pub fn retire_archived_identity_keys_from_paths(
             continue;
         }
 
-        fs::remove_file(&archive_path).map_err(|error| {
-            SecurityError::io("remove archived identity key", &archive_path, error)
-        })?;
+        state::remove_existing_regular_state_file(
+            &archive_path,
+            "inspect archived identity key removal",
+            "remove archived identity key",
+        )?;
         report.retired_identity_keys += 1;
     }
     report.old_key_decrypt_compatibility_retired = report.retired_identity_keys > 0;
@@ -2857,6 +2857,15 @@ fn ensure_replaceable_secret_file(path: &Path) -> Result<(), SecurityError> {
     ensure_regular_secret_file(path, "inspect replacement security file")
 }
 
+fn remove_existing_secret_file(
+    path: &Path,
+    inspect_action: &'static str,
+    remove_action: &'static str,
+) -> Result<(), SecurityError> {
+    ensure_regular_secret_file(path, inspect_action)?;
+    fs::remove_file(path).map_err(|error| SecurityError::io(remove_action, path, error))
+}
+
 fn ensure_regular_secret_file(path: &Path, action: &'static str) -> Result<(), SecurityError> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| SecurityError::io(action, path, error))?;
@@ -3218,6 +3227,67 @@ mod tests {
         assert!(
             fs::symlink_metadata(&paths.relay_credential)
                 .expect("credential link metadata reads")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_credential_clear_rejects_symlink_without_deleting_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-credential-clear-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.security_dir).expect("security dir created");
+        let target = paths.security_dir.join("outside-relay-token-target");
+        let target_contents = "kind = \"relay_token\"\ncontents_displayed = false\n";
+        fs::write(&target, target_contents).expect("target writes");
+        symlink(&target, &paths.relay_credential).expect("credential symlink creates");
+
+        let error = clear_relay_credential(Some(home))
+            .expect_err("credential symlink clear should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.relay_credential)
+                .expect("credential link metadata reads")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_file_removal_rejects_symlink_without_deleting_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("remove-secret-symlink");
+        fs::create_dir_all(&home).expect("home directory created");
+        let target = home.join("outside-secret-target");
+        let link = home.join("secret.key");
+        fs::write(&target, "existing secret").expect("target writes");
+        symlink(&target, &link).expect("symlink creates");
+
+        let error = remove_existing_secret_file(
+            &link,
+            "inspect symlinked security removal",
+            "remove symlinked security file",
+        )
+        .expect_err("symlinked secret removal should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "existing secret"
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("secret link metadata reads")
                 .file_type()
                 .is_symlink()
         );
