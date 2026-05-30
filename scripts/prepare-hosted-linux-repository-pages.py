@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
+import os
 import re
 import stat
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 from urllib.parse import urlparse
 
 
@@ -101,6 +104,8 @@ FORBIDDEN_TEXT = (
 )
 TEXT_SUFFIXES = (".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256")
 TEXT_MEMBER_NAMES = {"_headers"}
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
 
 
 def main() -> int:
@@ -197,7 +202,11 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
         max_bytes=MAX_CHECKSUM_BYTES,
     )
     try:
-        checksum_text = sidecar.read_text(encoding="ascii")
+        checksum_text = read_ascii_file(
+            sidecar,
+            f"SHA-256 sidecar for {label}",
+            max_bytes=MAX_CHECKSUM_BYTES,
+        )
     except UnicodeDecodeError as exc:
         raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
     match = CHECKSUM_RE.fullmatch(checksum_text)
@@ -206,7 +215,7 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
     if match.group(2) != path.name:
         raise SystemExit(f"SHA-256 sidecar for {label} names wrong file: {match.group(2)}")
     expected = match.group(1).lower()
-    actual = sha256_file(path)
+    actual = sha256_file(path, label, max_bytes=MAX_SITE_ZIP_BYTES)
     if expected != actual:
         raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
     return expected
@@ -220,7 +229,11 @@ def require_detached_signature(path: Path) -> None:
         max_bytes=MAX_SIGNATURE_BYTES,
     )
     try:
-        signature_text = signature.read_text(encoding="ascii")
+        signature_text = read_ascii_file(
+            signature,
+            "detached signature for hosted Linux repository site",
+            max_bytes=MAX_SIGNATURE_BYTES,
+        )
     except UnicodeDecodeError as exc:
         raise SystemExit(f"detached signature is not ASCII-armored: {signature.name}") from exc
     if "BEGIN PGP SIGNATURE" not in signature_text:
@@ -238,18 +251,45 @@ def prepare_output_dir(output_dir: Path) -> None:
 
 
 def validate_regular_file(path: Path, label: str, *, max_bytes: int) -> int:
+    handle, size = open_regular_file(path, label, max_bytes=max_bytes)
+    handle.close()
+    return size
+
+
+def open_regular_file(path: Path, label: str, *, max_bytes: int) -> tuple[BinaryIO, int]:
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
     if not path.exists():
         raise SystemExit(f"missing {label}: {path.name}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
     try:
-        metadata = path.stat()
+        fd = os.open(path, flags)
     except OSError as exc:
-        raise SystemExit(f"{label} could not be inspected: {path.name}") from exc
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {path.name}") from exc
+        if not path.exists():
+            raise SystemExit(f"missing {label}: {path.name}") from exc
+        if not path.is_file():
+            raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} must be a regular file: {path.name}")
+        if metadata.st_size > max_bytes:
+            raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+        return os.fdopen(fd, "rb"), metadata.st_size
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def validate_open_regular_file(handle: BinaryIO, label: str, *, max_bytes: int) -> int:
+    metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
-        raise SystemExit(f"{label} must be a regular file: {path.name}")
+        raise SystemExit(f"{label} must be a regular file")
     if metadata.st_size > max_bytes:
-        raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+        raise SystemExit(f"{label} is too large for Pages deployment")
     return metadata.st_size
 
 
@@ -257,23 +297,34 @@ def read_site_members(site_zip: Path) -> dict[str, bytes]:
     members: dict[str, bytes] = {}
     total_uncompressed = 0
     try:
-        with zipfile.ZipFile(site_zip) as archive:
-            infos = archive.infolist()
-            if len(infos) > MAX_SITE_MEMBERS:
-                raise SystemExit(f"{site_zip.name} has too many members for Pages deployment")
-            for info in infos:
-                name = normalize_zip_path(info.filename)
-                if not validate_zip_member_for_read(site_zip.name, info, name):
-                    continue
-                if name in members:
-                    raise SystemExit(f"{site_zip.name} contains duplicate zip member: {name}")
-                total_uncompressed += info.file_size
-                if total_uncompressed > MAX_SITE_TOTAL_UNCOMPRESSED_BYTES:
-                    raise SystemExit(
-                        f"{site_zip.name} uncompressed contents exceed "
-                        f"{MAX_SITE_TOTAL_UNCOMPRESSED_BYTES} bytes"
-                    )
-                members[name] = archive.read(info)
+        site_file, _size = open_regular_file(
+            site_zip,
+            "hosted Linux repository site ZIP",
+            max_bytes=MAX_SITE_ZIP_BYTES,
+        )
+        with site_file:
+            with zipfile.ZipFile(site_file) as archive:
+                infos = archive.infolist()
+                if len(infos) > MAX_SITE_MEMBERS:
+                    raise SystemExit(f"{site_zip.name} has too many members for Pages deployment")
+                for info in infos:
+                    name = normalize_zip_path(info.filename)
+                    if not validate_zip_member_for_read(site_zip.name, info, name):
+                        continue
+                    if name in members:
+                        raise SystemExit(f"{site_zip.name} contains duplicate zip member: {name}")
+                    total_uncompressed += info.file_size
+                    if total_uncompressed > MAX_SITE_TOTAL_UNCOMPRESSED_BYTES:
+                        raise SystemExit(
+                            f"{site_zip.name} uncompressed contents exceed "
+                            f"{MAX_SITE_TOTAL_UNCOMPRESSED_BYTES} bytes"
+                        )
+                    members[name] = archive.read(info)
+                validate_open_regular_file(
+                    site_file,
+                    "hosted Linux repository site ZIP",
+                    max_bytes=MAX_SITE_ZIP_BYTES,
+                )
     except zipfile.BadZipFile as exc:
         raise SystemExit(f"{site_zip.name} is not a readable zip archive") from exc
     return members
@@ -545,7 +596,14 @@ def extract_members(output_dir: Path, members: dict[str, bytes]) -> None:
         if not path.is_relative_to(output_dir):
             raise SystemExit(f"hosted repository site extraction escaped output directory: {name}")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(members[name])
+        if not path.parent.resolve().is_relative_to(output_dir):
+            raise SystemExit(f"hosted repository site extraction escaped output directory: {name}")
+        write_bytes_output(
+            path,
+            "hosted repository Pages file",
+            members[name],
+            max_bytes=MAX_SITE_MEMBER_BYTES,
+        )
 
 
 def assert_no_forbidden_text(data: bytes, label: str) -> None:
@@ -562,14 +620,91 @@ def is_text_member(name: str) -> bool:
     return name in TEXT_MEMBER_NAMES or name.endswith(TEXT_SUFFIXES)
 
 
-def sha256_file(path: Path) -> str:
+def validate_output_file(path: Path, label: str) -> None:
+    if path.is_symlink():
+        raise SystemExit(f"{label} output must not be a symlink: {path.name}")
+    if path.exists():
+        try:
+            metadata = path.stat()
+        except OSError as exc:
+            raise SystemExit(f"{label} output could not be inspected: {path.name}") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+
+
+def open_output_file(path: Path, label: str) -> BinaryIO:
+    validate_output_file(path, label)
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | OPEN_BINARY | OPEN_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} output must not be a symlink: {path.name}") from exc
+        if exc.errno == errno.EEXIST:
+            raise SystemExit(f"{label} output already exists: {path.name}") from exc
+        if path.exists() and not path.is_file():
+            raise SystemExit(f"{label} output must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} output could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} output must be a regular file: {path.name}")
+        return os.fdopen(fd, "w+b")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def write_bytes_output(path: Path, label: str, data: bytes, *, max_bytes: int) -> None:
+    if len(data) > max_bytes:
+        raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+    with open_output_file(path, label) as handle:
+        handle.write(data)
+        handle.flush()
+        validate_open_regular_file(handle, label, max_bytes=max_bytes)
+    validate_regular_file(path, label, max_bytes=max_bytes)
+
+
+def read_ascii_file(path: Path, label: str, *, max_bytes: int) -> str:
+    data = read_regular_file(path, label, max_bytes=max_bytes)
+    return data.decode("ascii")
+
+
+def read_regular_file(path: Path, label: str, *, max_bytes: int) -> bytes:
+    handle, _size = open_regular_file(path, label, max_bytes=max_bytes)
+    with handle:
+        data = handle.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+    return data
+
+
+def sha256_file(
+    path: Path,
+    label: str = "hosted repository Pages file",
+    *,
+    max_bytes: int = MAX_SITE_ZIP_BYTES,
+) -> str:
+    handle, _size = open_regular_file(path, label, max_bytes=max_bytes)
+    with handle:
+        return sha256_open_file(handle, label, max_bytes=max_bytes)
+
+
+def sha256_open_file(handle: BinaryIO, label: str, *, max_bytes: int) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(HASH_CHUNK_BYTES)
-            if not chunk:
-                break
-            digest.update(chunk)
+    if handle.writable():
+        handle.flush()
+    handle.seek(0)
+    total = 0
+    while True:
+        chunk = handle.read(HASH_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise SystemExit(f"{label} is too large for Pages deployment")
+        digest.update(chunk)
+    handle.seek(0, os.SEEK_END)
     return digest.hexdigest()
 
 
