@@ -32,6 +32,21 @@ const ABUSE_THRESHOLD_POLICY_FILE_VERSION: &str = "1";
 const MAILBOX_RETENTION_POLICY_FILE_VERSION: &str = "1";
 const HOSTED_FLEET_DASHBOARD_FILE_VERSION: &str = "1";
 
+fn read_required_regular_cli_file(path: &Path, label: &'static str) -> Result<String, String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| format!("inspect {label} file: {error}"))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err(format!("inspect {label} file: path is not a regular file"));
+    }
+
+    let mut file = fs::File::open(path).map_err(|error| format!("read {label} file: {error}"))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|error| format!("read {label} file: {error}"))?;
+    Ok(contents)
+}
+
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
@@ -6853,8 +6868,7 @@ fn merged_abuse_thresholds(
 }
 
 fn load_abuse_threshold_policy_file(path: &Path) -> Result<AbuseThresholds, String> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| format!("read abuse threshold policy file: {error}"))?;
+    let contents = read_required_regular_cli_file(path, "abuse threshold policy")?;
     parse_abuse_threshold_policy_file(&contents)
 }
 
@@ -7335,8 +7349,7 @@ fn merged_mailbox_retention_policy(
 }
 
 fn load_mailbox_retention_policy_file(path: &Path) -> Result<MailboxRetentionPolicy, String> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| format!("read mailbox retention policy file: {error}"))?;
+    let contents = read_required_regular_cli_file(path, "mailbox retention policy")?;
     parse_mailbox_retention_policy_file(&contents)
 }
 
@@ -8966,8 +8979,7 @@ fn abuse_threshold_report_from_fleet_totals(
 }
 
 fn parse_hosted_fleet_dashboard_file(path: &Path) -> Result<Vec<HostedFleetRelayConfig>, String> {
-    let contents = fs::read_to_string(path)
-        .map_err(|error| format!("read hosted fleet dashboard file: {error}"))?;
+    let contents = read_required_regular_cli_file(path, "hosted fleet dashboard")?;
     let base_dir = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -13286,6 +13298,107 @@ mod tests {
         let path = dir.join("fleet.toml");
         fs::write(&path, contents).expect("write hosted fleet dashboard file");
         path
+    }
+
+    #[cfg(unix)]
+    fn unique_temp_path(label: &str, file_name: &str) -> PathBuf {
+        let counter = TEST_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_nanos();
+        env::temp_dir()
+            .join(format!(
+                "conu-relay-{label}-{}-{nanos}-{counter}",
+                std::process::id(),
+            ))
+            .join(file_name)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_cli_policy_file_reads_reject_symlinks_without_reading_targets() {
+        use std::os::unix::fs::symlink;
+
+        let abuse_target = unique_temp_path("abuse-policy-target", "policy.toml");
+        fs::create_dir_all(abuse_target.parent().expect("abuse target parent"))
+            .expect("create abuse target dir");
+        let abuse_secret = "relay-secret-token-abuse";
+        let abuse_target_contents =
+            abuse_threshold_policy_contents(&format!("max_admin_failed = 1\n# {abuse_secret}\n"));
+        fs::write(&abuse_target, &abuse_target_contents).expect("write abuse target");
+        let abuse_link = unique_temp_path("abuse-policy-link", "policy.toml");
+        fs::create_dir_all(abuse_link.parent().expect("abuse link parent"))
+            .expect("create abuse link dir");
+        symlink(&abuse_target, &abuse_link).expect("create abuse policy symlink");
+        let abuse_error = parse_abuse_threshold_report_args(vec![
+            "--abuse-dir".to_string(),
+            "abuse".to_string(),
+            "--thresholds-file".to_string(),
+            abuse_link.to_string_lossy().to_string(),
+        ])
+        .expect_err("symlinked abuse threshold policy should fail closed");
+        assert!(abuse_error.contains("inspect abuse threshold policy file"));
+        assert!(!abuse_error.contains(abuse_secret));
+
+        let retention_target = unique_temp_path("retention-policy-target", "policy.toml");
+        fs::create_dir_all(retention_target.parent().expect("retention target parent"))
+            .expect("create retention target dir");
+        let retention_secret = "relay-secret-token-retention";
+        let retention_target_contents = mailbox_retention_policy_contents(&format!(
+            "ttl_seconds = 3600\n# {retention_secret}\n"
+        ));
+        fs::write(&retention_target, &retention_target_contents).expect("write retention target");
+        let retention_link = unique_temp_path("retention-policy-link", "policy.toml");
+        fs::create_dir_all(retention_link.parent().expect("retention link parent"))
+            .expect("create retention link dir");
+        symlink(&retention_target, &retention_link).expect("create retention policy symlink");
+        let retention_error = parse_mailbox_audit_args(vec![
+            "--mailbox-dir".to_string(),
+            "mailbox".to_string(),
+            "--retention-policy-file".to_string(),
+            retention_link.to_string_lossy().to_string(),
+        ])
+        .expect_err("symlinked retention policy should fail closed");
+        assert!(retention_error.contains("inspect mailbox retention policy file"));
+        assert!(!retention_error.contains(retention_secret));
+
+        let fleet_target = unique_temp_path("fleet-target", "fleet.toml");
+        fs::create_dir_all(fleet_target.parent().expect("fleet target parent"))
+            .expect("create fleet target dir");
+        let fleet_secret = "relay-secret-token-fleet";
+        let fleet_target_contents =
+            hosted_fleet_dashboard_file_contents(&format!("# {fleet_secret}\n"));
+        fs::write(&fleet_target, &fleet_target_contents).expect("write fleet target");
+        let fleet_link = unique_temp_path("fleet-link", "fleet.toml");
+        fs::create_dir_all(fleet_link.parent().expect("fleet link parent"))
+            .expect("create fleet link dir");
+        symlink(&fleet_target, &fleet_link).expect("create fleet symlink");
+        let fleet_error = parse_hosted_fleet_dashboard_file(&fleet_link)
+            .expect_err("symlinked fleet file should fail closed");
+        assert!(fleet_error.contains("inspect hosted fleet dashboard file"));
+        assert!(!fleet_error.contains(fleet_secret));
+
+        for (target, link, contents) in [
+            (&abuse_target, &abuse_link, &abuse_target_contents),
+            (
+                &retention_target,
+                &retention_link,
+                &retention_target_contents,
+            ),
+            (&fleet_target, &fleet_link, &fleet_target_contents),
+        ] {
+            assert_eq!(
+                fs::read_to_string(target).expect("target remains readable"),
+                contents.as_str()
+            );
+            assert!(
+                fs::symlink_metadata(link)
+                    .expect("link metadata reads")
+                    .file_type()
+                    .is_symlink()
+            );
+        }
     }
 
     #[test]
