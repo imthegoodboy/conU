@@ -525,6 +525,8 @@ def validate_public_key_source(source: Path, label: str) -> None:
     text = read_ascii_text(source, label)
     if "BEGIN PGP PUBLIC KEY BLOCK" not in text or "END PGP PUBLIC KEY BLOCK" not in text:
         raise SystemExit(f"{label} is not an armored PGP public key")
+    if "PRIVATE KEY BLOCK" in text:
+        raise SystemExit(f"{label} contains private key material")
     assert_safe_text(text, label, Path())
 
 
