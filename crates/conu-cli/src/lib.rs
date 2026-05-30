@@ -7964,29 +7964,47 @@ fn install_staged_update_binaries(
             .and_then(|report| report.backup_file.clone());
         if target_file.exists() {
             if let Err(error) = fs::remove_file(target_file) {
-                rollback_update_install(&installed);
+                let recovery_errors = rollback_update_install(&installed).err();
                 cleanup_update_temp_targets(&temp_targets);
-                return Err(format!(
-                    "could not replace release update binary {}: {error}",
-                    target_file.display()
+                return Err(with_update_recovery_error(
+                    format!(
+                        "could not replace release update binary {}: {error}",
+                        target_file.display()
+                    ),
+                    recovery_errors,
                 ));
             }
         }
         if let Err(error) = fs::rename(temp_target, target_file) {
+            let mut recovery_errors = Vec::new();
             if let Some(backup_file) = backup_file.as_ref() {
-                restore_update_backup(target_file, backup_file);
+                if let Err(error) = restore_update_backup(target_file, backup_file) {
+                    recovery_errors.push(error);
+                }
             }
-            rollback_update_install(&installed);
+            if let Err(error) = rollback_update_install(&installed) {
+                recovery_errors.push(error);
+            }
             cleanup_update_temp_targets(&temp_targets);
-            return Err(format!(
-                "could not install release update binary {}: {error}",
-                target_file.display()
+            return Err(with_update_recovery_error(
+                format!(
+                    "could not install release update binary {}: {error}",
+                    target_file.display()
+                ),
+                (!recovery_errors.is_empty()).then(|| recovery_errors.join("; ")),
             ));
         }
         installed.push((target_file.clone(), backup_file));
     }
 
     Ok(reports)
+}
+
+fn with_update_recovery_error(error: String, recovery_error: Option<String>) -> String {
+    match recovery_error {
+        Some(recovery_error) => format!("{error}; rollback also reported: {recovery_error}"),
+        None => error,
+    }
 }
 
 fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Result<(), String> {
@@ -8106,20 +8124,62 @@ fn create_update_temp_install_target(
     ))
 }
 
-fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) {
+fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) -> Result<(), String> {
+    let mut errors = Vec::new();
     for (target_file, backup_file) in installed.iter().rev() {
-        let _ = fs::remove_file(target_file);
-        if let Some(backup_file) = backup_file {
-            restore_update_backup(target_file, backup_file);
+        match fs::remove_file(target_file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => errors.push(format!(
+                "could not remove partially installed release update binary {}: {error}",
+                target_file.display()
+            )),
         }
+        if let Some(backup_file) = backup_file {
+            if let Err(error) = restore_update_backup(target_file, backup_file) {
+                errors.push(error);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
     }
 }
 
-fn restore_update_backup(target_file: &Path, backup_file: &Path) {
-    if backup_file.exists() {
-        let _ = fs::copy(backup_file, target_file);
-        let _ = set_update_binary_permissions(target_file);
+fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(backup_file).map_err(|error| {
+        format!(
+            "could not inspect release update backup file {}: {error}",
+            backup_file.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "release update backup file is not a regular file: {}",
+            backup_file.display()
+        ));
     }
+    let copied = match fs::copy(backup_file, target_file) {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = fs::remove_file(target_file);
+            return Err(format!(
+                "could not restore release update backup {} to {}: {error}",
+                backup_file.display(),
+                target_file.display()
+            ));
+        }
+    };
+    if copied != metadata.len() {
+        let _ = fs::remove_file(target_file);
+        return Err(format!(
+            "release update backup changed while restoring {}",
+            backup_file.display()
+        ));
+    }
+    set_update_binary_permissions(target_file)
 }
 
 fn cleanup_update_temp_targets(temp_targets: &[(PathBuf, PathBuf)]) {
@@ -11090,6 +11150,27 @@ mod tests {
         assert_eq!(
             fs::read(&target_file).expect("target remains readable"),
             b"late existing target"
+        );
+    }
+
+    #[test]
+    fn update_apply_restore_backup_reports_missing_backup() {
+        let home = temp_home("update-apply-missing-backup");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        fs::write(&target_file, b"partial update target").expect("target writes");
+        let missing_backup = install_dir
+            .join(".conu-update-backups")
+            .join("missing-conu");
+
+        let error = restore_update_backup(&target_file, &missing_backup)
+            .expect_err("missing backup should be reported");
+
+        assert!(error.contains("could not inspect release update backup file"));
+        assert_eq!(
+            fs::read(&target_file).expect("target remains readable"),
+            b"partial update target"
         );
     }
 
