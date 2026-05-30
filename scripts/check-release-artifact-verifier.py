@@ -195,6 +195,11 @@ def main() -> int:
                 lambda: verifier.verify_checksum(symlink_archive),
                 "release archive must not be a symlink",
             )
+            expect_failure(
+                "symlinked release archive members",
+                lambda: verifier.archive_members(symlink_archive),
+                "release archive must not be a symlink",
+            )
 
         directory_archive = root / "conu-0.1.0-directory-archive.zip"
         directory_archive.mkdir()
