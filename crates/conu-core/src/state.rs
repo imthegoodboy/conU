@@ -61,6 +61,7 @@ const STORAGE_KEY_ARCHIVE_DIR: &str = "storage-keys";
 const RELAY_CREDENTIAL_FILE: &str = "relay-credential.key";
 const REPLAY_CACHE_FILE: &str = "replay.toml";
 const KEY_ROTATION_PLAN_FILE: &str = "key-rotation.md";
+const MAX_STATE_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Files and folders used by the local conU state store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -517,14 +518,77 @@ fn read_existing_state_file(
     inspect_action: &'static str,
     read_action: &'static str,
 ) -> Result<String, StateError> {
-    regular_state_file_metadata(path, inspect_action)?;
+    let Some(metadata) = regular_state_file_metadata(path, inspect_action)? else {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    };
+    read_existing_state_file_with_metadata(path, inspect_action, read_action, &metadata)
+}
+
+fn read_existing_state_file_with_metadata(
+    path: &Path,
+    inspect_action: &'static str,
+    read_action: &'static str,
+    metadata: &fs::Metadata,
+) -> Result<String, StateError> {
     let mut file = OpenOptions::new()
         .read(true)
         .open(path)
         .map_err(|error| StateError::io(read_action, path, error))?;
+    let Some(path_metadata) = regular_state_file_metadata(path, inspect_action)? else {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    };
+    if !state_file_metadata_matches(metadata, &path_metadata) {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "state file path changed while reading",
+            ),
+        ));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| StateError::io(inspect_action, path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_STATE_FILE_BYTES
+        || !state_file_metadata_matches(metadata, &opened_metadata)
+    {
+        return Err(StateError::io(
+            read_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "state file path changed while reading",
+            ),
+        ));
+    }
+
     let mut contents = String::new();
-    file.read_to_string(&mut contents)
+    let limit = MAX_STATE_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
         .map_err(|error| StateError::io(read_action, path, error))?;
+    if contents.len() as u64 > MAX_STATE_FILE_BYTES {
+        return Err(StateError::io(
+            read_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("state file exceeds {MAX_STATE_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
     Ok(contents)
 }
 
@@ -533,11 +597,11 @@ pub(crate) fn read_optional_regular_state_file(
     inspect_action: &'static str,
     read_action: &'static str,
 ) -> Result<Option<String>, StateError> {
-    if regular_state_file_metadata(path, inspect_action)?.is_none() {
+    let Some(metadata) = regular_state_file_metadata(path, inspect_action)? else {
         return Ok(None);
-    }
+    };
 
-    read_existing_state_file(path, inspect_action, read_action).map(Some)
+    read_existing_state_file_with_metadata(path, inspect_action, read_action, &metadata).map(Some)
 }
 
 pub(crate) fn read_required_regular_state_file(
@@ -545,15 +609,15 @@ pub(crate) fn read_required_regular_state_file(
     inspect_action: &'static str,
     read_action: &'static str,
 ) -> Result<String, StateError> {
-    if regular_state_file_metadata(path, inspect_action)?.is_none() {
+    let Some(metadata) = regular_state_file_metadata(path, inspect_action)? else {
         return Err(StateError::io(
             inspect_action,
             path,
             io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
         ));
-    }
+    };
 
-    read_existing_state_file(path, inspect_action, read_action)
+    read_existing_state_file_with_metadata(path, inspect_action, read_action, &metadata)
 }
 
 pub(crate) fn write_regular_state_file(
@@ -670,11 +734,47 @@ fn regular_state_file_metadata(
                     ),
                 ));
             }
+            if metadata.len() > MAX_STATE_FILE_BYTES {
+                return Err(StateError::io(
+                    action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("state file exceeds {MAX_STATE_FILE_BYTES} bytes"),
+                    ),
+                ));
+            }
             Ok(Some(metadata))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(StateError::io(action, path, error)),
     }
+}
+
+fn state_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.len() == current.len() && state_file_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn state_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    expected.dev() == current.dev() && expected.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn state_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
+        && expected.last_write_time() == current.last_write_time()
+        && expected.file_size() == current.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn state_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.modified().ok() == current.modified().ok()
 }
 
 fn regular_state_directory_metadata(
@@ -956,6 +1056,37 @@ mod tests {
                 .to_string()
                 .contains("inspect removable missing state")
         );
+    }
+
+    #[test]
+    fn read_regular_state_file_rejects_oversized_file_without_printing_contents() {
+        let home = test_home("oversized-state-read");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("state.toml");
+        let private_marker = "private-state-marker";
+        let mut contents = format!("# {private_marker}\n");
+        contents.push_str(&"a".repeat((MAX_STATE_FILE_BYTES + 1) as usize));
+        fs::write(&path, contents).expect("oversized state writes");
+
+        let required_error = read_required_regular_state_file(
+            &path,
+            "inspect oversized required state",
+            "read oversized required state",
+        )
+        .expect_err("oversized required state file should fail closed");
+        let required_error = required_error.to_string();
+        assert!(required_error.contains("state file exceeds"));
+        assert!(!required_error.contains(private_marker));
+
+        let optional_error = read_optional_regular_state_file(
+            &path,
+            "inspect oversized optional state",
+            "read oversized optional state",
+        )
+        .expect_err("oversized optional state file should fail closed");
+        let optional_error = optional_error.to_string();
+        assert!(optional_error.contains("state file exceeds"));
+        assert!(!optional_error.contains(private_marker));
     }
 
     #[test]
