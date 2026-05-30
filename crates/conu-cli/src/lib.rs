@@ -8052,9 +8052,35 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
                 backup_file.display()
             ));
         }
-        let copied = match fs::copy(&report.target_file, backup_file) {
+        let mut source_file = fs::File::open(&report.target_file).map_err(|error| {
+            format!(
+                "could not back up release update binary {}: {error}",
+                report.target_file.display()
+            )
+        })?;
+        let mut backup = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(backup_file)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "release update backup target already exists: {}",
+                    backup_file.display()
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not reserve release update backup target {}: {error}",
+                    backup_file.display()
+                ));
+            }
+        };
+        let copied = match io::copy(&mut source_file, &mut backup) {
             Ok(copied) => copied,
             Err(error) => {
+                drop(backup);
                 let _ = fs::remove_file(backup_file);
                 return Err(format!(
                     "could not back up release update binary {}: {error}",
@@ -8062,6 +8088,7 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
                 ));
             }
         };
+        drop(backup);
         if copied != metadata.len() {
             let _ = fs::remove_file(backup_file);
             return Err(format!(
@@ -11228,6 +11255,79 @@ mod tests {
         assert_eq!(
             fs::read(&target_file).expect("target remains readable"),
             b"late existing target"
+        );
+    }
+
+    #[test]
+    fn update_apply_backup_rejects_existing_backup_without_overwrite() {
+        let home = temp_home("update-apply-existing-backup");
+        let install_dir = home.join("install-bin");
+        let backup_dir = install_dir.join(".conu-update-backups").join("existing");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let filename = update_binary_filename("conu");
+        let target_file = install_dir.join(&filename);
+        let backup_file = backup_dir.join(&filename);
+        fs::write(&target_file, b"current binary").expect("target writes");
+        fs::write(&backup_file, b"existing backup").expect("backup writes");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file: home.join("unused-staged"),
+            target_file: target_file.clone(),
+            backup_file: Some(backup_file.clone()),
+            bytes: b"current binary".len() as u64,
+        };
+
+        let error = back_up_existing_update_binaries(&[report])
+            .expect_err("existing backup should fail closed");
+
+        assert!(error.contains("release update backup target already exists"));
+        assert_eq!(
+            fs::read(&backup_file).expect("backup remains readable"),
+            b"existing backup"
+        );
+        assert_eq!(
+            fs::read(&target_file).expect("target remains readable"),
+            b"current binary"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_backup_rejects_symlink_backup_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-symlink-backup");
+        let install_dir = home.join("install-bin");
+        let backup_dir = install_dir.join(".conu-update-backups").join("symlink");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let filename = update_binary_filename("conu");
+        let target_file = install_dir.join(&filename);
+        let backup_file = backup_dir.join(&filename);
+        let outside_target = home.join("outside-backup-target");
+        fs::write(&target_file, b"current binary").expect("target writes");
+        symlink(&outside_target, &backup_file).expect("backup symlink creates");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file: home.join("unused-staged"),
+            target_file: target_file.clone(),
+            backup_file: Some(backup_file.clone()),
+            bytes: b"current binary".len() as u64,
+        };
+
+        let error = back_up_existing_update_binaries(&[report])
+            .expect_err("symlink backup should fail closed");
+
+        assert!(error.contains("release update backup target already exists"));
+        assert!(!outside_target.exists());
+        assert!(
+            fs::symlink_metadata(&backup_file)
+                .expect("backup symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(&target_file).expect("target remains readable"),
+            b"current binary"
         );
     }
 
