@@ -1427,8 +1427,28 @@ fn move_relay_request(
         .and_then(|value| value.to_str())
         .unwrap_or("relay-request");
     let target = target_dir.join(format!("{stem}.{extension}"));
+    ensure_relay_archive_target_available(&target)?;
     fs::rename(request_path, &target)
         .map_err(|error| RelayDeliveryError::io("move relay request marker", request_path, error))
+}
+
+fn ensure_relay_archive_target_available(path: &Path) -> Result<(), RelayDeliveryError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(RelayDeliveryError::io(
+            "reserve relay archive target",
+            path,
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "archive target already exists",
+            ),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(RelayDeliveryError::io(
+            "inspect relay archive target",
+            path,
+            error,
+        )),
+    }
 }
 
 fn relay_endpoint_for_sync(
@@ -2062,6 +2082,46 @@ mod tests {
         let error = read_relay_request(&path).expect_err("mismatched request fails");
 
         assert!(error.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn relay_sent_archive_refuses_existing_marker() {
+        let home = test_home("sent-archive-collision");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let request = init.paths.relay_outbox_dir.join("queued.relay");
+        let target = init.paths.relay_sent_dir.join("queued.sent");
+        fs::write(&request, "queued relay marker").expect("request writes");
+        fs::write(&target, "existing sent marker").expect("existing marker writes");
+
+        let error = move_relay_request(&init.paths.relay_sent_dir, &request, "sent")
+            .expect_err("existing sent marker should fail closed");
+
+        assert!(error.to_string().contains("reserve relay archive target"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("existing marker reads"),
+            "existing sent marker"
+        );
+        assert!(request.exists());
+    }
+
+    #[test]
+    fn relay_rejected_archive_refuses_existing_marker() {
+        let home = test_home("rejected-archive-collision");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let request = init.paths.relay_outbox_dir.join("bad.relay");
+        let target = init.paths.relay_rejected_dir.join("bad.rejected");
+        fs::write(&request, "bad relay marker").expect("request writes");
+        fs::write(&target, "existing rejected marker").expect("existing marker writes");
+
+        let error = move_relay_request(&init.paths.relay_rejected_dir, &request, "rejected")
+            .expect_err("existing rejected marker should fail closed");
+
+        assert!(error.to_string().contains("reserve relay archive target"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("existing marker reads"),
+            "existing rejected marker"
+        );
+        assert!(request.exists());
     }
 
     #[test]
