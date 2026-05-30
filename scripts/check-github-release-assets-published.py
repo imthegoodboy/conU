@@ -224,6 +224,7 @@ def audit_release_assets(
     actual_tag = release_tag_name(payload)
     required_assets = expected_release_asset_names(version)
     required_set = set(required_assets)
+    expected_prerelease = "-" in version
 
     assets_payload = payload.get("assets")
     if not isinstance(assets_payload, list):
@@ -263,6 +264,11 @@ def audit_release_assets(
         issues.append(f"release tag is {actual_tag}, expected {expected_tag}")
     if draft:
         issues.append("release is still a draft")
+    if prerelease != expected_prerelease:
+        if expected_prerelease:
+            issues.append("release prerelease flag must be true for semver prerelease tags")
+        else:
+            issues.append("release prerelease flag must be false for stable tags")
     if missing:
         issues.append(f"missing {len(missing)} required release asset(s)")
     if duplicates:
