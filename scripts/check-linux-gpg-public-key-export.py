@@ -182,6 +182,23 @@ def run_output_file_preflights() -> None:
             "public-key sidecar output directory",
         )
 
+        hash_directory = temp / "hash-directory.asc"
+        hash_directory.mkdir()
+        expect_action_failure(
+            lambda: exporter.write_sha256_sidecar(hash_directory),
+            "must be a regular file",
+            "public-key hash source directory",
+        )
+
+        expect_constant_failure(
+            exporter,
+            "MAX_PUBLIC_KEY_BYTES",
+            len(PUBLIC_KEY_FIXTURE) - 1,
+            lambda: exporter.write_sha256_sidecar(output),
+            "exceeds",
+            "public-key hash source size bound",
+        )
+
         symlink_output_target = temp / "real-output.asc"
         symlink_output_target.write_bytes(PUBLIC_KEY_FIXTURE)
         symlink_output = temp / "symlink-output.asc"
@@ -190,6 +207,16 @@ def run_output_file_preflights() -> None:
                 lambda: exporter.write_public_key_asset(symlink_output, PUBLIC_KEY_FIXTURE),
                 "must not be a symlink",
                 "public-key symlink output",
+            )
+
+        symlink_hash_target = temp / "real-hash-output.asc"
+        exporter.write_public_key_asset(symlink_hash_target, PUBLIC_KEY_FIXTURE)
+        symlink_hash = temp / "symlink-hash-output.asc"
+        if try_symlink(symlink_hash, symlink_hash_target):
+            expect_action_failure(
+                lambda: exporter.write_sha256_sidecar(symlink_hash),
+                "must not be a symlink",
+                "public-key symlink hash source",
             )
 
         symlink_sidecar_output = temp / "symlink-sidecar.asc"
