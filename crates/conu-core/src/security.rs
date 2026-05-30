@@ -486,13 +486,7 @@ pub fn rotate_storage_key_from_paths(
         let plaintext = decrypt_from_storage_from_paths(paths, &payload.encrypted, &payload.aad)?;
         let encrypted = encrypt_with_storage_key(&new_key, &plaintext, &payload.aad)?;
         let rewritten = rewrite_payload_metadata(&payload.contents, &encrypted);
-        fs::write(&payload.path, rewritten).map_err(|error| {
-            SecurityError::io(
-                "write re-encrypted local payload file",
-                &payload.path,
-                error,
-            )
-        })?;
+        rewrite_local_storage_payload_file(&payload.path, &rewritten)?;
         report.files_migrated += 1;
     }
 
@@ -1730,6 +1724,17 @@ fn local_storage_payload_file(
         encrypted,
         aad,
     }))
+}
+
+fn rewrite_local_storage_payload_file(path: &Path, contents: &str) -> Result<(), SecurityError> {
+    state::rewrite_existing_regular_state_file(
+        path,
+        contents,
+        "inspect local encrypted payload file",
+        "open re-encrypted local payload file",
+        "write re-encrypted local payload file",
+    )?;
+    Ok(())
 }
 
 fn local_payload_directory_exists(path: &Path) -> Result<bool, SecurityError> {
@@ -3799,6 +3804,48 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_payload_rewrite_rejects_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("storage-rewrite-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let outside = home.join("outside-payload-target.msg");
+        let link = home.join("payload.msg");
+        let outside_contents = "outside payload marker\n";
+        fs::write(&outside, outside_contents).expect("outside target writes");
+        symlink(&outside, &link).expect("payload symlink creates");
+
+        let error = rewrite_local_storage_payload_file(&link, "new encrypted metadata\n")
+            .expect_err("symlinked rewrite target fails closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside target reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("payload link metadata reads")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn storage_payload_rewrite_rejects_missing_target_without_creating_file() {
+        let home = test_home("storage-rewrite-missing");
+        fs::create_dir_all(&home).expect("home creates");
+        let missing = home.join("missing-payload.msg");
+
+        let error = rewrite_local_storage_payload_file(&missing, "new encrypted metadata\n")
+            .expect_err("missing rewrite target fails closed");
+
+        assert!(error.to_string().contains("missing"));
+        assert!(!missing.exists());
     }
 
     #[test]

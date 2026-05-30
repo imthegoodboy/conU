@@ -567,6 +567,30 @@ pub(crate) fn write_regular_state_file(
         .map_err(|error| StateError::io(write_action, path, error))
 }
 
+pub(crate) fn rewrite_existing_regular_state_file(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+    open_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), StateError> {
+    if regular_state_file_metadata(path, inspect_action)?.is_none() {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    }
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|error| StateError::io(open_action, path, error))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| StateError::io(write_action, path, error))
+}
+
 pub(crate) fn append_regular_state_file(
     path: &Path,
     contents: &str,
