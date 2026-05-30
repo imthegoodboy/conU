@@ -193,11 +193,9 @@ pub fn rotate_logs_from_paths(
             continue;
         }
 
-        let metadata = fs::metadata(&path)
-            .map_err(|error| ObservabilityError::io("read log metadata", &path, error))?;
-        if !metadata.is_file() {
+        let Some(metadata) = active_log_metadata(&path)? else {
             continue;
-        }
+        };
 
         let size_bytes = metadata.len();
         let archives_removed = if size_bytes > policy.max_bytes {
@@ -228,10 +226,11 @@ pub fn rotate_logs_from_paths(
 }
 
 fn rotate_one_log(path: &Path, keep_archives: usize) -> Result<usize, ObservabilityError> {
+    ensure_regular_log_file(path, "inspect active log before rotation")?;
     let mut removed = 0;
     for index in (1..=keep_archives).rev() {
         let source = archive_path(path, index);
-        if !source.exists() {
+        if regular_log_metadata(&source, "inspect log archive")?.is_none() {
             continue;
         }
         if index == keep_archives {
@@ -241,12 +240,14 @@ fn rotate_one_log(path: &Path, keep_archives: usize) -> Result<usize, Observabil
             removed += 1;
         } else {
             let target = archive_path(path, index + 1);
+            ensure_log_archive_target_available(&target)?;
             fs::rename(&source, &target)
                 .map_err(|error| ObservabilityError::io("shift log archive", &source, error))?;
         }
     }
 
     let first_archive = archive_path(path, 1);
+    ensure_log_archive_target_available(&first_archive)?;
     fs::rename(path, &first_archive)
         .map_err(|error| ObservabilityError::io("rotate active log", path, error))?;
     OpenOptions::new()
@@ -256,6 +257,72 @@ fn rotate_one_log(path: &Path, keep_archives: usize) -> Result<usize, Observabil
         .map_err(|error| ObservabilityError::io("create fresh active log", path, error))?;
 
     Ok(removed)
+}
+
+fn regular_log_metadata(
+    path: &Path,
+    action: &'static str,
+) -> Result<Option<fs::Metadata>, ObservabilityError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(ObservabilityError::io(
+                    action,
+                    path,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "log path is not a regular file",
+                    ),
+                ));
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ObservabilityError::io(action, path, error)),
+    }
+}
+
+fn active_log_metadata(path: &Path) -> Result<Option<fs::Metadata>, ObservabilityError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Ok(None);
+            }
+            Ok(Some(metadata))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ObservabilityError::io("read log metadata", path, error)),
+    }
+}
+
+fn ensure_regular_log_file(path: &Path, action: &'static str) -> Result<(), ObservabilityError> {
+    match regular_log_metadata(path, action)? {
+        Some(_) => Ok(()),
+        None => Err(ObservabilityError::io(
+            action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "log path does not exist"),
+        )),
+    }
+}
+
+fn ensure_log_archive_target_available(path: &Path) -> Result<(), ObservabilityError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(ObservabilityError::io(
+            "reserve log archive target",
+            path,
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "log archive target already exists",
+            ),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ObservabilityError::io(
+            "inspect log archive target",
+            path,
+            error,
+        )),
+    }
 }
 
 fn is_active_log_file(path: &Path) -> bool {
@@ -344,6 +411,104 @@ mod tests {
             fs::read_to_string(paths.logs_dir.join("conud.log.2")).expect("archive two reads"),
             "archive one\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skips_symlinked_active_log_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("active-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        let outside = home.join("outside.log");
+        let link = paths.logs_dir.join("conud.log");
+        fs::write(&outside, "outside payload-safe log\n").expect("outside log writes");
+        symlink(&outside, &link).expect("active log symlink creates");
+
+        let report = rotate_logs_from_paths(
+            &paths,
+            LogRotationPolicy::new(1, 2).expect("policy validates"),
+        )
+        .expect("logs rotate");
+
+        assert_eq!(report.files_scanned, 0);
+        assert_eq!(report.files_rotated, 0);
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside log reads"),
+            "outside payload-safe log\n"
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("active link metadata")
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!paths.logs_dir.join("conud.log.1").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_symlink_fails_before_rotating_active_log() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("archive-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        let active = paths.logs_dir.join("conud.log");
+        let outside = home.join("outside-archive");
+        let archive_link = paths.logs_dir.join("conud.log.1");
+        fs::write(&active, "active active\n").expect("active writes");
+        fs::write(&outside, "outside archive\n").expect("outside archive writes");
+        symlink(&outside, &archive_link).expect("archive symlink creates");
+
+        let error = rotate_logs_from_paths(
+            &paths,
+            LogRotationPolicy::new(4, 2).expect("policy validates"),
+        )
+        .expect_err("archive symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect log archive"));
+        assert_eq!(
+            fs::read_to_string(&active).expect("active reads"),
+            "active active\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside reads"),
+            "outside archive\n"
+        );
+        assert!(
+            fs::symlink_metadata(&archive_link)
+                .expect("archive link metadata")
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!paths.logs_dir.join("conud.log.2").exists());
+    }
+
+    #[test]
+    fn archive_directory_fails_before_rotating_active_log() {
+        let home = test_home("archive-directory");
+        let paths = StatePaths::from_home(home);
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        let active = paths.logs_dir.join("conud.log");
+        let archive_dir = paths.logs_dir.join("conud.log.1");
+        fs::write(&active, "active active\n").expect("active writes");
+        fs::create_dir_all(&archive_dir).expect("archive directory creates");
+
+        let error = rotate_logs_from_paths(
+            &paths,
+            LogRotationPolicy::new(4, 2).expect("policy validates"),
+        )
+        .expect_err("archive directory should fail closed");
+
+        assert!(error.to_string().contains("inspect log archive"));
+        assert_eq!(
+            fs::read_to_string(&active).expect("active reads"),
+            "active active\n"
+        );
+        assert!(archive_dir.is_dir());
+        assert!(!paths.logs_dir.join("conud.log.2").exists());
     }
 
     fn test_home(name: &str) -> PathBuf {
