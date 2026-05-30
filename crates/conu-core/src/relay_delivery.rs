@@ -1484,18 +1484,13 @@ fn configured_relay_endpoint(paths: &StatePaths) -> Result<String, RelayDelivery
 }
 
 fn configured_default_relay(paths: &StatePaths) -> Result<Option<String>, RelayDeliveryError> {
-    let contents = match fs::read_to_string(&paths.config) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(None);
-        }
-        Err(error) => {
-            return Err(RelayDeliveryError::io(
-                "read conU config",
-                &paths.config,
-                error,
-            ));
-        }
+    let contents = match state::read_optional_regular_state_file(
+        &paths.config,
+        "inspect relay config",
+        "read relay config",
+    )? {
+        Some(contents) => contents,
+        None => return Ok(None),
     };
     let values = parse_key_values(&contents);
     Ok(values
@@ -1505,16 +1500,13 @@ fn configured_default_relay(paths: &StatePaths) -> Result<Option<String>, RelayD
 }
 
 fn relay_auto_sync_enabled(paths: &StatePaths) -> Result<bool, RelayDeliveryError> {
-    let contents = match fs::read_to_string(&paths.config) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
-        Err(error) => {
-            return Err(RelayDeliveryError::io(
-                "read conU config",
-                &paths.config,
-                error,
-            ));
-        }
+    let contents = match state::read_optional_regular_state_file(
+        &paths.config,
+        "inspect relay config",
+        "read relay config",
+    )? {
+        Some(contents) => contents,
+        None => return Ok(true),
     };
     let values = parse_key_values(&contents);
     let value = values
@@ -2233,6 +2225,34 @@ mod tests {
 
         assert!(should_sync);
         assert_eq!(endpoint, "wss://relay.example.com/conu");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_config_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-config-read-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let outside = init.paths.home.join("outside-config.toml");
+        fs::write(
+            &outside,
+            "version = \"1\"\ndefault_relay = \"wss://relay.example.com/conu\"\nrelay_auto_sync = true\n",
+        )
+        .expect("outside config writes");
+        fs::remove_file(&init.paths.config).expect("config removes");
+        symlink(&outside, &init.paths.config).expect("config symlink creates");
+
+        let error = configured_relay_endpoint(&init.paths)
+            .expect_err("relay config symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect relay config"));
+        assert!(
+            fs::symlink_metadata(&init.paths.config)
+                .expect("config symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

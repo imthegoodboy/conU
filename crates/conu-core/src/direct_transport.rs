@@ -7,10 +7,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -189,14 +188,6 @@ pub enum DirectTransportError {
 }
 
 impl DirectTransportError {
-    fn io(action: &'static str, path: &Path, source: io::Error) -> Self {
-        Self::Io {
-            action,
-            path: path.to_path_buf(),
-            source,
-        }
-    }
-
     fn network(action: &'static str, error: impl fmt::Display) -> Self {
         Self::Network {
             action,
@@ -857,16 +848,13 @@ fn validate_delivery_ack(
 }
 
 fn read_config(paths: &StatePaths) -> Result<HashMap<String, String>, DirectTransportError> {
-    let contents = match fs::read_to_string(&paths.config) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(error) => {
-            return Err(DirectTransportError::io(
-                "read conU config",
-                &paths.config,
-                error,
-            ));
-        }
+    let contents = match state::read_optional_regular_state_file(
+        &paths.config,
+        "inspect direct transport config",
+        "read direct transport config",
+    )? {
+        Some(contents) => contents,
+        None => return Ok(HashMap::new()),
     };
     Ok(parse_key_values(&contents))
 }
@@ -1444,6 +1432,8 @@ fn current_unix_nanos() -> u128 {
 mod tests {
     use super::*;
     use crate::agents::AgentRegistration;
+    use std::fs;
+    use std::path::Path;
 
     #[test]
     fn direct_endpoint_validation_rejects_secret_bearing_values() {
@@ -1452,6 +1442,38 @@ mod tests {
         assert!(validate_direct_endpoint("quic://token@127.0.0.1:9443").is_err());
         assert!(validate_direct_endpoint("quic://127.0.0.1:9443/path").is_err());
         assert!(validate_direct_endpoint("quic://127.0.0.1:9443?token=value").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_config_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("direct-config-read-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let outside = init.paths.home.join("outside-config.toml");
+        fs::write(
+            &outside,
+            "version = \"1\"\ndirect_quic_endpoint = \"quic://127.0.0.1:9443\"\n",
+        )
+        .expect("outside config writes");
+        fs::remove_file(&init.paths.config).expect("config removes");
+        symlink(&outside, &init.paths.config).expect("config symlink creates");
+
+        let error = configured_direct_quic_endpoint_from_paths(&init.paths)
+            .expect_err("direct config symlink should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("inspect direct transport config")
+        );
+        assert!(
+            fs::symlink_metadata(&init.paths.config)
+                .expect("config symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
