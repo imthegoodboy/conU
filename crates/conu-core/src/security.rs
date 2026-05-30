@@ -2732,20 +2732,52 @@ fn required(
 }
 
 fn write_new_secret_file(path: &Path, contents: &str) -> Result<bool, SecurityError> {
-    let created = write_new_file(path, contents)?;
-    set_sensitive_file_permissions(path)?;
-    Ok(created)
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => {
+            set_sensitive_file_permissions(&file, path)?;
+            file.write_all(contents.as_bytes())
+                .map_err(|error| SecurityError::io("write security file", path, error))?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            ensure_existing_secret_file(path)?;
+            Ok(false)
+        }
+        Err(error) => Err(SecurityError::io("create security file", path, error)),
+    }
 }
 
 fn replace_secret_file(path: &Path, contents: &str) -> Result<(), SecurityError> {
+    ensure_replaceable_secret_file(path)?;
     let mut file = OpenOptions::new()
         .write(true)
-        .truncate(true)
         .open(path)
         .map_err(|error| SecurityError::io("open replacement security file", path, error))?;
+    set_sensitive_file_permissions(&file, path)?;
+    file.set_len(0)
+        .map_err(|error| SecurityError::io("truncate replacement security file", path, error))?;
     file.write_all(contents.as_bytes())
-        .map_err(|error| SecurityError::io("write replacement security file", path, error))?;
-    set_sensitive_file_permissions(path)
+        .map_err(|error| SecurityError::io("write replacement security file", path, error))
+}
+
+fn ensure_existing_secret_file(path: &Path) -> Result<(), SecurityError> {
+    ensure_regular_secret_file(path, "inspect existing security file")
+}
+
+fn ensure_replaceable_secret_file(path: &Path) -> Result<(), SecurityError> {
+    ensure_regular_secret_file(path, "inspect replacement security file")
+}
+
+fn ensure_regular_secret_file(path: &Path, action: &'static str) -> Result<(), SecurityError> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| SecurityError::io(action, path, error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "security file path is not a regular file".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn write_new_file(path: &Path, contents: &str) -> Result<bool, SecurityError> {
@@ -2761,16 +2793,16 @@ fn write_new_file(path: &Path, contents: &str) -> Result<bool, SecurityError> {
 }
 
 #[cfg(unix)]
-fn set_sensitive_file_permissions(path: &Path) -> Result<(), SecurityError> {
+fn set_sensitive_file_permissions(file: &fs::File, path: &Path) -> Result<(), SecurityError> {
     use std::os::unix::fs::PermissionsExt;
 
     let permissions = fs::Permissions::from_mode(0o600);
-    fs::set_permissions(path, permissions)
+    file.set_permissions(permissions)
         .map_err(|error| SecurityError::io("set security file permissions", path, error))
 }
 
 #[cfg(not(unix))]
-fn set_sensitive_file_permissions(_path: &Path) -> Result<(), SecurityError> {
+fn set_sensitive_file_permissions(_file: &fs::File, _path: &Path) -> Result<(), SecurityError> {
     Ok(())
 }
 
@@ -2969,6 +3001,60 @@ mod tests {
             assert!(!report.secrets_os_protected);
         }
         assert!(!signing.contains("private message contents"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_secret_file_rejects_existing_symlink_without_touching_target() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let home = test_home("new-secret-symlink");
+        fs::create_dir_all(&home).expect("home directory created");
+        let target = home.join("outside-secret-target");
+        let link = home.join("secret.key");
+        fs::write(&target, "existing secret").expect("target writes");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644))
+            .expect("target permissions set");
+        symlink(&target, &link).expect("symlink creates");
+
+        let error = write_new_secret_file(&link, "new secret")
+            .expect_err("existing symlink should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "existing secret"
+        );
+        assert_eq!(
+            fs::metadata(&target)
+                .expect("target metadata reads")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_secret_file_rejects_symlink_without_truncating_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("replace-secret-symlink");
+        fs::create_dir_all(&home).expect("home directory created");
+        let target = home.join("outside-secret-target");
+        let link = home.join("secret.key");
+        fs::write(&target, "existing secret").expect("target writes");
+        symlink(&target, &link).expect("symlink creates");
+
+        let error =
+            replace_secret_file(&link, "new secret").expect_err("symlink replacement fails closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "existing secret"
+        );
     }
 
     #[test]
