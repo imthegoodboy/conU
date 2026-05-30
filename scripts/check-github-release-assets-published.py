@@ -271,6 +271,8 @@ def audit_release_assets(
         issues.append(f"found {len(invalid)} invalid release asset metadata issue(s)")
     if forbidden:
         issues.append(f"found {len(forbidden)} forbidden release asset name(s)")
+    if unexpected:
+        issues.append(f"found {len(unexpected)} unexpected release asset name(s)")
 
     return ReleaseAssetReadiness(
         repo=repo,
@@ -350,12 +352,9 @@ def load_release_json(path: Path) -> dict[str, Any]:
 
 def print_text_report(report: ReleaseAssetReadiness) -> None:
     if report.ready:
-        extra = ""
-        if report.unexpected_assets:
-            extra = f"; {len(report.unexpected_assets)} extra public asset(s) were also present"
         print(
             "GitHub Release asset publication preflight passed: "
-            f"{report.repo}@{report.tag} has {len(report.required_assets)} required asset(s){extra}"
+            f"{report.repo}@{report.tag} has {len(report.required_assets)} required asset(s)"
         )
         return
 
@@ -373,6 +372,8 @@ def print_text_report(report: ReleaseAssetReadiness) -> None:
         print(f"invalid: {issue}", file=sys.stderr)
     for issue in report.forbidden_assets:
         print(f"forbidden: {issue}", file=sys.stderr)
+    for name in report.unexpected_assets:
+        print(f"unexpected: {name}", file=sys.stderr)
 
 
 def default_tag() -> str:
