@@ -32,6 +32,7 @@ const ABUSE_THRESHOLD_POLICY_FILE_VERSION: &str = "1";
 const MAILBOX_RETENTION_POLICY_FILE_VERSION: &str = "1";
 const HOSTED_FLEET_DASHBOARD_FILE_VERSION: &str = "1";
 const MAX_RELAY_CLI_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_RELAY_STDIN_TOKEN_BYTES: u64 = 4096;
 
 fn read_required_regular_cli_file(path: &Path, label: &'static str) -> Result<String, String> {
     let metadata =
@@ -1978,12 +1979,8 @@ fn readiness_contents_displayed(report: &HostedReadinessReport) -> bool {
 }
 
 fn hash_token_from_stdin() -> Result<(), String> {
-    let mut token = String::new();
-    io::stdin()
-        .read_to_string(&mut token)
-        .map_err(|error| format!("read relay token from stdin: {error}"))?;
-    let token = token.trim();
-    let hash = relay_token_sha256_hex(token).map_err(|error| error.to_string())?;
+    let token = read_relay_token_from_reader(io::stdin())?;
+    let hash = relay_token_sha256_hex(&token).map_err(|error| error.to_string())?;
 
     println!("token_sha256_hex = \"{hash}\"");
     println!("token_length = {}", token.len());
@@ -3727,18 +3724,37 @@ fn admin_mailbox_purge_usage() -> String {
 }
 
 fn read_admin_token_from_stdin(required: bool) -> Result<String, String> {
+    read_admin_token_from_reader(required, io::stdin())
+}
+
+fn read_admin_token_from_reader<R: Read>(required: bool, reader: R) -> Result<String, String> {
     if !required {
         return Err("--admin-token-stdin is required".to_string());
     }
-    let mut token = String::new();
-    io::stdin()
-        .read_to_string(&mut token)
-        .map_err(|error| format!("read relay admin token from stdin: {error}"))?;
-    let token = token.trim().to_string();
+    let token = read_bounded_stdin_token(reader, "relay admin token")?;
     if token.is_empty() {
         return Err("relay admin token cannot be empty".to_string());
     }
     Ok(token)
+}
+
+fn read_relay_token_from_reader<R: Read>(reader: R) -> Result<String, String> {
+    read_bounded_stdin_token(reader, "relay token")
+}
+
+fn read_bounded_stdin_token<R: Read>(mut reader: R, label: &'static str) -> Result<String, String> {
+    let mut token = String::new();
+    let limit = MAX_RELAY_STDIN_TOKEN_BYTES.saturating_add(1);
+    Read::by_ref(&mut reader)
+        .take(limit)
+        .read_to_string(&mut token)
+        .map_err(|error| format!("read {label} from stdin: {error}"))?;
+    if token.len() as u64 > MAX_RELAY_STDIN_TOKEN_BYTES {
+        return Err(format!(
+            "read {label} from stdin: input exceeds {MAX_RELAY_STDIN_TOKEN_BYTES} bytes"
+        ));
+    }
+    Ok(token.trim().to_string())
 }
 
 fn ensure_token_out_available(path: &Path) -> Result<(), String> {
@@ -13510,6 +13526,44 @@ mod tests {
         assert!(fleet_error.contains("hosted fleet dashboard file"));
         assert!(fleet_error.contains("exceeds"));
         assert!(!fleet_error.contains(fleet_secret));
+    }
+
+    #[test]
+    fn relay_stdin_token_reads_are_bounded_without_echoing_contents() {
+        let relay_token =
+            read_relay_token_from_reader(b"  relay-token-1234567890abcdef\n" as &[u8])
+                .expect("relay token reads");
+        assert_eq!(relay_token, "relay-token-1234567890abcdef");
+
+        let admin_token =
+            read_admin_token_from_reader(true, b" admin-token-1234567890abcdef\n" as &[u8])
+                .expect("admin token reads");
+        assert_eq!(admin_token, "admin-token-1234567890abcdef");
+
+        let missing_error = read_admin_token_from_reader(false, b"ignored-token" as &[u8])
+            .expect_err("missing admin token flag should fail");
+        assert!(missing_error.contains("--admin-token-stdin is required"));
+        assert!(!missing_error.contains("ignored-token"));
+
+        let empty_error = read_admin_token_from_reader(true, b" \n\t" as &[u8])
+            .expect_err("empty admin token should fail");
+        assert!(empty_error.contains("relay admin token cannot be empty"));
+
+        let secret = "relay-secret-token-stdin-oversized";
+        let mut oversized = format!("{secret}\n");
+        oversized.push_str(&"a".repeat((MAX_RELAY_STDIN_TOKEN_BYTES + 1) as usize));
+
+        let relay_error = read_relay_token_from_reader(oversized.as_bytes())
+            .expect_err("oversized relay token stdin should fail closed");
+        assert!(relay_error.contains("relay token"));
+        assert!(relay_error.contains("exceeds"));
+        assert!(!relay_error.contains(secret));
+
+        let admin_error = read_admin_token_from_reader(true, oversized.as_bytes())
+            .expect_err("oversized admin token stdin should fail closed");
+        assert!(admin_error.contains("relay admin token"));
+        assert!(admin_error.contains("exceeds"));
+        assert!(!admin_error.contains(secret));
     }
 
     #[test]
