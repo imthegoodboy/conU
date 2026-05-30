@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
@@ -39,6 +39,7 @@ const SECRET_WRAP_KEY_HEX_ENV: &str = "CONU_SECRET_WRAP_KEY_HEX";
 const SECRET_WRAP_KEY_FILE_ENV: &str = "CONU_SECRET_WRAP_KEY_FILE";
 #[cfg(not(windows))]
 const DISABLE_OS_SECRET_BACKEND_ENV: &str = "CONU_DISABLE_OS_SECRET_BACKEND";
+const MAX_SECURITY_KEY_FILE_BYTES: u64 = 64 * 1024;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1984,13 +1985,11 @@ fn derive_peer_key_with_local(
 }
 
 fn key_file_is_readable(path: &Path) -> bool {
-    ensure_existing_secret_file(path).is_ok() && fs::read_to_string(path).is_ok()
+    read_secret_file(path, "read security key").is_ok()
 }
 
 fn read_key_values(path: &Path) -> Result<HashMap<String, String>, SecurityError> {
-    ensure_existing_secret_file(path)?;
-    let contents = fs::read_to_string(path)
-        .map_err(|error| SecurityError::io("read security key", path, error))?;
+    let contents = read_secret_file(path, "read security key")?;
     Ok(parse_key_values(&contents))
 }
 
@@ -2867,6 +2866,56 @@ fn remove_existing_secret_file(
 }
 
 fn ensure_regular_secret_file(path: &Path, action: &'static str) -> Result<(), SecurityError> {
+    regular_secret_file_metadata(path, action).map(|_| ())
+}
+
+fn read_secret_file(path: &Path, read_action: &'static str) -> Result<String, SecurityError> {
+    let metadata = regular_secret_file_metadata(path, "inspect existing security file")?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|error| SecurityError::io(read_action, path, error))?;
+    let path_metadata = regular_secret_file_metadata(path, "inspect existing security file")?;
+    if !secret_file_metadata_matches(&metadata, &path_metadata) {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "security file path changed while reading".to_string(),
+        });
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| SecurityError::io("inspect opened security file", path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_SECURITY_KEY_FILE_BYTES
+        || !secret_file_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "security file path changed while reading".to_string(),
+        });
+    }
+
+    let mut contents = String::new();
+    let limit = MAX_SECURITY_KEY_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_string(&mut contents)
+        .map_err(|error| SecurityError::io(read_action, path, error))?;
+    if contents.len() as u64 > MAX_SECURITY_KEY_FILE_BYTES {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: format!("security key file exceeds {MAX_SECURITY_KEY_FILE_BYTES} bytes"),
+        });
+    }
+
+    Ok(contents)
+}
+
+fn regular_secret_file_metadata(
+    path: &Path,
+    action: &'static str,
+) -> Result<fs::Metadata, SecurityError> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| SecurityError::io(action, path, error))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -2875,7 +2924,39 @@ fn ensure_regular_secret_file(path: &Path, action: &'static str) -> Result<(), S
             reason: "security file path is not a regular file".to_string(),
         });
     }
-    Ok(())
+    if metadata.len() > MAX_SECURITY_KEY_FILE_BYTES {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: format!("security key file exceeds {MAX_SECURITY_KEY_FILE_BYTES} bytes"),
+        });
+    }
+    Ok(metadata)
+}
+
+fn secret_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.len() == current.len() && secret_file_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn secret_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    expected.dev() == current.dev() && expected.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn secret_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
+        && expected.last_write_time() == current.last_write_time()
+        && expected.file_size() == current.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn secret_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.modified().ok() == current.modified().ok()
 }
 
 fn secret_file_exists(path: &Path) -> Result<bool, SecurityError> {
@@ -3207,6 +3288,24 @@ mod tests {
             fs::read_to_string(&target).expect("target reads"),
             "version = \"1\"\nsecret_key_hex = \"outside\"\n"
         );
+    }
+
+    #[test]
+    fn secret_key_read_rejects_oversized_file_without_printing_contents() {
+        let home = test_home("read-secret-oversized");
+        fs::create_dir_all(&home).expect("home directory created");
+        let path = home.join("secret.key");
+        let private_marker = "private-secret-marker";
+        let mut contents = format!("# {private_marker}\n");
+        contents.push_str(&"a".repeat((MAX_SECURITY_KEY_FILE_BYTES + 1) as usize));
+        fs::write(&path, contents).expect("oversized secret writes");
+
+        let error = read_key_values(&path).expect_err("oversized secret read fails closed");
+        let error = error.to_string();
+
+        assert!(error.contains("security key file exceeds"));
+        assert!(!error.contains(private_marker));
+        assert!(!key_file_is_readable(&path));
     }
 
     #[cfg(unix)]
