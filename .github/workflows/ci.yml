@@ -83,6 +83,8 @@ jobs:
         run: python scripts/check-npm-launcher-local-smoke-preflight.py
       - name: Verify npm package contents
         run: python scripts/verify-npm-package-contents.py
+      - name: npm package public metadata regression
+        run: python scripts/verify-npm-package-contents-regression.py
       - name: npm publish preflight
         run: python scripts/check-npm-publish-preflight.py
       - name: npm publish preflight regression
