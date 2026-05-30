@@ -19,7 +19,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
-use crate::state::{StateError, StatePaths};
+use crate::state::{self, StateError, StatePaths};
 
 pub const STORAGE_ALGORITHM: &str = "XChaCha20Poly1305";
 pub const AGENT_CARD_SIGNATURE_ALGORITHM: &str = "Ed25519";
@@ -258,16 +258,8 @@ pub fn ensure_security_state(
 pub fn ensure_security_state_from_paths(
     paths: &StatePaths,
 ) -> Result<SecurityReport, SecurityError> {
-    fs::create_dir_all(&paths.security_dir).map_err(|error| {
-        SecurityError::io("create security directory", &paths.security_dir, error)
-    })?;
-    fs::create_dir_all(&paths.storage_key_archive_dir).map_err(|error| {
-        SecurityError::io(
-            "create storage key archive directory",
-            &paths.storage_key_archive_dir,
-            error,
-        )
-    })?;
+    state::ensure_state_directory(&paths.security_dir)?;
+    state::ensure_state_directory(&paths.storage_key_archive_dir)?;
 
     let identity_signing_key_created = ensure_identity_signing_key(paths)?;
     let identity_exchange_key_created = ensure_identity_exchange_key(paths)?;
@@ -304,8 +296,18 @@ pub fn security_audit(home_override: Option<PathBuf>) -> Result<SecurityAudit, S
     let identity_signing_key = key_file_is_readable(&paths.identity_signing_key);
     let identity_exchange_key = key_file_is_readable(&paths.identity_exchange_key);
     let storage_key = key_file_is_readable(&paths.storage_key);
-    let replay_cache = paths.replay_cache.exists();
-    let key_rotation_plan = paths.key_rotation_plan.exists();
+    let replay_cache = state::read_optional_regular_state_file(
+        &paths.replay_cache,
+        "inspect replay cache",
+        "read replay cache",
+    )?
+    .is_some();
+    let key_rotation_plan = state::read_optional_regular_state_file(
+        &paths.key_rotation_plan,
+        "inspect key rotation plan",
+        "read key rotation plan",
+    )?
+    .is_some();
     let secrets_os_protected = all_secret_files_use_os_protection(&paths);
     let initialized = identity_signing_key
         && identity_exchange_key
@@ -895,13 +897,15 @@ pub fn record_replay_id_from_paths(
 ) -> Result<(), SecurityError> {
     validate_replay_value(id, "replay id")?;
     validate_replay_value(source, "replay source")?;
-    fs::create_dir_all(&paths.security_dir).map_err(|error| {
-        SecurityError::io("create security directory", &paths.security_dir, error)
-    })?;
+    state::ensure_state_directory(&paths.security_dir)?;
     ensure_replay_cache(paths)?;
 
-    let contents = fs::read_to_string(&paths.replay_cache)
-        .map_err(|error| SecurityError::io("read replay cache", &paths.replay_cache, error))?;
+    let contents = state::read_optional_regular_state_file(
+        &paths.replay_cache,
+        "inspect replay cache",
+        "read replay cache",
+    )?
+    .unwrap_or_default();
     for line in contents.lines().map(str::trim) {
         if let Some(value) = line.strip_prefix("id = ") {
             if clean_value(value) == id {
@@ -910,19 +914,21 @@ pub fn record_replay_id_from_paths(
         }
     }
 
-    let mut file = OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&paths.replay_cache)
-        .map_err(|error| SecurityError::io("open replay cache", &paths.replay_cache, error))?;
-    writeln!(
-        file,
+    let entry = format!(
         "\n[[seen]]\nid = \"{}\"\nsource = \"{}\"\nfirst_seen_unix = {}\n",
         escape_file_value(id),
         escape_file_value(source),
         current_unix_seconds()
-    )
-    .map_err(|error| SecurityError::io("write replay cache", &paths.replay_cache, error))
+    );
+    state::append_regular_state_file(
+        &paths.replay_cache,
+        &entry,
+        "inspect replay cache",
+        "create replay cache",
+        "open replay cache",
+        "write replay cache",
+    )?;
+    Ok(())
 }
 
 fn ensure_identity_signing_key(paths: &StatePaths) -> Result<bool, SecurityError> {
@@ -1397,22 +1403,52 @@ fn validate_relay_token(token: &str) -> Result<(), SecurityError> {
 }
 
 fn ensure_replay_cache(paths: &StatePaths) -> Result<bool, SecurityError> {
-    if paths.replay_cache.exists() {
-        return Ok(false);
-    }
-
-    write_new_file(
+    ensure_regular_security_file(
         &paths.replay_cache,
         "# conU replay cache\nversion = \"1\"\n",
+        "inspect replay cache",
+        "read replay cache",
+        "replay cache disappeared after create collision",
     )
 }
 
 fn ensure_key_rotation_plan(paths: &StatePaths) -> Result<bool, SecurityError> {
-    if paths.key_rotation_plan.exists() {
+    ensure_regular_security_file(
+        &paths.key_rotation_plan,
+        key_rotation_plan_contents(),
+        "inspect key rotation plan",
+        "read key rotation plan",
+        "key rotation plan disappeared after create collision",
+    )
+}
+
+fn ensure_regular_security_file(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+    read_action: &'static str,
+    disappeared_reason: &'static str,
+) -> Result<bool, SecurityError> {
+    if state::read_optional_regular_state_file(path, inspect_action, read_action)?.is_some() {
         return Ok(false);
     }
 
-    write_new_file(&paths.key_rotation_plan, key_rotation_plan_contents())
+    match write_new_file(path, contents) {
+        Ok(created) => Ok(created),
+        Err(SecurityError::Io { source, .. }) if source.kind() == io::ErrorKind::AlreadyExists => {
+            if state::read_optional_regular_state_file(path, inspect_action, read_action)?.is_some()
+            {
+                Ok(false)
+            } else {
+                Err(SecurityError::io(
+                    inspect_action,
+                    path,
+                    io::Error::new(io::ErrorKind::NotFound, disappeared_reason),
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn read_identity_signing_key(paths: &StatePaths) -> Result<SigningKeyRecord, SecurityError> {
@@ -1896,10 +1932,11 @@ fn derive_peer_key_with_local(
 }
 
 fn key_file_is_readable(path: &Path) -> bool {
-    path.exists() && fs::read_to_string(path).is_ok()
+    ensure_existing_secret_file(path).is_ok() && fs::read_to_string(path).is_ok()
 }
 
 fn read_key_values(path: &Path) -> Result<HashMap<String, String>, SecurityError> {
+    ensure_existing_secret_file(path)?;
     let contents = fs::read_to_string(path)
         .map_err(|error| SecurityError::io("read security key", path, error))?;
     Ok(parse_key_values(&contents))
@@ -3057,6 +3094,28 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn secret_key_read_rejects_symlink_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("read-secret-symlink");
+        fs::create_dir_all(&home).expect("home directory created");
+        let target = home.join("outside-secret-target");
+        let link = home.join("secret.key");
+        fs::write(&target, "version = \"1\"\nsecret_key_hex = \"outside\"\n")
+            .expect("target writes");
+        symlink(&target, &link).expect("symlink creates");
+
+        let error = read_key_values(&link).expect_err("symlink read fails closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "version = \"1\"\nsecret_key_hex = \"outside\"\n"
+        );
+    }
+
     #[test]
     fn existing_plaintext_secret_files_are_read_and_migrated_when_supported() {
         let home = test_home("plaintext-migration");
@@ -3676,6 +3735,35 @@ mod tests {
             .expect_err("duplicate fails");
 
         assert!(matches!(duplicate, SecurityError::ReplayDetected { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_cache_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("replay-symlink");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-replay-cache");
+        let outside_contents = "outside replay cache\n";
+        fs::write(&outside, outside_contents).expect("outside replay cache writes");
+        symlink(&outside, &paths.replay_cache).expect("replay cache symlink creates");
+
+        let error = record_replay_id_from_paths(&paths, "request_456", "message_request")
+            .expect_err("symlinked replay cache fails closed");
+
+        assert!(error.to_string().contains("inspect replay cache"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside replay cache reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.replay_cache)
+                .expect("replay cache metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
