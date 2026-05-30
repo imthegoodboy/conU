@@ -28,7 +28,13 @@ def load_module():
     return module
 
 
-def ready_payload(module) -> dict[str, object]:
+def ready_payload(
+    module,
+    *,
+    tag: str = TEST_TAG,
+    version: str = TEST_VERSION,
+    prerelease: bool = False,
+) -> dict[str, object]:
     assets = [
         {
             "name": name,
@@ -36,13 +42,13 @@ def ready_payload(module) -> dict[str, object]:
             "state": "uploaded",
             "browser_download_url": f"https://example.invalid/{SENSITIVE_SENTINEL}/{name}",
         }
-        for index, name in enumerate(module.expected_release_asset_names(TEST_VERSION))
+        for index, name in enumerate(module.expected_release_asset_names(version))
     ]
     return {
         "id": 12345,
-        "tag_name": TEST_TAG,
+        "tag_name": tag,
         "draft": False,
-        "prerelease": False,
+        "prerelease": prerelease,
         "assets": assets,
         "body": SENSITIVE_SENTINEL,
     }
@@ -127,6 +133,38 @@ def run_audit_tests(module) -> None:
         module.audit_release_assets("owner/repo", TEST_TAG, draft_payload),
         "release is still a draft",
     )
+
+    stable_prerelease_payload = ready_payload(module, prerelease=True)
+    assert_not_ready(
+        module.audit_release_assets("owner/repo", TEST_TAG, stable_prerelease_payload),
+        "stable tags",
+    )
+
+    prerelease_tag = "v0.1.0-rc.1"
+    prerelease_version = "0.1.0-rc.1"
+    prerelease_flag_payload = ready_payload(
+        module,
+        tag=prerelease_tag,
+        version=prerelease_version,
+        prerelease=False,
+    )
+    assert_not_ready(
+        module.audit_release_assets("owner/repo", prerelease_tag, prerelease_flag_payload),
+        "semver prerelease tags",
+    )
+    prerelease_ready_payload = ready_payload(
+        module,
+        tag=prerelease_tag,
+        version=prerelease_version,
+        prerelease=True,
+    )
+    prerelease_report = module.audit_release_assets(
+        "owner/repo",
+        prerelease_tag,
+        prerelease_ready_payload,
+    )
+    if not prerelease_report.ready:
+        raise AssertionError(f"expected prerelease report to pass, got {prerelease_report.issues!r}")
 
     mismatch_payload = ready_payload(module)
     mismatch_payload["tag_name"] = "v0.2.0"
