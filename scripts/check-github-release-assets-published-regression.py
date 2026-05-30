@@ -158,6 +158,15 @@ def run_audit_tests(module) -> None:
         "forbiddenAssets",
     )
 
+    unexpected_payload = ready_payload(module)
+    unexpected_payload["assets"].append(
+        {"name": "conu-0.1.0-extra-notes.txt", "size": 100, "state": "uploaded"}
+    )
+    assert_not_ready(
+        module.audit_release_assets("owner/repo", TEST_TAG, unexpected_payload),
+        "unexpectedAssets",
+    )
+
     assert_raises(lambda: module.validate_tag("0.1.0"), "must start with")
     assert_raises(lambda: module.validate_tag("vlatest"), "semver")
 
