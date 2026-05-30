@@ -258,6 +258,7 @@ pub fn ensure_security_state(
 pub fn ensure_security_state_from_paths(
     paths: &StatePaths,
 ) -> Result<SecurityReport, SecurityError> {
+    state::ensure_state_directory(&paths.home)?;
     state::ensure_state_directory(&paths.security_dir)?;
     state::ensure_state_directory(&paths.storage_key_archive_dir)?;
 
@@ -897,6 +898,7 @@ pub fn record_replay_id_from_paths(
 ) -> Result<(), SecurityError> {
     validate_replay_value(id, "replay id")?;
     validate_replay_value(source, "replay source")?;
+    state::ensure_state_directory(&paths.home)?;
     state::ensure_state_directory(&paths.security_dir)?;
     ensure_replay_cache(paths)?;
 
