@@ -464,14 +464,23 @@ fn write_if_missing(
 }
 
 fn write_new_file(path: &Path, contents: &str) -> Result<(), StateError> {
+    write_new_file_with_actions(path, contents, "create state file", "write state file")
+}
+
+fn write_new_file_with_actions(
+    path: &Path,
+    contents: &str,
+    create_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), StateError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|error| StateError::io("create state file", path, error))?;
+        .map_err(|error| StateError::io(create_action, path, error))?;
 
     file.write_all(contents.as_bytes())
-        .map_err(|error| StateError::io("write state file", path, error))
+        .map_err(|error| StateError::io(write_action, path, error))
 }
 
 fn read_node_identity(path: &Path) -> Result<NodeIdentity, StateError> {
@@ -517,6 +526,45 @@ fn read_existing_state_file(
     file.read_to_string(&mut contents)
         .map_err(|error| StateError::io(read_action, path, error))?;
     Ok(contents)
+}
+
+pub(crate) fn read_optional_regular_state_file(
+    path: &Path,
+    inspect_action: &'static str,
+    read_action: &'static str,
+) -> Result<Option<String>, StateError> {
+    if regular_state_file_metadata(path, inspect_action)?.is_none() {
+        return Ok(None);
+    }
+
+    read_existing_state_file(path, inspect_action, read_action).map(Some)
+}
+
+pub(crate) fn write_regular_state_file(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+    create_action: &'static str,
+    open_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), StateError> {
+    if regular_state_file_metadata(path, inspect_action)?.is_none() {
+        match write_new_file_with_actions(path, contents, create_action, write_action) {
+            Ok(()) => return Ok(()),
+            Err(StateError::Io { source, .. }) if source.kind() == io::ErrorKind::AlreadyExists => {
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    regular_state_file_metadata(path, inspect_action)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|error| StateError::io(open_action, path, error))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| StateError::io(write_action, path, error))
 }
 
 fn state_file_exists(path: &Path, inspect_action: &'static str) -> Result<bool, StateError> {

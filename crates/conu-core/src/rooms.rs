@@ -865,12 +865,14 @@ fn room_topic_allows(
 }
 
 fn read_rooms(paths: &StatePaths) -> Result<Vec<RoomRecord>, RoomError> {
-    if !paths.room_registry.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.room_registry,
+        "inspect room registry",
+        "read room registry",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.room_registry)
-        .map_err(|error| RoomError::io("read room registry", &paths.room_registry, error))?;
+    };
     parse_rooms(&contents)
 }
 
@@ -923,8 +925,15 @@ fn write_rooms(paths: &StatePaths, rooms: &[RoomRecord]) -> Result<(), RoomError
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.room_registry, contents)
-        .map_err(|error| RoomError::io("write room registry", &paths.room_registry, error))
+    state::write_regular_state_file(
+        &paths.room_registry,
+        &contents,
+        "inspect room registry",
+        "create room registry",
+        "open room registry",
+        "write room registry",
+    )?;
+    Ok(())
 }
 
 fn append_event(paths: &StatePaths, event: RoomEvent) -> Result<(), RoomError> {
@@ -947,12 +956,14 @@ fn append_event_once(paths: &StatePaths, event: RoomEvent) -> Result<(), RoomErr
 }
 
 fn read_events(paths: &StatePaths) -> Result<Vec<RoomEvent>, RoomError> {
-    if !paths.room_events.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.room_events,
+        "inspect room events",
+        "read room events",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.room_events)
-        .map_err(|error| RoomError::io("read room events", &paths.room_events, error))?;
+    };
     parse_events(&contents)
 }
 
@@ -990,17 +1001,26 @@ fn write_events(paths: &StatePaths, events: &[RoomEvent]) -> Result<(), RoomErro
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.room_events, contents)
-        .map_err(|error| RoomError::io("write room events", &paths.room_events, error))
+    state::write_regular_state_file(
+        &paths.room_events,
+        &contents,
+        "inspect room events",
+        "create room events",
+        "open room events",
+        "write room events",
+    )?;
+    Ok(())
 }
 
 fn read_topic_policies(paths: &StatePaths) -> Result<Vec<RoomTopicPolicyRecord>, RoomError> {
-    if !paths.room_policy.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.room_policy,
+        "inspect room topic policy",
+        "read room topic policy",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.room_policy)
-        .map_err(|error| RoomError::io("read room topic policy", &paths.room_policy, error))?;
+    };
     parse_topic_policies(&contents)
 }
 
@@ -1039,8 +1059,15 @@ fn write_topic_policies(
         contents.push_str("payload_displayed = false\n");
     }
 
-    fs::write(&paths.room_policy, contents)
-        .map_err(|error| RoomError::io("write room topic policy", &paths.room_policy, error))
+    state::write_regular_state_file(
+        &paths.room_policy,
+        &contents,
+        "inspect room topic policy",
+        "create room topic policy",
+        "open room topic policy",
+        "write room topic policy",
+    )?;
+    Ok(())
 }
 
 fn parse_rooms(contents: &str) -> Result<Vec<RoomRecord>, RoomError> {
@@ -1725,6 +1752,35 @@ mod tests {
 
         assert!(error.to_string().contains("not allowed to publish"));
         assert!(!error.to_string().contains("private message contents"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn room_registry_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("registry-symlink");
+        register_agent(&home, "agent.codex");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-room-registry");
+        let outside_contents = "outside room registry\n";
+        fs::write(&outside, outside_contents).expect("outside registry writes");
+        symlink(&outside, &paths.room_registry).expect("room registry symlink creates");
+
+        let error = create_room(Some(home), "room.dev", "Dev Room", "agent.codex")
+            .expect_err("symlinked room registry fails closed");
+
+        assert!(error.to_string().contains("inspect room registry"));
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside registry reads"),
+            outside_contents
+        );
+        assert!(
+            fs::symlink_metadata(&paths.room_registry)
+                .expect("room registry metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

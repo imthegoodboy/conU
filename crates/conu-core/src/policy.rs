@@ -6,9 +6,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::state::{self, StateError, StatePaths};
@@ -121,16 +120,6 @@ pub enum PolicyError {
     InvalidRecord {
         reason: String,
     },
-}
-
-impl PolicyError {
-    fn io(action: &'static str, path: &Path, source: io::Error) -> Self {
-        Self::Io {
-            action,
-            path: path.to_path_buf(),
-            source,
-        }
-    }
 }
 
 impl fmt::Display for PolicyError {
@@ -267,12 +256,14 @@ fn ensure_peer_is_trusted(paths: &StatePaths, peer_node_id: &str) -> Result<(), 
 }
 
 fn read_policies(paths: &StatePaths) -> Result<Vec<PeerPolicyRecord>, PolicyError> {
-    if !paths.policy_store.exists() {
+    let Some(contents) = state::read_optional_regular_state_file(
+        &paths.policy_store,
+        "inspect peer policy store",
+        "read peer policy store",
+    )?
+    else {
         return Ok(Vec::new());
-    }
-
-    let contents = fs::read_to_string(&paths.policy_store)
-        .map_err(|error| PolicyError::io("read peer policy store", &paths.policy_store, error))?;
+    };
     let mut policies = Vec::new();
     let mut current = HashMap::new();
     let version_line = format!("version = \"{POLICY_VERSION}\"");
@@ -321,14 +312,15 @@ fn write_policies(paths: &StatePaths, policies: &[PeerPolicyRecord]) -> Result<(
         contents.push_str("payload_displayed = false\n");
     }
 
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&paths.policy_store)
-        .map_err(|error| PolicyError::io("open peer policy store", &paths.policy_store, error))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| PolicyError::io("write peer policy store", &paths.policy_store, error))
+    state::write_regular_state_file(
+        &paths.policy_store,
+        &contents,
+        "inspect peer policy store",
+        "create peer policy store",
+        "open peer policy store",
+        "write peer policy store",
+    )?;
+    Ok(())
 }
 
 fn policy_from_values(values: &HashMap<String, String>) -> Result<PeerPolicyRecord, PolicyError> {
@@ -419,6 +411,7 @@ mod tests {
     use super::*;
     use crate::trust;
     use std::env;
+    use std::fs;
     use std::process;
 
     #[test]
