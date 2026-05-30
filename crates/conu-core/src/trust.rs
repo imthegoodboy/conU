@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -201,7 +201,7 @@ pub fn create_pairing_invite(home_override: Option<PathBuf>) -> Result<PairingIn
         expires_at_unix: now + PAIRING_TTL_SECS,
         status: PairingStatus::Pending,
     };
-    write_pairing_invite(&init.paths, &invite)?;
+    write_new_pairing_invite(&init.paths, &invite)?;
 
     Ok(invite)
 }
@@ -229,6 +229,7 @@ pub fn join_pairing_code(
         });
     }
 
+    ensure_used_invite_target_available(&init.paths, &invite)?;
     let peer = upsert_trusted_peer(&init.paths, &invite, now)?;
     invite.status = PairingStatus::Used;
     write_pairing_invite(&init.paths, &invite)?;
@@ -457,6 +458,18 @@ fn read_pairing_invite(paths: &StatePaths, code: &str) -> Result<PairingInvite, 
 }
 
 fn write_pairing_invite(paths: &StatePaths, invite: &PairingInvite) -> Result<(), TrustError> {
+    write_pairing_invite_with_mode(paths, invite, false)
+}
+
+fn write_new_pairing_invite(paths: &StatePaths, invite: &PairingInvite) -> Result<(), TrustError> {
+    write_pairing_invite_with_mode(paths, invite, true)
+}
+
+fn write_pairing_invite_with_mode(
+    paths: &StatePaths,
+    invite: &PairingInvite,
+    create_new: bool,
+) -> Result<(), TrustError> {
     fs::create_dir_all(&paths.pairing_invites_dir).map_err(|error| {
         TrustError::io(
             "create pairing invitation directory",
@@ -479,8 +492,17 @@ fn write_pairing_invite(paths: &StatePaths, invite: &PairingInvite) -> Result<()
         invite.status.as_str()
     );
 
-    fs::write(&path, contents)
-        .map_err(|error| TrustError::io("write pairing invitation", &path, error))
+    if create_new {
+        write_new_file(
+            &path,
+            &contents,
+            "create pairing invitation",
+            "write pairing invitation",
+        )
+    } else {
+        fs::write(&path, contents)
+            .map_err(|error| TrustError::io("write pairing invitation", &path, error))
+    }
 }
 
 fn move_used_invite(paths: &StatePaths, invite: &PairingInvite) -> Result<(), TrustError> {
@@ -495,8 +517,52 @@ fn move_used_invite(paths: &StatePaths, invite: &PairingInvite) -> Result<(), Tr
         .pairing_invites_dir
         .join(format!("{}.pair", invite.code));
     let target = paths.pairing_used_dir.join(format!("{}.pair", invite.code));
+    ensure_path_available(&target, "reserve used pairing invitation")?;
     fs::rename(&source, &target)
         .map_err(|error| TrustError::io("move used pairing invitation", &source, error))
+}
+
+fn ensure_used_invite_target_available(
+    paths: &StatePaths,
+    invite: &PairingInvite,
+) -> Result<(), TrustError> {
+    fs::create_dir_all(&paths.pairing_used_dir).map_err(|error| {
+        TrustError::io(
+            "create used pairing invitation directory",
+            &paths.pairing_used_dir,
+            error,
+        )
+    })?;
+    let target = paths.pairing_used_dir.join(format!("{}.pair", invite.code));
+    ensure_path_available(&target, "reserve used pairing invitation")
+}
+
+fn ensure_path_available(path: &Path, action: &'static str) -> Result<(), TrustError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(TrustError::io(
+            action,
+            path,
+            io::Error::new(io::ErrorKind::AlreadyExists, "target already exists"),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(TrustError::io("inspect trust target", path, error)),
+    }
+}
+
+fn write_new_file(
+    path: &Path,
+    contents: &str,
+    create_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), TrustError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| TrustError::io(create_action, path, error))?;
+
+    file.write_all(contents.as_bytes())
+        .map_err(|error| TrustError::io(write_action, path, error))
 }
 
 fn read_trust_store(paths: &StatePaths) -> Result<Vec<TrustedPeer>, TrustError> {
@@ -1023,6 +1089,35 @@ mod tests {
     }
 
     #[test]
+    fn new_pairing_invite_refuses_existing_file_without_overwrite() {
+        let home = test_home("invite-create-collision");
+        let paths = StatePaths::from_home(home);
+        let invite = PairingInvite {
+            code: "123456".to_string(),
+            local_node_id: "node_local".to_string(),
+            peer_node_id: "peer_existing".to_string(),
+            display_name: "paired-peer-existing".to_string(),
+            created_at_unix: 10,
+            expires_at_unix: 20,
+            status: PairingStatus::Pending,
+        };
+        write_new_pairing_invite(&paths, &invite).expect("first invite writes");
+        let path = paths.pairing_invites_dir.join("123456.pair");
+        let original = fs::read_to_string(&path).expect("original invite reads");
+        let mut replacement = invite.clone();
+        replacement.display_name = "paired-peer-replacement".to_string();
+
+        let error = write_new_pairing_invite(&paths, &replacement)
+            .expect_err("existing invite should fail closed");
+
+        assert!(error.to_string().contains("create pairing invitation"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("invite still reads"),
+            original
+        );
+    }
+
+    #[test]
     fn join_pairing_code_creates_trusted_peer() {
         let home = test_home("join");
         let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
@@ -1046,6 +1141,38 @@ mod tests {
         let error = join_pairing_code(Some(home), &invite.code).expect_err("second join fails");
 
         assert!(error.to_string().contains("not available locally"));
+    }
+
+    #[test]
+    fn used_pairing_archive_collision_fails_before_trust_mutation() {
+        let home = test_home("used-collision");
+        let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let paths = StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.pairing_used_dir).expect("used dir creates");
+        let used_path = paths.pairing_used_dir.join(format!("{}.pair", invite.code));
+        fs::write(&used_path, "existing used invite").expect("existing used invite writes");
+        let pending_path = paths
+            .pairing_invites_dir
+            .join(format!("{}.pair", invite.code));
+
+        let error = join_pairing_code(Some(home.clone()), &invite.code)
+            .expect_err("used invite collision should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("reserve used pairing invitation")
+        );
+        assert_eq!(
+            fs::read_to_string(&used_path).expect("used invite reads"),
+            "existing used invite"
+        );
+        assert!(
+            fs::read_to_string(&pending_path)
+                .expect("pending invite reads")
+                .contains("status = \"pending\"")
+        );
+        assert!(list_peers(Some(home)).expect("peers read").is_empty());
     }
 
     #[test]
