@@ -887,6 +887,21 @@ pub fn decrypt_from_peer_from_paths(
     Ok(plaintext)
 }
 
+/// Check an idempotency/replay id without committing it.
+pub fn ensure_replay_id_not_seen_from_paths(
+    paths: &StatePaths,
+    id: &str,
+    source: &str,
+) -> Result<(), SecurityError> {
+    validate_replay_value(id, "replay id")?;
+    validate_replay_value(source, "replay source")?;
+    let contents = read_replay_cache_contents(paths)?;
+    if replay_cache_contains_id(&contents, id) {
+        return Err(SecurityError::ReplayDetected { id: id.to_string() });
+    }
+    Ok(())
+}
+
 /// Record an idempotency/replay id and reject duplicates.
 pub fn record_replay_id_from_paths(
     paths: &StatePaths,
@@ -895,22 +910,9 @@ pub fn record_replay_id_from_paths(
 ) -> Result<(), SecurityError> {
     validate_replay_value(id, "replay id")?;
     validate_replay_value(source, "replay source")?;
-    state::ensure_state_directory(&paths.home)?;
-    state::ensure_state_directory(&paths.security_dir)?;
-    ensure_replay_cache(paths)?;
-
-    let contents = state::read_optional_regular_state_file(
-        &paths.replay_cache,
-        "inspect replay cache",
-        "read replay cache",
-    )?
-    .unwrap_or_default();
-    for line in contents.lines().map(str::trim) {
-        if let Some(value) = line.strip_prefix("id = ") {
-            if clean_value(value) == id {
-                return Err(SecurityError::ReplayDetected { id: id.to_string() });
-            }
-        }
+    let contents = read_replay_cache_contents(paths)?;
+    if replay_cache_contains_id(&contents, id) {
+        return Err(SecurityError::ReplayDetected { id: id.to_string() });
     }
 
     let entry = format!(
@@ -928,6 +930,26 @@ pub fn record_replay_id_from_paths(
         "write replay cache",
     )?;
     Ok(())
+}
+
+fn read_replay_cache_contents(paths: &StatePaths) -> Result<String, SecurityError> {
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.security_dir)?;
+    ensure_replay_cache(paths)?;
+
+    Ok(state::read_optional_regular_state_file(
+        &paths.replay_cache,
+        "inspect replay cache",
+        "read replay cache",
+    )?
+    .unwrap_or_default())
+}
+
+fn replay_cache_contains_id(contents: &str, id: &str) -> bool {
+    contents.lines().map(str::trim).any(|line| {
+        line.strip_prefix("id = ")
+            .is_some_and(|value| clean_value(value) == id)
+    })
 }
 
 fn ensure_identity_signing_key(paths: &StatePaths) -> Result<bool, SecurityError> {
@@ -4382,6 +4404,22 @@ mod tests {
             .expect_err("duplicate fails");
 
         assert!(matches!(duplicate, SecurityError::ReplayDetected { .. }));
+    }
+
+    #[test]
+    fn replay_cache_precheck_does_not_record_id() {
+        let home = test_home("replay-precheck");
+        let paths = StatePaths::from_home(home);
+        ensure_security_state_from_paths(&paths).expect("security state initializes");
+
+        ensure_replay_id_not_seen_from_paths(&paths, "request_precheck", "message_request")
+            .expect("unused id prechecks");
+
+        let contents = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
+        assert!(!contents.contains("request_precheck"));
+
+        record_replay_id_from_paths(&paths, "request_precheck", "message_request")
+            .expect("prechecked id still records");
     }
 
     #[cfg(unix)]
