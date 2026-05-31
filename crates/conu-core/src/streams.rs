@@ -6,10 +6,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use conu_protocol::OpaquePayload;
@@ -115,16 +114,6 @@ pub enum StreamError {
     InvalidRequest {
         reason: String,
     },
-}
-
-impl StreamError {
-    fn io(action: &'static str, path: &Path, source: io::Error) -> Self {
-        Self::Io {
-            action,
-            path: path.to_path_buf(),
-            source,
-        }
-    }
 }
 
 impl fmt::Display for StreamError {
@@ -456,6 +445,9 @@ fn remote_peer_for_stream_target(
 }
 
 fn read_streams(paths: &StatePaths) -> Result<Vec<StreamRecord>, StreamError> {
+    if !state::state_directory_exists(&paths.streams_dir, "inspect streams directory")? {
+        return Ok(Vec::new());
+    }
     let Some(contents) = state::read_optional_regular_state_file(
         &paths.stream_registry,
         "inspect stream registry",
@@ -468,8 +460,7 @@ fn read_streams(paths: &StatePaths) -> Result<Vec<StreamRecord>, StreamError> {
 }
 
 fn write_streams(paths: &StatePaths, streams: &[StreamRecord]) -> Result<(), StreamError> {
-    fs::create_dir_all(&paths.streams_dir)
-        .map_err(|error| StreamError::io("create streams directory", &paths.streams_dir, error))?;
+    ensure_streams_directory(paths)?;
     let mut sorted = streams.to_vec();
     sorted.sort_by(|left, right| left.stream_id.cmp(&right.stream_id));
     let mut contents = format!("# conU stream registry\nversion = \"{}\"\n", STREAM_VERSION);
@@ -517,14 +508,16 @@ fn write_streams(paths: &StatePaths, streams: &[StreamRecord]) -> Result<(), Str
 }
 
 fn append_event(paths: &StatePaths, event: StreamEvent) -> Result<(), StreamError> {
-    fs::create_dir_all(&paths.streams_dir)
-        .map_err(|error| StreamError::io("create streams directory", &paths.streams_dir, error))?;
+    ensure_streams_directory(paths)?;
     let mut events = read_events(paths)?;
     events.push(event);
     write_events(paths, &events)
 }
 
 fn read_events(paths: &StatePaths) -> Result<Vec<StreamEvent>, StreamError> {
+    if !state::state_directory_exists(&paths.streams_dir, "inspect streams directory")? {
+        return Ok(Vec::new());
+    }
     let Some(contents) = state::read_optional_regular_state_file(
         &paths.stream_events,
         "inspect stream events",
@@ -537,6 +530,7 @@ fn read_events(paths: &StatePaths) -> Result<Vec<StreamEvent>, StreamError> {
 }
 
 fn write_events(paths: &StatePaths, events: &[StreamEvent]) -> Result<(), StreamError> {
+    ensure_streams_directory(paths)?;
     let mut contents = format!(
         "# conU stream event bus\nversion = \"{}\"\n",
         STREAM_VERSION
@@ -581,6 +575,11 @@ fn write_events(paths: &StatePaths, events: &[StreamEvent]) -> Result<(), Stream
         "open stream events",
         "write stream events",
     )?;
+    Ok(())
+}
+
+fn ensure_streams_directory(paths: &StatePaths) -> Result<(), StreamError> {
+    state::ensure_state_directory(&paths.streams_dir)?;
     Ok(())
 }
 
@@ -819,6 +818,8 @@ mod tests {
     use crate::agents::{AgentRegistration, process_gateway_requests, submit_registration};
     use crate::trust;
     use std::env;
+    use std::fs;
+    use std::path::Path;
     use std::process;
 
     #[test]
@@ -894,6 +895,75 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_directory_symlink_is_rejected_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("streams-dir-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-streams-dir-write");
+        fs::remove_dir_all(&paths.streams_dir).expect("streams dir removes");
+        fs::create_dir_all(&outside).expect("outside streams dir creates");
+        symlink(&outside, &paths.streams_dir).expect("streams dir symlink creates");
+
+        let error = write_streams(&paths, &[test_stream_record()])
+            .expect_err("symlinked streams directory fails closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(!outside.join("registry.toml").exists());
+        assert!(
+            fs::symlink_metadata(&paths.streams_dir)
+                .expect("streams dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_listing_rejects_symlinked_stream_directory_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("streams-dir-list-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-streams-dir-list");
+        fs::remove_dir_all(&paths.streams_dir).expect("streams dir removes");
+        fs::create_dir_all(&outside).expect("outside streams dir creates");
+        fs::write(
+            outside.join("registry.toml"),
+            test_stream_registry_contents(),
+        )
+        .expect("outside registry writes");
+        symlink(&outside, &paths.streams_dir).expect("streams dir symlink creates");
+
+        let error = list_streams(Some(home)).expect_err("symlinked streams directory fails closed");
+
+        assert!(error.to_string().contains("inspect streams directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_event_listing_rejects_symlinked_stream_directory_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("streams-dir-events-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-streams-dir-events");
+        fs::remove_dir_all(&paths.streams_dir).expect("streams dir removes");
+        fs::create_dir_all(&outside).expect("outside streams dir creates");
+        fs::write(outside.join("events.toml"), test_stream_events_contents())
+            .expect("outside events write");
+        symlink(&outside, &paths.streams_dir).expect("streams dir symlink creates");
+
+        let error = list_events(Some(home)).expect_err("symlinked streams directory fails closed");
+
+        assert!(error.to_string().contains("inspect streams directory"));
     }
 
     #[cfg(unix)]
@@ -1075,5 +1145,32 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    #[cfg(unix)]
+    fn test_stream_record() -> StreamRecord {
+        StreamRecord {
+            stream_id: "stream.outside".to_string(),
+            from_agent_id: "agent.outside.a".to_string(),
+            to_agent_id: "agent.outside.b".to_string(),
+            kind: "message".to_string(),
+            state: StreamState::Open,
+            route: "local".to_string(),
+            chunks_written: 0,
+            bytes_written: 0,
+            backpressure_window: DEFAULT_BACKPRESSURE_WINDOW,
+            opened_at_unix: 1,
+            updated_at_unix: 1,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_stream_registry_contents() -> &'static str {
+        "# conU stream registry\nversion = \"1\"\n\n[[stream]]\nstream_id = \"stream.outside\"\nfrom_agent_id = \"agent.outside.a\"\nto_agent_id = \"agent.outside.b\"\nkind = \"message\"\nstate = \"open\"\nroute = \"local\"\nchunks_written = 0\nbytes_written = 0\nbackpressure_window = 65536\nopened_at_unix = 1\nupdated_at_unix = 1\npayload_displayed = false\n"
+    }
+
+    #[cfg(unix)]
+    fn test_stream_events_contents() -> &'static str {
+        "# conU stream event bus\nversion = \"1\"\n\n[[event]]\nevent_id = \"event.outside\"\nstream_id = \"stream.outside\"\nevent_type = \"chunk\"\nfrom_agent_id = \"agent.outside.a\"\nto_agent_id = \"agent.outside.b\"\nroute = \"local\"\npayload_bytes = 10\ncreated_at_unix = 1\npayload_displayed = false\n"
     }
 }
