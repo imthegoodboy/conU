@@ -8,7 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::state::{StateError, StatePaths};
+use crate::state::{self, StateError, StatePaths};
 
 /// Default maximum active log size before rotation.
 pub const DEFAULT_LOG_ROTATE_MAX_BYTES: u64 = 1024 * 1024;
@@ -178,8 +178,8 @@ pub fn rotate_logs_from_paths(
     paths: &StatePaths,
     policy: LogRotationPolicy,
 ) -> Result<LogRotationReport, ObservabilityError> {
-    fs::create_dir_all(&paths.logs_dir)
-        .map_err(|error| ObservabilityError::io("create logs directory", &paths.logs_dir, error))?;
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.logs_dir)?;
 
     let mut entries = Vec::new();
     for entry in fs::read_dir(&paths.logs_dir)
@@ -509,6 +509,66 @@ mod tests {
         );
         assert!(archive_dir.is_dir());
         assert!(!paths.logs_dir.join("conud.log.2").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn home_symlink_fails_before_creating_logs_directory() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("home-symlink");
+        let outside = test_home("home-symlink-target");
+        fs::create_dir_all(&outside).expect("outside directory creates");
+        symlink(&outside, &home).expect("home symlink creates");
+        let paths = StatePaths::from_home(home.clone());
+
+        let error = rotate_logs_from_paths(
+            &paths,
+            LogRotationPolicy::new(1, 2).expect("policy validates"),
+        )
+        .expect_err("home symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect state directory"));
+        assert!(!outside.join("logs").exists());
+        assert!(
+            fs::symlink_metadata(&home)
+                .expect("home link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn logs_directory_symlink_fails_before_rotating_target_logs() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("logs-dir-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = test_home("logs-dir-symlink-target");
+        fs::create_dir_all(&home).expect("home directory creates");
+        fs::create_dir_all(&outside).expect("outside directory creates");
+        fs::write(outside.join("conud.log"), "outside active log\n").expect("outside log writes");
+        symlink(&outside, &paths.logs_dir).expect("logs directory symlink creates");
+
+        let error = rotate_logs_from_paths(
+            &paths,
+            LogRotationPolicy::new(1, 2).expect("policy validates"),
+        )
+        .expect_err("logs directory symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect state directory"));
+        assert_eq!(
+            fs::read_to_string(outside.join("conud.log")).expect("outside log reads"),
+            "outside active log\n"
+        );
+        assert!(!outside.join("conud.log.1").exists());
+        assert!(
+            fs::symlink_metadata(&paths.logs_dir)
+                .expect("logs link metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     fn test_home(name: &str) -> PathBuf {
