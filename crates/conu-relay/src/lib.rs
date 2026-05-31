@@ -42,6 +42,8 @@ const RELAY_ADMIN_TOKENS_FILE_VERSION: &str = "1";
 const RELAY_ACCOUNTING_FILE_VERSION: &str = "1";
 const RELAY_ABUSE_FILE_VERSION: &str = "1";
 const HOSTED_TENANT_FILE_VERSION: &str = "1";
+const RELAY_SESSION_STATE_LOAD_ATTEMPTS: usize = 6;
+const RELAY_SESSION_STATE_LOAD_RETRY_DELAY: Duration = Duration::from_millis(20);
 const LOCAL_DEV_TOKEN: &str = "local-dev-token";
 const MIN_PUBLIC_BIND_TOKEN_LEN: usize = 24;
 const MAX_TOKEN_LEN: usize = 200;
@@ -6122,13 +6124,25 @@ impl RelaySessionState {
         storage: &RelaySessionStorage,
         _policy: RelaySessionPolicy,
     ) -> Result<Self, RelayError> {
-        let mut state = Self::default();
         let RelaySessionStorage::FileBacked(root) = storage else {
-            return Ok(state);
+            return Ok(Self::default());
         };
 
-        fs::create_dir_all(root)
-            .map_err(|error| RelayError::io("create relay session state directory", error))?;
+        ensure_relay_directory(root, "create relay session state directory")?;
+        for attempt in 0..RELAY_SESSION_STATE_LOAD_ATTEMPTS {
+            let (state, retry) = Self::load_from_directory(root)?;
+            if !retry || attempt + 1 == RELAY_SESSION_STATE_LOAD_ATTEMPTS {
+                return Ok(state);
+            }
+            thread::sleep(RELAY_SESSION_STATE_LOAD_RETRY_DELAY);
+        }
+
+        Ok(Self::default())
+    }
+
+    fn load_from_directory(root: &Path) -> Result<(Self, bool), RelayError> {
+        let mut state = Self::default();
+        let mut retry = false;
         let now = current_unix_millis_u64();
         for entry in fs::read_dir(root)
             .map_err(|error| RelayError::io("read relay session state directory", error))?
@@ -6136,19 +6150,36 @@ impl RelaySessionState {
             let entry =
                 entry.map_err(|error| RelayError::io("read relay session state entry", error))?;
             let path = entry.path();
+            if is_relay_session_temp_file(&path) {
+                retry = true;
+                continue;
+            }
             if path.extension().and_then(|extension| extension.to_str()) != Some("session") {
                 continue;
             }
-            let Ok(file_type) = entry.file_type() else {
-                continue;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => {
+                    retry = true;
+                    continue;
+                }
             };
             if !file_type.is_file() {
                 let _ = remove_mailbox_file(&path);
                 continue;
             }
+
             let record = match read_session_file(&path) {
                 Ok(Some(record)) => record,
-                Ok(None) | Err(_) => {
+                Ok(None) => {
+                    let _ = remove_mailbox_file(&path);
+                    continue;
+                }
+                Err(error) if relay_session_load_should_retry(&error) => {
+                    retry = true;
+                    continue;
+                }
+                Err(_) => {
                     let _ = remove_mailbox_file(&path);
                     continue;
                 }
@@ -6160,7 +6191,7 @@ impl RelaySessionState {
             state.records.insert(record.node_id.clone(), record);
         }
 
-        Ok(state)
+        Ok((state, retry))
     }
 
     fn can_resume(
@@ -7161,6 +7192,29 @@ fn remove_session_record(storage: &RelaySessionStorage, node_id: &str) -> Result
 
 fn relay_session_record_path(root: &Path, node_id: &str) -> PathBuf {
     root.join(format!("{}.session", sanitize_identifier(node_id)))
+}
+
+fn is_relay_session_temp_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.starts_with('.') && name.contains(".session.") && name.ends_with(".tmp")
+        })
+}
+
+fn relay_session_load_should_retry(error: &RelayError) -> bool {
+    match error {
+        RelayError::Io { source, .. } => matches!(
+            source.kind(),
+            io::ErrorKind::NotFound
+                | io::ErrorKind::PermissionDenied
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::Interrupted
+        ),
+        RelayError::InvalidConfig(_)
+        | RelayError::InvalidConfigValue(_)
+        | RelayError::Protocol(_) => false,
+    }
 }
 
 fn render_session_file(record: &RelaySessionRecord) -> String {
