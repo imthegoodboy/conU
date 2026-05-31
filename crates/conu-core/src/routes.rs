@@ -288,7 +288,7 @@ pub fn sync_routes_from_paths(paths: &StatePaths) -> Result<RouteSyncReport, Rou
 
     write_routes(paths, &routes)?;
     append_probes(paths, &probes)?;
-    append_route_log(paths, &routes)?;
+    record_route_log(paths, &routes);
 
     Ok(report_from_routes(&routes, probes.len()))
 }
@@ -793,6 +793,10 @@ fn append_route_log(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), Ro
         "write route log",
     )?;
     Ok(())
+}
+
+fn record_route_log(paths: &StatePaths, routes: &[RouteRecord]) {
+    let _ = append_route_log(paths, routes);
 }
 
 fn parse_routes(contents: &str) -> Result<Vec<RouteRecord>, RouteError> {
@@ -1465,6 +1469,25 @@ mod tests {
         assert!(!log.contains("private message contents"));
         assert!(!probes.contains("private message contents"));
         assert!(!log.contains("Review this code"));
+    }
+
+    #[test]
+    fn route_sync_success_does_not_depend_on_route_log_write() {
+        let home = test_home("route-log-collision");
+        let peer = trusted_peer(&home);
+        let route_log = StatePaths::from_home(home.clone())
+            .logs_dir
+            .join("routes.log");
+        fs::create_dir(&route_log).expect("route log collision creates");
+
+        let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let selected = selected_route_for_peer(Some(home), &peer.peer_node_id)
+            .expect("selected route reads")
+            .expect("selected route exists");
+
+        assert_eq!(report.peers, 1);
+        assert_eq!(selected.transport, RouteTransport::RelayWebSocket);
+        assert!(route_log.is_dir());
     }
 
     #[cfg(unix)]

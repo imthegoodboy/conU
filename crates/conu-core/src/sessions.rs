@@ -226,7 +226,7 @@ pub fn sync_remote_sessions_from_paths(
         .map_err(|_| SessionError::InvalidRecord {
             reason: "failed to queue signed agent-card exchange".to_string(),
         })?;
-    append_session_log(paths, &sessions, remote_agents.len())?;
+    record_session_log(paths, &sessions, remote_agents.len());
 
     Ok(report_from_sessions(&sessions, remote_agents.len()))
 }
@@ -841,6 +841,10 @@ fn append_session_log(
     Ok(())
 }
 
+fn record_session_log(paths: &StatePaths, sessions: &[RemoteSession], remote_agents: usize) {
+    let _ = append_session_log(paths, sessions, remote_agents);
+}
+
 fn parse_key_values(contents: &str) -> HashMap<String, String> {
     let mut values = HashMap::new();
 
@@ -1057,6 +1061,23 @@ mod tests {
         assert!(log.contains("payload=not_observed"));
         assert!(!log.contains("private message contents"));
         assert!(!log.contains("Review this code"));
+    }
+
+    #[test]
+    fn session_sync_success_does_not_depend_on_session_log_write() {
+        let home = test_home("session-log-collision");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let invite = trust::create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let joined = trust::join_pairing_code(Some(home.clone()), &invite.code).expect("joins");
+        let session_log = init.paths.logs_dir.join("sessions.log");
+        fs::create_dir(&session_log).expect("session log collision creates");
+
+        let report = sync_remote_sessions(Some(home.clone())).expect("sync succeeds");
+        let sessions = list_remote_sessions(Some(home)).expect("sessions read");
+
+        assert_eq!(report.connected, 1);
+        assert_eq!(sessions[0].peer_node_id, joined.peer.peer_node_id);
+        assert!(session_log.is_dir());
     }
 
     #[cfg(unix)]
