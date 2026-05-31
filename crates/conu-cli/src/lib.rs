@@ -8507,12 +8507,7 @@ fn set_update_binary_file_permissions(_file: &fs::File, _path: &Path) -> Result<
 }
 
 fn ensure_update_output_files_available(dir: &Path, names: &[&str]) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|error| {
-        format!(
-            "could not create release update artifact output directory {}: {error}",
-            dir.display()
-        )
-    })?;
+    ensure_update_output_directory(dir)?;
     let mut seen = HashSet::new();
     for name in names {
         validate_public_asset_name(name, "downloaded update asset")?;
@@ -8522,14 +8517,72 @@ fn ensure_update_output_files_available(dir: &Path, names: &[&str]) -> Result<()
             ));
         }
         let path = dir.join(name);
-        if path.exists() {
-            return Err(format!(
-                "release update artifact output already exists: {}",
-                path.display()
-            ));
-        }
+        ensure_update_output_path_available(&path, None)?;
     }
     Ok(())
+}
+
+fn ensure_update_output_directory(dir: &Path) -> Result<(), String> {
+    if update_output_directory_exists(dir)? {
+        return Ok(());
+    }
+    fs::create_dir_all(dir).map_err(|error| {
+        format!(
+            "could not create release update artifact output directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    if update_output_directory_exists(dir)? {
+        return Ok(());
+    }
+    Err(format!(
+        "could not create release update artifact output directory {}: directory was not created",
+        dir.display()
+    ))
+}
+
+fn update_output_directory_exists(dir: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(dir) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !metadata.is_dir() {
+                return Err(format!(
+                    "release update artifact output directory is not a directory: {}",
+                    dir.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "could not inspect release update artifact output directory {}: {error}",
+            dir.display()
+        )),
+    }
+}
+
+fn ensure_update_output_path_available(path: &Path, label: Option<&str>) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(update_output_exists_message(path, label)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not inspect release update artifact output {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn update_output_exists_message(path: &Path, label: Option<&str>) -> String {
+    match label {
+        Some(label) => format!(
+            "release update artifact {label} output already exists: {}",
+            path.display()
+        ),
+        None => format!(
+            "release update artifact output already exists: {}",
+            path.display()
+        ),
+    }
 }
 
 fn write_update_output_file(
@@ -8539,19 +8592,9 @@ fn write_update_output_file(
     label: &str,
 ) -> Result<PathBuf, String> {
     validate_public_asset_name(name, "downloaded update asset")?;
-    fs::create_dir_all(dir).map_err(|error| {
-        format!(
-            "could not create release update artifact output directory {}: {error}",
-            dir.display()
-        )
-    })?;
+    ensure_update_output_directory(dir)?;
     let path = dir.join(name);
-    if path.exists() {
-        return Err(format!(
-            "release update artifact {label} output already exists: {}",
-            path.display()
-        ));
-    }
+    ensure_update_output_path_available(&path, Some(label))?;
     let mut file = match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -11515,6 +11558,68 @@ mod tests {
         assert_eq!(
             fs::read(&existing).expect("existing output reads"),
             b"existing public archive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_download_output_write_rejects_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let output_dir = temp_home("update-download-output-symlink");
+        fs::create_dir_all(&output_dir).expect("output dir creates");
+        let filename = "conu-0.1.0-linux-x64.tar.gz";
+        let outside = output_dir.join("outside-archive");
+        let output = output_dir.join(filename);
+        fs::write(&outside, b"existing outside archive").expect("outside writes");
+        symlink(&outside, &output).expect("output symlink creates");
+
+        let error = write_update_output_file(&output_dir, filename, b"new archive", "archive")
+            .expect_err("symlink output should fail closed");
+
+        assert!(error.contains("output already exists"));
+        assert_eq!(
+            fs::read(&outside).expect("outside reads"),
+            b"existing outside archive"
+        );
+        assert!(
+            fs::symlink_metadata(&output)
+                .expect("output symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_download_output_write_rejects_symlinked_output_directory() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-download-output-dir-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let outside = home.join("outside");
+        fs::create_dir_all(&outside).expect("outside dir creates");
+        let output_dir = home.join("output");
+        symlink(&outside, &output_dir).expect("output dir symlink creates");
+
+        let error = write_update_output_file(
+            &output_dir,
+            "conu-0.1.0-linux-x64.tar.gz",
+            b"new archive",
+            "archive",
+        )
+        .expect_err("symlinked output directory should fail closed");
+
+        assert!(error.contains("output directory is not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside).expect("outside dir reads").count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&output_dir)
+                .expect("output dir symlink metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 
