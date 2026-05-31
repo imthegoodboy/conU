@@ -649,7 +649,7 @@ fn deliver_envelope_with_status_stream_and_receipt(
         let _ = fs::remove_file(&envelope_path);
         return Err(error);
     }
-    append_message_log(paths, &entry, status)?;
+    record_message_log(paths, &entry, status);
 
     Ok(entry)
 }
@@ -1107,6 +1107,11 @@ fn append_message_log(
         "write message log",
     )?;
     Ok(())
+}
+
+fn record_message_log(paths: &StatePaths, entry: &InboxEntry, status: &str) {
+    // Durable inbox and receipt writes own delivery success. Metadata logs are best-effort.
+    let _ = append_message_log(paths, entry, status);
 }
 
 fn write_new_file(path: &Path, contents: &str) -> Result<(), MessageError> {
@@ -2176,6 +2181,39 @@ mod tests {
         assert_eq!(entry.envelope_id, "env.retry");
         let replay_cache = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
         assert!(replay_cache.contains("env.retry"));
+    }
+
+    #[test]
+    fn remote_delivery_success_does_not_depend_on_message_log_write() {
+        let home = test_home("remote-delivery-log-collision");
+        register_agent(&home, "agent.receiver");
+        let paths = StatePaths::from_home(home);
+        let message_log = paths.logs_dir.join("messages.log");
+        fs::create_dir(&message_log).expect("message log collision creates");
+
+        let entry = deliver_remote_envelope_from_paths(
+            &paths,
+            "env.log.collision",
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private delivered payload".to_vec()),
+        )
+        .expect("delivery succeeds despite message log collision");
+
+        let envelope_path = paths
+            .message_inbox_dir
+            .join("agent.receiver")
+            .join("env.log.collision.env");
+        let receipt_count = fs::read_dir(&paths.message_receipts_dir)
+            .expect("receipts read")
+            .count();
+        let replay_cache = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
+
+        assert_eq!(entry.envelope_id, "env.log.collision");
+        assert!(envelope_path.exists());
+        assert_eq!(receipt_count, 1);
+        assert!(replay_cache.contains("env.log.collision"));
+        assert!(message_log.is_dir());
     }
 
     #[cfg(unix)]
