@@ -7881,13 +7881,9 @@ fn create_update_apply_backup_dir_with_nonce(
     nonce: u128,
 ) -> Result<PathBuf, String> {
     validate_public_asset_name(version, "release update version")?;
+    ensure_update_install_directory(install_dir)?;
     let backup_root = install_dir.join(".conu-update-backups");
-    fs::create_dir_all(&backup_root).map_err(|error| {
-        format!(
-            "could not create release update backup root {}: {error}",
-            backup_root.display()
-        )
-    })?;
+    ensure_update_backup_root_directory(&backup_root)?;
 
     for attempt in 0..1024 {
         let backup_dir = backup_root.join(format!("{version}-{nonce}-{attempt}"));
@@ -7906,18 +7902,91 @@ fn create_update_apply_backup_dir_with_nonce(
     Err("could not create unique release update backup directory".to_string())
 }
 
+fn ensure_update_install_directory(install_dir: &Path) -> Result<(), String> {
+    if update_install_directory_exists(install_dir)? {
+        return Ok(());
+    }
+    fs::create_dir_all(install_dir).map_err(|error| {
+        format!(
+            "could not create release update install directory {}: {error}",
+            install_dir.display()
+        )
+    })?;
+    if update_install_directory_exists(install_dir)? {
+        return Ok(());
+    }
+    Err(format!(
+        "could not create release update install directory {}: directory was not created",
+        install_dir.display()
+    ))
+}
+
+fn update_install_directory_exists(install_dir: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(install_dir) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !metadata.is_dir() {
+                return Err(format!(
+                    "release update install-dir is not a directory: {}",
+                    install_dir.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "could not inspect release update install directory {}: {error}",
+            install_dir.display()
+        )),
+    }
+}
+
+fn ensure_update_backup_root_directory(backup_root: &Path) -> Result<(), String> {
+    if update_backup_root_directory_exists(backup_root)? {
+        return Ok(());
+    }
+    fs::create_dir_all(backup_root).map_err(|error| {
+        format!(
+            "could not create release update backup root {}: {error}",
+            backup_root.display()
+        )
+    })?;
+    if update_backup_root_directory_exists(backup_root)? {
+        return Ok(());
+    }
+    Err(format!(
+        "could not create release update backup root {}: directory was not created",
+        backup_root.display()
+    ))
+}
+
+fn update_backup_root_directory_exists(backup_root: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(backup_root) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !metadata.is_dir() {
+                return Err(format!(
+                    "release update backup root is not a directory: {}",
+                    backup_root.display()
+                ));
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "could not inspect release update backup root {}: {error}",
+            backup_root.display()
+        )),
+    }
+}
+
 fn plan_staged_update_binaries(
     binaries: &[StagedUpdateBinary],
     install_dir: &Path,
     backup_dir: Option<&Path>,
     _confirmed: bool,
 ) -> Result<Vec<UpdateApplyBinaryReport>, String> {
-    if install_dir.exists() && !install_dir.is_dir() {
-        return Err(format!(
-            "release update install-dir is not a directory: {}",
-            install_dir.display()
-        ));
-    }
+    update_install_directory_exists(install_dir)?;
 
     let mut reports = Vec::new();
     let mut targets = HashSet::new();
@@ -7957,12 +8026,7 @@ fn install_staged_update_binaries(
     backup_dir: Option<&Path>,
 ) -> Result<Vec<UpdateApplyBinaryReport>, String> {
     let reports = plan_staged_update_binaries(binaries, install_dir, backup_dir, true)?;
-    fs::create_dir_all(install_dir).map_err(|error| {
-        format!(
-            "could not create release update install directory {}: {error}",
-            install_dir.display()
-        )
-    })?;
+    ensure_update_install_directory(install_dir)?;
     if let Some(backup_dir) = backup_dir {
         fs::create_dir_all(backup_dir).map_err(|error| {
             format!(
@@ -11673,6 +11737,52 @@ mod tests {
         assert!(!install_dir.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_dry_run_rejects_symlinked_install_dir_without_installing() {
+        use std::os::unix::fs::symlink;
+
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let archive_bytes = update_archive_fixture_bytes(&target, false);
+        let archive_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-dry-run-install-dir-symlink");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
+        let outside = home.join("outside-install");
+        fs::create_dir_all(&outside).expect("outside install dir creates");
+        let install_dir = home.join("install-bin");
+        symlink(&outside, &install_dir).expect("install dir symlink creates");
+
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--dry-run",
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("install-dir is not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside)
+                .expect("outside install dir reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&install_dir)
+                .expect("install dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn update_apply_confirm_installs_expected_binaries_and_backup() {
         let target = update_apply_test_target();
@@ -11727,6 +11837,52 @@ mod tests {
         assert!(!output.stdout.contains("fixture binary bytes"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_confirm_rejects_symlinked_install_dir_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let archive_bytes = update_archive_fixture_bytes(&target, false);
+        let archive_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-confirm-install-dir-symlink");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
+        let outside = home.join("outside-install");
+        fs::create_dir_all(&outside).expect("outside install dir creates");
+        let install_dir = home.join("install-bin");
+        symlink(&outside, &install_dir).expect("install dir symlink creates");
+
+        let output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--confirm",
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("install-dir is not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside)
+                .expect("outside install dir reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&install_dir)
+                .expect("install dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn update_apply_backup_dir_skips_existing_candidate() {
         let home = temp_home("update-apply-backup-dir");
@@ -11743,6 +11899,37 @@ mod tests {
             Some("0.1.0-42-1")
         );
         assert!(created.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_backup_dir_rejects_symlinked_backup_root() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-backup-root-symlink");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let outside = home.join("outside-backups");
+        fs::create_dir_all(&outside).expect("outside backup dir creates");
+        let backup_root = install_dir.join(".conu-update-backups");
+        symlink(&outside, &backup_root).expect("backup root symlink creates");
+
+        let error = create_update_apply_backup_dir_with_nonce(&install_dir, "0.1.0", 42)
+            .expect_err("symlinked backup root should fail closed");
+
+        assert!(error.contains("release update backup root is not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside)
+                .expect("outside backup dir reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&backup_root)
+                .expect("backup root symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
