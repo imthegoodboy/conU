@@ -2573,7 +2573,7 @@ pub fn audit_relay_session_state_dir(
         contents_displayed: false,
     };
 
-    if !root.exists() {
+    if !relay_directory_exists(root, "inspect relay session state directory")? {
         return Ok(audit);
     }
 
@@ -2684,7 +2684,7 @@ pub fn audit_relay_accounting_dir(
         contents_displayed: false,
     };
 
-    if !root.exists() {
+    if !relay_directory_exists(root, "inspect relay accounting directory")? {
         return Ok(audit);
     }
 
@@ -2920,7 +2920,7 @@ pub fn audit_relay_abuse_dir(
         contents_displayed: false,
     };
 
-    if !root.exists() {
+    if !relay_directory_exists(root, "inspect relay abuse directory")? {
         return Ok(audit);
     }
 
@@ -6326,8 +6326,7 @@ impl RelayAccountingState {
             return Ok(state);
         };
 
-        fs::create_dir_all(root)
-            .map_err(|error| RelayError::io("create relay accounting directory", error))?;
+        ensure_relay_directory(root, "create relay accounting directory")?;
         for entry in fs::read_dir(root)
             .map_err(|error| RelayError::io("read relay accounting directory", error))?
         {
@@ -6506,8 +6505,7 @@ impl RelayAbuseState {
             return Ok(state);
         };
 
-        fs::create_dir_all(root)
-            .map_err(|error| RelayError::io("create relay abuse directory", error))?;
+        ensure_relay_directory(root, "create relay abuse directory")?;
         for entry in fs::read_dir(root)
             .map_err(|error| RelayError::io("read relay abuse directory", error))?
         {
@@ -7392,7 +7390,7 @@ fn purge_abuse_storage(storage: &RelayAbuseStorage) -> Result<(), RelayError> {
     let RelayAbuseStorage::FileBacked(root) = storage else {
         return Ok(());
     };
-    if !root.exists() {
+    if !relay_directory_exists(root, "inspect relay abuse directory")? {
         return Ok(());
     }
     for entry in
@@ -11513,6 +11511,64 @@ token_displayed = true\n",
                 .expect("session dir link metadata")
                 .file_type()
                 .is_symlink()
+        );
+
+        let session_audit_error = audit_relay_session_state_dir(&session_dir, None)
+            .expect_err("symlinked session audit directory fails closed");
+        assert!(session_audit_error.to_string().contains("not a directory"));
+
+        let accounting_outside = home.join("outside-accounting");
+        let accounting_dir = home.join("accounting");
+        fs::create_dir_all(&accounting_outside).expect("outside accounting dir creates");
+        symlink(&accounting_outside, &accounting_dir).expect("accounting dir symlink creates");
+        let accounting_storage = RelayAccountingStorage::file_backed(accounting_dir.clone())
+            .expect("accounting storage");
+
+        let accounting_load_error =
+            RelayAccountingState::load(&accounting_storage, RelayAccountingPolicy::default())
+                .expect_err("symlinked accounting load directory fails closed");
+        let accounting_audit_error = audit_relay_accounting_dir(&accounting_dir, None)
+            .expect_err("symlinked accounting audit directory fails closed");
+
+        assert!(
+            accounting_load_error
+                .to_string()
+                .contains("not a directory")
+        );
+        assert!(
+            accounting_audit_error
+                .to_string()
+                .contains("not a directory")
+        );
+        assert_eq!(
+            fs::read_dir(&accounting_outside)
+                .expect("outside accounting dir reads")
+                .count(),
+            0
+        );
+
+        let abuse_outside = home.join("outside-abuse");
+        let abuse_dir = home.join("abuse");
+        fs::create_dir_all(&abuse_outside).expect("outside abuse dir creates");
+        symlink(&abuse_outside, &abuse_dir).expect("abuse dir symlink creates");
+        let abuse_storage =
+            RelayAbuseStorage::file_backed(abuse_dir.clone()).expect("abuse storage");
+
+        let abuse_load_error = RelayAbuseState::load(&abuse_storage, RelayAbusePolicy::default())
+            .expect_err("symlinked abuse load directory fails closed");
+        let abuse_audit_error = audit_relay_abuse_dir(&abuse_dir, None)
+            .expect_err("symlinked abuse audit directory fails closed");
+        let abuse_purge_error =
+            purge_abuse_storage(&abuse_storage).expect_err("symlinked abuse purge fails closed");
+
+        assert!(abuse_load_error.to_string().contains("not a directory"));
+        assert!(abuse_audit_error.to_string().contains("not a directory"));
+        assert!(abuse_purge_error.to_string().contains("not a directory"));
+        assert_eq!(
+            fs::read_dir(&abuse_outside)
+                .expect("outside abuse dir reads")
+                .count(),
+            0
         );
     }
 
