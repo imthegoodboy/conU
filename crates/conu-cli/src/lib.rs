@@ -7980,6 +7980,85 @@ fn update_backup_root_directory_exists(backup_root: &Path) -> Result<bool, Strin
     }
 }
 
+fn ensure_prepared_update_backup_directory(
+    install_dir: &Path,
+    backup_dir: &Path,
+) -> Result<(), String> {
+    let backup_root = install_dir.join(".conu-update-backups");
+    match backup_dir.parent() {
+        Some(parent) if parent == backup_root.as_path() => {}
+        _ => {
+            return Err(format!(
+                "release update backup directory is outside backup root: {}",
+                backup_dir.display()
+            ));
+        }
+    }
+    ensure_existing_update_backup_directory(&backup_root, backup_dir)
+}
+
+fn ensure_existing_update_backup_directory(
+    backup_root: &Path,
+    backup_dir: &Path,
+) -> Result<(), String> {
+    if !update_backup_root_directory_exists(backup_root)? {
+        return Err(format!(
+            "release update backup root does not exist: {}",
+            backup_root.display()
+        ));
+    }
+    match fs::symlink_metadata(backup_dir) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !metadata.is_dir() {
+                return Err(format!(
+                    "release update backup directory is not a directory: {}",
+                    backup_dir.display()
+                ));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(format!(
+            "release update backup directory does not exist: {}",
+            backup_dir.display()
+        )),
+        Err(error) => Err(format!(
+            "could not inspect release update backup directory {}: {error}",
+            backup_dir.display()
+        )),
+    }
+}
+
+fn ensure_update_backup_file_parent(backup_file: &Path) -> Result<(), String> {
+    let backup_dir = backup_file.parent().ok_or_else(|| {
+        format!(
+            "release update backup file has no parent directory: {}",
+            backup_file.display()
+        )
+    })?;
+    let backup_root = backup_dir.parent().ok_or_else(|| {
+        format!(
+            "release update backup file has no backup root: {}",
+            backup_file.display()
+        )
+    })?;
+    ensure_existing_update_backup_directory(backup_root, backup_dir)
+}
+
+fn ensure_update_backup_file_parent_if_present(backup_file: &Path) -> Result<(), String> {
+    let Some(backup_dir) = backup_file.parent() else {
+        return Ok(());
+    };
+    match fs::symlink_metadata(backup_dir) {
+        Ok(_) => ensure_update_backup_file_parent(backup_file),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not inspect release update backup directory {}: {error}",
+            backup_dir.display()
+        )),
+    }
+}
+
 fn plan_staged_update_binaries(
     binaries: &[StagedUpdateBinary],
     install_dir: &Path,
@@ -8028,12 +8107,7 @@ fn install_staged_update_binaries(
     let reports = plan_staged_update_binaries(binaries, install_dir, backup_dir, true)?;
     ensure_update_install_directory(install_dir)?;
     if let Some(backup_dir) = backup_dir {
-        fs::create_dir_all(backup_dir).map_err(|error| {
-            format!(
-                "could not create release update backup directory {}: {error}",
-                backup_dir.display()
-            )
-        })?;
+        ensure_prepared_update_backup_directory(install_dir, backup_dir)?;
     }
 
     let nonce = SystemTime::now()
@@ -8161,6 +8235,7 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
                 report.target_file.display()
             ));
         };
+        ensure_update_backup_file_parent(backup_file)?;
         if backup_file.exists() {
             return Err(format!(
                 "release update backup target already exists: {}",
@@ -8406,6 +8481,7 @@ fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) -> Result<(
 }
 
 fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), String> {
+    ensure_update_backup_file_parent_if_present(backup_file)?;
     let metadata = update_backup_file_metadata(backup_file)?;
     let mut backup = fs::File::open(backup_file).map_err(|error| {
         format!(
@@ -11932,6 +12008,56 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_install_rejects_symlinked_backup_dir_without_writing_outside() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-backup-dir-symlink");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let target_file = install_dir.join(&filename);
+        fs::write(&target_file, b"current binary").expect("target writes");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        fs::write(&source_file, b"new conu binary").expect("source binary writes");
+        let backup_root = install_dir.join(".conu-update-backups");
+        fs::create_dir_all(&backup_root).expect("backup root creates");
+        let outside = home.join("outside-backup-dir");
+        fs::create_dir_all(&outside).expect("outside backup dir creates");
+        let backup_dir = backup_root.join("swapped");
+        symlink(&outside, &backup_dir).expect("backup dir symlink creates");
+        let staged = StagedUpdateBinary {
+            name: "conu".to_string(),
+            source_file,
+            bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
+        };
+
+        let error = install_staged_update_binaries(&[staged], &install_dir, Some(&backup_dir))
+            .expect_err("symlinked backup dir should fail closed");
+
+        assert!(error.contains("release update backup directory is not a directory"));
+        assert_eq!(
+            fs::read(&target_file).expect("target remains readable"),
+            b"current binary"
+        );
+        assert_eq!(
+            fs::read_dir(&outside)
+                .expect("outside backup dir reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&backup_dir)
+                .expect("backup dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn update_apply_temp_install_target_skips_existing_candidate() {
         let home = temp_home("update-apply-temp-target");
@@ -12323,6 +12449,49 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_backup_rejects_symlinked_backup_root_without_writing_outside() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-backup-root-swapped");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let target_file = install_dir.join(&filename);
+        fs::write(&target_file, b"current binary").expect("target writes");
+        let outside_root = home.join("outside-backup-root");
+        let outside_run = outside_root.join("swapped");
+        fs::create_dir_all(&outside_run).expect("outside backup run creates");
+        let backup_root = install_dir.join(".conu-update-backups");
+        symlink(&outside_root, &backup_root).expect("backup root symlink creates");
+        let backup_file = backup_root.join("swapped").join(&filename);
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file: home.join("unused-staged"),
+            target_file: target_file.clone(),
+            backup_file: Some(backup_file.clone()),
+            bytes: b"current binary".len() as u64,
+            sha256: sha256_hex(b"current binary"),
+        };
+
+        let error = back_up_existing_update_binaries(&[report])
+            .expect_err("symlinked backup root should fail closed");
+
+        assert!(error.contains("release update backup root is not a directory"));
+        assert!(!outside_run.join(&filename).exists());
+        assert_eq!(
+            fs::read(&target_file).expect("target remains readable"),
+            b"current binary"
+        );
+        assert!(
+            fs::symlink_metadata(&backup_root)
+                .expect("backup root symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn update_apply_restore_backup_reports_missing_backup() {
         let home = temp_home("update-apply-missing-backup");
@@ -12389,6 +12558,42 @@ mod tests {
         assert!(
             fs::symlink_metadata(&backup_file)
                 .expect("backup symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_restore_backup_rejects_symlinked_backup_dir_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-symlink-restore-backup-dir");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let backup_root = install_dir.join(".conu-update-backups");
+        fs::create_dir_all(&backup_root).expect("backup root creates");
+        let outside_backup_dir = home.join("outside-restore-backup-dir");
+        fs::create_dir_all(&outside_backup_dir).expect("outside backup dir creates");
+        let backup_dir = backup_root.join("restore");
+        symlink(&outside_backup_dir, &backup_dir).expect("backup dir symlink creates");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        let backup_file = backup_dir.join(update_binary_filename("conu"));
+        let outside_backup = outside_backup_dir.join(update_binary_filename("conu"));
+        fs::write(&outside_backup, b"backup binary").expect("outside backup writes");
+
+        let error = restore_update_backup(&target_file, &backup_file)
+            .expect_err("symlinked backup dir should fail closed");
+
+        assert!(error.contains("release update backup directory is not a directory"));
+        assert!(!target_file.exists());
+        assert_eq!(
+            fs::read(&outside_backup).expect("outside backup reads"),
+            b"backup binary"
+        );
+        assert!(
+            fs::symlink_metadata(&backup_dir)
+                .expect("backup dir symlink metadata")
                 .file_type()
                 .is_symlink()
         );
