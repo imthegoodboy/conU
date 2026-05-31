@@ -249,6 +249,8 @@ pub fn process_gateway_requests_from_paths(
     };
 
     for request_path in pending_requests(paths)? {
+        ensure_request_archive_targets_available(paths, &request_path)?;
+
         match process_one_request(paths, node_id, &request_path) {
             Ok(ProcessedRequest::Registered(agent_id)) => {
                 report.processed += 1;
@@ -832,13 +834,25 @@ fn pending_requests(paths: &StatePaths) -> Result<Vec<PathBuf>, AgentError> {
     Ok(requests)
 }
 
+fn ensure_request_archive_targets_available(
+    paths: &StatePaths,
+    request_path: &Path,
+) -> Result<(), AgentError> {
+    state::ensure_state_directory(&paths.ipc_processed_dir)?;
+    state::ensure_state_directory(&paths.ipc_rejected_dir)?;
+
+    let processed_target = request_archive_target(request_path, &paths.ipc_processed_dir);
+    let rejected_target = request_archive_target(request_path, &paths.ipc_rejected_dir);
+    let rejection_reason = request_rejection_reason_path(request_path, &paths.ipc_rejected_dir);
+
+    ensure_ipc_archive_target_available(&processed_target)?;
+    ensure_ipc_archive_target_available(&rejected_target)?;
+    ensure_ipc_archive_target_available(&rejection_reason)
+}
+
 fn move_request(request_path: &Path, target_dir: &Path) -> Result<(), AgentError> {
     state::ensure_state_directory(target_dir)?;
-    let target = target_dir.join(
-        request_path
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("request.req")),
-    );
+    let target = request_archive_target(request_path, target_dir);
     ensure_ipc_archive_target_available(&target)?;
     fs::rename(request_path, &target)
         .map_err(|error| AgentError::io("move IPC request", request_path, error))
@@ -850,12 +864,8 @@ fn reject_request(
     error: &AgentError,
 ) -> Result<(), AgentError> {
     state::ensure_state_directory(target_dir)?;
-    let target = target_dir.join(
-        request_path
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("request.req")),
-    );
-    let error_path = target.with_extension("error");
+    let target = request_archive_target(request_path, target_dir);
+    let error_path = request_rejection_reason_path(request_path, target_dir);
     ensure_ipc_archive_target_available(&target)?;
     write_new_file_with_action(
         &error_path,
@@ -865,6 +875,18 @@ fn reject_request(
     )?;
     fs::rename(request_path, &target)
         .map_err(|error| AgentError::io("move rejected IPC request", request_path, error))
+}
+
+fn request_archive_target(request_path: &Path, target_dir: &Path) -> PathBuf {
+    target_dir.join(
+        request_path
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("request.req")),
+    )
+}
+
+fn request_rejection_reason_path(request_path: &Path, target_dir: &Path) -> PathBuf {
+    request_archive_target(request_path, target_dir).with_extension("error")
 }
 
 fn ensure_ipc_archive_target_available(path: &Path) -> Result<(), AgentError> {
@@ -1427,7 +1449,7 @@ mod tests {
         );
         fs::write(&target, "existing processed marker").expect("existing marker writes");
 
-        let error = process_gateway_requests(Some(home))
+        let error = process_gateway_requests(Some(home.clone()))
             .expect_err("existing processed marker should fail closed");
 
         assert!(error.to_string().contains("reserve IPC archive target"));
@@ -1436,6 +1458,11 @@ mod tests {
             "existing processed marker"
         );
         assert!(submission.request_path.exists());
+        assert!(
+            list_local_agents(Some(home))
+                .expect("agents read")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1477,7 +1504,7 @@ mod tests {
         let error = process_gateway_requests(Some(home))
             .expect_err("existing rejection reason should fail closed");
 
-        assert!(error.to_string().contains("create IPC rejection reason"));
+        assert!(error.to_string().contains("reserve IPC archive target"));
         assert_eq!(
             fs::read_to_string(&error_path).expect("existing error reads"),
             "existing rejection reason"
