@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -644,11 +644,8 @@ pub(crate) fn write_regular_state_file(
         }
     }
 
-    regular_state_file_metadata(path, inspect_action)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(path)
+    let mut file = open_existing_regular_state_file_for_write(path, inspect_action, open_action)?;
+    file.set_len(0)
         .map_err(|error| StateError::io(open_action, path, error))?;
     file.write_all(contents.as_bytes())
         .map_err(|error| StateError::io(write_action, path, error))
@@ -669,10 +666,8 @@ pub(crate) fn rewrite_existing_regular_state_file(
         ));
     }
 
-    let mut file = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(path)
+    let mut file = open_existing_regular_state_file_for_write(path, inspect_action, open_action)?;
+    file.set_len(0)
         .map_err(|error| StateError::io(open_action, path, error))?;
     file.write_all(contents.as_bytes())
         .map_err(|error| StateError::io(write_action, path, error))
@@ -711,13 +706,94 @@ pub(crate) fn append_regular_state_file(
         }
     }
 
-    regular_state_file_metadata(path, inspect_action)?;
-    let mut file = OpenOptions::new()
+    let mut file = open_existing_regular_state_file_for_append(path, inspect_action, open_action)?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| StateError::io(write_action, path, error))
+}
+
+fn open_existing_regular_state_file_for_write(
+    path: &Path,
+    inspect_action: &'static str,
+    open_action: &'static str,
+) -> Result<File, StateError> {
+    let Some(metadata) = regular_state_file_metadata(path, inspect_action)? else {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    };
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| StateError::io(open_action, path, error))?;
+    validate_opened_regular_state_file(path, inspect_action, open_action, &metadata, &file)?;
+    Ok(file)
+}
+
+fn open_existing_regular_state_file_for_append(
+    path: &Path,
+    inspect_action: &'static str,
+    open_action: &'static str,
+) -> Result<File, StateError> {
+    let Some(metadata) = regular_state_file_metadata(path, inspect_action)? else {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    };
+    let file = OpenOptions::new()
         .append(true)
         .open(path)
         .map_err(|error| StateError::io(open_action, path, error))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| StateError::io(write_action, path, error))
+    validate_opened_regular_state_file(path, inspect_action, open_action, &metadata, &file)?;
+    Ok(file)
+}
+
+fn validate_opened_regular_state_file(
+    path: &Path,
+    inspect_action: &'static str,
+    open_action: &'static str,
+    expected_metadata: &fs::Metadata,
+    file: &File,
+) -> Result<(), StateError> {
+    let Some(path_metadata) = regular_state_file_metadata(path, inspect_action)? else {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    };
+    if !state_file_write_target_matches(expected_metadata, &path_metadata) {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "state file path changed while opening",
+            ),
+        ));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| StateError::io(open_action, path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_STATE_FILE_BYTES
+        || !state_file_write_target_matches(expected_metadata, &opened_metadata)
+    {
+        return Err(StateError::io(
+            open_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "opened state file does not match inspected path",
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 fn state_file_exists(path: &Path, inspect_action: &'static str) -> Result<bool, StateError> {
@@ -762,8 +838,17 @@ fn state_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) 
     expected.len() == current.len() && state_file_identity_matches(expected, current)
 }
 
+fn state_file_write_target_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    state_file_stable_identity_matches(expected, current)
+}
+
 #[cfg(unix)]
 fn state_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    state_file_stable_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn state_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
 
     expected.dev() == current.dev() && expected.ino() == current.ino()
@@ -773,15 +858,27 @@ fn state_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) 
 fn state_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
-    expected.file_attributes() == current.file_attributes()
-        && expected.creation_time() == current.creation_time()
+    state_file_stable_identity_matches(expected, current)
         && expected.last_write_time() == current.last_write_time()
         && expected.file_size() == current.file_size()
+}
+
+#[cfg(windows)]
+fn state_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
 }
 
 #[cfg(not(any(unix, windows)))]
 fn state_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     expected.modified().ok() == current.modified().ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn state_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    state_file_identity_matches(expected, current)
 }
 
 fn regular_state_directory_metadata(
@@ -1118,6 +1215,83 @@ mod tests {
         let error = init_state(Some(home)).expect_err("file state directory should fail closed");
 
         assert!(error.to_string().contains("inspect state directory"));
+    }
+
+    #[test]
+    fn opened_state_write_guard_rejects_mismatched_handle() {
+        let home = test_home("opened-write-guard");
+        fs::create_dir_all(&home).expect("home creates");
+        let target = home.join("target.toml");
+        let replacement = home.join("replacement.toml");
+        fs::write(&target, "version = \"1\"\n").expect("target writes");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fs::write(&replacement, "version = \"1\"\nchanged = true\n").expect("replacement writes");
+
+        let expected = regular_state_file_metadata(&target, "inspect state write target")
+            .expect("target metadata reads")
+            .expect("target exists");
+        let opened = OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .expect("replacement opens");
+
+        let error = validate_opened_regular_state_file(
+            &target,
+            "inspect state write target",
+            "open state write target",
+            &expected,
+            &opened,
+        )
+        .expect_err("mismatched opened handle should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("opened state file does not match inspected path")
+        );
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "version = \"1\"\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&replacement).expect("replacement reads"),
+            "version = \"1\"\nchanged = true\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_regular_state_file_rejects_symlink_without_truncating_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("write-state-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let target = home.join("outside-state.toml");
+        let link = home.join("linked-state.toml");
+        fs::write(&target, "version = \"1\"\nsecret = \"kept\"\n").expect("outside writes");
+        symlink(&target, &link).expect("state symlink creates");
+
+        let error = write_regular_state_file(
+            &link,
+            "version = \"1\"\nsecret = \"changed\"\n",
+            "inspect symlinked state write",
+            "create symlinked state",
+            "open symlinked state",
+            "write symlinked state",
+        )
+        .expect_err("symlinked state write should fail closed");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("outside reads"),
+            "version = \"1\"\nsecret = \"kept\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("state symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[cfg(unix)]
