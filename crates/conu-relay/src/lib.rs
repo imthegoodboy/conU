@@ -6146,9 +6146,12 @@ impl RelaySessionState {
                 let _ = remove_mailbox_file(&path);
                 continue;
             }
-            let Some(record) = read_session_file(&path)? else {
-                let _ = remove_mailbox_file(&path);
-                continue;
+            let record = match read_session_file(&path) {
+                Ok(Some(record)) => record,
+                Ok(None) | Err(_) => {
+                    let _ = remove_mailbox_file(&path);
+                    continue;
+                }
             };
             if record.is_expired(now) {
                 let _ = remove_mailbox_file(&path);
@@ -10762,6 +10765,44 @@ token_displayed = true\n",
         let debug = format!("{loaded_state:?}");
         assert!(!debug.contains(&first_session));
         assert!(!debug.contains("test-token"));
+    }
+
+    #[test]
+    fn relay_session_state_load_skips_invalid_records_without_payloads() {
+        let session_dir = test_home("relay-session-state-invalid-load").join("sessions");
+        fs::create_dir_all(&session_dir).expect("session dir exists");
+        let invalid_path = relay_session_record_path(&session_dir, "node.invalid");
+        fs::write(
+            &invalid_path,
+            "version = \"1\"\nnode_id = \"node.invalid\"\nsession_id = \"relay_node.invalid_1\"\ncreated_at_unix_millis = not-a-number\nlast_seen_unix_millis = 1\nexpires_at_unix_millis = 2\npayload_displayed = false\ntoken_displayed = false\ncontents_displayed = false\n",
+        )
+        .expect("invalid session state writes");
+        let now = current_unix_millis_u64();
+        let valid = RelaySessionRecord {
+            node_id: "node.valid".to_string(),
+            session_id: session_id("node.valid"),
+            created_at_unix_millis: now,
+            last_seen_unix_millis: now,
+            expires_at_unix_millis: now.saturating_add(5_000),
+        };
+        fs::write(
+            relay_session_record_path(&session_dir, "node.valid"),
+            render_session_file(&valid),
+        )
+        .expect("valid session state writes");
+
+        let loaded_state = RelaySessionState::load(
+            &RelaySessionStorage::file_backed(session_dir).expect("storage config"),
+            RelaySessionPolicy::default(),
+        )
+        .expect("session state loads around invalid records");
+
+        assert_eq!(loaded_state.records.len(), 1);
+        assert!(loaded_state.records.contains_key("node.valid"));
+        assert!(!invalid_path.exists());
+        let debug = format!("{loaded_state:?}");
+        assert!(!debug.contains("relay_node.invalid_1"));
+        assert!(!debug.contains("not-a-number"));
     }
 
     #[test]
