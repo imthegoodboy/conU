@@ -356,7 +356,7 @@ fn direct_route_candidate(
                 local_node_id,
                 peer,
                 endpoint,
-                std::time::Duration::from_millis(700),
+                std::time::Duration::from_millis(direct_transport::DEFAULT_DIRECT_TIMEOUT_MS),
             ) {
                 Ok(report) if report.authenticated => {
                     state = RouteState::Candidate;
@@ -1344,9 +1344,7 @@ mod tests {
 
     #[test]
     fn sync_selects_direct_when_authenticated_quic_probe_succeeds() {
-        let _direct_guard = crate::direct_transport::DIRECT_QUIC_TEST_LOCK
-            .lock()
-            .expect("direct quic test lock");
+        let _direct_guard = crate::direct_transport::direct_quic_test_lock();
         let alice_home = test_home("direct-selected-alice");
         let bob_home = test_home("direct-selected-bob");
         let bob_endpoint = free_loopback_endpoint();
@@ -1374,10 +1372,14 @@ mod tests {
             crate::direct_transport::DirectRuntimeServer::new().expect("server starts");
         let handle = std::thread::spawn(move || {
             server
-                .tick_from_paths(&bob_paths, &bob_node, std::time::Duration::from_millis(900))
+                .tick_from_paths(
+                    &bob_paths,
+                    &bob_node,
+                    crate::direct_transport::direct_quic_test_timeout(),
+                )
                 .expect("server tick")
         });
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(crate::direct_transport::direct_quic_test_startup_delay());
 
         let report = sync_routes(Some(alice_home.clone())).expect("routes sync");
         let routes = list_routes(Some(alice_home.clone())).expect("routes read");

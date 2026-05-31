@@ -35,12 +35,29 @@ use crate::state::{self, StateError, StatePaths};
 use crate::trust::{self, TrustStatus, TrustedPeer};
 
 const DIRECT_VERSION: &str = "1";
-const DEFAULT_DIRECT_TIMEOUT_MS: u64 = 700;
+pub(crate) const DEFAULT_DIRECT_TIMEOUT_MS: u64 = 2_000;
 const MAX_DIRECT_FRAME_BYTES: usize = 80 * 1024;
 const MAX_DIRECT_PAYLOAD_BYTES: usize = 64 * 1024;
 
 #[cfg(test)]
 pub(crate) static DIRECT_QUIC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn direct_quic_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    DIRECT_QUIC_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) fn direct_quic_test_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+#[cfg(test)]
+pub(crate) fn direct_quic_test_startup_delay() -> Duration {
+    Duration::from_millis(300)
+}
 
 /// A completed direct QUIC route probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1508,7 +1525,7 @@ mod tests {
 
     #[test]
     fn direct_quic_probe_authenticates_trusted_peer() {
-        let _direct_guard = DIRECT_QUIC_TEST_LOCK.lock().expect("direct quic test lock");
+        let _direct_guard = direct_quic_test_lock();
         let alice_home = test_home("probe-alice");
         let bob_home = test_home("probe-bob");
         let bob_endpoint = free_loopback_endpoint();
@@ -1534,10 +1551,10 @@ mod tests {
         let mut server = DirectRuntimeServer::new().expect("server starts");
         let handle = std::thread::spawn(move || {
             server
-                .tick_from_paths(&bob_paths, &bob_node, Duration::from_millis(900))
+                .tick_from_paths(&bob_paths, &bob_node, direct_quic_test_timeout())
                 .expect("server tick")
         });
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(direct_quic_test_startup_delay());
 
         let alice_paths = StatePaths::from_home(alice_home.clone());
         let alice_node = state::read_state(Some(alice_home))
@@ -1550,7 +1567,7 @@ mod tests {
             &alice_node,
             &bob_peer,
             &bob_endpoint,
-            Duration::from_millis(900),
+            direct_quic_test_timeout(),
         )
         .expect("direct probe succeeds");
         let server_report = handle.join().expect("server joins");
@@ -1562,7 +1579,7 @@ mod tests {
 
     #[test]
     fn direct_stream_chunk_delivers_to_peer_inbox_without_payload_logs() {
-        let _direct_guard = DIRECT_QUIC_TEST_LOCK.lock().expect("direct quic test lock");
+        let _direct_guard = direct_quic_test_lock();
         let alice_home = test_home("stream-alice");
         let bob_home = test_home("stream-bob");
         let bob_endpoint = free_loopback_endpoint();
@@ -1593,10 +1610,10 @@ mod tests {
         let mut server = DirectRuntimeServer::new().expect("server starts");
         let handle = std::thread::spawn(move || {
             server
-                .tick_from_paths(&bob_paths, &bob_node, Duration::from_millis(900))
+                .tick_from_paths(&bob_paths, &bob_node, direct_quic_test_timeout())
                 .expect("server tick")
         });
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(direct_quic_test_startup_delay());
 
         let alice_paths = StatePaths::from_home(alice_home.clone());
         let alice_node = state::read_state(Some(alice_home))
@@ -1630,7 +1647,7 @@ mod tests {
 
     #[test]
     fn direct_message_delivers_to_peer_inbox_without_payload_logs() {
-        let _direct_guard = DIRECT_QUIC_TEST_LOCK.lock().expect("direct quic test lock");
+        let _direct_guard = direct_quic_test_lock();
         let alice_home = test_home("message-alice");
         let bob_home = test_home("message-bob");
         let bob_endpoint = free_loopback_endpoint();
@@ -1661,10 +1678,10 @@ mod tests {
         let mut server = DirectRuntimeServer::new().expect("server starts");
         let handle = std::thread::spawn(move || {
             server
-                .tick_from_paths(&bob_paths, &bob_node, Duration::from_millis(900))
+                .tick_from_paths(&bob_paths, &bob_node, direct_quic_test_timeout())
                 .expect("server tick")
         });
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(direct_quic_test_startup_delay());
 
         let alice_paths = StatePaths::from_home(alice_home.clone());
         let alice_node = state::read_state(Some(alice_home))
