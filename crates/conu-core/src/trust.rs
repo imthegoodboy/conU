@@ -744,12 +744,13 @@ fn write_trust_file(
     open_action: &'static str,
     write_action: &'static str,
 ) -> Result<(), TrustError> {
-    let mut file = if regular_trust_file_metadata(path, open_action)?.is_some() {
-        OpenOptions::new()
+    let mut file = if let Some(metadata) = regular_trust_file_metadata(path, open_action)? {
+        let file = OpenOptions::new()
             .write(true)
-            .truncate(true)
             .open(path)
-            .map_err(|error| TrustError::io(open_action, path, error))?
+            .map_err(|error| TrustError::io(open_action, path, error))?;
+        validate_opened_regular_trust_file(path, open_action, &metadata, &file)?;
+        file
     } else {
         OpenOptions::new()
             .write(true)
@@ -758,8 +759,54 @@ fn write_trust_file(
             .map_err(|error| TrustError::io(create_action, path, error))?
     };
 
+    file.set_len(0)
+        .map_err(|error| TrustError::io(open_action, path, error))?;
     file.write_all(contents.as_bytes())
         .map_err(|error| TrustError::io(write_action, path, error))
+}
+
+fn validate_opened_regular_trust_file(
+    path: &Path,
+    action: &'static str,
+    expected_metadata: &fs::Metadata,
+    file: &fs::File,
+) -> Result<(), TrustError> {
+    let Some(path_metadata) = regular_trust_file_metadata(path, action)? else {
+        return Err(TrustError::io(
+            action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "trust file path is missing"),
+        ));
+    };
+    if !trust_file_metadata_matches(expected_metadata, &path_metadata) {
+        return Err(TrustError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trust file path changed while opening",
+            ),
+        ));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| TrustError::io(action, path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_TRUST_FILE_BYTES
+        || !trust_file_metadata_matches(expected_metadata, &opened_metadata)
+    {
+        return Err(TrustError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "opened trust file does not match inspected path",
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 fn regular_trust_file_metadata(
@@ -1413,6 +1460,47 @@ mod tests {
 
         assert!(error.contains("trust file exceeds"));
         assert!(!error.contains(private_marker));
+    }
+
+    #[test]
+    fn opened_trust_write_guard_rejects_mismatched_handle() {
+        let home = test_home("opened-trust-write-guard");
+        fs::create_dir_all(&home).expect("home creates");
+        let target = home.join("trust-target.toml");
+        let replacement = home.join("trust-replacement.toml");
+        fs::write(&target, "version = \"1\"\n").expect("target writes");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fs::write(&replacement, "version = \"1\"\nchanged = true\n").expect("replacement writes");
+
+        let expected = regular_trust_file_metadata(&target, "inspect trust write target")
+            .expect("target metadata reads")
+            .expect("target exists");
+        let opened = OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .expect("replacement opens");
+
+        let error = validate_opened_regular_trust_file(
+            &target,
+            "inspect trust write target",
+            &expected,
+            &opened,
+        )
+        .expect_err("mismatched opened handle should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("opened trust file does not match inspected path")
+        );
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "version = \"1\"\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&replacement).expect("replacement reads"),
+            "version = \"1\"\nchanged = true\n"
+        );
     }
 
     #[test]
