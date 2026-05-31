@@ -3291,14 +3291,54 @@ fn write_relay_metadata_file(
 
     #[cfg(windows)]
     if _existing_target_is_regular {
-        fs::remove_file(path).map_err(|error| RelayError::io(replace_action, error))?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(RelayError::io(replace_action, error)),
+        }
     }
 
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(RelayError::io(replace_action, error));
+    #[cfg(windows)]
+    {
+        if let Err(error) = fs::rename(&temp_path, path) {
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
+            ) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(RelayError::io(replace_action, error));
+            }
+            match regular_relay_file_exists(path, inspect_action) {
+                Ok(true) => match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        let _ = fs::remove_file(&temp_path);
+                        return Err(RelayError::io(replace_action, error));
+                    }
+                },
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = fs::remove_file(&temp_path);
+                    return Err(error);
+                }
+            }
+            if let Err(error) = fs::rename(&temp_path, path) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(RelayError::io(replace_action, error));
+            }
+        }
+        Ok(())
     }
-    Ok(())
+
+    #[cfg(not(windows))]
+    {
+        if let Err(error) = fs::rename(&temp_path, path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(RelayError::io(replace_action, error));
+        }
+        Ok(())
+    }
 }
 
 fn relay_metadata_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
