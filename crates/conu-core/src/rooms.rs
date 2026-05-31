@@ -330,7 +330,7 @@ pub fn create_room(
 
     rooms.push(room.clone());
     write_rooms(&init.paths, &rooms)?;
-    append_room_log(&init.paths, "room_created", &room.room_id, None, 0)?;
+    record_room_log(&init.paths, "room_created", &room.room_id, None, 0);
 
     Ok(RoomCreateReport { room })
 }
@@ -379,13 +379,13 @@ pub fn join_room(
     let room = rooms[index].clone();
 
     write_rooms(&init.paths, &rooms)?;
-    append_room_log(
+    record_room_log(
         &init.paths,
         "room_joined",
         &room.room_id,
         Some(&agent_id),
         0,
-    )?;
+    );
 
     Ok(RoomJoinReport { room, joined: true })
 }
@@ -490,13 +490,13 @@ pub fn publish_room_event(
 
     write_rooms(&init.paths, &rooms)?;
     append_event(&init.paths, event.clone())?;
-    append_room_log(
+    record_room_log(
         &init.paths,
         "room_event_published",
         &room.room_id,
         Some(&from_agent_id),
         payload_bytes,
-    )?;
+    );
 
     Ok(RoomPublishReport {
         room,
@@ -567,13 +567,13 @@ pub fn deliver_remote_room_event_from_paths(
         &to_agent_id,
         payload,
     )?;
-    append_room_log(
+    record_room_log(
         paths,
         "room_event_received",
         &room_id,
         Some(&to_agent_id),
         payload_bytes,
-    )?;
+    );
 
     Ok(entry)
 }
@@ -661,13 +661,13 @@ pub fn set_room_topic_policy(
     });
     policies.push(record.clone());
     write_topic_policies(&init.paths, &policies)?;
-    append_room_log(
+    record_room_log(
         &init.paths,
         "room_topic_policy_updated",
         &record.room_id,
         Some(&record.agent_id),
         0,
-    )?;
+    );
 
     Ok(record)
 }
@@ -1398,6 +1398,16 @@ fn append_room_log(
     Ok(())
 }
 
+fn record_room_log(
+    paths: &StatePaths,
+    event: &'static str,
+    room_id: &str,
+    agent_id: Option<&str>,
+    payload_bytes: usize,
+) {
+    let _ = append_room_log(paths, event, room_id, agent_id, payload_bytes);
+}
+
 fn required(values: &HashMap<String, String>, key: &'static str) -> Result<String, RoomError> {
     values
         .get(key)
@@ -1590,6 +1600,24 @@ mod tests {
         assert!(!registry.contains("private message contents"));
         assert!(!event_file.contains("private message contents"));
         assert!(!log.contains("private message contents"));
+    }
+
+    #[test]
+    fn room_create_success_does_not_depend_on_room_log_write() {
+        let home = test_home("room-log-collision");
+        register_agent(&home, "agent.codex");
+        let room_log = StatePaths::from_home(home.clone())
+            .logs_dir
+            .join("rooms.log");
+        fs::create_dir(&room_log).expect("room log collision creates");
+
+        let created = create_room(Some(home.clone()), "room.dev", "Dev Room", "agent.codex")
+            .expect("room creates");
+        let rooms = list_rooms(Some(home)).expect("rooms read");
+
+        assert_eq!(created.room.room_id, "room.dev");
+        assert_eq!(rooms.len(), 1);
+        assert!(room_log.is_dir());
     }
 
     #[test]

@@ -485,7 +485,7 @@ fn upsert_agent(
     }
 
     write_registry(paths, &agents)?;
-    append_agent_log(paths, "agent_registered", &registration.agent_id)?;
+    record_agent_log(paths, "agent_registered", &registration.agent_id);
 
     Ok(registration.agent_id)
 }
@@ -511,7 +511,7 @@ fn update_presence(paths: &StatePaths, heartbeat: PresenceHeartbeat) -> Result<S
     }
 
     write_registry(paths, &agents)?;
-    append_agent_log(paths, "agent_presence", &heartbeat.agent_id)?;
+    record_agent_log(paths, "agent_presence", &heartbeat.agent_id);
 
     Ok(heartbeat.agent_id)
 }
@@ -951,6 +951,10 @@ fn append_agent_log(paths: &StatePaths, event: &str, agent_id: &str) -> Result<(
     Ok(())
 }
 
+fn record_agent_log(paths: &StatePaths, event: &str, agent_id: &str) {
+    let _ = append_agent_log(paths, event, agent_id);
+}
+
 fn write_new_file(path: &Path, contents: &str) -> Result<(), AgentError> {
     write_new_file_with_action(path, contents, "create IPC request", "write IPC request")
 }
@@ -1171,6 +1175,25 @@ mod tests {
             Some(security::AGENT_CARD_SIGNATURE_ALGORITHM)
         );
         assert!(verify_local_agent_record(&agents[0]).expect("signature verifies"));
+    }
+
+    #[test]
+    fn registration_success_does_not_depend_on_agent_log_write() {
+        let home = test_home("register-log-collision");
+        let registration = AgentRegistration::new("agent.codex", "Codex Desktop", "coding-agent")
+            .expect("valid registration");
+        submit_registration(Some(home.clone()), registration).expect("request submits");
+        let paths = StatePaths::from_home(home.clone());
+        let agent_log = paths.logs_dir.join("agents.log");
+        fs::create_dir(&agent_log).expect("agent log collision creates");
+
+        let report = process_gateway_requests(Some(home.clone())).expect("requests process");
+        let agents = list_local_agents(Some(home)).expect("agents read");
+
+        assert_eq!(report.processed, 1);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent_id, "agent.codex");
+        assert!(agent_log.is_dir());
     }
 
     #[test]

@@ -216,7 +216,7 @@ pub fn open_stream(
     streams.push(stream.clone());
     write_streams(&init.paths, &streams)?;
     append_event(&init.paths, event_for(&stream, "opened", 0, now))?;
-    append_stream_log(&init.paths, "stream_opened", &stream, 0)?;
+    record_stream_log(&init.paths, "stream_opened", &stream, 0);
 
     Ok(StreamOpenReport { stream })
 }
@@ -326,7 +326,7 @@ pub fn write_stream(
 
     write_streams(&init.paths, &streams)?;
     append_event(&init.paths, event.clone())?;
-    append_stream_log(&init.paths, "stream_chunk", &stream, payload_bytes)?;
+    record_stream_log(&init.paths, "stream_chunk", &stream, payload_bytes);
 
     Ok(StreamWriteReport { stream, event })
 }
@@ -356,7 +356,7 @@ pub fn close_stream(
 
     write_streams(&init.paths, &streams)?;
     append_event(&init.paths, event.clone())?;
-    append_stream_log(&init.paths, "stream_closed", &stream, 0)?;
+    record_stream_log(&init.paths, "stream_closed", &stream, 0);
 
     Ok(StreamCloseReport { stream, event })
 }
@@ -718,6 +718,15 @@ fn append_stream_log(
     Ok(())
 }
 
+fn record_stream_log(
+    paths: &StatePaths,
+    event: &'static str,
+    stream: &StreamRecord,
+    payload_bytes: usize,
+) {
+    let _ = append_stream_log(paths, event, stream, payload_bytes);
+}
+
 fn required(values: &HashMap<String, String>, key: &'static str) -> Result<String, StreamError> {
     values
         .get(key)
@@ -851,6 +860,33 @@ mod tests {
     }
 
     #[test]
+    fn stream_lifecycle_success_does_not_depend_on_stream_log_write() {
+        let home = test_home("stream-log-collision");
+        register_agent(&home, "agent.a");
+        register_agent(&home, "agent.b");
+        let stream_log = StatePaths::from_home(home.clone())
+            .logs_dir
+            .join("streams.log");
+        fs::create_dir(&stream_log).expect("stream log collision creates");
+
+        let opened =
+            open_stream(Some(home.clone()), "agent.a", "agent.b", "message").expect("opens");
+        let written = write_stream(
+            Some(home.clone()),
+            &opened.stream.stream_id,
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("writes");
+        let closed = close_stream(Some(home.clone()), &opened.stream.stream_id).expect("closes");
+        let events = list_events(Some(home)).expect("events read");
+
+        assert_eq!(written.stream.chunks_written, 1);
+        assert_eq!(closed.stream.state, StreamState::Closed);
+        assert_eq!(events.len(), 3);
+        assert!(stream_log.is_dir());
+    }
+
+    #[test]
     fn stream_write_enforces_backpressure_window() {
         let home = test_home("stream-backpressure");
         register_agent(&home, "agent.a");
@@ -968,7 +1004,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stream_log_rejects_symlink_without_writing_target() {
+    fn stream_log_symlink_does_not_block_persisted_stream_open() {
         use std::os::unix::fs::symlink;
 
         let home = test_home("log-symlink");
@@ -980,10 +1016,11 @@ mod tests {
         fs::write(&outside, outside_contents).expect("outside log writes");
         symlink(&outside, paths.logs_dir.join("streams.log")).expect("stream log symlink creates");
 
-        let error = open_stream(Some(home), "agent.a", "agent.b", "message")
-            .expect_err("symlinked stream log fails closed");
+        let opened = open_stream(Some(home.clone()), "agent.a", "agent.b", "message")
+            .expect("stream opens despite symlinked stream log");
+        let streams = list_streams(Some(home)).expect("streams read");
 
-        assert!(error.to_string().contains("inspect stream log"));
+        assert_eq!(opened.stream.stream_id, streams[0].stream_id);
         assert_eq!(
             fs::read_to_string(&outside).expect("outside log reads"),
             outside_contents

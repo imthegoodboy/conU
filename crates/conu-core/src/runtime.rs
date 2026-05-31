@@ -137,7 +137,7 @@ impl RuntimeLease {
     pub fn heartbeat(&self) -> Result<RuntimeStatus, RuntimeError> {
         let status = self.build_status(RuntimeState::Running, current_unix_seconds());
         write_status(&self.paths, &status)?;
-        append_log(&self.paths, "heartbeat", self.pid, &self.node.node_id)?;
+        record_log(&self.paths, "heartbeat", self.pid, &self.node.node_id);
         Ok(status)
     }
 
@@ -206,7 +206,7 @@ impl RuntimeLease {
 
         let status = self.build_status(RuntimeState::Stopping, current_unix_seconds());
         write_status(&self.paths, &status)?;
-        append_log(&self.paths, "stop_requested", self.pid, &self.node.node_id)?;
+        record_log(&self.paths, "stop_requested", self.pid, &self.node.node_id);
         Ok(())
     }
 
@@ -237,7 +237,7 @@ impl RuntimeLease {
         write_status(&self.paths, &status)?;
         remove_file_if_exists(&self.paths.runtime_lock)?;
         remove_file_if_exists(&self.paths.runtime_stop_request)?;
-        append_log(&self.paths, "stopped", self.pid, &self.node.node_id)?;
+        record_log(&self.paths, "stopped", self.pid, &self.node.node_id);
         self.stopped = true;
 
         Ok(status)
@@ -319,34 +319,34 @@ impl RuntimeLease {
                             || relay_report.undelivered > 0
                             || relay_report.rejected > 0
                         {
-                            append_log(
+                            record_log(
                                 &self.paths,
                                 "relay_pump_activity",
                                 self.pid,
                                 &self.node.node_id,
-                            )?;
+                            );
                         }
                     }
                     Err(_) => {
                         report.relay_error = true;
-                        append_log(
+                        record_log(
                             &self.paths,
                             "relay_pump_retry",
                             self.pid,
                             &self.node.node_id,
-                        )?;
+                        );
                     }
                 }
             }
             Ok(false) => {}
             Err(_) => {
                 report.relay_error = true;
-                append_log(
+                record_log(
                     &self.paths,
                     "relay_pump_retry",
                     self.pid,
                     &self.node.node_id,
-                )?;
+                );
             }
         }
 
@@ -374,22 +374,22 @@ impl RuntimeLease {
                             || relay_report.undelivered > 0
                             || relay_report.rejected > 0
                         {
-                            append_log(
+                            record_log(
                                 &self.paths,
                                 "relay_pump_activity",
                                 self.pid,
                                 &self.node.node_id,
-                            )?;
+                            );
                         }
                     }
                     Err(_) => {
                         report.relay_error = true;
-                        append_log(
+                        record_log(
                             &self.paths,
                             "relay_pump_retry",
                             self.pid,
                             &self.node.node_id,
-                        )?;
+                        );
                     }
                 }
             }
@@ -397,12 +397,12 @@ impl RuntimeLease {
             Err(_) => {
                 report.relay_error = true;
                 relay_pump.disconnect();
-                append_log(
+                record_log(
                     &self.paths,
                     "relay_pump_retry",
                     self.pid,
                     &self.node.node_id,
-                )?;
+                );
             }
         }
 
@@ -420,12 +420,12 @@ impl RuntimeLease {
         match server.tick_from_paths(&self.paths, &self.node.node_id, wait) {
             Ok(_) => Ok(()),
             Err(_) => {
-                append_log(
+                record_log(
                     &self.paths,
                     "direct_quic_retry",
                     self.pid,
                     &self.node.node_id,
-                )?;
+                );
                 Ok(())
             }
         }
@@ -447,22 +447,22 @@ impl RuntimeLease {
                 report.direct_received = direct_report.received;
                 report.direct_rejected = direct_report.rejected;
                 if direct_report.received > 0 || direct_report.rejected > 0 {
-                    append_log(
+                    record_log(
                         &self.paths,
                         "direct_quic_activity",
                         self.pid,
                         &self.node.node_id,
-                    )?;
+                    );
                 }
             }
             Err(_) => {
                 report.direct_error = true;
-                append_log(
+                record_log(
                     &self.paths,
                     "direct_quic_retry",
                     self.pid,
                     &self.node.node_id,
-                )?;
+                );
             }
         }
         Ok(())
@@ -584,7 +584,7 @@ pub fn acquire_runtime(home_override: Option<PathBuf>) -> Result<RuntimeLease, R
 
     let starting = lease.build_status(RuntimeState::Starting, started_at_unix);
     write_status(&lease.paths, &starting)?;
-    append_log(&lease.paths, "started", lease.pid, &lease.node.node_id)?;
+    record_log(&lease.paths, "started", lease.pid, &lease.node.node_id);
     lease.heartbeat()?;
 
     Ok(lease)
@@ -610,12 +610,12 @@ pub fn request_runtime_stop(home_override: Option<PathBuf>) -> Result<StopReport
             "truncate runtime stop request",
             "write runtime stop request",
         )?;
-        append_log(
+        record_log(
             &paths,
             "stop_requested_by_cli",
             process::id(),
             status.node_id.as_deref().unwrap_or("unknown"),
-        )?;
+        );
         Ok(StopReport {
             requested: true,
             status,
@@ -1001,6 +1001,10 @@ fn append_log(
         "write runtime log",
     )?;
     Ok(())
+}
+
+fn record_log(paths: &StatePaths, event: &str, pid: u32, node_id: &str) {
+    let _ = append_log(paths, event, pid, node_id);
 }
 
 fn runtime_is_stale(status: &RuntimeStatus) -> bool {
@@ -1494,6 +1498,22 @@ mod tests {
         assert!(log.contains("payload=not_observed"));
         assert!(!log.contains("private message contents"));
         assert!(!log.contains("Review this code"));
+    }
+
+    #[test]
+    fn runtime_heartbeat_success_does_not_depend_on_log_write() {
+        let home = test_home("runtime-log-collision");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let runtime_log = init.paths.logs_dir.join("conud.log");
+        fs::create_dir(&runtime_log).expect("runtime log collision creates");
+
+        let lease = acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let status = lease.heartbeat().expect("heartbeat writes");
+        let read_back = read_runtime(Some(home)).expect("runtime reads");
+
+        assert_eq!(status.state, RuntimeState::Running);
+        assert_eq!(read_back.state, RuntimeState::Running);
+        assert!(runtime_log.is_dir());
     }
 
     #[test]
