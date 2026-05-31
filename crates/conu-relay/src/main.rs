@@ -3758,17 +3758,46 @@ fn read_bounded_stdin_token<R: Read>(mut reader: R, label: &'static str) -> Resu
 }
 
 fn ensure_token_out_available(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        return Err("token output file already exists".to_string());
+    match fs::symlink_metadata(path) {
+        Ok(_) => return Err("token output file already exists".to_string()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect issued relay token file: {error}")),
     }
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("create issued relay token directory: {error}"))?;
+        ensure_token_out_directory(parent)?;
     }
     Ok(())
+}
+
+fn ensure_token_out_directory(path: &Path) -> Result<(), String> {
+    if token_out_directory_exists(path)? {
+        return Ok(());
+    }
+    fs::create_dir_all(path)
+        .map_err(|error| format!("create issued relay token directory: {error}"))?;
+    if token_out_directory_exists(path)? {
+        return Ok(());
+    }
+    Err("inspect issued relay token directory: directory was not created".to_string())
+}
+
+fn token_out_directory_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() || !metadata.is_dir() {
+                return Err(
+                    "create issued relay token directory: path is not a directory".to_string(),
+                );
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("inspect issued relay token directory: {error}")),
+    }
 }
 
 fn send_admin_request(relay: &str, request: RelayAdminRequest) -> Result<RelayAdminResult, String> {
@@ -13398,6 +13427,63 @@ mod tests {
         contents.push_str(&"a".repeat((MAX_RELAY_CLI_FILE_BYTES + 1) as usize));
         fs::write(&path, contents).expect("write oversized file");
         path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_out_preflight_rejects_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let token_path = unique_temp_path("token-out-dangling-link", "node.token");
+        fs::create_dir_all(token_path.parent().expect("token link parent"))
+            .expect("create token link parent");
+        let missing_target = token_path
+            .parent()
+            .expect("token link parent")
+            .join("missing-token-target");
+        symlink(&missing_target, &token_path).expect("create dangling token symlink");
+
+        let error = ensure_token_out_available(&token_path)
+            .expect_err("dangling symlink token output should fail closed");
+
+        assert!(error.contains("token output file already exists"));
+        assert!(
+            fs::symlink_metadata(&token_path)
+                .expect("token symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_out_preflight_rejects_symlinked_output_directory() {
+        use std::os::unix::fs::symlink;
+
+        let outside = unique_temp_path("token-out-dir-target", "outside");
+        fs::create_dir_all(&outside).expect("create outside token dir");
+        let token_dir = unique_temp_path("token-out-dir-link", "tokens");
+        fs::create_dir_all(token_dir.parent().expect("token dir link parent"))
+            .expect("create token dir link parent");
+        symlink(&outside, &token_dir).expect("create token dir symlink");
+        let token_path = token_dir.join("node.token");
+
+        let error = ensure_token_out_available(&token_path)
+            .expect_err("symlinked token output directory should fail closed");
+
+        assert!(error.contains("create issued relay token directory"));
+        assert_eq!(
+            fs::read_dir(&outside)
+                .expect("outside token dir reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&token_dir)
+                .expect("token dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[cfg(unix)]
