@@ -3130,8 +3130,16 @@ pub fn write_issued_relay_token_file(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent)
-            .map_err(|error| RelayError::io("create issued relay token directory", error))?;
+        ensure_relay_directory(parent, "create issued relay token directory")?;
+    }
+    if regular_relay_file_exists(path, "inspect issued relay token file")? {
+        return Err(RelayError::io(
+            "create issued relay token file",
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "issued relay token file already exists",
+            ),
+        ));
     }
 
     let mut options = OpenOptions::new();
@@ -3155,8 +3163,7 @@ fn write_credential_manifest_records(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent)
-            .map_err(|error| RelayError::io("create relay credential file directory", error))?;
+        ensure_relay_directory(parent, "create relay credential file directory")?;
     }
     let _existing_target_is_regular =
         regular_relay_file_exists(path, "inspect relay credential file replacement")?;
@@ -3712,8 +3719,7 @@ fn write_hosted_tenant_manifest(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent)
-            .map_err(|error| RelayError::io("create hosted tenant file directory", error))?;
+        ensure_relay_directory(parent, "create hosted tenant file directory")?;
     }
     let _existing_target_is_regular =
         regular_relay_file_exists(path, "inspect hosted tenant file replacement")?;
@@ -8099,6 +8105,86 @@ mod tests {
                 .contains("create issued relay token file")
         );
         assert!(!credential.manifest_entry().contains(credential.token()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issued_relay_token_file_rejects_symlink_without_replacing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("issued-relay-token-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let token_path = home.join("node.issue.token");
+        let target_path = home.join("outside-token.txt");
+        let target_contents = "existing relay token\n";
+        fs::write(&target_path, target_contents).expect("target token writes");
+        symlink(&target_path, &token_path).expect("token symlink creates");
+        let credential = issue_relay_credential_from_token_bytes(
+            "node.issue",
+            &[12_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            1_000,
+        )
+        .expect("credential issues");
+
+        let error = write_issued_relay_token_file(&credential, &token_path)
+            .expect_err("symlinked token output should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("inspect issued relay token file")
+        );
+        assert_eq!(
+            fs::read_to_string(&target_path).expect("target token reads"),
+            target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&token_path)
+                .expect("token symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issued_relay_token_file_rejects_symlinked_output_directory() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("issued-relay-token-dir-symlink");
+        fs::create_dir_all(&home).expect("home creates");
+        let outside = home.join("outside");
+        fs::create_dir_all(&outside).expect("outside dir creates");
+        let token_dir = home.join("tokens");
+        symlink(&outside, &token_dir).expect("token dir symlink creates");
+        let token_path = token_dir.join("node.issue.token");
+        let credential = issue_relay_credential_from_token_bytes(
+            "node.issue",
+            &[14_u8; ISSUED_RELAY_TOKEN_BYTES],
+            None,
+            1_000,
+        )
+        .expect("credential issues");
+
+        let error = write_issued_relay_token_file(&credential, &token_path)
+            .expect_err("symlinked token output directory should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("create issued relay token directory")
+        );
+        assert_eq!(
+            fs::read_dir(&outside).expect("outside dir reads").count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&token_dir)
+                .expect("token dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
