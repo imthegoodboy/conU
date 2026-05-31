@@ -679,6 +679,7 @@ fn read_runtime_from_paths(paths: &StatePaths) -> Result<RuntimeStatus, RuntimeE
 }
 
 fn write_status(paths: &StatePaths, status: &RuntimeStatus) -> Result<(), RuntimeError> {
+    ensure_runtime_control_directory(paths)?;
     let contents = format!(
         "version = \"{}\"\nstate = \"{}\"\npid = {}\nnode_id = \"{}\"\nstarted_at_unix = {}\nheartbeat_at_unix = {}\nlocal_endpoint = \"{}\"\n",
         STATUS_VERSION,
@@ -702,6 +703,7 @@ fn write_status(paths: &StatePaths, status: &RuntimeStatus) -> Result<(), Runtim
 }
 
 fn write_lock(paths: &StatePaths, pid: u32, started_at_unix: u64) -> Result<(), RuntimeError> {
+    ensure_runtime_control_directory(paths)?;
     let contents = format!("pid = {pid}\nstarted_at_unix = {started_at_unix}\n");
     let mut file = OpenOptions::new()
         .write(true)
@@ -875,6 +877,14 @@ fn validate_opened_runtime_control(
     Ok(())
 }
 
+fn ensure_runtime_control_directory(paths: &StatePaths) -> Result<(), RuntimeError> {
+    if state::state_directory_exists(&paths.runtime_dir, "inspect runtime directory")? {
+        Ok(())
+    } else {
+        state::ensure_state_directory(&paths.runtime_dir).map_err(RuntimeError::State)
+    }
+}
+
 fn regular_runtime_control_metadata(
     path: &Path,
     action: &'static str,
@@ -1015,6 +1025,7 @@ fn offline_status(paths: &StatePaths) -> RuntimeStatus {
 }
 
 fn clear_runtime_files(paths: &StatePaths) -> Result<(), RuntimeError> {
+    ensure_runtime_control_directory(paths)?;
     remove_file_if_exists(&paths.runtime_lock)?;
     remove_file_if_exists(&paths.runtime_stop_request)
 }
@@ -1261,6 +1272,104 @@ mod tests {
         assert!(
             fs::symlink_metadata(&paths.runtime_status)
                 .expect("status symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_status_write_rejects_runtime_directory_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("status-write-dir-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = test_home("status-write-dir-target");
+        fs::create_dir_all(&home).expect("home creates");
+        fs::create_dir_all(&outside).expect("outside runtime creates");
+        fs::write(outside.join("status.toml"), "outside status\n").expect("outside status writes");
+        symlink(&outside, &paths.runtime_dir).expect("runtime dir symlink creates");
+        let status = RuntimeStatus {
+            state: RuntimeState::Running,
+            pid: Some(process::id()),
+            node_id: Some("node_test".to_string()),
+            started_at_unix: Some(1),
+            heartbeat_at_unix: Some(1),
+            local_endpoint: LOCAL_ENDPOINT.to_string(),
+            status_path: paths.runtime_status.clone(),
+            lock_path: paths.runtime_lock.clone(),
+        };
+
+        let error = write_status(&paths, &status)
+            .expect_err("runtime dir symlink status write should fail closed");
+
+        assert!(error.to_string().contains("inspect runtime directory"));
+        assert_eq!(
+            fs::read_to_string(outside.join("status.toml")).expect("outside status reads"),
+            "outside status\n"
+        );
+        assert!(
+            fs::symlink_metadata(&paths.runtime_dir)
+                .expect("runtime dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_lock_write_rejects_runtime_directory_symlink_without_creating_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("lock-write-dir-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = test_home("lock-write-dir-target");
+        fs::create_dir_all(&home).expect("home creates");
+        fs::create_dir_all(&outside).expect("outside runtime creates");
+        symlink(&outside, &paths.runtime_dir).expect("runtime dir symlink creates");
+
+        let error = write_lock(&paths, 123, 1)
+            .expect_err("runtime dir symlink lock write should fail closed");
+
+        assert!(error.to_string().contains("inspect runtime directory"));
+        assert!(!outside.join("conud.lock").exists());
+        assert!(
+            fs::symlink_metadata(&paths.runtime_dir)
+                .expect("runtime dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_runtime_files_rejects_runtime_directory_symlink_without_deleting_targets() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("clear-runtime-dir-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = test_home("clear-runtime-dir-target");
+        fs::create_dir_all(&home).expect("home creates");
+        fs::create_dir_all(&outside).expect("outside runtime creates");
+        fs::write(outside.join("conud.lock"), "outside lock\n").expect("outside lock writes");
+        fs::write(outside.join("stop.request"), "outside stop\n").expect("outside stop writes");
+        symlink(&outside, &paths.runtime_dir).expect("runtime dir symlink creates");
+
+        let error = clear_runtime_files(&paths)
+            .expect_err("runtime dir symlink cleanup should fail closed");
+
+        assert!(error.to_string().contains("inspect runtime directory"));
+        assert_eq!(
+            fs::read_to_string(outside.join("conud.lock")).expect("outside lock reads"),
+            "outside lock\n"
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("stop.request")).expect("outside stop reads"),
+            "outside stop\n"
+        );
+        assert!(
+            fs::symlink_metadata(&paths.runtime_dir)
+                .expect("runtime dir symlink metadata")
                 .file_type()
                 .is_symlink()
         );
