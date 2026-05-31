@@ -594,7 +594,9 @@ pub fn acquire_runtime(home_override: Option<PathBuf>) -> Result<RuntimeLease, R
 pub fn request_runtime_stop(home_override: Option<PathBuf>) -> Result<StopReport, RuntimeError> {
     let paths = StatePaths::resolve(home_override)?;
     state::ensure_state_directory(&paths.home)?;
-    state::ensure_state_directory(&paths.runtime_dir)?;
+    if !state::state_directory_exists(&paths.runtime_dir, "inspect runtime directory")? {
+        state::ensure_state_directory(&paths.runtime_dir)?;
+    }
 
     let status = read_runtime_from_paths(&paths)?;
     if status.is_live() {
