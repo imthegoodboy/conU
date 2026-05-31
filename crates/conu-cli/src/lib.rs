@@ -8312,7 +8312,7 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
             Ok(copied) => copied,
             Err(error) => {
                 drop(backup);
-                let _ = fs::remove_file(backup_file);
+                remove_update_backup_file_if_safe(backup_file);
                 return Err(format!(
                     "could not back up release update binary {}: {error}",
                     report.target_file.display()
@@ -8321,7 +8321,7 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
         };
         drop(backup);
         if copied != metadata.len() {
-            let _ = fs::remove_file(backup_file);
+            remove_update_backup_file_if_safe(backup_file);
             return Err(format!(
                 "release update install target changed while backing up {}",
                 report.target_file.display()
@@ -8673,6 +8673,12 @@ fn cleanup_update_temp_targets(temp_targets: &[(PathBuf, PathBuf)]) {
 
 fn remove_update_install_file_if_safe(path: &Path) {
     if ensure_update_install_file_parent_if_present(path).is_ok() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn remove_update_backup_file_if_safe(path: &Path) {
+    if ensure_update_backup_file_parent_if_present(path).is_ok() {
         let _ = fs::remove_file(path);
     }
 }
@@ -12658,6 +12664,53 @@ mod tests {
         assert!(
             fs::symlink_metadata(&backup_root)
                 .expect("backup root symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn update_apply_backup_cleanup_removes_regular_backup_file() {
+        let home = temp_home("update-apply-backup-cleanup-regular");
+        let install_dir = home.join("install-bin");
+        let backup_dir = install_dir.join(".conu-update-backups").join("cleanup");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let backup_file = backup_dir.join(update_binary_filename("conu"));
+        fs::write(&backup_file, b"partial backup").expect("backup writes");
+
+        remove_update_backup_file_if_safe(&backup_file);
+
+        assert!(!backup_file.exists());
+        assert!(backup_dir.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_backup_cleanup_rejects_symlinked_backup_dir_without_removing_outside() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-backup-cleanup-symlink-dir");
+        let install_dir = home.join("install-bin");
+        let backup_root = install_dir.join(".conu-update-backups");
+        fs::create_dir_all(&backup_root).expect("backup root creates");
+        let outside = home.join("outside-backup-dir");
+        fs::create_dir_all(&outside).expect("outside backup dir creates");
+        let filename = update_binary_filename("conu");
+        let outside_backup = outside.join(&filename);
+        fs::write(&outside_backup, b"outside backup").expect("outside backup writes");
+        let backup_dir = backup_root.join("cleanup");
+        symlink(&outside, &backup_dir).expect("backup dir symlink creates");
+        let backup_file = backup_dir.join(&filename);
+
+        remove_update_backup_file_if_safe(&backup_file);
+
+        assert_eq!(
+            fs::read(&outside_backup).expect("outside backup remains readable"),
+            b"outside backup"
+        );
+        assert!(
+            fs::symlink_metadata(&backup_dir)
+                .expect("backup dir symlink metadata")
                 .file_type()
                 .is_symlink()
         );
