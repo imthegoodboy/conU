@@ -7,10 +7,9 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
-use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::direct_transport;
@@ -193,16 +192,6 @@ pub enum RouteError {
     InvalidRecord {
         reason: String,
     },
-}
-
-impl RouteError {
-    fn io(action: &'static str, path: &Path, source: io::Error) -> Self {
-        Self::Io {
-            action,
-            path: path.to_path_buf(),
-            source,
-        }
-    }
 }
 
 impl fmt::Display for RouteError {
@@ -600,7 +589,7 @@ fn report_from_routes(routes: &[RouteRecord], probes_recorded: usize) -> RouteSy
 }
 
 fn ensure_route_files(paths: &StatePaths) -> Result<(), RouteError> {
-    state::ensure_state_directory(&paths.routes_dir)?;
+    ensure_routes_directory(paths)?;
     state::ensure_state_directory(&paths.logs_dir)?;
     Ok(())
 }
@@ -628,6 +617,12 @@ fn relay_endpoint(config: &HashMap<String, String>) -> Result<String, RouteError
 }
 
 fn read_routes(paths: &StatePaths) -> Result<Vec<RouteRecord>, RouteError> {
+    if !state::state_directory_exists(&paths.home, "inspect state directory")? {
+        return Ok(Vec::new());
+    }
+    if !state::state_directory_exists(&paths.routes_dir, "inspect routes directory")? {
+        return Ok(Vec::new());
+    }
     let Some(contents) = state::read_optional_regular_state_file(
         &paths.route_registry,
         "inspect route registry",
@@ -640,8 +635,7 @@ fn read_routes(paths: &StatePaths) -> Result<Vec<RouteRecord>, RouteError> {
 }
 
 fn write_routes(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteError> {
-    fs::create_dir_all(&paths.routes_dir)
-        .map_err(|error| RouteError::io("create routes directory", &paths.routes_dir, error))?;
+    ensure_routes_directory(paths)?;
     let mut sorted = routes.to_vec();
     sorted.sort_by(|left, right| {
         left.peer_node_id
@@ -714,8 +708,7 @@ fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteE
         return Ok(());
     }
 
-    fs::create_dir_all(&paths.routes_dir)
-        .map_err(|error| RouteError::io("create routes directory", &paths.routes_dir, error))?;
+    ensure_routes_directory(paths)?;
     let mut contents = state::read_optional_regular_state_file(
         &paths.route_probes,
         "inspect route probes",
@@ -753,6 +746,12 @@ fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteE
 }
 
 fn read_probes(paths: &StatePaths) -> Result<Vec<RouteProbe>, RouteError> {
+    if !state::state_directory_exists(&paths.home, "inspect state directory")? {
+        return Ok(Vec::new());
+    }
+    if !state::state_directory_exists(&paths.routes_dir, "inspect routes directory")? {
+        return Ok(Vec::new());
+    }
     let Some(contents) = state::read_optional_regular_state_file(
         &paths.route_probes,
         "inspect route probes",
@@ -762,6 +761,12 @@ fn read_probes(paths: &StatePaths) -> Result<Vec<RouteProbe>, RouteError> {
         return Ok(Vec::new());
     };
     parse_probes(&contents)
+}
+
+fn ensure_routes_directory(paths: &StatePaths) -> Result<(), RouteError> {
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.routes_dir)?;
+    Ok(())
 }
 
 fn append_route_log(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteError> {
@@ -1086,6 +1091,8 @@ fn current_unix_nanos() -> u128 {
 mod tests {
     use super::*;
     use std::env;
+    use std::fs;
+    use std::path::Path;
     use std::process;
 
     #[test]
@@ -1468,6 +1475,115 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn route_directory_symlink_is_rejected_without_reading_registry() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("routes-dir-registry-read-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-routes-dir-registry-read");
+        let registry_name = paths
+            .route_registry
+            .file_name()
+            .expect("route registry filename");
+        fs::remove_dir_all(&paths.routes_dir).expect("routes dir removes");
+        fs::create_dir_all(&outside).expect("outside routes dir creates");
+        fs::write(outside.join(registry_name), test_route_registry_contents())
+            .expect("outside registry writes");
+        symlink(&outside, &paths.routes_dir).expect("routes dir symlink creates");
+
+        let error = list_routes(Some(home)).expect_err("symlinked routes directory fails closed");
+
+        assert!(error.to_string().contains("inspect routes directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_directory_symlink_is_rejected_without_writing_registry() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("routes-dir-registry-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-routes-dir-registry-write");
+        let registry_name = paths
+            .route_registry
+            .file_name()
+            .expect("route registry filename");
+        fs::remove_dir_all(&paths.routes_dir).expect("routes dir removes");
+        fs::create_dir_all(&outside).expect("outside routes dir creates");
+        symlink(&outside, &paths.routes_dir).expect("routes dir symlink creates");
+
+        let error = write_routes(&paths, &[test_route_record()])
+            .expect_err("symlinked routes directory fails closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(!outside.join(registry_name).exists());
+        assert!(
+            fs::symlink_metadata(&paths.routes_dir)
+                .expect("routes dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_directory_symlink_is_rejected_without_reading_probes() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("routes-dir-probes-read-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-routes-dir-probes-read");
+        let probes_name = paths
+            .route_probes
+            .file_name()
+            .expect("route probes filename");
+        fs::remove_dir_all(&paths.routes_dir).expect("routes dir removes");
+        fs::create_dir_all(&outside).expect("outside routes dir creates");
+        fs::write(outside.join(probes_name), test_route_probe_contents())
+            .expect("outside probes write");
+        symlink(&outside, &paths.routes_dir).expect("routes dir symlink creates");
+
+        let error =
+            list_route_probes(Some(home)).expect_err("symlinked routes directory fails closed");
+
+        assert!(error.to_string().contains("inspect routes directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn route_directory_symlink_is_rejected_without_appending_probe() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("routes-dir-probes-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-routes-dir-probes-write");
+        let probes_name = paths
+            .route_probes
+            .file_name()
+            .expect("route probes filename");
+        fs::remove_dir_all(&paths.routes_dir).expect("routes dir removes");
+        fs::create_dir_all(&outside).expect("outside routes dir creates");
+        symlink(&outside, &paths.routes_dir).expect("routes dir symlink creates");
+
+        let error = append_probes(&paths, &[test_route_probe()])
+            .expect_err("symlinked routes directory fails closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(!outside.join(probes_name).exists());
+        assert!(
+            fs::symlink_metadata(&paths.routes_dir)
+                .expect("routes dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn revoked_peer_is_not_routeable() {
         let home = test_home("revoked");
@@ -1479,6 +1595,56 @@ mod tests {
 
         assert_eq!(report.peers, 0);
         assert!(routes.is_empty());
+    }
+
+    #[cfg(unix)]
+    fn test_route_record() -> RouteRecord {
+        RouteRecord {
+            route_id: "route_test".to_string(),
+            peer_node_id: "node_peer".to_string(),
+            display_name: "Peer".to_string(),
+            transport: RouteTransport::RelayWebSocket,
+            endpoint: DEFAULT_RELAY_ENDPOINT.to_string(),
+            state: RouteState::Selected,
+            score: RELAY_WEBSOCKET_LATENCY_MS as u16,
+            latency_ms: Some(RELAY_WEBSOCKET_LATENCY_MS),
+            direct_attempted: false,
+            relay_fallback: true,
+            nat_profile: NatProfile::Unknown,
+            candidate_source: CANDIDATE_SOURCE_NONE.to_string(),
+            candidate_kind: CANDIDATE_KIND_NONE.to_string(),
+            rendezvous_state: RENDEZVOUS_STATE_NOT_CONFIGURED.to_string(),
+            failure_reason: None,
+            updated_at_unix: 1,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_route_probe() -> RouteProbe {
+        RouteProbe {
+            probe_id: "probe_test".to_string(),
+            route_id: "route_test".to_string(),
+            peer_node_id: "node_peer".to_string(),
+            transport: RouteTransport::RelayWebSocket,
+            endpoint: DEFAULT_RELAY_ENDPOINT.to_string(),
+            outcome: "selected".to_string(),
+            score: RELAY_WEBSOCKET_LATENCY_MS as u16,
+            latency_ms: Some(RELAY_WEBSOCKET_LATENCY_MS),
+            candidate_source: CANDIDATE_SOURCE_NONE.to_string(),
+            candidate_kind: CANDIDATE_KIND_NONE.to_string(),
+            rendezvous_state: RENDEZVOUS_STATE_NOT_CONFIGURED.to_string(),
+            created_at_unix: 1,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_route_registry_contents() -> &'static str {
+        "# conU route registry\nversion = \"1\"\n\n[[route]]\nroute_id = \"route_test\"\npeer_node_id = \"node_peer\"\ndisplay_name = \"Peer\"\ntransport = \"relay-websocket\"\nendpoint = \"ws://127.0.0.1:8787\"\nstate = \"selected\"\nscore = 80\nlatency_ms = 80\ndirect_attempted = false\nrelay_fallback = true\nnat_profile = \"unknown\"\ncandidate_source = \"none\"\ncandidate_kind = \"none\"\nrendezvous_state = \"not_configured\"\nfailure_reason = \"\"\nupdated_at_unix = 1\npayload_displayed = false\n"
+    }
+
+    #[cfg(unix)]
+    fn test_route_probe_contents() -> &'static str {
+        "# conU route probes\nversion = \"1\"\n\n[[probe]]\nprobe_id = \"probe_test\"\nroute_id = \"route_test\"\npeer_node_id = \"node_peer\"\ntransport = \"relay-websocket\"\nendpoint = \"ws://127.0.0.1:8787\"\noutcome = \"selected\"\nscore = 80\nlatency_ms = 80\ncandidate_source = \"none\"\ncandidate_kind = \"none\"\nrendezvous_state = \"not_configured\"\ncreated_at_unix = 1\npayload_displayed = false\n"
     }
 
     fn trusted_peer(home: &Path) -> TrustedPeer {
