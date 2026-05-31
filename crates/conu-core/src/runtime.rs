@@ -593,8 +593,8 @@ pub fn acquire_runtime(home_override: Option<PathBuf>) -> Result<RuntimeLease, R
 /// Ask a running local conUD process to shut down gracefully.
 pub fn request_runtime_stop(home_override: Option<PathBuf>) -> Result<StopReport, RuntimeError> {
     let paths = StatePaths::resolve(home_override)?;
-    fs::create_dir_all(&paths.runtime_dir)
-        .map_err(|error| RuntimeError::io("create runtime directory", &paths.runtime_dir, error))?;
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.runtime_dir)?;
 
     let status = read_runtime_from_paths(&paths)?;
     if status.is_live() {
@@ -639,6 +639,13 @@ pub fn request_runtime_stop(home_override: Option<PathBuf>) -> Result<StopReport
 }
 
 fn read_runtime_from_paths(paths: &StatePaths) -> Result<RuntimeStatus, RuntimeError> {
+    if !state::state_directory_exists(&paths.home, "inspect state directory")? {
+        return Ok(offline_status(paths));
+    }
+    if !state::state_directory_exists(&paths.runtime_dir, "inspect runtime directory")? {
+        return Ok(offline_status(paths));
+    }
+
     let Some(contents) = read_runtime_control_file(&paths.runtime_status, "read runtime status")?
     else {
         return Ok(offline_status(paths));
@@ -1121,6 +1128,66 @@ mod tests {
                 .expect("status symlink metadata")
                 .file_type()
                 .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_directory_symlink_is_rejected_without_reading_target_status() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("runtime-dir-read-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = test_home("runtime-dir-read-target");
+        fs::create_dir_all(&home).expect("home creates");
+        fs::create_dir_all(&outside).expect("outside runtime creates");
+        fs::write(
+            outside.join("status.toml"),
+            "version = \"1\"\nstate = \"running\"\npid = 123\nnode_id = \"node_outside\"\nstarted_at_unix = 1\nheartbeat_at_unix = 1\nlocal_endpoint = \"file-ipc:runtime/ipc/inbox\"\n",
+        )
+        .expect("outside status writes");
+        symlink(&outside, &paths.runtime_dir).expect("runtime dir symlink creates");
+
+        let error = read_runtime(Some(home)).expect_err("runtime dir symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect runtime directory"));
+        assert_eq!(
+            fs::read_to_string(outside.join("status.toml")).expect("outside status reads"),
+            "version = \"1\"\nstate = \"running\"\npid = 123\nnode_id = \"node_outside\"\nstarted_at_unix = 1\nheartbeat_at_unix = 1\nlocal_endpoint = \"file-ipc:runtime/ipc/inbox\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&paths.runtime_dir)
+                .expect("runtime dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_request_rejects_runtime_directory_symlink_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("runtime-dir-stop-symlink");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = test_home("runtime-dir-stop-target");
+        fs::create_dir_all(&home).expect("home creates");
+        fs::create_dir_all(&outside).expect("outside runtime creates");
+        fs::write(
+            outside.join("status.toml"),
+            "version = \"1\"\nstate = \"running\"\npid = 123\nnode_id = \"node_outside\"\nstarted_at_unix = 1\nheartbeat_at_unix = 1\nlocal_endpoint = \"file-ipc:runtime/ipc/inbox\"\n",
+        )
+        .expect("outside status writes");
+        symlink(&outside, &paths.runtime_dir).expect("runtime dir symlink creates");
+
+        let error =
+            request_runtime_stop(Some(home)).expect_err("runtime dir symlink should fail closed");
+
+        assert!(error.to_string().contains("inspect runtime directory"));
+        assert!(!outside.join("stop.request").exists());
+        assert_eq!(
+            fs::read_to_string(outside.join("status.toml")).expect("outside status reads"),
+            "version = \"1\"\nstate = \"running\"\npid = 123\nnode_id = \"node_outside\"\nstarted_at_unix = 1\nheartbeat_at_unix = 1\nlocal_endpoint = \"file-ipc:runtime/ipc/inbox\"\n"
         );
     }
 
