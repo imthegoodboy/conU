@@ -389,6 +389,15 @@ pub fn deliver_room_event_from_paths(
     Ok(entry)
 }
 
+pub(crate) fn ensure_room_event_replay_not_seen_from_paths(
+    paths: &StatePaths,
+    envelope_id: &str,
+) -> Result<(), MessageError> {
+    let envelope_id = validate_identifier(envelope_id.to_string(), "envelope id")?;
+    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "room_event_envelope")?;
+    Ok(())
+}
+
 /// List metadata-only local delivery receipts.
 pub fn list_receipts(home_override: Option<PathBuf>) -> Result<Vec<DeliveryReceipt>, MessageError> {
     let paths = StatePaths::resolve(home_override)?;
