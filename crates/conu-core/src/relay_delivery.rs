@@ -56,7 +56,7 @@ impl RemoteMessage {
     ) -> Result<Self, RelayDeliveryError> {
         if payload.is_empty() {
             return Err(RelayDeliveryError::InvalidRequest {
-                reason: "room event payload cannot be empty".to_string(),
+                reason: "remote message payload cannot be empty".to_string(),
             });
         }
         validate_payload_size(payload.len())?;
@@ -332,6 +332,7 @@ impl RelayRuntimePump {
                     return Err(error);
                 }
             };
+            ensure_relay_sent_archive_available(paths, &request_path)?;
             if let Err(error) = client.send(&RelayClientFrame::Forward(Box::new(
                 request.to_forward_frame()?,
             ))) {
@@ -777,6 +778,7 @@ pub fn sync_relay_once_from_paths(
                 return Err(error);
             }
         };
+        ensure_relay_sent_archive_available(paths, &request_path)?;
         client.send(&RelayClientFrame::Forward(Box::new(
             request.to_forward_frame()?,
         )))?;
@@ -925,8 +927,8 @@ fn handle_relay_frame(
             to_node_id,
             payload_bytes,
         } => {
-            report.sent += 1;
             mark_sent_by_envelope(paths, &envelope_id)?;
+            report.sent += 1;
             append_relay_log(
                 paths,
                 "outbox_sent",
@@ -1413,7 +1415,18 @@ fn mark_sent_by_envelope(paths: &StatePaths, envelope_id: &str) -> Result<(), Re
             return Ok(());
         }
     }
-    Ok(())
+    Err(RelayDeliveryError::InvalidRequest {
+        reason: "relay sent acknowledgement did not match a queued request".to_string(),
+    })
+}
+
+fn ensure_relay_sent_archive_available(
+    paths: &StatePaths,
+    request_path: &Path,
+) -> Result<(), RelayDeliveryError> {
+    state::ensure_state_directory(&paths.relay_sent_dir)?;
+    let target = relay_archive_target(&paths.relay_sent_dir, request_path, "sent");
+    ensure_relay_archive_target_available(&target)
 }
 
 fn move_relay_request(
@@ -1422,14 +1435,18 @@ fn move_relay_request(
     extension: &str,
 ) -> Result<(), RelayDeliveryError> {
     state::ensure_state_directory(target_dir)?;
+    let target = relay_archive_target(target_dir, request_path, extension);
+    ensure_relay_archive_target_available(&target)?;
+    fs::rename(request_path, &target)
+        .map_err(|error| RelayDeliveryError::io("move relay request marker", request_path, error))
+}
+
+fn relay_archive_target(target_dir: &Path, request_path: &Path, extension: &str) -> PathBuf {
     let stem = request_path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("relay-request");
-    let target = target_dir.join(format!("{stem}.{extension}"));
-    ensure_relay_archive_target_available(&target)?;
-    fs::rename(request_path, &target)
-        .map_err(|error| RelayDeliveryError::io("move relay request marker", request_path, error))
+    target_dir.join(format!("{stem}.{extension}"))
 }
 
 fn ensure_relay_archive_target_available(path: &Path) -> Result<(), RelayDeliveryError> {
@@ -2062,6 +2079,20 @@ mod tests {
     }
 
     #[test]
+    fn remote_message_empty_payload_error_matches_message_context() {
+        let error = RemoteMessage::new(
+            "agent.alice",
+            "agent.bob",
+            "node.bob",
+            OpaquePayload::from_bytes(Vec::new()),
+        )
+        .expect_err("empty remote message payload should fail");
+
+        assert!(error.to_string().contains("remote message payload"));
+        assert!(!error.to_string().contains("room event payload"));
+    }
+
+    #[test]
     fn relay_request_rejects_type_kind_mismatch() {
         let home = test_home("type-kind-mismatch");
         let init = state::init_state(Some(home)).expect("state initializes");
@@ -2239,6 +2270,61 @@ mod tests {
             "existing sent marker"
         );
         assert!(request.exists());
+    }
+
+    #[test]
+    fn relay_sent_archive_preflight_refuses_existing_marker() {
+        let home = test_home("sent-archive-preflight-collision");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let request = init.paths.relay_outbox_dir.join("queued.relay");
+        let target = init.paths.relay_sent_dir.join("queued.sent");
+        fs::write(&request, "queued relay marker").expect("request writes");
+        fs::write(&target, "existing sent marker").expect("existing marker writes");
+
+        let error = ensure_relay_sent_archive_available(&init.paths, &request)
+            .expect_err("existing sent marker should fail before send");
+
+        assert!(error.to_string().contains("reserve relay archive target"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("existing marker reads"),
+            "existing sent marker"
+        );
+        assert!(request.exists());
+    }
+
+    #[test]
+    fn relay_sent_ack_requires_matching_outbox_request() {
+        let home = test_home("sent-ack-missing-request");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let mut report = RelaySyncReport {
+            endpoint: DEFAULT_RELAY_ENDPOINT.to_string(),
+            connected: true,
+            queued: 0,
+            sent: 0,
+            received: 0,
+            undelivered: 0,
+            rejected: 0,
+            inbox_entries: Vec::new(),
+        };
+
+        let error = handle_relay_frame(
+            &init.paths,
+            &mut report,
+            RelayServerFrame::Sent {
+                envelope_id: "env.missing".to_string(),
+                to_node_id: "node.peer".to_string(),
+                payload_bytes: 42,
+            },
+        )
+        .expect_err("unknown sent acknowledgement should fail closed");
+        let log_path = init.paths.logs_dir.join("relay-delivery.log");
+
+        assert!(error.to_string().contains("did not match a queued request"));
+        assert_eq!(report.sent, 0);
+        assert!(
+            !log_path.exists(),
+            "unknown sent acknowledgement must not write sent log"
+        );
     }
 
     #[test]
