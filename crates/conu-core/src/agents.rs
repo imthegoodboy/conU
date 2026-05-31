@@ -239,22 +239,7 @@ pub fn process_gateway_requests_from_paths(
     paths: &StatePaths,
     node_id: &str,
 ) -> Result<GatewayProcessReport, AgentError> {
-    fs::create_dir_all(&paths.ipc_inbox_dir)
-        .map_err(|error| AgentError::io("create IPC inbox", &paths.ipc_inbox_dir, error))?;
-    fs::create_dir_all(&paths.ipc_processed_dir).map_err(|error| {
-        AgentError::io(
-            "create IPC processed directory",
-            &paths.ipc_processed_dir,
-            error,
-        )
-    })?;
-    fs::create_dir_all(&paths.ipc_rejected_dir).map_err(|error| {
-        AgentError::io(
-            "create IPC rejected directory",
-            &paths.ipc_rejected_dir,
-            error,
-        )
-    })?;
+    ensure_agent_ipc_directories(paths)?;
 
     let mut report = GatewayProcessReport {
         processed: 0,
@@ -616,6 +601,12 @@ fn signed_agent_card_from_record(agent: &LocalAgentRecord) -> Result<SignedAgent
 }
 
 fn read_registry(paths: &StatePaths) -> Result<Vec<LocalAgentRecord>, AgentError> {
+    if !state::state_directory_exists(&paths.home, "inspect state directory")? {
+        return Ok(Vec::new());
+    }
+    if !state::state_directory_exists(&paths.agents_dir, "inspect agents directory")? {
+        return Ok(Vec::new());
+    }
     let Some(contents) = state::read_optional_regular_state_file(
         &paths.agent_registry,
         "inspect agent registry",
@@ -628,6 +619,7 @@ fn read_registry(paths: &StatePaths) -> Result<Vec<LocalAgentRecord>, AgentError
 }
 
 fn write_registry(paths: &StatePaths, agents: &[LocalAgentRecord]) -> Result<(), AgentError> {
+    ensure_agent_registry_directory(paths)?;
     let mut sorted = agents.to_vec();
     sorted.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
     let mut contents = String::from("# conU local agent registry\nversion = \"1\"\n");
@@ -688,6 +680,22 @@ fn write_registry(paths: &StatePaths, agents: &[LocalAgentRecord]) -> Result<(),
         "open agent registry",
         "write agent registry",
     )?;
+    Ok(())
+}
+
+fn ensure_agent_registry_directory(paths: &StatePaths) -> Result<(), AgentError> {
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.agents_dir)?;
+    Ok(())
+}
+
+fn ensure_agent_ipc_directories(paths: &StatePaths) -> Result<(), AgentError> {
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.runtime_dir)?;
+    state::ensure_state_directory(&paths.ipc_dir)?;
+    state::ensure_state_directory(&paths.ipc_inbox_dir)?;
+    state::ensure_state_directory(&paths.ipc_processed_dir)?;
+    state::ensure_state_directory(&paths.ipc_rejected_dir)?;
     Ok(())
 }
 
@@ -795,6 +803,18 @@ fn presence_from_values(values: &HashMap<String, String>) -> Result<PresenceHear
 }
 
 fn pending_requests(paths: &StatePaths) -> Result<Vec<PathBuf>, AgentError> {
+    if !state::state_directory_exists(&paths.home, "inspect state directory")? {
+        return Ok(Vec::new());
+    }
+    if !state::state_directory_exists(&paths.runtime_dir, "inspect runtime directory")? {
+        return Ok(Vec::new());
+    }
+    if !state::state_directory_exists(&paths.ipc_dir, "inspect IPC directory")? {
+        return Ok(Vec::new());
+    }
+    if !state::state_directory_exists(&paths.ipc_inbox_dir, "inspect IPC inbox")? {
+        return Ok(Vec::new());
+    }
     let mut requests = Vec::new();
 
     for entry in fs::read_dir(&paths.ipc_inbox_dir)
@@ -813,8 +833,7 @@ fn pending_requests(paths: &StatePaths) -> Result<Vec<PathBuf>, AgentError> {
 }
 
 fn move_request(request_path: &Path, target_dir: &Path) -> Result<(), AgentError> {
-    fs::create_dir_all(target_dir)
-        .map_err(|error| AgentError::io("create IPC target directory", target_dir, error))?;
+    state::ensure_state_directory(target_dir)?;
     let target = target_dir.join(
         request_path
             .file_name()
@@ -830,8 +849,7 @@ fn reject_request(
     target_dir: &Path,
     error: &AgentError,
 ) -> Result<(), AgentError> {
-    fs::create_dir_all(target_dir)
-        .map_err(|error| AgentError::io("create IPC rejected directory", target_dir, error))?;
+    state::ensure_state_directory(target_dir)?;
     let target = target_dir.join(
         request_path
             .file_name()
@@ -1261,6 +1279,138 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn agent_registry_directory_symlink_is_rejected_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("agent-registry-dir-read-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-agent-registry-dir-read");
+        fs::remove_dir_all(&paths.agents_dir).expect("agents dir removes");
+        fs::create_dir_all(&outside).expect("outside agents dir creates");
+        fs::write(
+            outside.join("registry.toml"),
+            test_agent_registry_contents(),
+        )
+        .expect("outside registry writes");
+        symlink(&outside, &paths.agents_dir).expect("agents dir symlink creates");
+
+        let error =
+            list_local_agents(Some(home)).expect_err("symlinked agents directory fails closed");
+
+        assert!(error.to_string().contains("inspect agents directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_registry_directory_symlink_is_rejected_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("agent-registry-dir-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-agent-registry-dir-write");
+        fs::remove_dir_all(&paths.agents_dir).expect("agents dir removes");
+        fs::create_dir_all(&outside).expect("outside agents dir creates");
+        symlink(&outside, &paths.agents_dir).expect("agents dir symlink creates");
+
+        let error = write_registry(&paths, &[test_agent_record()])
+            .expect_err("symlinked agents directory fails closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(!outside.join("registry.toml").exists());
+        assert!(
+            fs::symlink_metadata(&paths.agents_dir)
+                .expect("agents dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_inbox_directory_symlink_is_rejected_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("ipc-inbox-dir-read-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-ipc-inbox-dir-read");
+        fs::remove_dir_all(&paths.ipc_inbox_dir).expect("ipc inbox dir removes");
+        fs::create_dir_all(&outside).expect("outside ipc inbox dir creates");
+        fs::write(outside.join("outside.req"), "outside request").expect("outside request writes");
+        symlink(&outside, &paths.ipc_inbox_dir).expect("ipc inbox dir symlink creates");
+
+        let error =
+            pending_requests(&paths).expect_err("symlinked IPC inbox directory fails closed");
+
+        assert!(error.to_string().contains("inspect IPC inbox"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_processed_directory_symlink_is_rejected_without_moving_request() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("ipc-processed-dir-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let request = paths.ipc_inbox_dir.join("move.req");
+        let outside = home.with_extension("outside-ipc-processed-dir-write");
+        fs::write(&request, "request").expect("request writes");
+        fs::remove_dir_all(&paths.ipc_processed_dir).expect("processed dir removes");
+        fs::create_dir_all(&outside).expect("outside processed dir creates");
+        symlink(&outside, &paths.ipc_processed_dir).expect("processed dir symlink creates");
+
+        let error = move_request(&request, &paths.ipc_processed_dir)
+            .expect_err("symlinked processed directory fails closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(request.exists());
+        assert!(!outside.join("move.req").exists());
+        assert!(
+            fs::symlink_metadata(&paths.ipc_processed_dir)
+                .expect("processed dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_rejected_directory_symlink_is_rejected_without_writing_error() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("ipc-rejected-dir-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let request = paths.ipc_inbox_dir.join("bad.req");
+        let outside = home.with_extension("outside-ipc-rejected-dir-write");
+        let rejection = AgentError::InvalidRequest {
+            reason: "unsupported request type".to_string(),
+        };
+        fs::write(&request, "request").expect("request writes");
+        fs::remove_dir_all(&paths.ipc_rejected_dir).expect("rejected dir removes");
+        fs::create_dir_all(&outside).expect("outside rejected dir creates");
+        symlink(&outside, &paths.ipc_rejected_dir).expect("rejected dir symlink creates");
+
+        let error = reject_request(&request, &paths.ipc_rejected_dir, &rejection)
+            .expect_err("symlinked rejected directory fails closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(request.exists());
+        assert!(!outside.join("bad.req").exists());
+        assert!(!outside.join("bad.error").exists());
+        assert!(
+            fs::symlink_metadata(&paths.ipc_rejected_dir)
+                .expect("rejected dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn processed_request_archive_refuses_existing_marker() {
         let home = test_home("processed-collision");
@@ -1334,6 +1484,28 @@ mod tests {
         );
         assert!(!target.exists());
         assert!(bad.exists());
+    }
+
+    #[cfg(unix)]
+    fn test_agent_record() -> LocalAgentRecord {
+        LocalAgentRecord {
+            agent_id: "agent.test".to_string(),
+            display_name: "Test Agent".to_string(),
+            node_id: "node_test".to_string(),
+            kind: "test".to_string(),
+            presence: AgentPresence::Ready,
+            last_seen_unix: 1,
+            capabilities: AgentCapabilities::basic(),
+            signature_algorithm: None,
+            signature_key_id: None,
+            signing_public_key_hex: None,
+            signature_hex: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_agent_registry_contents() -> &'static str {
+        "# conU local agent registry\nversion = \"1\"\n\n[[agent]]\nagent_id = \"agent.outside\"\ndisplay_name = \"Outside Agent\"\nnode_id = \"node_outside\"\nkind = \"test\"\npresence = \"ready\"\nlast_seen_unix = 1\ncap_messages = true\ncap_streams = false\ncap_rooms = false\ncap_files = false\ncap_presence = true\n"
     }
 
     fn test_home(label: &str) -> PathBuf {
