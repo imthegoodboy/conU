@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
@@ -791,10 +791,8 @@ fn write_runtime_control_file(
 ) -> Result<(), RuntimeError> {
     match regular_runtime_control_metadata(path, inspect_action)? {
         Some(_) => {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .open(path)
-                .map_err(|error| RuntimeError::io(open_action, path, error))?;
+            let mut file =
+                open_existing_runtime_control_for_write(path, inspect_action, open_action)?;
             file.set_len(0)
                 .map_err(|error| RuntimeError::io(truncate_action, path, error))?;
             file.write_all(contents.as_bytes())
@@ -810,6 +808,71 @@ fn write_runtime_control_file(
                 .map_err(|error| RuntimeError::io(write_action, path, error))
         }
     }
+}
+
+fn open_existing_runtime_control_for_write(
+    path: &Path,
+    inspect_action: &'static str,
+    open_action: &'static str,
+) -> Result<File, RuntimeError> {
+    let Some(metadata) = regular_runtime_control_metadata(path, inspect_action)? else {
+        return Err(RuntimeError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "runtime control path is missing"),
+        ));
+    };
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| RuntimeError::io(open_action, path, error))?;
+    validate_opened_runtime_control(path, inspect_action, open_action, &metadata, &file)?;
+    Ok(file)
+}
+
+fn validate_opened_runtime_control(
+    path: &Path,
+    inspect_action: &'static str,
+    open_action: &'static str,
+    expected_metadata: &fs::Metadata,
+    file: &File,
+) -> Result<(), RuntimeError> {
+    let Some(path_metadata) = regular_runtime_control_metadata(path, inspect_action)? else {
+        return Err(RuntimeError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "runtime control path is missing"),
+        ));
+    };
+    if !runtime_control_write_target_matches(expected_metadata, &path_metadata) {
+        return Err(RuntimeError::io(
+            inspect_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "runtime control path changed while opening",
+            ),
+        ));
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| RuntimeError::io(open_action, path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_RUNTIME_CONTROL_FILE_BYTES
+        || !runtime_control_write_target_matches(expected_metadata, &opened_metadata)
+    {
+        return Err(RuntimeError::io(
+            open_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "opened runtime control file does not match inspected path",
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 fn regular_runtime_control_metadata(
@@ -851,8 +914,20 @@ fn runtime_control_metadata_matches(expected: &fs::Metadata, current: &fs::Metad
     expected.len() == current.len() && runtime_control_identity_matches(expected, current)
 }
 
+fn runtime_control_write_target_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    runtime_control_stable_identity_matches(expected, current)
+}
+
 #[cfg(unix)]
 fn runtime_control_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    runtime_control_stable_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn runtime_control_stable_identity_matches(
+    expected: &fs::Metadata,
+    current: &fs::Metadata,
+) -> bool {
     use std::os::unix::fs::MetadataExt;
 
     expected.dev() == current.dev() && expected.ino() == current.ino()
@@ -862,15 +937,33 @@ fn runtime_control_identity_matches(expected: &fs::Metadata, current: &fs::Metad
 fn runtime_control_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
-    expected.file_attributes() == current.file_attributes()
-        && expected.creation_time() == current.creation_time()
+    runtime_control_stable_identity_matches(expected, current)
         && expected.last_write_time() == current.last_write_time()
         && expected.file_size() == current.file_size()
+}
+
+#[cfg(windows)]
+fn runtime_control_stable_identity_matches(
+    expected: &fs::Metadata,
+    current: &fs::Metadata,
+) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
 }
 
 #[cfg(not(any(unix, windows)))]
 fn runtime_control_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     expected.modified().ok() == current.modified().ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn runtime_control_stable_identity_matches(
+    expected: &fs::Metadata,
+    current: &fs::Metadata,
+) -> bool {
+    runtime_control_identity_matches(expected, current)
 }
 
 fn append_log(
@@ -1042,6 +1135,49 @@ mod tests {
         assert!(report.requested);
         assert!(request.contains("requested_at_unix"));
         assert!(!request.contains("private message contents"));
+    }
+
+    #[test]
+    fn opened_runtime_control_write_guard_rejects_mismatched_handle() {
+        let home = test_home("opened-runtime-write-guard");
+        fs::create_dir_all(&home).expect("home creates");
+        let target = home.join("status.toml");
+        let replacement = home.join("replacement-status.toml");
+        fs::write(&target, "version = \"1\"\nstate = \"offline\"\n").expect("target writes");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fs::write(&replacement, "version = \"1\"\nstate = \"running\"\n")
+            .expect("replacement writes");
+
+        let expected = regular_runtime_control_metadata(&target, "inspect runtime control target")
+            .expect("target metadata reads")
+            .expect("target exists");
+        let opened = OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .expect("replacement opens");
+
+        let error = validate_opened_runtime_control(
+            &target,
+            "inspect runtime control target",
+            "open runtime control target",
+            &expected,
+            &opened,
+        )
+        .expect_err("mismatched opened handle should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("opened runtime control file does not match inspected path")
+        );
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "version = \"1\"\nstate = \"offline\"\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&replacement).expect("replacement reads"),
+            "version = \"1\"\nstate = \"running\"\n"
+        );
     }
 
     #[cfg(unix)]
