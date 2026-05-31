@@ -3227,6 +3227,86 @@ fn credential_manifest_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
     )))
 }
 
+fn ensure_relay_directory(path: &Path, action: &'static str) -> Result<(), RelayError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(RelayError::io(
+                    action,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "relay directory path is not a directory",
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(path).map_err(|error| RelayError::io(action, error))?;
+            let metadata = fs::symlink_metadata(path)
+                .map_err(|error| RelayError::io("inspect relay directory", error))?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(RelayError::io(
+                    "inspect relay directory",
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "relay directory path is not a directory",
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => Err(RelayError::io(action, error)),
+    }
+}
+
+fn write_relay_metadata_file(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+    create_temp_action: &'static str,
+    write_temp_action: &'static str,
+    replace_action: &'static str,
+) -> Result<(), RelayError> {
+    let _existing_target_is_regular = regular_relay_file_exists(path, inspect_action)?;
+    let temp_path = relay_metadata_temp_path(path)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(|error| RelayError::io(create_temp_action, error))?;
+    if let Err(error) = file
+        .write_all(contents.as_bytes())
+        .and_then(|_| file.sync_all())
+    {
+        let _ = fs::remove_file(&temp_path);
+        return Err(RelayError::io(write_temp_action, error));
+    }
+    drop(file);
+
+    #[cfg(windows)]
+    if _existing_target_is_regular {
+        fs::remove_file(path).map_err(|error| RelayError::io(replace_action, error))?;
+    }
+
+    if let Err(error) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(RelayError::io(replace_action, error));
+    }
+    Ok(())
+}
+
+fn relay_metadata_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
+    let file_name = path.file_name().ok_or(RelayError::InvalidConfig(
+        "relay metadata file path must include a file name",
+    ))?;
+    Ok(path.with_file_name(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        current_unix_nanos()
+    )))
+}
+
 fn read_required_regular_relay_file(
     path: &Path,
     inspect_action: &'static str,
@@ -7007,18 +7087,17 @@ fn persist_session_record(
         return Ok(());
     };
 
-    fs::create_dir_all(root)
-        .map_err(|error| RelayError::io("create relay session state directory", error))?;
+    ensure_relay_directory(root, "create relay session state directory")?;
     let path = relay_session_record_path(root, &record.node_id);
     let contents = render_session_file(record);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)
-        .map_err(|error| RelayError::io("write relay session state file", error))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| RelayError::io("write relay session state file", error))
+    write_relay_metadata_file(
+        &path,
+        &contents,
+        "inspect relay session state file replacement",
+        "create temporary relay session state file",
+        "write temporary relay session state file",
+        "replace relay session state file",
+    )
 }
 
 fn remove_session_record(storage: &RelaySessionStorage, node_id: &str) -> Result<(), RelayError> {
@@ -7098,21 +7177,20 @@ fn persist_accounting_record(
         return Ok(());
     };
 
-    fs::create_dir_all(root)
-        .map_err(|error| RelayError::io("create relay accounting directory", error))?;
+    ensure_relay_directory(root, "create relay accounting directory")?;
     let path = root.join(format!(
         "{}.accounting",
         sanitize_identifier(&record.node_id)
     ));
     let contents = render_accounting_file(record);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)
-        .map_err(|error| RelayError::io("write relay accounting file", error))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| RelayError::io("write relay accounting file", error))
+    write_relay_metadata_file(
+        &path,
+        &contents,
+        "inspect relay accounting file replacement",
+        "create temporary relay accounting file",
+        "write temporary relay accounting file",
+        "replace relay accounting file",
+    )
 }
 
 fn render_accounting_file(record: &RelayAccountingRecord) -> String {
@@ -7193,18 +7271,17 @@ fn persist_abuse_record(
         return Ok(());
     };
 
-    fs::create_dir_all(root)
-        .map_err(|error| RelayError::io("create relay abuse directory", error))?;
+    ensure_relay_directory(root, "create relay abuse directory")?;
     let path = abuse_record_path(root, record.node_id.as_deref());
     let contents = render_abuse_file(record);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)
-        .map_err(|error| RelayError::io("write relay abuse file", error))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| RelayError::io("write relay abuse file", error))
+    write_relay_metadata_file(
+        &path,
+        &contents,
+        "inspect relay abuse file replacement",
+        "create temporary relay abuse file",
+        "write temporary relay abuse file",
+        "replace relay abuse file",
+    )
 }
 
 fn purge_abuse_storage(storage: &RelayAbuseStorage) -> Result<(), RelayError> {
@@ -11164,6 +11241,136 @@ token_displayed = true\n",
         assert_eq!(
             fs::read_to_string(&abuse_target).expect("abuse target reads"),
             abuse_target_contents
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_metadata_writes_reject_symlinks_without_replacing_targets() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-metadata-write-symlink");
+        let now_millis = current_unix_millis();
+        let now_unix = current_unix_seconds();
+
+        let session_dir = home.join("sessions");
+        fs::create_dir_all(&session_dir).expect("session dir creates");
+        let session_record = RelaySessionRecord::new(
+            "node.a",
+            &session_id("node.a"),
+            now_millis.min(u64::MAX as u128) as u64,
+            RelaySessionPolicy::default(),
+        );
+        let session_target = home.join("outside.session");
+        let session_target_contents = "existing session target\n";
+        fs::write(&session_target, session_target_contents).expect("session target writes");
+        let session_link = session_dir.join("node.a.session");
+        symlink(&session_target, &session_link).expect("session symlink creates");
+        let session_storage =
+            RelaySessionStorage::file_backed(session_dir).expect("session storage");
+
+        let session_error = persist_session_record(&session_storage, &session_record)
+            .expect_err("symlinked session write fails closed");
+
+        assert!(session_error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&session_target).expect("session target reads"),
+            session_target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&session_link)
+                .expect("session link metadata")
+                .file_type()
+                .is_symlink()
+        );
+
+        let accounting_dir = home.join("accounting");
+        fs::create_dir_all(&accounting_dir).expect("accounting dir creates");
+        let mut accounting_record = RelayAccountingRecord::new("node.a", now_unix);
+        accounting_record.sessions_authenticated = 3;
+        let accounting_target = home.join("outside.accounting");
+        let accounting_target_contents = "existing accounting target\n";
+        fs::write(&accounting_target, accounting_target_contents)
+            .expect("accounting target writes");
+        let accounting_link = accounting_dir.join("node.a.accounting");
+        symlink(&accounting_target, &accounting_link).expect("accounting symlink creates");
+        let accounting_storage =
+            RelayAccountingStorage::file_backed(accounting_dir).expect("accounting storage");
+
+        let accounting_error = persist_accounting_record(&accounting_storage, &accounting_record)
+            .expect_err("symlinked accounting write fails closed");
+
+        assert!(accounting_error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&accounting_target).expect("accounting target reads"),
+            accounting_target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&accounting_link)
+                .expect("accounting link metadata")
+                .file_type()
+                .is_symlink()
+        );
+
+        let abuse_dir = home.join("abuse");
+        fs::create_dir_all(&abuse_dir).expect("abuse dir creates");
+        let mut abuse_record = RelayAbuseRecord::new(Some("node.a".to_string()), now_unix);
+        abuse_record.record(RelayAbuseKind::RateLimitedSession);
+        let abuse_target = home.join("outside.abuse");
+        let abuse_target_contents = "existing abuse target\n";
+        fs::write(&abuse_target, abuse_target_contents).expect("abuse target writes");
+        let abuse_link = abuse_dir.join("node-node.a.abuse");
+        symlink(&abuse_target, &abuse_link).expect("abuse symlink creates");
+        let abuse_storage = RelayAbuseStorage::file_backed(abuse_dir).expect("abuse storage");
+
+        let abuse_error = persist_abuse_record(&abuse_storage, &abuse_record)
+            .expect_err("symlinked abuse write fails closed");
+
+        assert!(abuse_error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read_to_string(&abuse_target).expect("abuse target reads"),
+            abuse_target_contents
+        );
+        assert!(
+            fs::symlink_metadata(&abuse_link)
+                .expect("abuse link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_metadata_writes_reject_symlinked_storage_directory() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-metadata-write-dir-symlink");
+        let outside = home.join("outside-sessions");
+        let session_dir = home.join("sessions");
+        fs::create_dir_all(&outside).expect("outside dir creates");
+        symlink(&outside, &session_dir).expect("session dir symlink creates");
+        let session_record = RelaySessionRecord::new(
+            "node.a",
+            &session_id("node.a"),
+            current_unix_millis().min(u64::MAX as u128) as u64,
+            RelaySessionPolicy::default(),
+        );
+        let session_storage =
+            RelaySessionStorage::file_backed(session_dir.clone()).expect("session storage");
+
+        let error = persist_session_record(&session_storage, &session_record)
+            .expect_err("symlinked storage directory fails closed");
+
+        assert!(error.to_string().contains("not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside).expect("outside dir reads").count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&session_dir)
+                .expect("session dir link metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 
