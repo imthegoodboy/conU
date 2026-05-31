@@ -7941,6 +7941,36 @@ fn update_install_directory_exists(install_dir: &Path) -> Result<bool, String> {
     }
 }
 
+fn ensure_update_install_file_parent(target_file: &Path) -> Result<(), String> {
+    let install_dir = target_file.parent().ok_or_else(|| {
+        format!(
+            "release update install target has no parent directory: {}",
+            target_file.display()
+        )
+    })?;
+    if update_install_directory_exists(install_dir)? {
+        return Ok(());
+    }
+    Err(format!(
+        "release update install target parent does not exist: {}",
+        install_dir.display()
+    ))
+}
+
+fn ensure_update_install_file_parent_if_present(target_file: &Path) -> Result<(), String> {
+    let Some(install_dir) = target_file.parent() else {
+        return Ok(());
+    };
+    match fs::symlink_metadata(install_dir) {
+        Ok(_) => ensure_update_install_file_parent(target_file),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not inspect release update install directory {}: {error}",
+            install_dir.display()
+        )),
+    }
+}
+
 fn ensure_update_backup_root_directory(backup_root: &Path) -> Result<(), String> {
     if update_backup_root_directory_exists(backup_root)? {
         return Ok(());
@@ -8148,6 +8178,13 @@ fn install_staged_update_binaries(
             cleanup_update_temp_targets(&temp_targets);
             return Err(with_update_recovery_error(error, recovery_errors));
         }
+        if let Err(error) = ensure_update_install_file_parent(target_file)
+            .and_then(|_| ensure_update_install_file_parent(temp_target))
+        {
+            let recovery_errors = rollback_update_install(&installed).err();
+            cleanup_update_temp_targets(&temp_targets);
+            return Err(with_update_recovery_error(error, recovery_errors));
+        }
         if let Err(error) = fs::rename(temp_target, target_file) {
             let mut recovery_errors = Vec::new();
             if let Some(backup_file) = backup_file.as_ref() {
@@ -8174,6 +8211,7 @@ fn install_staged_update_binaries(
 }
 
 fn inspect_update_install_target(target_file: &Path) -> Result<bool, String> {
+    ensure_update_install_file_parent_if_present(target_file)?;
     match fs::symlink_metadata(target_file) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -8196,6 +8234,7 @@ fn remove_existing_update_install_target(target_file: &Path) -> Result<(), Strin
     if !inspect_update_install_target(target_file)? {
         return Ok(());
     }
+    ensure_update_install_file_parent(target_file)?;
     fs::remove_file(target_file).map_err(|error| {
         format!(
             "could not replace release update binary {}: {error}",
@@ -8213,6 +8252,7 @@ fn with_update_recovery_error(error: String, recovery_error: Option<String>) -> 
 
 fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Result<(), String> {
     for report in reports {
+        ensure_update_install_file_parent_if_present(&report.target_file)?;
         let metadata = match fs::symlink_metadata(&report.target_file) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -8242,6 +8282,7 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
                 backup_file.display()
             ));
         }
+        ensure_update_install_file_parent(&report.target_file)?;
         let mut source_file = fs::File::open(&report.target_file).map_err(|error| {
             format!(
                 "could not back up release update binary {}: {error}",
@@ -8296,6 +8337,17 @@ fn create_update_temp_install_target(
     filename: &str,
     nonce: u128,
 ) -> Result<PathBuf, String> {
+    match report.target_file.parent() {
+        Some(parent) if parent == install_dir => {}
+        _ => {
+            return Err(format!(
+                "release update install target is outside install-dir: {}",
+                report.target_file.display()
+            ));
+        }
+    }
+    ensure_update_install_file_parent(&report.target_file)?;
+    ensure_update_install_directory(install_dir)?;
     let source_label = "release update staged binary";
     let source_metadata = update_input_file_metadata(&report.source_file, source_label)?;
     if source_metadata.len() != report.bytes {
@@ -8327,13 +8379,13 @@ fn create_update_temp_install_target(
             Ok(metadata) => metadata,
             Err(error) => {
                 drop(temp_file);
-                let _ = fs::remove_file(&temp_target);
+                remove_update_install_file_if_safe(&temp_target);
                 return Err(error);
             }
         };
         if !update_input_file_metadata_matches(&source_metadata, &path_metadata) {
             drop(temp_file);
-            let _ = fs::remove_file(&temp_target);
+            remove_update_install_file_if_safe(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
                 report.target_file.display()
@@ -8343,7 +8395,7 @@ fn create_update_temp_install_target(
             Ok(file) => file,
             Err(error) => {
                 drop(temp_file);
-                let _ = fs::remove_file(&temp_target);
+                remove_update_install_file_if_safe(&temp_target);
                 return Err(format!(
                     "could not stage release update binary {}: {error}",
                     report.target_file.display()
@@ -8355,13 +8407,13 @@ fn create_update_temp_install_target(
                 Ok(metadata) => metadata,
                 Err(error) => {
                     drop(temp_file);
-                    let _ = fs::remove_file(&temp_target);
+                    remove_update_install_file_if_safe(&temp_target);
                     return Err(error);
                 }
             };
         if !update_input_file_metadata_matches(&source_metadata, &opened_path_metadata) {
             drop(temp_file);
-            let _ = fs::remove_file(&temp_target);
+            remove_update_install_file_if_safe(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
                 report.target_file.display()
@@ -8371,7 +8423,7 @@ fn create_update_temp_install_target(
             Ok(metadata) => metadata,
             Err(error) => {
                 drop(temp_file);
-                let _ = fs::remove_file(&temp_target);
+                remove_update_install_file_if_safe(&temp_target);
                 return Err(format!(
                     "release update staged binary metadata could not be read: {error}"
                 ));
@@ -8381,7 +8433,7 @@ fn create_update_temp_install_target(
             || !update_input_file_metadata_matches(&source_metadata, &opened_metadata)
         {
             drop(temp_file);
-            let _ = fs::remove_file(&temp_target);
+            remove_update_install_file_if_safe(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
                 report.target_file.display()
@@ -8392,7 +8444,7 @@ fn create_update_temp_install_target(
                 Ok(result) => result,
                 Err(error) => {
                     drop(temp_file);
-                    let _ = fs::remove_file(&temp_target);
+                    remove_update_install_file_if_safe(&temp_target);
                     return Err(format!(
                         "could not stage release update binary {}: {error}",
                         report.target_file.display()
@@ -8401,7 +8453,7 @@ fn create_update_temp_install_target(
             };
         if copied != report.bytes || copied_sha256 != report.sha256 {
             drop(temp_file);
-            let _ = fs::remove_file(&temp_target);
+            remove_update_install_file_if_safe(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
                 report.target_file.display()
@@ -8412,13 +8464,13 @@ fn create_update_temp_install_target(
                 Ok(metadata) => metadata,
                 Err(error) => {
                     drop(temp_file);
-                    let _ = fs::remove_file(&temp_target);
+                    remove_update_install_file_if_safe(&temp_target);
                     return Err(error);
                 }
             };
         if !update_input_file_metadata_matches(&source_metadata, &final_source_metadata) {
             drop(temp_file);
-            let _ = fs::remove_file(&temp_target);
+            remove_update_install_file_if_safe(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
                 report.target_file.display()
@@ -8428,7 +8480,7 @@ fn create_update_temp_install_target(
             Ok(metadata) => metadata,
             Err(error) => {
                 drop(temp_file);
-                let _ = fs::remove_file(&temp_target);
+                remove_update_install_file_if_safe(&temp_target);
                 return Err(format!(
                     "release update staged binary metadata could not be read: {error}"
                 ));
@@ -8436,7 +8488,7 @@ fn create_update_temp_install_target(
         };
         if !update_input_file_metadata_matches(&source_metadata, &final_opened_metadata) {
             drop(temp_file);
-            let _ = fs::remove_file(&temp_target);
+            remove_update_install_file_if_safe(&temp_target);
             return Err(format!(
                 "release update staged binary changed while preparing {}",
                 report.target_file.display()
@@ -8444,7 +8496,7 @@ fn create_update_temp_install_target(
         }
         if let Err(error) = set_update_binary_file_permissions(&temp_file, &temp_target) {
             drop(temp_file);
-            let _ = fs::remove_file(&temp_target);
+            remove_update_install_file_if_safe(&temp_target);
             return Err(error);
         }
         drop(temp_file);
@@ -8459,13 +8511,16 @@ fn create_update_temp_install_target(
 fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) -> Result<(), String> {
     let mut errors = Vec::new();
     for (target_file, backup_file) in installed.iter().rev() {
-        match fs::remove_file(target_file) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => errors.push(format!(
-                "could not remove partially installed release update binary {}: {error}",
-                target_file.display()
-            )),
+        match ensure_update_install_file_parent_if_present(target_file) {
+            Ok(()) => match fs::remove_file(target_file) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => errors.push(format!(
+                    "could not remove partially installed release update binary {}: {error}",
+                    target_file.display()
+                )),
+            },
+            Err(error) => errors.push(error),
         }
         if let Some(backup_file) = backup_file {
             if let Err(error) = restore_update_backup(target_file, backup_file) {
@@ -8482,6 +8537,7 @@ fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) -> Result<(
 
 fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), String> {
     ensure_update_backup_file_parent_if_present(backup_file)?;
+    ensure_update_install_file_parent(target_file)?;
     let metadata = update_backup_file_metadata(backup_file)?;
     let mut backup = fs::File::open(backup_file).map_err(|error| {
         format!(
@@ -8533,7 +8589,7 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
         Ok(copied) => copied,
         Err(error) => {
             drop(target);
-            let _ = fs::remove_file(target_file);
+            remove_update_install_file_if_safe(target_file);
             return Err(format!(
                 "could not restore release update backup {} to {}: {error}",
                 backup_file.display(),
@@ -8545,13 +8601,13 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
         Ok(metadata) => metadata,
         Err(error) => {
             drop(target);
-            let _ = fs::remove_file(target_file);
+            remove_update_install_file_if_safe(target_file);
             return Err(error);
         }
     };
     if !update_input_file_metadata_matches(&metadata, &final_path_metadata) {
         drop(target);
-        let _ = fs::remove_file(target_file);
+        remove_update_install_file_if_safe(target_file);
         return Err(format!(
             "release update backup changed while restoring {}",
             backup_file.display()
@@ -8561,7 +8617,7 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
         Ok(metadata) => metadata,
         Err(error) => {
             drop(target);
-            let _ = fs::remove_file(target_file);
+            remove_update_install_file_if_safe(target_file);
             return Err(format!(
                 "could not inspect opened release update backup file {}: {error}",
                 backup_file.display()
@@ -8570,7 +8626,7 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
     };
     if !update_input_file_metadata_matches(&metadata, &final_opened_metadata) {
         drop(target);
-        let _ = fs::remove_file(target_file);
+        remove_update_install_file_if_safe(target_file);
         return Err(format!(
             "release update backup changed while restoring {}",
             backup_file.display()
@@ -8578,7 +8634,7 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
     }
     if copied != metadata.len() {
         drop(target);
-        let _ = fs::remove_file(target_file);
+        remove_update_install_file_if_safe(target_file);
         return Err(format!(
             "release update backup changed while restoring {}",
             backup_file.display()
@@ -8586,7 +8642,7 @@ fn restore_update_backup(target_file: &Path, backup_file: &Path) -> Result<(), S
     }
     if let Err(error) = set_update_binary_file_permissions(&target, target_file) {
         drop(target);
-        let _ = fs::remove_file(target_file);
+        remove_update_install_file_if_safe(target_file);
         return Err(error);
     }
     drop(target);
@@ -8611,7 +8667,13 @@ fn update_backup_file_metadata(backup_file: &Path) -> Result<fs::Metadata, Strin
 
 fn cleanup_update_temp_targets(temp_targets: &[(PathBuf, PathBuf)]) {
     for (_, temp_target) in temp_targets {
-        let _ = fs::remove_file(temp_target);
+        remove_update_install_file_if_safe(temp_target);
+    }
+}
+
+fn remove_update_install_file_if_safe(path: &Path) {
+    if ensure_update_install_file_parent_if_present(path).is_ok() {
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -12100,6 +12162,48 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn update_apply_temp_install_target_rejects_symlinked_install_parent_without_writing_outside() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-temp-install-parent-symlink");
+        let outside = home.join("outside-install");
+        fs::create_dir_all(&outside).expect("outside install dir creates");
+        let install_dir = home.join("install-bin");
+        symlink(&outside, &install_dir).expect("install dir symlink creates");
+        let filename = update_binary_filename("conu");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        fs::write(&source_file, b"new conu binary").expect("source binary writes");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file,
+            target_file: install_dir.join(&filename),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
+        };
+
+        let error = create_update_temp_install_target(&report, &install_dir, &filename, 42)
+            .expect_err("symlinked install parent should fail closed");
+
+        assert!(error.contains("release update install-dir is not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside)
+                .expect("outside install dir reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&install_dir)
+                .expect("install dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn update_apply_temp_install_target_sets_executable_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -12343,6 +12447,37 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_final_replacement_rejects_symlinked_install_parent_without_removing_outside() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-final-parent-symlink");
+        let outside = home.join("outside-install");
+        fs::create_dir_all(&outside).expect("outside install dir creates");
+        let filename = update_binary_filename("conu");
+        let outside_target = outside.join(&filename);
+        fs::write(&outside_target, b"outside binary").expect("outside binary writes");
+        let install_dir = home.join("install-bin");
+        symlink(&outside, &install_dir).expect("install dir symlink creates");
+        let target_file = install_dir.join(&filename);
+
+        let error = remove_existing_update_install_target(&target_file)
+            .expect_err("symlinked install parent should fail closed");
+
+        assert!(error.contains("release update install-dir is not a directory"));
+        assert_eq!(
+            fs::read(&outside_target).expect("outside target remains readable"),
+            b"outside binary"
+        );
+        assert!(
+            fs::symlink_metadata(&install_dir)
+                .expect("install dir symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
     #[test]
     fn update_apply_backup_rejects_unplanned_existing_target() {
         let home = temp_home("update-apply-backup-unplanned-target");
@@ -12446,6 +12581,42 @@ mod tests {
         assert_eq!(
             fs::read(&target_file).expect("target remains readable"),
             b"current binary"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_backup_rejects_symlinked_install_parent_without_backing_up_outside() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-backup-install-parent-symlink");
+        let outside = home.join("outside-install");
+        fs::create_dir_all(&outside).expect("outside install dir creates");
+        let filename = update_binary_filename("conu");
+        let outside_target = outside.join(&filename);
+        fs::write(&outside_target, b"outside binary").expect("outside target writes");
+        let install_dir = home.join("install-bin");
+        symlink(&outside, &install_dir).expect("install dir symlink creates");
+        let backup_dir = home.join("backups").join("run");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let backup_file = backup_dir.join(&filename);
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file: home.join("unused-staged"),
+            target_file: install_dir.join(&filename),
+            backup_file: Some(backup_file.clone()),
+            bytes: b"outside binary".len() as u64,
+            sha256: sha256_hex(b"outside binary"),
+        };
+
+        let error = back_up_existing_update_binaries(&[report])
+            .expect_err("symlinked install parent should fail closed");
+
+        assert!(error.contains("release update install-dir is not a directory"));
+        assert!(!backup_file.exists());
+        assert_eq!(
+            fs::read(&outside_target).expect("outside target remains readable"),
+            b"outside binary"
         );
     }
 
@@ -12643,6 +12814,43 @@ mod tests {
         assert!(
             fs::symlink_metadata(&target_file)
                 .expect("restore symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_restore_backup_rejects_symlinked_install_parent_without_writing_outside() {
+        use std::os::unix::fs::symlink;
+
+        let home = temp_home("update-apply-restore-parent-symlink");
+        let outside = home.join("outside-install");
+        fs::create_dir_all(&outside).expect("outside install dir creates");
+        let install_dir = home.join("install-bin");
+        symlink(&outside, &install_dir).expect("install dir symlink creates");
+        let backup_dir = home
+            .join("real-install")
+            .join(".conu-update-backups")
+            .join("restore");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let filename = update_binary_filename("conu");
+        let backup_file = backup_dir.join(&filename);
+        fs::write(&backup_file, b"backup binary").expect("backup writes");
+        let target_file = install_dir.join(&filename);
+
+        let error = restore_update_backup(&target_file, &backup_file)
+            .expect_err("symlinked install parent should fail closed");
+
+        assert!(error.contains("release update install-dir is not a directory"));
+        assert!(!outside.join(&filename).exists());
+        assert_eq!(
+            fs::read(&backup_file).expect("backup remains readable"),
+            b"backup binary"
+        );
+        assert!(
+            fs::symlink_metadata(&install_dir)
+                .expect("install dir symlink metadata")
                 .file_type()
                 .is_symlink()
         );
