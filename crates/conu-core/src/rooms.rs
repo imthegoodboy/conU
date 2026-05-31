@@ -7,10 +7,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use conu_protocol::OpaquePayload;
@@ -232,16 +231,6 @@ pub enum RoomError {
     InvalidRequest {
         reason: String,
     },
-}
-
-impl RoomError {
-    fn io(action: &'static str, path: &Path, source: io::Error) -> Self {
-        Self::Io {
-            action,
-            path: path.to_path_buf(),
-            source,
-        }
-    }
 }
 
 impl fmt::Display for RoomError {
@@ -865,6 +854,9 @@ fn room_topic_allows(
 }
 
 fn read_rooms(paths: &StatePaths) -> Result<Vec<RoomRecord>, RoomError> {
+    if !state::state_directory_exists(&paths.rooms_dir, "inspect rooms directory")? {
+        return Ok(Vec::new());
+    }
     let Some(contents) = state::read_optional_regular_state_file(
         &paths.room_registry,
         "inspect room registry",
@@ -877,8 +869,7 @@ fn read_rooms(paths: &StatePaths) -> Result<Vec<RoomRecord>, RoomError> {
 }
 
 fn write_rooms(paths: &StatePaths, rooms: &[RoomRecord]) -> Result<(), RoomError> {
-    fs::create_dir_all(&paths.rooms_dir)
-        .map_err(|error| RoomError::io("create rooms directory", &paths.rooms_dir, error))?;
+    ensure_rooms_directory(paths)?;
     let mut sorted = rooms.to_vec();
     sorted.sort_by(|left, right| left.room_id.cmp(&right.room_id));
     let mut contents = format!("# conU room registry\nversion = \"{}\"\n", ROOM_VERSION);
@@ -937,16 +928,14 @@ fn write_rooms(paths: &StatePaths, rooms: &[RoomRecord]) -> Result<(), RoomError
 }
 
 fn append_event(paths: &StatePaths, event: RoomEvent) -> Result<(), RoomError> {
-    fs::create_dir_all(&paths.rooms_dir)
-        .map_err(|error| RoomError::io("create rooms directory", &paths.rooms_dir, error))?;
+    ensure_rooms_directory(paths)?;
     let mut events = read_events(paths)?;
     events.push(event);
     write_events(paths, &events)
 }
 
 fn append_event_once(paths: &StatePaths, event: RoomEvent) -> Result<(), RoomError> {
-    fs::create_dir_all(&paths.rooms_dir)
-        .map_err(|error| RoomError::io("create rooms directory", &paths.rooms_dir, error))?;
+    ensure_rooms_directory(paths)?;
     let mut events = read_events(paths)?;
     if events.iter().any(|known| known.event_id == event.event_id) {
         return Ok(());
@@ -956,6 +945,9 @@ fn append_event_once(paths: &StatePaths, event: RoomEvent) -> Result<(), RoomErr
 }
 
 fn read_events(paths: &StatePaths) -> Result<Vec<RoomEvent>, RoomError> {
+    if !state::state_directory_exists(&paths.rooms_dir, "inspect rooms directory")? {
+        return Ok(Vec::new());
+    }
     let Some(contents) = state::read_optional_regular_state_file(
         &paths.room_events,
         "inspect room events",
@@ -968,6 +960,7 @@ fn read_events(paths: &StatePaths) -> Result<Vec<RoomEvent>, RoomError> {
 }
 
 fn write_events(paths: &StatePaths, events: &[RoomEvent]) -> Result<(), RoomError> {
+    ensure_rooms_directory(paths)?;
     let mut contents = format!("# conU room event bus\nversion = \"{}\"\n", ROOM_VERSION);
 
     for event in events {
@@ -1013,6 +1006,9 @@ fn write_events(paths: &StatePaths, events: &[RoomEvent]) -> Result<(), RoomErro
 }
 
 fn read_topic_policies(paths: &StatePaths) -> Result<Vec<RoomTopicPolicyRecord>, RoomError> {
+    if !state::state_directory_exists(&paths.rooms_dir, "inspect rooms directory")? {
+        return Ok(Vec::new());
+    }
     let Some(contents) = state::read_optional_regular_state_file(
         &paths.room_policy,
         "inspect room topic policy",
@@ -1028,8 +1024,7 @@ fn write_topic_policies(
     paths: &StatePaths,
     policies: &[RoomTopicPolicyRecord],
 ) -> Result<(), RoomError> {
-    fs::create_dir_all(&paths.rooms_dir)
-        .map_err(|error| RoomError::io("create rooms directory", &paths.rooms_dir, error))?;
+    ensure_rooms_directory(paths)?;
     let mut sorted = policies.to_vec();
     sorted.sort_by(|left, right| {
         left.room_id
@@ -1067,6 +1062,11 @@ fn write_topic_policies(
         "open room topic policy",
         "write room topic policy",
     )?;
+    Ok(())
+}
+
+fn ensure_rooms_directory(paths: &StatePaths) -> Result<(), RoomError> {
+    state::ensure_state_directory(&paths.rooms_dir)?;
     Ok(())
 }
 
@@ -1532,6 +1532,8 @@ mod tests {
     use crate::policy::{self, PeerPolicyUpdate};
     use crate::trust;
     use std::env;
+    use std::fs;
+    use std::path::Path;
     use std::process;
 
     #[test]
@@ -1785,6 +1787,94 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn room_directory_symlink_is_rejected_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("rooms-dir-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-rooms-dir-write");
+        fs::remove_dir_all(&paths.rooms_dir).expect("rooms dir removes");
+        fs::create_dir_all(&outside).expect("outside rooms dir creates");
+        symlink(&outside, &paths.rooms_dir).expect("rooms dir symlink creates");
+
+        let error = write_rooms(&paths, &[test_room_record()])
+            .expect_err("symlinked rooms directory fails closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(!outside.join("registry.toml").exists());
+        assert!(
+            fs::symlink_metadata(&paths.rooms_dir)
+                .expect("rooms dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn room_listing_rejects_symlinked_room_directory_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("rooms-dir-list-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-rooms-dir-list");
+        fs::remove_dir_all(&paths.rooms_dir).expect("rooms dir removes");
+        fs::create_dir_all(&outside).expect("outside rooms dir creates");
+        fs::write(outside.join("registry.toml"), test_room_registry_contents())
+            .expect("outside registry writes");
+        symlink(&outside, &paths.rooms_dir).expect("rooms dir symlink creates");
+
+        let error = list_rooms(Some(home)).expect_err("symlinked rooms directory fails closed");
+
+        assert!(error.to_string().contains("inspect rooms directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn room_event_listing_rejects_symlinked_room_directory_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("rooms-dir-events-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-rooms-dir-events");
+        fs::remove_dir_all(&paths.rooms_dir).expect("rooms dir removes");
+        fs::create_dir_all(&outside).expect("outside rooms dir creates");
+        fs::write(outside.join("events.toml"), test_room_events_contents())
+            .expect("outside events write");
+        symlink(&outside, &paths.rooms_dir).expect("rooms dir symlink creates");
+
+        let error =
+            list_room_events(Some(home)).expect_err("symlinked rooms directory fails closed");
+
+        assert!(error.to_string().contains("inspect rooms directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn room_topic_policy_listing_rejects_symlinked_room_directory_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("rooms-dir-policy-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let paths = init.paths;
+        let outside = home.with_extension("outside-rooms-dir-policy");
+        fs::remove_dir_all(&paths.rooms_dir).expect("rooms dir removes");
+        fs::create_dir_all(&outside).expect("outside rooms dir creates");
+        fs::write(outside.join("policy.toml"), test_room_policy_contents())
+            .expect("outside policy write");
+        symlink(&outside, &paths.rooms_dir).expect("rooms dir symlink creates");
+
+        let error = list_room_topic_policies(Some(home))
+            .expect_err("symlinked rooms directory fails closed");
+
+        assert!(error.to_string().contains("inspect rooms directory"));
+    }
+
     #[test]
     fn inbound_room_topic_policy_requires_remote_publish_grant() {
         let alice_home = test_home("inbound-topic-alice");
@@ -1968,5 +2058,36 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    #[cfg(unix)]
+    fn test_room_record() -> RoomRecord {
+        RoomRecord {
+            room_id: "room.outside".to_string(),
+            display_name: "Outside Room".to_string(),
+            state: RoomState::Open,
+            created_by_agent_id: "agent.outside".to_string(),
+            participants: Vec::new(),
+            topics: Vec::new(),
+            events_published: 0,
+            bytes_published: 0,
+            created_at_unix: 1,
+            updated_at_unix: 1,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_room_registry_contents() -> &'static str {
+        "# conU room registry\nversion = \"1\"\n\n[[room]]\nroom_id = \"room.outside\"\ndisplay_name = \"Outside Room\"\nstate = \"open\"\ncreated_by_agent_id = \"agent.outside\"\nparticipants = \"\"\ntopics = \"\"\nevents_published = 0\nbytes_published = 0\ncreated_at_unix = 1\nupdated_at_unix = 1\npayload_displayed = false\n"
+    }
+
+    #[cfg(unix)]
+    fn test_room_events_contents() -> &'static str {
+        "# conU room event bus\nversion = \"1\"\n\n[[event]]\nevent_id = \"room_event.outside\"\nroom_id = \"room.outside\"\ntopic = \"build\"\nfrom_agent_id = \"agent.outside\"\nevent_type = \"published\"\nroute = \"room-local\"\npayload_bytes = 10\ncreated_at_unix = 1\npayload_displayed = false\n"
+    }
+
+    #[cfg(unix)]
+    fn test_room_policy_contents() -> &'static str {
+        "# conU room topic policy\nversion = \"1\"\n\n[[topic_policy]]\nroom_id = \"room.outside\"\nagent_id = \"agent.outside\"\ntopic = \"build\"\npublish = true\nsubscribe = true\nupdated_at_unix = 1\npayload_displayed = false\n"
     }
 }
