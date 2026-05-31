@@ -8169,10 +8169,21 @@ fn install_staged_update_binaries(
 
     let mut installed = Vec::new();
     for (target_file, temp_target) in &temp_targets {
-        let backup_file = reports
+        let Some(report) = reports
             .iter()
             .find(|report| report.target_file == *target_file)
-            .and_then(|report| report.backup_file.clone());
+        else {
+            let recovery_errors = rollback_update_install(&installed).err();
+            cleanup_update_temp_targets(&temp_targets);
+            return Err(with_update_recovery_error(
+                format!(
+                    "release update install plan is missing target {}",
+                    target_file.display()
+                ),
+                recovery_errors,
+            ));
+        };
+        let backup_file = report.backup_file.clone();
         if let Err(error) = remove_existing_update_install_target(target_file) {
             let recovery_errors = rollback_update_install(&installed).err();
             cleanup_update_temp_targets(&temp_targets);
@@ -8180,10 +8191,22 @@ fn install_staged_update_binaries(
         }
         if let Err(error) = ensure_update_install_file_parent(target_file)
             .and_then(|_| ensure_update_install_file_parent(temp_target))
+            .and_then(|_| verify_update_temp_install_target(report, temp_target))
         {
-            let recovery_errors = rollback_update_install(&installed).err();
+            let mut recovery_errors = Vec::new();
+            if let Some(backup_file) = backup_file.as_ref() {
+                if let Err(error) = restore_update_backup(target_file, backup_file) {
+                    recovery_errors.push(error);
+                }
+            }
+            if let Err(error) = rollback_update_install(&installed) {
+                recovery_errors.push(error);
+            }
             cleanup_update_temp_targets(&temp_targets);
-            return Err(with_update_recovery_error(error, recovery_errors));
+            return Err(with_update_recovery_error(
+                error,
+                (!recovery_errors.is_empty()).then(|| recovery_errors.join("; ")),
+            ));
         }
         if let Err(error) = fs::rename(temp_target, target_file) {
             let mut recovery_errors = Vec::new();
@@ -8562,6 +8585,84 @@ fn create_update_temp_install_target(
     Err(format!(
         "could not reserve unique release update temporary install target for {filename}"
     ))
+}
+
+fn verify_update_temp_install_target(
+    report: &UpdateApplyBinaryReport,
+    temp_target: &Path,
+) -> Result<(), String> {
+    ensure_update_install_file_parent(temp_target)?;
+    let label = "release update temporary install target";
+    let metadata = update_input_file_metadata(temp_target, label)?;
+    if metadata.len() != report.bytes {
+        return Err(format!(
+            "release update temporary install target changed before installing {}",
+            report.target_file.display()
+        ));
+    }
+    let mut temp_file = fs::File::open(temp_target).map_err(|error| {
+        format!(
+            "could not open release update temporary install target {}: {error}",
+            temp_target.display()
+        )
+    })?;
+    let opened_path_metadata = update_input_file_metadata(temp_target, label)?;
+    if !update_input_file_metadata_matches(&metadata, &opened_path_metadata) {
+        return Err(format!(
+            "release update temporary install target changed before installing {}",
+            report.target_file.display()
+        ));
+    }
+    let opened_metadata = temp_file.metadata().map_err(|error| {
+        format!(
+            "could not inspect opened release update temporary install target {}: {error}",
+            temp_target.display()
+        )
+    })?;
+    if !opened_metadata.is_file()
+        || !update_input_file_metadata_matches(&metadata, &opened_metadata)
+    {
+        return Err(format!(
+            "release update temporary install target changed before installing {}",
+            report.target_file.display()
+        ));
+    }
+    let mut sink = io::sink();
+    let (read, sha256) =
+        copy_update_binary_with_sha256(&mut temp_file, &mut sink).map_err(|error| {
+            format!(
+                "could not verify release update temporary install target {}: {error}",
+                temp_target.display()
+            )
+        })?;
+    if read != report.bytes || sha256 != report.sha256 {
+        return Err(format!(
+            "release update temporary install target changed before installing {}",
+            report.target_file.display()
+        ));
+    }
+    let final_path_metadata = update_input_file_metadata(temp_target, label)?;
+    if !update_input_file_metadata_matches(&metadata, &final_path_metadata) {
+        return Err(format!(
+            "release update temporary install target changed before installing {}",
+            report.target_file.display()
+        ));
+    }
+    let final_opened_metadata = temp_file.metadata().map_err(|error| {
+        format!(
+            "could not inspect opened release update temporary install target {}: {error}",
+            temp_target.display()
+        )
+    })?;
+    if !final_opened_metadata.is_file()
+        || !update_input_file_metadata_matches(&metadata, &final_opened_metadata)
+    {
+        return Err(format!(
+            "release update temporary install target changed before installing {}",
+            report.target_file.display()
+        ));
+    }
+    Ok(())
 }
 
 fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) -> Result<(), String> {
@@ -12295,6 +12396,61 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn update_apply_temp_install_target_verify_accepts_created_target() {
+        let home = temp_home("update-apply-temp-target-verify-accepts");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        fs::write(&source_file, b"new conu binary").expect("source binary writes");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file,
+            target_file: install_dir.join(&filename),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
+        };
+        let created = create_update_temp_install_target(&report, &install_dir, &filename, 42)
+            .expect("temp target creates");
+
+        verify_update_temp_install_target(&report, &created).expect("created temp target verifies");
+    }
+
+    #[test]
+    fn update_apply_temp_install_target_verify_rejects_same_length_replacement() {
+        let home = temp_home("update-apply-temp-target-verify-replacement");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let source_dir = home.join("staged");
+        fs::create_dir_all(&source_dir).expect("source dir creates");
+        let source_file = source_dir.join(&filename);
+        fs::write(&source_file, b"new conu binary").expect("source binary writes");
+        let report = UpdateApplyBinaryReport {
+            name: "conu".to_string(),
+            source_file,
+            target_file: install_dir.join(&filename),
+            backup_file: None,
+            bytes: b"new conu binary".len() as u64,
+            sha256: sha256_hex(b"new conu binary"),
+        };
+        let created = create_update_temp_install_target(&report, &install_dir, &filename, 42)
+            .expect("temp target creates");
+        fs::remove_file(&created).expect("temp target removes");
+        fs::write(&created, b"bad conu binary").expect("replacement temp target writes");
+
+        let error = verify_update_temp_install_target(&report, &created)
+            .expect_err("same-length temp target replacement should fail closed");
+
+        assert!(
+            error.contains("release update temporary install target changed before installing")
+        );
     }
 
     #[cfg(unix)]
