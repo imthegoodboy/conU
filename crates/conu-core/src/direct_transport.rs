@@ -434,13 +434,13 @@ pub fn send_direct_message_from_paths(
         local_node_id,
     )?;
     validate_delivery_ack(paths, local_node_id, &peer, &envelope_id, &response)?;
-    append_direct_log(
+    record_direct_log(
         paths,
         "outbox_sent",
         &envelope_id,
         &peer.peer_node_id,
         encrypted.plaintext_len,
-    )?;
+    );
 
     Ok(DirectDeliveryReport {
         envelope_id,
@@ -497,13 +497,13 @@ pub fn send_direct_stream_chunk_from_paths(
         local_node_id,
     )?;
     validate_delivery_ack(paths, local_node_id, &peer, &envelope_id, &response)?;
-    append_direct_log(
+    record_direct_log(
         paths,
         "outbox_sent",
         &envelope_id,
         &peer.peer_node_id,
         encrypted.plaintext_len,
-    )?;
+    );
 
     Ok(DirectDeliveryReport {
         envelope_id,
@@ -546,7 +546,7 @@ fn send_direct_envelope(
             reason: "direct acknowledgement peer mismatch".to_string(),
         });
     }
-    append_direct_log(paths, "ack_received", &envelope_id, &peer.peer_node_id, 0)?;
+    record_direct_log(paths, "ack_received", &envelope_id, &peer.peer_node_id, 0);
     Ok(values)
 }
 
@@ -573,7 +573,7 @@ async fn accept_direct_frames(
             Ok(None) => report.received += 1,
             Err(_) => {
                 report.rejected += 1;
-                append_direct_log(paths, "inbox_rejected", "", "", 0)?;
+                record_direct_log(paths, "inbox_rejected", "", "", 0);
             }
         }
     }
@@ -745,13 +745,13 @@ fn receive_direct_frame(
         encrypted.plaintext_len,
         &encrypted,
     );
-    append_direct_log(
+    record_direct_log(
         paths,
         "inbox_delivered",
         &envelope_id,
         &from_node_id,
         body.plaintext_len,
-    )?;
+    );
 
     Ok((response, entry))
 }
@@ -1341,6 +1341,18 @@ fn is_multicast_or_broadcast(address: IpAddr) -> bool {
     }
 }
 
+fn record_direct_log(
+    paths: &StatePaths,
+    event: &str,
+    envelope_id: &str,
+    peer_node_id: &str,
+    bytes: usize,
+) {
+    // Direct delivery success is owned by peer acknowledgement and durable inbox state,
+    // not by optional metadata-log persistence.
+    let _ = append_direct_log(paths, event, envelope_id, peer_node_id, bytes);
+}
+
 fn append_direct_log(
     paths: &StatePaths,
     event: &str,
@@ -1842,6 +1854,79 @@ mod tests {
         assert_eq!(inbox[0].kind, "message");
         assert!(log.contains("payload=not_observed"));
         assert!(!log.contains("private direct message"));
+    }
+
+    #[test]
+    fn direct_delivery_success_does_not_depend_on_direct_log_writes() {
+        let _direct_guard = direct_quic_test_lock();
+        let alice_home = test_home("log-collision-alice");
+        let bob_home = test_home("log-collision-bob");
+        let bob_endpoint = free_loopback_endpoint();
+        state::init_state(Some(bob_home.clone())).expect("bob state initializes");
+        fs::write(
+            StatePaths::from_home(bob_home.clone()).config,
+            format!("version = \"1\"\ndirect_quic_endpoint = \"{bob_endpoint}\"\n"),
+        )
+        .expect("bob config writes");
+        let alice_card =
+            trust::export_peer_card(Some(alice_home.clone())).expect("alice card exports");
+        let bob_card = trust::export_peer_card(Some(bob_home.clone())).expect("bob card exports");
+        let bob_peer =
+            trust::trust_peer_card(Some(alice_home.clone()), bob_card).expect("alice trusts bob");
+        let alice_peer =
+            trust::trust_peer_card(Some(bob_home.clone()), alice_card).expect("bob trusts alice");
+        grant_peer_policy(&alice_home, &bob_peer.peer_node_id, true, false);
+        grant_peer_policy(&bob_home, &alice_peer.peer_node_id, true, false);
+        register_stream_agent(&alice_home, "agent.alice");
+        register_stream_agent(&bob_home, "agent.bob");
+        let alice_direct_log = StatePaths::from_home(alice_home.clone())
+            .logs_dir
+            .join("direct.log");
+        let bob_direct_log = StatePaths::from_home(bob_home.clone())
+            .logs_dir
+            .join("direct.log");
+        fs::create_dir(&alice_direct_log).expect("alice direct log collision creates");
+        fs::create_dir(&bob_direct_log).expect("bob direct log collision creates");
+
+        let bob_paths = StatePaths::from_home(bob_home.clone());
+        let bob_node = state::read_state(Some(bob_home.clone()))
+            .expect("bob state")
+            .node
+            .expect("bob node")
+            .node_id;
+        let mut server = DirectRuntimeServer::new().expect("server starts");
+        let handle = std::thread::spawn(move || {
+            server
+                .tick_from_paths(&bob_paths, &bob_node, direct_quic_test_timeout())
+                .expect("server tick")
+        });
+        std::thread::sleep(direct_quic_test_startup_delay());
+
+        let alice_paths = StatePaths::from_home(alice_home.clone());
+        let alice_node = state::read_state(Some(alice_home))
+            .expect("alice state")
+            .node
+            .expect("alice node")
+            .node_id;
+        let message = RemoteMessage::new(
+            "agent.alice",
+            "agent.bob",
+            &bob_peer.peer_node_id,
+            OpaquePayload::from_bytes(b"private direct message".to_vec()),
+        )
+        .expect("message valid");
+        let sent = send_direct_message_from_paths(&alice_paths, &alice_node, message)
+            .expect("message sends despite direct log collisions");
+        let server_report = handle.join().expect("server joins");
+        let inbox =
+            messages::list_agent_inbox(Some(bob_home), "agent.bob").expect("bob inbox reads");
+
+        assert_eq!(sent.route, "direct-quic");
+        assert_eq!(server_report.received, 1);
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].kind, "message");
+        assert!(alice_direct_log.is_dir());
+        assert!(bob_direct_log.is_dir());
     }
 
     fn register_stream_agent(home: &Path, agent_id: &str) {
