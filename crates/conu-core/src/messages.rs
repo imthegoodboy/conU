@@ -444,7 +444,7 @@ fn process_one_message_request(
     }
 
     let request_id_value = validate_identifier(required(&values, "request_id")?, "request id")?;
-    security::record_replay_id_from_paths(paths, &request_id_value, "message_request")?;
+    security::ensure_replay_id_not_seen_from_paths(paths, &request_id_value, "message_request")?;
     let from_agent_id = required(&values, "from_agent_id")?;
     let to_agent_id = required(&values, "to_agent_id")?;
     let payload = OpaquePayload::from_bytes(payload_from_values(
@@ -465,8 +465,11 @@ fn process_one_message_request(
         message.payload,
     )?;
 
+    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "message_envelope")?;
+    let delivery = deliver_envelope_with_status(paths, envelope, "delivered_local")?;
+    security::record_replay_id_from_paths(paths, &request_id_value, "message_request")?;
     security::record_replay_id_from_paths(paths, &envelope_id, "message_envelope")?;
-    deliver_envelope_with_status(paths, envelope, "delivered_local")
+    Ok(delivery)
 }
 
 fn validate_agents_can_message(
@@ -1484,6 +1487,62 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn failed_local_delivery_does_not_record_replay_id_before_retry() {
+        let home = test_home("local-delivery-replay-retry");
+        register_agent(&home, "agent.sender");
+        register_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        let submission =
+            submit_local_message(Some(home.clone()), message.clone()).expect("message submits");
+        let paths = StatePaths::from_home(home.clone());
+        let recipient_inbox_dir = paths.message_inbox_dir.join("agent.receiver");
+        fs::write(&recipient_inbox_dir, "not a directory").expect("inbox blocker writes");
+
+        let report = process_message_requests(Some(home.clone()))
+            .expect("delivery failure is archived as rejection");
+
+        assert_eq!(report.delivered, 0);
+        assert_eq!(report.rejected, 1);
+        let replay_cache = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
+        assert!(!replay_cache.contains(&submission.request_id));
+        assert!(!replay_cache.contains("message_envelope"));
+
+        fs::remove_file(&recipient_inbox_dir).expect("inbox blocker removes");
+        let encrypted = security::encrypt_for_storage_from_paths(
+            &paths,
+            message.payload.as_bytes(),
+            &message_request_aad(
+                &submission.request_id,
+                &message.from_agent_id,
+                &message.to_agent_id,
+            ),
+        )
+        .expect("retry payload encrypts");
+        let retry_path = paths.message_ipc_inbox_dir.join("retry.msg");
+        fs::write(
+            &retry_path,
+            render_message_request(&submission.request_id, &message, &encrypted),
+        )
+        .expect("retry request writes");
+
+        let retry_report =
+            process_message_requests(Some(home.clone())).expect("retry request processes");
+        let inbox = list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let replay_cache = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
+
+        assert_eq!(retry_report.delivered, 1);
+        assert_eq!(retry_report.rejected, 0);
+        assert_eq!(inbox.len(), 1);
+        assert!(replay_cache.contains(&submission.request_id));
+        assert!(replay_cache.contains("message_envelope"));
     }
 
     #[cfg(unix)]
