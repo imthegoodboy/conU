@@ -1166,7 +1166,7 @@ fn optional_direct_endpoint(value: Option<&String>) -> Result<Option<String>, Tr
 
 fn validate_direct_endpoint(value: String) -> Result<String, TrustError> {
     let value = value.trim().to_string();
-    direct_transport::validate_direct_endpoint(&value).map_err(|error| {
+    direct_transport::validate_direct_peer_endpoint(&value).map_err(|error| {
         TrustError::InvalidRequest {
             reason: error.to_string(),
         }
@@ -1193,11 +1193,11 @@ fn configured_relay_endpoint(paths: &StatePaths) -> Result<String, TrustError> {
 }
 
 fn configured_direct_quic_endpoint(paths: &StatePaths) -> Result<Option<String>, TrustError> {
-    direct_transport::configured_direct_quic_endpoint_from_paths(paths).map_err(|error| {
-        TrustError::InvalidRequest {
+    direct_transport::configured_direct_quic_advertised_endpoint_from_paths(paths).map_err(
+        |error| TrustError::InvalidRequest {
             reason: error.to_string(),
-        }
-    })
+        },
+    )
 }
 
 fn parse_key_values(contents: &str) -> HashMap<String, String> {
@@ -1500,6 +1500,26 @@ mod tests {
 
         assert_eq!(peer.source, "manual_signed_peer_card");
         assert!(peer.direct_quic_endpoint.is_none());
+    }
+
+    #[test]
+    fn peer_card_rejects_unusable_direct_endpoint_literal() {
+        let card = PeerCard {
+            node_id: "node_peer".to_string(),
+            display_name: "Peer".to_string(),
+            exchange_public_key_hex: "aa".to_string(),
+            relay_endpoint: "ws://127.0.0.1:8787".to_string(),
+            direct_quic_endpoint: Some("quic://0.0.0.0:9443".to_string()),
+            signing_public_key_hex: None,
+            signature_algorithm: None,
+            signature_key_id: None,
+            signature_hex: None,
+        };
+
+        let error = validate_peer_card(card)
+            .expect_err("unusable direct endpoint literal should fail closed");
+
+        assert!(error.to_string().contains("unspecified address"));
     }
 
     #[cfg(unix)]

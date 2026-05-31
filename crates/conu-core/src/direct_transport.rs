@@ -317,6 +317,17 @@ pub fn configured_direct_quic_endpoint_from_paths(
     Ok(Some(endpoint))
 }
 
+/// Return the configured direct QUIC endpoint only if it is safe to advertise to peers.
+pub fn configured_direct_quic_advertised_endpoint_from_paths(
+    paths: &StatePaths,
+) -> Result<Option<String>, DirectTransportError> {
+    let Some(endpoint) = configured_direct_quic_endpoint_from_paths(paths)? else {
+        return Ok(None);
+    };
+    validate_direct_peer_endpoint(&endpoint)?;
+    Ok(Some(endpoint))
+}
+
 /// Probe a peer's direct QUIC endpoint and authenticate both peer-card keys.
 pub fn probe_direct_quic_from_paths(
     paths: &StatePaths,
@@ -326,7 +337,7 @@ pub fn probe_direct_quic_from_paths(
     timeout: Duration,
 ) -> Result<DirectProbeReport, DirectTransportError> {
     let peer = trusted_peer_with_key(paths, &peer.peer_node_id)?;
-    validate_direct_endpoint(endpoint)?;
+    validate_direct_peer_endpoint(endpoint)?;
     let probe_id = request_id("directprobe");
     let plaintext = format!(
         "direct-probe:{probe_id}:{local_node_id}:{}",
@@ -509,7 +520,7 @@ fn send_direct_envelope(
     peer: &TrustedPeer,
     local_node_id: &str,
 ) -> Result<HashMap<String, String>, DirectTransportError> {
-    validate_direct_endpoint(endpoint)?;
+    validate_direct_peer_endpoint(endpoint)?;
     let envelope_id = frame.envelope_id.to_string();
     let request = render_direct_frame(frame);
     let response = direct_client_round_trip(
@@ -895,7 +906,7 @@ fn direct_endpoint_for_peer(
         .ok_or_else(|| DirectTransportError::InvalidRequest {
             reason: "trusted peer does not have a direct QUIC endpoint".to_string(),
         })?;
-    validate_direct_endpoint(&endpoint)?;
+    validate_direct_peer_endpoint(&endpoint)?;
     Ok(endpoint)
 }
 
@@ -1176,6 +1187,7 @@ fn endpoint_to_socket_addr(
     usage: EndpointUse,
 ) -> Result<SocketAddr, DirectTransportError> {
     validate_direct_endpoint(endpoint)?;
+    let endpoint = endpoint.trim();
     let without_scheme = endpoint
         .strip_prefix("quic://")
         .or_else(|| endpoint.strip_prefix("udp://"))
@@ -1185,14 +1197,16 @@ fn endpoint_to_socket_addr(
     let mut addrs = without_scheme
         .to_socket_addrs()
         .map_err(|error| DirectTransportError::network("resolve direct QUIC endpoint", error))?;
-    addrs
+    let address = addrs
         .next()
         .ok_or_else(|| DirectTransportError::InvalidRequest {
             reason: match usage {
                 EndpointUse::Bind => "direct bind endpoint did not resolve".to_string(),
                 EndpointUse::Connect => "direct peer endpoint did not resolve".to_string(),
             },
-        })
+        })?;
+    validate_direct_socket_addr(address, usage)?;
+    Ok(address)
 }
 
 /// Validate that an endpoint cannot hide credentials, query strings, or spaces.
@@ -1213,6 +1227,28 @@ pub fn validate_direct_endpoint(endpoint: &str) -> Result<(), DirectTransportErr
             reason: "direct endpoint is invalid".to_string(),
         });
     }
+    let (host, port) = direct_endpoint_host_port(endpoint)?;
+    validate_direct_endpoint_host(host)?;
+    if !port.parse::<u16>().is_ok_and(|port| port > 0) {
+        return Err(DirectTransportError::InvalidRequest {
+            reason: "direct endpoint host or port is invalid".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate an endpoint that will be advertised to or dialed as a peer endpoint.
+pub fn validate_direct_peer_endpoint(endpoint: &str) -> Result<(), DirectTransportError> {
+    validate_direct_endpoint(endpoint)?;
+    let (host, _) = direct_endpoint_host_port(endpoint)?;
+    if let Some(address) = direct_endpoint_ip_literal(host)? {
+        validate_direct_peer_ip(address)?;
+    }
+    Ok(())
+}
+
+fn direct_endpoint_host_port(endpoint: &str) -> Result<(&str, &str), DirectTransportError> {
+    let endpoint = endpoint.trim();
     let Some(without_scheme) = endpoint
         .strip_prefix("quic://")
         .or_else(|| endpoint.strip_prefix("udp://"))
@@ -1226,17 +1262,83 @@ pub fn validate_direct_endpoint(endpoint: &str) -> Result<(), DirectTransportErr
             reason: "direct endpoint path is not supported".to_string(),
         });
     }
-    let Some((host, port)) = without_scheme.rsplit_once(':') else {
-        return Err(DirectTransportError::InvalidRequest {
+    without_scheme
+        .rsplit_once(':')
+        .ok_or_else(|| DirectTransportError::InvalidRequest {
             reason: "direct endpoint must include host and port".to_string(),
+        })
+}
+
+fn validate_direct_endpoint_host(host: &str) -> Result<(), DirectTransportError> {
+    if host.trim().is_empty() {
+        return Err(DirectTransportError::InvalidRequest {
+            reason: "direct endpoint host or port is invalid".to_string(),
         });
-    };
-    if host.trim().is_empty() || !port.parse::<u16>().is_ok_and(|port| port > 0) {
+    }
+    if host.starts_with('[') || host.ends_with(']') {
+        if direct_endpoint_ip_literal(host)?.is_none() {
+            return Err(DirectTransportError::InvalidRequest {
+                reason: "direct endpoint host or port is invalid".to_string(),
+            });
+        }
+    } else if host.contains(':') {
         return Err(DirectTransportError::InvalidRequest {
             reason: "direct endpoint host or port is invalid".to_string(),
         });
     }
     Ok(())
+}
+
+fn direct_endpoint_ip_literal(host: &str) -> Result<Option<IpAddr>, DirectTransportError> {
+    let host = host.trim();
+    if let Some(inner) = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    {
+        let address =
+            inner
+                .parse::<IpAddr>()
+                .map_err(|_| DirectTransportError::InvalidRequest {
+                    reason: "direct endpoint host or port is invalid".to_string(),
+                })?;
+        return Ok(Some(address));
+    }
+    Ok(host.parse::<IpAddr>().ok())
+}
+
+fn validate_direct_socket_addr(
+    address: SocketAddr,
+    usage: EndpointUse,
+) -> Result<(), DirectTransportError> {
+    if matches!(usage, EndpointUse::Connect) {
+        validate_direct_peer_ip(address.ip())?;
+    } else if is_multicast_or_broadcast(address.ip()) {
+        return Err(DirectTransportError::InvalidRequest {
+            reason: "direct bind endpoint cannot use multicast or broadcast address".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_direct_peer_ip(address: IpAddr) -> Result<(), DirectTransportError> {
+    if address.is_unspecified() {
+        return Err(DirectTransportError::InvalidRequest {
+            reason: "direct peer endpoint cannot use an unspecified address".to_string(),
+        });
+    }
+    if is_multicast_or_broadcast(address) {
+        return Err(DirectTransportError::InvalidRequest {
+            reason: "direct peer endpoint cannot use multicast or broadcast address".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn is_multicast_or_broadcast(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => address.is_multicast() || address == Ipv4Addr::BROADCAST,
+        IpAddr::V6(address) => address.is_multicast(),
+    }
 }
 
 fn append_direct_log(
@@ -1460,9 +1562,39 @@ mod tests {
     fn direct_endpoint_validation_rejects_secret_bearing_values() {
         assert!(validate_direct_endpoint("quic://127.0.0.1:9443").is_ok());
         assert!(validate_direct_endpoint("udp://127.0.0.1:9443").is_ok());
+        assert!(validate_direct_endpoint("quic://[::1]:9443").is_ok());
+        assert!(validate_direct_endpoint("quic://::1:9443").is_err());
         assert!(validate_direct_endpoint("quic://token@127.0.0.1:9443").is_err());
         assert!(validate_direct_endpoint("quic://127.0.0.1:9443/path").is_err());
         assert!(validate_direct_endpoint("quic://127.0.0.1:9443?token=value").is_err());
+    }
+
+    #[test]
+    fn direct_peer_endpoint_validation_rejects_unusable_ip_literals() {
+        assert!(validate_direct_peer_endpoint("quic://127.0.0.1:9443").is_ok());
+        assert!(validate_direct_peer_endpoint("quic://[::1]:9443").is_ok());
+        assert!(validate_direct_peer_endpoint("quic://peer.example.com:9443").is_ok());
+        assert!(validate_direct_peer_endpoint("quic://0.0.0.0:9443").is_err());
+        assert!(validate_direct_peer_endpoint("quic://[::]:9443").is_err());
+        assert!(validate_direct_peer_endpoint("quic://224.0.0.1:9443").is_err());
+        assert!(validate_direct_peer_endpoint("quic://[ff02::1]:9443").is_err());
+        assert!(validate_direct_peer_endpoint("quic://255.255.255.255:9443").is_err());
+    }
+
+    #[test]
+    fn direct_advertised_endpoint_rejects_unspecified_bind_address() {
+        let home = test_home("direct-advertised-unspecified");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        fs::write(
+            &init.paths.config,
+            "version = \"1\"\ndirect_quic_endpoint = \"quic://0.0.0.0:9443\"\n",
+        )
+        .expect("config writes");
+
+        let error = configured_direct_quic_advertised_endpoint_from_paths(&init.paths)
+            .expect_err("unspecified advertised endpoint should fail closed");
+
+        assert!(error.to_string().contains("unspecified address"));
     }
 
     #[cfg(unix)]

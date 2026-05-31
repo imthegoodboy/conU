@@ -1017,7 +1017,7 @@ fn validate_endpoint(value: String) -> Result<String, RouteError> {
 }
 
 fn valid_direct_endpoint(value: &str) -> bool {
-    direct_transport::validate_direct_endpoint(value).is_ok()
+    direct_transport::validate_direct_peer_endpoint(value).is_ok()
 }
 
 fn parse_bool(value: Option<&String>) -> Option<bool> {
@@ -1340,6 +1340,49 @@ mod tests {
             assert!(!contents.contains("BEGIN PRIVATE KEY"));
             assert!(!contents.contains("private message contents"));
         }
+    }
+
+    #[test]
+    fn unusable_direct_ip_literal_is_not_probed() {
+        let home = test_home("invalid-endpoint-unspecified");
+        let peer = trusted_peer(&home);
+        let config_key = format!("direct_quic_{}", config_key_suffix(&peer.peer_node_id));
+        fs::write(
+            StatePaths::from_home(home.clone()).config,
+            format!(
+                "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\nnat_profile = \"public\"\n{config_key} = \"quic://0.0.0.0:9443\"\n"
+            ),
+        )
+        .expect("config writes");
+
+        let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let routes = list_routes(Some(home.clone())).expect("routes read");
+        let selected =
+            selected_route_for_peer(Some(home.clone()), &peer.peer_node_id).expect("route lookup");
+        let direct = routes
+            .iter()
+            .find(|route| route.peer_node_id == peer.peer_node_id && route.is_direct())
+            .expect("direct route recorded");
+        let paths = StatePaths::from_home(home);
+        let registry = fs::read_to_string(paths.route_registry).expect("routes read");
+        let probes = fs::read_to_string(paths.route_probes).expect("probes read");
+
+        assert_eq!(report.direct_attempts, 0);
+        assert_eq!(report.selected_relay, 1);
+        assert_eq!(
+            selected.expect("selected").transport,
+            RouteTransport::RelayWebSocket
+        );
+        assert_eq!(direct.endpoint, "quic://invalid");
+        assert!(!direct.direct_attempted);
+        assert_eq!(
+            direct.failure_reason.as_deref(),
+            Some("invalid_direct_quic_endpoint")
+        );
+        assert!(registry.contains("payload_displayed = false"));
+        assert!(probes.contains("payload_displayed = false"));
+        assert!(!registry.contains("0.0.0.0"));
+        assert!(!probes.contains("0.0.0.0"));
     }
 
     #[test]
