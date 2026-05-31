@@ -436,6 +436,13 @@ pub(crate) fn ensure_state_directory(path: &Path) -> Result<(), StateError> {
     }
 }
 
+pub(crate) fn state_directory_exists(
+    path: &Path,
+    action: &'static str,
+) -> Result<bool, StateError> {
+    regular_state_directory_metadata(path, action).map(|metadata| metadata.is_some())
+}
+
 fn write_if_missing(
     path: &Path,
     contents: &str,

@@ -249,7 +249,7 @@ pub fn list_agent_inbox(
     let agent_id = validate_identifier(agent_id.to_string(), "agent id")?;
     let paths = StatePaths::resolve(home_override)?;
     let inbox_dir = paths.message_inbox_dir.join(&agent_id);
-    if !inbox_dir.exists() {
+    if !state::state_directory_exists(&inbox_dir, "inspect agent message inbox")? {
         return Ok(Vec::new());
     }
 
@@ -384,7 +384,10 @@ pub fn deliver_room_event_from_paths(
 /// List metadata-only local delivery receipts.
 pub fn list_receipts(home_override: Option<PathBuf>) -> Result<Vec<DeliveryReceipt>, MessageError> {
     let paths = StatePaths::resolve(home_override)?;
-    if !paths.message_receipts_dir.exists() {
+    if !state::state_directory_exists(
+        &paths.message_receipts_dir,
+        "inspect message receipts directory",
+    )? {
         return Ok(Vec::new());
     }
 
@@ -580,15 +583,8 @@ fn deliver_envelope_with_status_stream_and_receipt(
 ) -> Result<InboxEntry, MessageError> {
     let now = current_unix_seconds();
     let inbox_dir = paths.message_inbox_dir.join(envelope.to.as_str());
-    fs::create_dir_all(&inbox_dir)
-        .map_err(|error| MessageError::io("create agent message inbox", &inbox_dir, error))?;
-    fs::create_dir_all(&paths.message_receipts_dir).map_err(|error| {
-        MessageError::io(
-            "create message receipts directory",
-            &paths.message_receipts_dir,
-            error,
-        )
-    })?;
+    state::ensure_state_directory(&inbox_dir)?;
+    state::ensure_state_directory(&paths.message_receipts_dir)?;
 
     let entry = InboxEntry {
         envelope_id: envelope.id.clone(),
@@ -652,8 +648,7 @@ fn ensure_message_dirs(paths: &StatePaths) -> Result<(), MessageError> {
         &paths.message_inbox_dir,
         &paths.message_receipts_dir,
     ] {
-        fs::create_dir_all(directory)
-            .map_err(|error| MessageError::io("create message directory", directory, error))?;
+        state::ensure_state_directory(directory)?;
     }
 
     Ok(())
@@ -691,13 +686,7 @@ fn write_processed_marker(
     request_path: &Path,
     delivery: &InboxEntry,
 ) -> Result<(), MessageError> {
-    fs::create_dir_all(&paths.message_ipc_processed_dir).map_err(|error| {
-        MessageError::io(
-            "create message IPC processed directory",
-            &paths.message_ipc_processed_dir,
-            error,
-        )
-    })?;
+    state::ensure_state_directory(&paths.message_ipc_processed_dir)?;
     let marker_path = processed_marker_path(paths, request_path);
     let contents = format!(
         "version = \"{}\"\ntype = \"send_message\"\nrequest_id = \"{}\"\nenvelope_id = \"{}\"\nfrom_agent_id = \"{}\"\nto_agent_id = \"{}\"\nstatus = \"delivered_local\"\npayload_len = {}\npayload_displayed = false\n",
@@ -722,13 +711,7 @@ fn reject_message_request(
     request_path: &Path,
     error: &MessageError,
 ) -> Result<(), MessageError> {
-    fs::create_dir_all(&paths.message_ipc_rejected_dir).map_err(|error| {
-        MessageError::io(
-            "create message IPC rejected directory",
-            &paths.message_ipc_rejected_dir,
-            error,
-        )
-    })?;
+    state::ensure_state_directory(&paths.message_ipc_rejected_dir)?;
     let error_path = rejected_marker_path(paths, request_path);
     write_new_file_with_action(
         &error_path,
@@ -1641,6 +1624,128 @@ mod tests {
         assert!(
             fs::symlink_metadata(&receipt_path)
                 .expect("receipt symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delivery_rejects_symlinked_agent_inbox_directory_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("message-inbox-dir-symlink-write");
+        register_agent(&home, "agent.sender");
+        register_agent(&home, "agent.receiver");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = paths.home.join("outside-inbox");
+        let inbox_link = paths.message_inbox_dir.join("agent.receiver");
+        fs::create_dir_all(&outside).expect("outside inbox dir creates");
+        symlink(&outside, &inbox_link).expect("inbox directory symlink creates");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+
+        submit_local_message(Some(home.clone()), message).expect("message submits");
+        let report = process_message_requests(Some(home.clone())).expect("message processes");
+
+        assert_eq!(report.rejected, 1);
+        assert_eq!(
+            fs::read_dir(&outside).expect("outside inbox reads").count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&inbox_link)
+                .expect("inbox link metadata")
+                .file_type()
+                .is_symlink()
+        );
+        let rejection = fs::read_to_string(
+            fs::read_dir(&paths.message_ipc_rejected_dir)
+                .expect("rejected dir reads")
+                .next()
+                .expect("rejection exists")
+                .expect("rejection entry")
+                .path(),
+        )
+        .expect("rejection reads");
+        assert!(rejection.contains("state directory path is not a directory"));
+        assert!(!rejection.contains("private message contents"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inbox_listing_rejects_symlinked_agent_directory_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("message-inbox-dir-symlink-read");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let outside = init.paths.home.join("outside-inbox");
+        fs::create_dir_all(&outside).expect("outside inbox dir creates");
+        fs::write(
+            outside.join("outside.env"),
+            "version = \"1\"\npayload = \"secret private message contents\"\n",
+        )
+        .expect("outside inbox file writes");
+        let inbox_link = init.paths.message_inbox_dir.join("agent.receiver");
+        symlink(&outside, &inbox_link).expect("inbox directory symlink creates");
+
+        let error = list_agent_inbox(Some(home), "agent.receiver")
+            .expect_err("symlinked inbox directory fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("state directory path is not a directory")
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("outside.env")).expect("outside file reads"),
+            "version = \"1\"\npayload = \"secret private message contents\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&inbox_link)
+                .expect("inbox link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn receipt_listing_rejects_symlinked_receipts_directory_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("message-receipts-dir-symlink-read");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let outside = init.paths.home.join("outside-receipts");
+        fs::create_dir_all(&outside).expect("outside receipts dir creates");
+        fs::write(
+            outside.join("outside.receipt"),
+            "version = \"1\"\npayload = \"secret private message contents\"\n",
+        )
+        .expect("outside receipt writes");
+        fs::remove_dir(&init.paths.message_receipts_dir).expect("receipt dir removes");
+        symlink(&outside, &init.paths.message_receipts_dir)
+            .expect("receipts directory symlink creates");
+
+        let error =
+            list_receipts(Some(home)).expect_err("symlinked receipts directory fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("state directory path is not a directory")
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("outside.receipt")).expect("outside receipt reads"),
+            "version = \"1\"\npayload = \"secret private message contents\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&init.paths.message_receipts_dir)
+                .expect("receipts link metadata")
                 .file_type()
                 .is_symlink()
         );
