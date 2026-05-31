@@ -2783,14 +2783,14 @@ pub fn audit_relay_mailbox_dir(
         contents_displayed: false,
     };
 
-    if !root.exists() {
+    if !relay_directory_exists(root, "inspect relay mailbox directory")? {
         return Ok(audit);
     }
 
     let now_millis = current_unix_millis();
     if let Some(node_id) = audit.node_id.as_deref() {
         let node_dir = root.join(sanitize_identifier(node_id));
-        if node_dir.exists() {
+        if relay_directory_exists(&node_dir, "inspect relay mailbox node directory")? {
             audit_mailbox_node_dir(&mut audit, &node_dir, now_millis, retention_ttl_millis)?;
         }
         return Ok(audit);
@@ -2854,7 +2854,7 @@ pub fn purge_relay_mailbox_dir(
         contents_displayed: false,
     };
 
-    if !root.exists() {
+    if !relay_directory_exists(root, "inspect relay mailbox directory")? {
         return Ok(report);
     }
 
@@ -2862,7 +2862,7 @@ pub fn purge_relay_mailbox_dir(
     let retention_ttl_millis = retention_ttl.as_millis();
     if let Some(node_id) = report.node_id.as_deref() {
         let node_dir = root.join(sanitize_identifier(node_id));
-        if node_dir.exists() {
+        if relay_directory_exists(&node_dir, "inspect relay mailbox node directory")? {
             purge_mailbox_node_dir(&mut report, &node_dir, now_millis, retention_ttl_millis)?;
         }
         return Ok(report);
@@ -3228,6 +3228,25 @@ fn credential_manifest_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
 }
 
 fn ensure_relay_directory(path: &Path, action: &'static str) -> Result<(), RelayError> {
+    if relay_directory_exists(path, action)? {
+        return Ok(());
+    }
+
+    fs::create_dir_all(path).map_err(|error| RelayError::io(action, error))?;
+    if relay_directory_exists(path, "inspect relay directory")? {
+        return Ok(());
+    }
+
+    Err(RelayError::io(
+        "inspect relay directory",
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "relay directory path was not created",
+        ),
+    ))
+}
+
+fn relay_directory_exists(path: &Path, action: &'static str) -> Result<bool, RelayError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -3239,23 +3258,9 @@ fn ensure_relay_directory(path: &Path, action: &'static str) -> Result<(), Relay
                     ),
                 ));
             }
-            Ok(())
+            Ok(true)
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(path).map_err(|error| RelayError::io(action, error))?;
-            let metadata = fs::symlink_metadata(path)
-                .map_err(|error| RelayError::io("inspect relay directory", error))?;
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                return Err(RelayError::io(
-                    "inspect relay directory",
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "relay directory path is not a directory",
-                    ),
-                ));
-            }
-            Ok(())
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(RelayError::io(action, error)),
     }
 }
@@ -3286,14 +3291,54 @@ fn write_relay_metadata_file(
 
     #[cfg(windows)]
     if _existing_target_is_regular {
-        fs::remove_file(path).map_err(|error| RelayError::io(replace_action, error))?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(RelayError::io(replace_action, error)),
+        }
     }
 
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(RelayError::io(replace_action, error));
+    #[cfg(windows)]
+    {
+        if let Err(error) = fs::rename(&temp_path, path) {
+            if !matches!(
+                error.kind(),
+                io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
+            ) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(RelayError::io(replace_action, error));
+            }
+            match regular_relay_file_exists(path, inspect_action) {
+                Ok(true) => match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        let _ = fs::remove_file(&temp_path);
+                        return Err(RelayError::io(replace_action, error));
+                    }
+                },
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = fs::remove_file(&temp_path);
+                    return Err(error);
+                }
+            }
+            if let Err(error) = fs::rename(&temp_path, path) {
+                let _ = fs::remove_file(&temp_path);
+                return Err(RelayError::io(replace_action, error));
+            }
+        }
+        Ok(())
     }
-    Ok(())
+
+    #[cfg(not(windows))]
+    {
+        if let Err(error) = fs::rename(&temp_path, path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(RelayError::io(replace_action, error));
+        }
+        Ok(())
+    }
 }
 
 fn relay_metadata_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
@@ -5914,8 +5959,7 @@ impl RelayHubState {
             return Ok(state);
         };
 
-        fs::create_dir_all(root)
-            .map_err(|error| RelayError::io("create relay mailbox directory", error))?;
+        ensure_relay_directory(root, "create relay mailbox directory")?;
         let mut loaded: HashMap<String, Vec<QueuedRelayEnvelope>> = HashMap::new();
         for node_entry in fs::read_dir(root)
             .map_err(|error| RelayError::io("read relay mailbox directory", error))?
@@ -6857,8 +6901,11 @@ fn persist_mailbox_entry(
         return Ok(());
     };
 
+    ensure_relay_directory(root, "create relay mailbox directory")
+        .map_err(|_| "mailbox_unavailable")?;
     let node_dir = root.join(sanitize_identifier(node_id));
-    fs::create_dir_all(&node_dir).map_err(|_| "mailbox_unavailable")?;
+    ensure_relay_directory(&node_dir, "create relay mailbox node directory")
+        .map_err(|_| "mailbox_unavailable")?;
     let path = node_dir.join(format!(
         "{}-{}.mailbox",
         entry.queued_at_nanos,
@@ -11369,6 +11416,105 @@ token_displayed = true\n",
         assert!(
             fs::symlink_metadata(&session_dir)
                 .expect("session dir link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_mailbox_writes_reject_symlinked_storage_directories() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-mailbox-write-dir-symlink");
+        let mailbox_policy =
+            RelayMailboxPolicy::new(4, Duration::from_secs(60)).expect("mailbox policy");
+
+        let outside_root = home.join("outside-root");
+        let mailbox_root = home.join("relay-mailbox-root");
+        fs::create_dir_all(&outside_root).expect("outside root creates");
+        symlink(&outside_root, &mailbox_root).expect("mailbox root symlink creates");
+        let root_storage =
+            RelayMailboxStorage::file_backed(mailbox_root.clone()).expect("mailbox storage");
+
+        let load_error = RelayHubState::load(&root_storage, mailbox_policy)
+            .expect_err("symlinked mailbox root fails closed");
+
+        assert!(load_error.to_string().contains("not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside_root)
+                .expect("outside root reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&mailbox_root)
+                .expect("mailbox root link metadata")
+                .file_type()
+                .is_symlink()
+        );
+
+        let mailbox_dir = home.join("relay-mailbox");
+        let outside_node = home.join("outside-node");
+        let mailbox_node_dir = mailbox_dir.join("node.b");
+        fs::create_dir_all(&mailbox_dir).expect("mailbox dir creates");
+        fs::create_dir_all(&outside_node).expect("outside node creates");
+        symlink(&outside_node, &mailbox_node_dir).expect("mailbox node symlink creates");
+        let node_storage =
+            RelayMailboxStorage::file_backed(mailbox_dir.clone()).expect("mailbox storage");
+        let forwarded =
+            forwarded_from_client_frame("node.a", encrypted_forward_frame("node.b", "env.node"));
+        let mut state = RelayHubState::default();
+
+        let enqueue_error = state
+            .enqueue_mailbox("node.b", forwarded, mailbox_policy, &node_storage)
+            .expect_err("symlinked mailbox node dir fails closed");
+
+        assert_eq!(enqueue_error, "mailbox_unavailable");
+        assert_eq!(
+            fs::read_dir(&outside_node)
+                .expect("outside node reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&mailbox_node_dir)
+                .expect("mailbox node link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_mailbox_admin_paths_reject_symlinked_node_directory() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-mailbox-admin-dir-symlink");
+        let mailbox_dir = home.join("relay-mailbox");
+        let outside_node = home.join("outside-node");
+        let mailbox_node_dir = mailbox_dir.join("node.b");
+        fs::create_dir_all(&mailbox_dir).expect("mailbox dir creates");
+        fs::create_dir_all(&outside_node).expect("outside node creates");
+        symlink(&outside_node, &mailbox_node_dir).expect("mailbox node symlink creates");
+
+        let audit_error = audit_relay_mailbox_dir(&mailbox_dir, Some("node.b"), None)
+            .expect_err("symlinked mailbox audit node dir fails closed");
+        let purge_error =
+            purge_relay_mailbox_dir(&mailbox_dir, Some("node.b"), Duration::from_secs(1), true)
+                .expect_err("symlinked mailbox purge node dir fails closed");
+
+        assert!(audit_error.to_string().contains("not a directory"));
+        assert!(purge_error.to_string().contains("not a directory"));
+        assert_eq!(
+            fs::read_dir(&outside_node)
+                .expect("outside node reads")
+                .count(),
+            0
+        );
+        assert!(
+            fs::symlink_metadata(&mailbox_node_dir)
+                .expect("mailbox node link metadata")
                 .file_type()
                 .is_symlink()
         );
