@@ -436,6 +436,11 @@ fn upsert_manual_trusted_peer(
 }
 
 fn read_pairing_invite(paths: &StatePaths, code: &str) -> Result<PairingInvite, TrustError> {
+    if !pairing_invite_directory_exists(paths)? {
+        return Err(TrustError::InvalidRequest {
+            reason: "pairing code is not available locally until relay pairing arrives".to_string(),
+        });
+    }
     let path = paths.pairing_invites_dir.join(format!("{code}.pair"));
     let Some(contents) = read_trust_file(
         &path,
@@ -473,13 +478,7 @@ fn write_pairing_invite_with_mode(
     invite: &PairingInvite,
     create_new: bool,
 ) -> Result<(), TrustError> {
-    fs::create_dir_all(&paths.pairing_invites_dir).map_err(|error| {
-        TrustError::io(
-            "create pairing invitation directory",
-            &paths.pairing_invites_dir,
-            error,
-        )
-    })?;
+    ensure_pairing_invite_directory(paths)?;
     let path = paths
         .pairing_invites_dir
         .join(format!("{}.pair", invite.code));
@@ -514,13 +513,7 @@ fn write_pairing_invite_with_mode(
 }
 
 fn move_used_invite(paths: &StatePaths, invite: &PairingInvite) -> Result<(), TrustError> {
-    fs::create_dir_all(&paths.pairing_used_dir).map_err(|error| {
-        TrustError::io(
-            "create used pairing invitation directory",
-            &paths.pairing_used_dir,
-            error,
-        )
-    })?;
+    ensure_pairing_used_directory(paths)?;
     let source = paths
         .pairing_invites_dir
         .join(format!("{}.pair", invite.code));
@@ -534,15 +527,37 @@ fn ensure_used_invite_target_available(
     paths: &StatePaths,
     invite: &PairingInvite,
 ) -> Result<(), TrustError> {
-    fs::create_dir_all(&paths.pairing_used_dir).map_err(|error| {
-        TrustError::io(
-            "create used pairing invitation directory",
-            &paths.pairing_used_dir,
-            error,
-        )
-    })?;
+    ensure_pairing_used_directory(paths)?;
     let target = paths.pairing_used_dir.join(format!("{}.pair", invite.code));
     ensure_path_available(&target, "reserve used pairing invitation")
+}
+
+fn ensure_pairing_invite_directory(paths: &StatePaths) -> Result<(), TrustError> {
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.pairing_dir)?;
+    state::ensure_state_directory(&paths.pairing_invites_dir)?;
+    Ok(())
+}
+
+fn ensure_pairing_used_directory(paths: &StatePaths) -> Result<(), TrustError> {
+    state::ensure_state_directory(&paths.home)?;
+    state::ensure_state_directory(&paths.pairing_dir)?;
+    state::ensure_state_directory(&paths.pairing_used_dir)?;
+    Ok(())
+}
+
+fn pairing_invite_directory_exists(paths: &StatePaths) -> Result<bool, TrustError> {
+    if !state::state_directory_exists(&paths.home, "inspect state directory")? {
+        return Ok(false);
+    }
+    if !state::state_directory_exists(&paths.pairing_dir, "inspect pairing directory")? {
+        return Ok(false);
+    }
+    state::state_directory_exists(
+        &paths.pairing_invites_dir,
+        "inspect pairing invitation directory",
+    )
+    .map_err(TrustError::from)
 }
 
 fn ensure_path_available(path: &Path, action: &'static str) -> Result<(), TrustError> {
@@ -574,6 +589,9 @@ fn write_new_file(
 }
 
 fn read_trust_store(paths: &StatePaths) -> Result<Vec<TrustedPeer>, TrustError> {
+    if !state::state_directory_exists(&paths.home, "inspect state directory")? {
+        return Ok(Vec::new());
+    }
     match read_trust_file(
         &paths.trust_store,
         "inspect trust store",
@@ -585,6 +603,7 @@ fn read_trust_store(paths: &StatePaths) -> Result<Vec<TrustedPeer>, TrustError> 
 }
 
 fn write_trust_store(paths: &StatePaths, peers: &[TrustedPeer]) -> Result<(), TrustError> {
+    state::ensure_state_directory(&paths.home)?;
     let mut sorted = peers.to_vec();
     sorted.sort_by(|left, right| left.peer_node_id.cmp(&right.peer_node_id));
     let mut contents = format!("# conU trust store\nversion = \"{}\"\n", TRUST_VERSION);
@@ -1630,6 +1649,141 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn trust_home_symlink_is_rejected_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("trust-home-read-symlink");
+        let outside = home.with_extension("outside-trust-home-read");
+        fs::create_dir_all(&outside).expect("outside home creates");
+        fs::write(outside.join("trust.toml"), test_trust_store_contents())
+            .expect("outside trust store writes");
+        symlink(&outside, &home).expect("home symlink creates");
+        let paths = StatePaths::from_home(home.clone());
+
+        let error = read_trust_store(&paths).expect_err("symlinked home should fail closed");
+
+        assert!(error.to_string().contains("inspect state directory"));
+        assert_eq!(
+            fs::read_to_string(outside.join("trust.toml")).expect("outside trust reads"),
+            test_trust_store_contents()
+        );
+        assert!(
+            fs::symlink_metadata(&home)
+                .expect("home symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_home_symlink_is_rejected_without_writing_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("trust-home-write-symlink");
+        let outside = home.with_extension("outside-trust-home-write");
+        fs::create_dir_all(&outside).expect("outside home creates");
+        symlink(&outside, &home).expect("home symlink creates");
+        let paths = StatePaths::from_home(home.clone());
+
+        let error = write_trust_store(&paths, &[test_peer("peer_symlink_home")])
+            .expect_err("symlinked home should fail closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(!outside.join("trust.toml").exists());
+        assert!(
+            fs::symlink_metadata(&home)
+                .expect("home symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pairing_directory_symlink_is_rejected_without_writing_invite() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("pairing-dir-write-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let outside = home.with_extension("outside-pairing-dir-write");
+        fs::remove_dir_all(&init.paths.pairing_dir).expect("pairing dir removes");
+        fs::create_dir_all(&outside).expect("outside pairing dir creates");
+        symlink(&outside, &init.paths.pairing_dir).expect("pairing dir symlink creates");
+
+        let error = write_new_pairing_invite(&init.paths, &test_invite())
+            .expect_err("symlinked pairing directory should fail closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(!outside.join("invites").exists());
+        assert!(
+            fs::symlink_metadata(&init.paths.pairing_dir)
+                .expect("pairing dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pairing_directory_symlink_is_rejected_without_reading_invite() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("pairing-dir-read-symlink");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let outside = home.with_extension("outside-pairing-dir-read");
+        fs::remove_dir_all(&init.paths.pairing_dir).expect("pairing dir removes");
+        fs::create_dir_all(outside.join("invites")).expect("outside invites creates");
+        fs::write(
+            outside.join("invites").join("123456.pair"),
+            test_pairing_invite_contents(),
+        )
+        .expect("outside invite writes");
+        symlink(&outside, &init.paths.pairing_dir).expect("pairing dir symlink creates");
+
+        let error = read_pairing_invite(&init.paths, "123456")
+            .expect_err("symlinked pairing directory should fail closed");
+
+        assert!(error.to_string().contains("inspect pairing directory"));
+        assert_eq!(
+            fs::read_to_string(outside.join("invites").join("123456.pair"))
+                .expect("outside invite reads"),
+            test_pairing_invite_contents()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn used_pairing_directory_symlink_is_rejected_without_moving_invite() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("pairing-used-dir-symlink");
+        let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let paths = StatePaths::from_home(home.clone());
+        let pending_path = paths
+            .pairing_invites_dir
+            .join(format!("{}.pair", invite.code));
+        let outside = home.with_extension("outside-pairing-used-dir");
+        fs::remove_dir_all(&paths.pairing_used_dir).expect("used dir removes");
+        fs::create_dir_all(&outside).expect("outside used dir creates");
+        symlink(&outside, &paths.pairing_used_dir).expect("used dir symlink creates");
+
+        let error = move_used_invite(&paths, &invite)
+            .expect_err("symlinked used directory should fail closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert!(pending_path.exists());
+        assert!(!outside.join(format!("{}.pair", invite.code)).exists());
+        assert!(
+            fs::symlink_metadata(&paths.pairing_used_dir)
+                .expect("used dir metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
     fn test_peer(peer_node_id: &str) -> TrustedPeer {
         TrustedPeer {
             peer_node_id: peer_node_id.to_string(),
@@ -1647,6 +1801,29 @@ mod tests {
             created_at_unix: 1,
             updated_at_unix: 1,
         }
+    }
+
+    #[cfg(unix)]
+    fn test_invite() -> PairingInvite {
+        PairingInvite {
+            code: "123456".to_string(),
+            local_node_id: "node_local".to_string(),
+            peer_node_id: "peer_test".to_string(),
+            display_name: "paired-peer-test".to_string(),
+            created_at_unix: 1,
+            expires_at_unix: 601,
+            status: PairingStatus::Pending,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_pairing_invite_contents() -> &'static str {
+        "version = \"1\"\ncode = \"123456\"\nlocal_node_id = \"node_local\"\npeer_node_id = \"peer_test\"\ndisplay_name = \"paired-peer-test\"\ncreated_at_unix = 1\nexpires_at_unix = 601\nstatus = \"pending\"\npayload_displayed = false\n"
+    }
+
+    #[cfg(unix)]
+    fn test_trust_store_contents() -> &'static str {
+        "# conU trust store\nversion = \"1\"\n\n[[peer]]\npeer_node_id = \"peer_test\"\ndisplay_name = \"Peer Test\"\nstatus = \"trusted\"\nsource = \"test\"\npairing_code_hash = \"pair_test\"\nexchange_public_key_hex = \"\"\nrelay_endpoint = \"\"\ndirect_quic_endpoint = \"\"\nsigning_public_key_hex = \"\"\nsignature_algorithm = \"\"\nsignature_key_id = \"\"\nsignature_hex = \"\"\ncreated_at_unix = 1\nupdated_at_unix = 1\npayload_displayed = false\n"
     }
 
     fn test_home(label: &str) -> PathBuf {
