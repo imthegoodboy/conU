@@ -8289,6 +8289,11 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
                 report.target_file.display()
             )
         })?;
+        ensure_update_install_target_unchanged_while_backing_up(
+            &report.target_file,
+            &metadata,
+            &source_file,
+        )?;
         let mut backup = match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -8320,6 +8325,14 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
             }
         };
         drop(backup);
+        if let Err(error) = ensure_update_install_target_unchanged_while_backing_up(
+            &report.target_file,
+            &metadata,
+            &source_file,
+        ) {
+            remove_update_backup_file_if_safe(backup_file);
+            return Err(error);
+        }
         if copied != metadata.len() {
             remove_update_backup_file_if_safe(backup_file);
             return Err(format!(
@@ -8327,6 +8340,49 @@ fn back_up_existing_update_binaries(reports: &[UpdateApplyBinaryReport]) -> Resu
                 report.target_file.display()
             ));
         }
+    }
+    Ok(())
+}
+
+fn ensure_update_install_target_unchanged_while_backing_up(
+    target_file: &Path,
+    expected: &fs::Metadata,
+    source_file: &fs::File,
+) -> Result<(), String> {
+    ensure_update_install_file_parent(target_file)?;
+    let path_metadata = match fs::symlink_metadata(target_file) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return Err(format!(
+                "could not inspect release update install target {}: {error}",
+                target_file.display()
+            ));
+        }
+    };
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return Err(format!(
+            "release update install target is not a regular file: {}",
+            target_file.display()
+        ));
+    }
+    if !update_input_file_metadata_matches(expected, &path_metadata) {
+        return Err(format!(
+            "release update install target changed while backing up {}",
+            target_file.display()
+        ));
+    }
+    let opened_metadata = source_file.metadata().map_err(|error| {
+        format!(
+            "could not inspect opened release update install target {}: {error}",
+            target_file.display()
+        )
+    })?;
+    if !opened_metadata.is_file() || !update_input_file_metadata_matches(expected, &opened_metadata)
+    {
+        return Err(format!(
+            "release update install target changed while backing up {}",
+            target_file.display()
+        ));
     }
     Ok(())
 }
@@ -12666,6 +12722,67 @@ mod tests {
                 .expect("backup root symlink metadata")
                 .file_type()
                 .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_backup_detects_source_replacement_after_open() {
+        let home = temp_home("update-apply-backup-source-open-swap");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let target_file = install_dir.join(update_binary_filename("conu"));
+        let replacement = install_dir.join("replacement-conu");
+        fs::write(&target_file, b"current binary").expect("target writes");
+        fs::write(&replacement, b"changed binary").expect("replacement writes");
+        let metadata = fs::symlink_metadata(&target_file).expect("target metadata");
+        let source_file = fs::File::open(&target_file).expect("target opens");
+        fs::rename(&replacement, &target_file).expect("target swaps");
+
+        let error = ensure_update_install_target_unchanged_while_backing_up(
+            &target_file,
+            &metadata,
+            &source_file,
+        )
+        .expect_err("swapped backup source should fail closed");
+
+        assert!(error.contains("release update install target changed while backing up"));
+        assert_eq!(
+            fs::read(&target_file).expect("replacement target reads"),
+            b"changed binary"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_apply_backup_detects_source_replacement_before_open() {
+        let home = temp_home("update-apply-backup-source-before-open-swap");
+        let install_dir = home.join("install-bin");
+        fs::create_dir_all(&install_dir).expect("install dir creates");
+        let filename = update_binary_filename("conu");
+        let target_file = install_dir.join(&filename);
+        let replacement = install_dir.join("replacement-conu");
+        let backup_dir = install_dir.join(".conu-update-backups").join("source-swap");
+        fs::create_dir_all(&backup_dir).expect("backup dir creates");
+        let backup_file = backup_dir.join(&filename);
+        fs::write(&target_file, b"current binary").expect("target writes");
+        let metadata = fs::symlink_metadata(&target_file).expect("target metadata");
+        fs::write(&replacement, b"changed binary").expect("replacement writes");
+        fs::rename(&replacement, &target_file).expect("target swaps");
+        let source_file = fs::File::open(&target_file).expect("target opens");
+
+        let error = ensure_update_install_target_unchanged_while_backing_up(
+            &target_file,
+            &metadata,
+            &source_file,
+        )
+        .expect_err("pre-open swapped backup source should fail closed");
+
+        assert!(error.contains("release update install target changed while backing up"));
+        assert!(!backup_file.exists());
+        assert_eq!(
+            fs::read(&target_file).expect("replacement target reads"),
+            b"changed binary"
         );
     }
 
