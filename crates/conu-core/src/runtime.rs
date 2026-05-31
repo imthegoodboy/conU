@@ -143,7 +143,7 @@ impl RuntimeLease {
 
     /// True when the CLI has requested a graceful shutdown.
     pub fn stop_requested(&self) -> bool {
-        self.paths.runtime_stop_request.exists()
+        runtime_control_path_present(&self.paths.runtime_stop_request)
     }
 
     /// Process local IPC, route/session mirrors, and one bounded relay pump.
@@ -926,6 +926,13 @@ fn clear_runtime_files(paths: &StatePaths) -> Result<(), RuntimeError> {
     remove_file_if_exists(&paths.runtime_stop_request)
 }
 
+fn runtime_control_path_present(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    }
+}
+
 fn remove_file_if_exists(path: &Path) -> Result<(), RuntimeError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1035,6 +1042,27 @@ mod tests {
         assert!(report.requested);
         assert!(request.contains("requested_at_unix"));
         assert!(!request.contains("private message contents"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_requested_treats_dangling_symlink_as_present() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("stop-request-dangling-symlink");
+        let lease = acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let paths = StatePaths::from_home(home);
+        let missing_target = paths.runtime_dir.join("missing-stop-target");
+        symlink(&missing_target, &paths.runtime_stop_request)
+            .expect("dangling stop request symlink creates");
+
+        assert!(lease.stop_requested());
+        assert!(
+            fs::symlink_metadata(&paths.runtime_stop_request)
+                .expect("stop request symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[cfg(unix)]
