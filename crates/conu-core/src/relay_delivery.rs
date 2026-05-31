@@ -1378,15 +1378,14 @@ fn ensure_relay_dirs(paths: &StatePaths) -> Result<(), RelayDeliveryError> {
         &paths.relay_rejected_dir,
         &paths.logs_dir,
     ] {
-        fs::create_dir_all(directory)
-            .map_err(|error| RelayDeliveryError::io("create relay directory", directory, error))?;
+        state::ensure_state_directory(directory)?;
     }
     Ok(())
 }
 
 fn pending_relay_requests(paths: &StatePaths) -> Result<Vec<PathBuf>, RelayDeliveryError> {
     let mut requests = Vec::new();
-    if !paths.relay_outbox_dir.exists() {
+    if !state::state_directory_exists(&paths.relay_outbox_dir, "inspect relay outbox")? {
         return Ok(requests);
     }
 
@@ -1422,9 +1421,7 @@ fn move_relay_request(
     request_path: &Path,
     extension: &str,
 ) -> Result<(), RelayDeliveryError> {
-    fs::create_dir_all(target_dir).map_err(|error| {
-        RelayDeliveryError::io("create relay marker directory", target_dir, error)
-    })?;
+    state::ensure_state_directory(target_dir)?;
     let stem = request_path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -1670,7 +1667,7 @@ fn append_relay_log(
 }
 
 fn count_files_with_extension(path: &Path, extension: &str) -> Result<usize, RelayDeliveryError> {
-    if !path.exists() {
+    if !state::state_directory_exists(path, "inspect relay queue directory")? {
         return Ok(0);
     }
     let mut count = 0;
@@ -2106,6 +2103,119 @@ mod tests {
         assert!(
             fs::symlink_metadata(&path)
                 .expect("relay request symlink metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_outbox_directory_symlink_is_rejected_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-outbox-dir-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let outside = init.paths.home.join("outside-relay-outbox");
+        fs::create_dir_all(&outside).expect("outside outbox dir creates");
+        fs::write(
+            outside.join("outside.relay"),
+            "version = \"1\"\ntype = \"relay_message\"\npayload = \"secret private message contents\"\n",
+        )
+        .expect("outside relay request writes");
+        fs::remove_dir(&init.paths.relay_outbox_dir).expect("relay outbox removes");
+        symlink(&outside, &init.paths.relay_outbox_dir).expect("relay outbox symlink creates");
+
+        let error =
+            pending_relay_requests(&init.paths).expect_err("symlinked relay outbox fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("state directory path is not a directory")
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("outside.relay")).expect("outside relay request reads"),
+            "version = \"1\"\ntype = \"relay_message\"\npayload = \"secret private message contents\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&init.paths.relay_outbox_dir)
+                .expect("relay outbox link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_archive_directory_symlink_is_rejected_without_moving_request() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-archive-dir-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let request = init.paths.relay_outbox_dir.join("queued.relay");
+        fs::write(&request, "queued relay marker").expect("request writes");
+        let outside = init.paths.home.join("outside-relay-sent");
+        fs::create_dir_all(&outside).expect("outside sent dir creates");
+        fs::remove_dir(&init.paths.relay_sent_dir).expect("relay sent removes");
+        symlink(&outside, &init.paths.relay_sent_dir).expect("relay sent symlink creates");
+
+        let error = move_relay_request(&init.paths.relay_sent_dir, &request, "sent")
+            .expect_err("symlinked relay sent directory fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("state directory path is not a directory")
+        );
+        assert_eq!(
+            fs::read_dir(&outside).expect("outside sent reads").count(),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(&request).expect("request remains readable"),
+            "queued relay marker"
+        );
+        assert!(
+            fs::symlink_metadata(&init.paths.relay_sent_dir)
+                .expect("relay sent link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_queue_count_rejects_symlinked_directory_without_reading_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("relay-count-dir-symlink");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let outside = init.paths.home.join("outside-relay-rejected");
+        fs::create_dir_all(&outside).expect("outside rejected dir creates");
+        fs::write(
+            outside.join("outside.rejected"),
+            "payload = \"secret private message contents\"\n",
+        )
+        .expect("outside rejected marker writes");
+        fs::remove_dir(&init.paths.relay_rejected_dir).expect("relay rejected removes");
+        symlink(&outside, &init.paths.relay_rejected_dir).expect("relay rejected symlink creates");
+
+        let error = count_files_with_extension(&init.paths.relay_rejected_dir, "rejected")
+            .expect_err("symlinked relay rejected directory fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("state directory path is not a directory")
+        );
+        assert_eq!(
+            fs::read_to_string(outside.join("outside.rejected"))
+                .expect("outside rejected marker reads"),
+            "payload = \"secret private message contents\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&init.paths.relay_rejected_dir)
+                .expect("relay rejected link metadata")
                 .file_type()
                 .is_symlink()
         );
