@@ -1344,6 +1344,9 @@ mod tests {
 
     #[test]
     fn sync_selects_direct_when_authenticated_quic_probe_succeeds() {
+        let _direct_guard = crate::direct_transport::DIRECT_QUIC_TEST_LOCK
+            .lock()
+            .expect("direct quic test lock");
         let alice_home = test_home("direct-selected-alice");
         let bob_home = test_home("direct-selected-bob");
         let bob_endpoint = free_loopback_endpoint();
