@@ -902,6 +902,26 @@ pub fn ensure_replay_id_not_seen_from_paths(
     Ok(())
 }
 
+/// Check an idempotency/replay id and verify it can be committed later.
+pub fn ensure_replay_id_recordable_from_paths(
+    paths: &StatePaths,
+    id: &str,
+    source: &str,
+) -> Result<(), SecurityError> {
+    validate_replay_value(id, "replay id")?;
+    validate_replay_value(source, "replay source")?;
+    let contents = read_replay_cache_contents(paths)?;
+    if replay_cache_contains_id(&contents, id) {
+        return Err(SecurityError::ReplayDetected { id: id.to_string() });
+    }
+    state::ensure_regular_state_file_appendable(
+        &paths.replay_cache,
+        "inspect replay cache",
+        "open replay cache",
+    )?;
+    Ok(())
+}
+
 /// Record an idempotency/replay id and reject duplicates.
 pub fn record_replay_id_from_paths(
     paths: &StatePaths,

@@ -319,7 +319,7 @@ pub fn deliver_remote_envelope_from_paths(
         payload,
     )?;
 
-    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "relay_envelope")?;
+    security::ensure_replay_id_recordable_from_paths(paths, &envelope_id, "relay_envelope")?;
     let entry = deliver_envelope_with_status(paths, envelope, "delivered_relay")?;
     security::record_replay_id_from_paths(paths, &envelope_id, "relay_envelope")?;
     Ok(entry)
@@ -350,7 +350,7 @@ pub fn deliver_remote_stream_chunk_from_paths(
     )?;
     envelope.meta.stream_id = Some(stream_id.clone());
 
-    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "relay_stream_chunk")?;
+    security::ensure_replay_id_recordable_from_paths(paths, &envelope_id, "relay_stream_chunk")?;
     let entry = deliver_envelope_with_status_and_stream(
         paths,
         envelope,
@@ -383,18 +383,18 @@ pub fn deliver_room_event_from_paths(
         payload,
     )?;
 
-    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "room_event_envelope")?;
+    security::ensure_replay_id_recordable_from_paths(paths, &envelope_id, "room_event_envelope")?;
     let entry = deliver_envelope_with_status(paths, envelope, "delivered_room")?;
     security::record_replay_id_from_paths(paths, &envelope_id, "room_event_envelope")?;
     Ok(entry)
 }
 
-pub(crate) fn ensure_room_event_replay_not_seen_from_paths(
+pub(crate) fn ensure_room_event_replay_recordable_from_paths(
     paths: &StatePaths,
     envelope_id: &str,
 ) -> Result<(), MessageError> {
     let envelope_id = validate_identifier(envelope_id.to_string(), "envelope id")?;
-    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "room_event_envelope")?;
+    security::ensure_replay_id_recordable_from_paths(paths, &envelope_id, "room_event_envelope")?;
     Ok(())
 }
 
@@ -453,7 +453,7 @@ fn process_one_message_request(
     }
 
     let request_id_value = validate_identifier(required(&values, "request_id")?, "request id")?;
-    security::ensure_replay_id_not_seen_from_paths(paths, &request_id_value, "message_request")?;
+    security::ensure_replay_id_recordable_from_paths(paths, &request_id_value, "message_request")?;
     let from_agent_id = required(&values, "from_agent_id")?;
     let to_agent_id = required(&values, "to_agent_id")?;
     let payload = OpaquePayload::from_bytes(payload_from_values(
@@ -474,7 +474,7 @@ fn process_one_message_request(
         message.payload,
     )?;
 
-    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "message_envelope")?;
+    security::ensure_replay_id_recordable_from_paths(paths, &envelope_id, "message_envelope")?;
     let delivery = deliver_envelope_with_status(paths, envelope, "delivered_local")?;
     security::record_replay_id_from_paths(paths, &request_id_value, "message_request")?;
     security::record_replay_id_from_paths(paths, &envelope_id, "message_envelope")?;
@@ -1559,6 +1559,30 @@ mod tests {
         assert!(replay_cache.contains("message_envelope"));
     }
 
+    #[test]
+    fn local_delivery_requires_recordable_replay_cache_before_inbox_write() {
+        let home = test_home("local-delivery-replay-recordable");
+        register_agent(&home, "agent.sender");
+        register_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private local payload".to_vec()),
+        )
+        .expect("message is valid");
+        submit_local_message(Some(home.clone()), message).expect("message request submits");
+        let paths = StatePaths::from_home(home.clone());
+        make_replay_cache_read_only(&paths);
+
+        let report =
+            process_message_requests(Some(home.clone())).expect("request failure is archived");
+        let inbox = list_agent_inbox(Some(home), "agent.receiver").expect("inbox reads");
+
+        assert_eq!(report.delivered, 0);
+        assert_eq!(report.rejected, 1);
+        assert!(inbox.is_empty());
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_message_request_is_rejected_without_reading_target() {
@@ -2184,6 +2208,63 @@ mod tests {
     }
 
     #[test]
+    fn remote_delivery_requires_recordable_replay_cache_before_inbox_write() {
+        let home = test_home("remote-delivery-replay-recordable");
+        register_agent(&home, "agent.receiver");
+        let paths = StatePaths::from_home(home.clone());
+        make_replay_cache_read_only(&paths);
+
+        let error = deliver_remote_envelope_from_paths(
+            &paths,
+            "env.recordable",
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private delivered payload".to_vec()),
+        )
+        .expect_err("readonly replay cache fails before delivery");
+        let inbox = list_agent_inbox(Some(home), "agent.receiver").expect("inbox reads");
+        let receipt_count = fs::read_dir(&paths.message_receipts_dir)
+            .expect("receipts read")
+            .count();
+
+        assert!(error.to_string().contains("open replay cache"));
+        assert!(inbox.is_empty());
+        assert_eq!(receipt_count, 0);
+    }
+
+    #[test]
+    fn remote_stream_delivery_requires_recordable_replay_cache_before_inbox_write() {
+        let home = test_home("remote-stream-replay-recordable");
+        register_agent_with_capabilities(
+            &home,
+            "agent.receiver",
+            AgentCapabilities {
+                messages: false,
+                streams: true,
+                files: false,
+                rooms: false,
+                presence: false,
+            },
+        );
+        let paths = StatePaths::from_home(home.clone());
+        make_replay_cache_read_only(&paths);
+
+        let error = deliver_remote_stream_chunk_from_paths(
+            &paths,
+            "streamenv.recordable",
+            "stream.1",
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private stream payload".to_vec()),
+        )
+        .expect_err("readonly replay cache fails before stream delivery");
+        let inbox = list_agent_inbox(Some(home), "agent.receiver").expect("inbox reads");
+
+        assert!(error.to_string().contains("open replay cache"));
+        assert!(inbox.is_empty());
+    }
+
+    #[test]
     fn remote_delivery_success_does_not_depend_on_message_log_write() {
         let home = test_home("remote-delivery-log-collision");
         register_agent(&home, "agent.receiver");
@@ -2251,6 +2332,14 @@ mod tests {
         agents::submit_registration(Some(home.to_path_buf()), registration)
             .expect("registration submits");
         agents::process_gateway_requests(Some(home.to_path_buf())).expect("registration processes");
+    }
+
+    fn make_replay_cache_read_only(paths: &StatePaths) {
+        let mut permissions = fs::metadata(&paths.replay_cache)
+            .expect("replay cache metadata")
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&paths.replay_cache, permissions).expect("replay cache made readonly");
     }
 
     fn test_home(label: &str) -> PathBuf {

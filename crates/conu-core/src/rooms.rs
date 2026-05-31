@@ -558,7 +558,7 @@ pub fn deliver_remote_room_event_from_paths(
         payload_bytes,
         created_at_unix: current_unix_seconds(),
     };
-    messages::ensure_room_event_replay_not_seen_from_paths(paths, &envelope_id)?;
+    messages::ensure_room_event_replay_recordable_from_paths(paths, &envelope_id)?;
     append_event_once(paths, event)?;
     let entry = messages::deliver_room_event_from_paths(
         paths,
@@ -2039,6 +2039,60 @@ mod tests {
     }
 
     #[test]
+    fn remote_room_event_requires_recordable_replay_cache_before_event_or_inbox_write() {
+        let alice_home = test_home("remote-room-replay-recordable-alice");
+        let bob_home = test_home("remote-room-replay-recordable-bob");
+        state::init_state(Some(alice_home.clone())).expect("alice initializes");
+        state::init_state(Some(bob_home.clone())).expect("bob initializes");
+        let alice_peer = trust::export_peer_card(Some(alice_home.clone())).expect("alice card");
+        trust::trust_peer_card(Some(bob_home.clone()), alice_peer.clone())
+            .expect("bob trusts alice");
+        policy::set_peer_policy(
+            Some(bob_home.clone()),
+            &alice_peer.node_id,
+            PeerPolicyUpdate {
+                messages: Some(false),
+                streams: Some(false),
+                rooms: Some(true),
+                files: Some(false),
+                mailbox: Some(false),
+            },
+        )
+        .expect("bob grants alice rooms");
+        register_agent(&alice_home, "agent.alice");
+        register_agent(&bob_home, "agent.bob");
+        let alice_agent_card =
+            agents::export_agent_card(Some(alice_home), "agent.alice").expect("alice card");
+        sessions::trust_remote_agent_card(Some(bob_home.clone()), alice_agent_card)
+            .expect("alice remote agent imports");
+        create_room(Some(bob_home.clone()), "room.dev", "Dev Room", "agent.bob")
+            .expect("bob room creates");
+        join_room(Some(bob_home.clone()), "room.dev", "agent.alice").expect("alice remote joins");
+
+        let paths = StatePaths::from_home(bob_home.clone());
+        make_replay_cache_read_only(&paths);
+        let delivery = RemoteRoomEventDelivery {
+            envelope_id: "roomenv.recordable".to_string(),
+            event_id: "room_event.recordable".to_string(),
+            room_id: "room.dev".to_string(),
+            topic: "build".to_string(),
+            peer_node_id: alice_peer.node_id,
+            from_agent_id: "agent.alice".to_string(),
+            to_agent_id: "agent.bob".to_string(),
+            payload: OpaquePayload::from_bytes(b"private retry room event".to_vec()),
+        };
+
+        let error = deliver_remote_room_event_from_paths(&paths, delivery)
+            .expect_err("readonly replay cache fails before room delivery");
+        let events = list_room_events(Some(bob_home.clone())).expect("events read");
+        let inbox = messages::list_agent_inbox(Some(bob_home), "agent.bob").expect("inbox reads");
+
+        assert!(error.to_string().contains("open replay cache"));
+        assert!(events.is_empty());
+        assert!(inbox.is_empty());
+    }
+
+    #[test]
     fn room_publish_requires_joined_agent() {
         let home = test_home("requires-joined");
         register_agent(&home, "agent.codex");
@@ -2179,6 +2233,14 @@ mod tests {
             AgentRegistration::new(agent_id, agent_id, "test-agent").expect("valid agent");
         submit_registration(Some(home.to_path_buf()), registration).expect("submits");
         process_gateway_requests(Some(home.to_path_buf())).expect("processes");
+    }
+
+    fn make_replay_cache_read_only(paths: &StatePaths) {
+        let mut permissions = fs::metadata(&paths.replay_cache)
+            .expect("replay cache metadata")
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&paths.replay_cache, permissions).expect("replay cache made readonly");
     }
 
     fn test_home(name: &str) -> PathBuf {
