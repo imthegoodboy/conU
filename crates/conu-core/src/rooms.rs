@@ -472,6 +472,8 @@ pub fn publish_room_event(
     let local_recipients = local_room_recipients(&init.paths, &room, &from_agent_id, &event.topic)?;
     let remote_recipients =
         remote_room_recipients(&init.paths, &room, &from_agent_id, &event.topic)?;
+    read_events(&init.paths)?;
+
     let local_deliveries = deliver_room_event_to_local_participants(
         &init.paths,
         &event,
@@ -2047,6 +2049,36 @@ mod tests {
 
         assert!(error.to_string().contains("registered locally"));
         assert!(!error.to_string().contains("private message contents"));
+    }
+
+    #[test]
+    fn room_publish_event_store_error_fails_before_fanout() {
+        let home = test_home("publish-event-store-preflight");
+        register_agent(&home, "agent.codex");
+        register_agent(&home, "agent.hermes");
+        create_room(Some(home.clone()), "room.dev", "Dev Room", "agent.codex")
+            .expect("room creates");
+        join_room(Some(home.clone()), "room.dev", "agent.hermes").expect("hermes joins");
+        let paths = StatePaths::from_home(home.clone());
+        fs::create_dir(&paths.room_events).expect("room events blocker creates");
+
+        let error = publish_room_event(
+            Some(home.clone()),
+            "room.dev",
+            "agent.hermes",
+            "build",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect_err("invalid event store should fail before fanout");
+        let inbox = messages::list_agent_inbox(Some(home.clone()), "agent.codex")
+            .expect("recipient inbox reads");
+        let rooms = list_rooms(Some(home)).expect("rooms read");
+
+        assert!(error.to_string().contains("inspect room events"));
+        assert!(!error.to_string().contains("private message contents"));
+        assert!(inbox.is_empty());
+        assert_eq!(rooms[0].events_published, 0);
+        assert_eq!(rooms[0].bytes_published, 0);
     }
 
     #[test]
