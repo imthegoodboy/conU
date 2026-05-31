@@ -319,8 +319,10 @@ pub fn deliver_remote_envelope_from_paths(
         payload,
     )?;
 
+    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "relay_envelope")?;
+    let entry = deliver_envelope_with_status(paths, envelope, "delivered_relay")?;
     security::record_replay_id_from_paths(paths, &envelope_id, "relay_envelope")?;
-    deliver_envelope_with_status(paths, envelope, "delivered_relay")
+    Ok(entry)
 }
 
 /// Deliver a peer-decrypted remote stream chunk to a local addressed agent inbox.
@@ -348,13 +350,15 @@ pub fn deliver_remote_stream_chunk_from_paths(
     )?;
     envelope.meta.stream_id = Some(stream_id.clone());
 
-    security::record_replay_id_from_paths(paths, &envelope_id, "relay_stream_chunk")?;
-    deliver_envelope_with_status_and_stream(
+    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "relay_stream_chunk")?;
+    let entry = deliver_envelope_with_status_and_stream(
         paths,
         envelope,
         "delivered_relay_stream",
         Some(stream_id),
-    )
+    )?;
+    security::record_replay_id_from_paths(paths, &envelope_id, "relay_stream_chunk")?;
+    Ok(entry)
 }
 
 /// Deliver an opaque room event to a local subscribed agent inbox.
@@ -379,8 +383,10 @@ pub fn deliver_room_event_from_paths(
         payload,
     )?;
 
+    security::ensure_replay_id_not_seen_from_paths(paths, &envelope_id, "room_event_envelope")?;
+    let entry = deliver_envelope_with_status(paths, envelope, "delivered_room")?;
     security::record_replay_id_from_paths(paths, &envelope_id, "room_event_envelope")?;
-    deliver_envelope_with_status(paths, envelope, "delivered_room")
+    Ok(entry)
 }
 
 /// List metadata-only local delivery receipts.
@@ -2064,6 +2070,44 @@ mod tests {
         assert_eq!(receipts[0].payload_bytes, 24);
         assert!(receipt_file.contains("payload_displayed = false"));
         assert!(!receipt_file.contains("private message contents"));
+    }
+
+    #[test]
+    fn failed_remote_delivery_does_not_record_replay_id_before_retry() {
+        let home = test_home("remote-delivery-replay-retry");
+        register_agent(&home, "agent.receiver");
+        let paths = StatePaths::from_home(home);
+        let inbox_dir = paths.message_inbox_dir.join("agent.receiver");
+        fs::create_dir_all(&inbox_dir).expect("inbox dir creates");
+        let existing = inbox_dir.join("env.retry.env");
+        fs::write(&existing, "existing envelope").expect("existing envelope writes");
+
+        let error = deliver_remote_envelope_from_paths(
+            &paths,
+            "env.retry",
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private retry payload".to_vec()),
+        )
+        .expect_err("delivery collision should fail before replay commit");
+
+        assert!(error.to_string().contains("reserve message delivery file"));
+        let replay_cache = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
+        assert!(!replay_cache.contains("env.retry"));
+
+        fs::remove_file(&existing).expect("existing envelope removes");
+        let entry = deliver_remote_envelope_from_paths(
+            &paths,
+            "env.retry",
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private retry payload".to_vec()),
+        )
+        .expect("retry delivers after collision is cleared");
+
+        assert_eq!(entry.envelope_id, "env.retry");
+        let replay_cache = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
+        assert!(replay_cache.contains("env.retry"));
     }
 
     #[cfg(unix)]
