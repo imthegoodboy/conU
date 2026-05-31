@@ -546,13 +546,6 @@ pub fn deliver_remote_room_event_from_paths(
         &topic,
         RoomTopicPermission::Subscribe,
     )?;
-    let entry = messages::deliver_room_event_from_paths(
-        paths,
-        &envelope_id,
-        &from_agent_id,
-        &to_agent_id,
-        payload,
-    )?;
     let event = RoomEvent {
         event_id,
         room_id: room_id.clone(),
@@ -563,7 +556,15 @@ pub fn deliver_remote_room_event_from_paths(
         payload_bytes,
         created_at_unix: current_unix_seconds(),
     };
+    messages::ensure_room_event_replay_not_seen_from_paths(paths, &envelope_id)?;
     append_event_once(paths, event)?;
+    let entry = messages::deliver_room_event_from_paths(
+        paths,
+        &envelope_id,
+        &from_agent_id,
+        &to_agent_id,
+        payload,
+    )?;
     append_room_log(
         paths,
         "room_event_received",
@@ -1934,6 +1935,77 @@ mod tests {
 
         assert!(error.to_string().contains("not allowed to publish"));
         assert!(!error.to_string().contains("private message contents"));
+    }
+
+    #[test]
+    fn failed_remote_room_event_metadata_append_does_not_record_replay_before_retry() {
+        let alice_home = test_home("remote-room-replay-alice");
+        let bob_home = test_home("remote-room-replay-bob");
+        state::init_state(Some(alice_home.clone())).expect("alice initializes");
+        state::init_state(Some(bob_home.clone())).expect("bob initializes");
+        let alice_peer = trust::export_peer_card(Some(alice_home.clone())).expect("alice card");
+        trust::trust_peer_card(Some(bob_home.clone()), alice_peer.clone())
+            .expect("bob trusts alice");
+        policy::set_peer_policy(
+            Some(bob_home.clone()),
+            &alice_peer.node_id,
+            PeerPolicyUpdate {
+                messages: Some(false),
+                streams: Some(false),
+                rooms: Some(true),
+                files: Some(false),
+                mailbox: Some(false),
+            },
+        )
+        .expect("bob grants alice rooms");
+        register_agent(&alice_home, "agent.alice");
+        register_agent(&bob_home, "agent.bob");
+        let alice_agent_card =
+            agents::export_agent_card(Some(alice_home), "agent.alice").expect("alice card");
+        sessions::trust_remote_agent_card(Some(bob_home.clone()), alice_agent_card)
+            .expect("alice remote agent imports");
+        create_room(Some(bob_home.clone()), "room.dev", "Dev Room", "agent.bob")
+            .expect("bob room creates");
+        join_room(Some(bob_home.clone()), "room.dev", "agent.alice").expect("alice remote joins");
+
+        let paths = StatePaths::from_home(bob_home.clone());
+        fs::create_dir(&paths.room_events).expect("room events blocker creates");
+        let delivery = RemoteRoomEventDelivery {
+            envelope_id: "roomenv.retry".to_string(),
+            event_id: "room_event.retry".to_string(),
+            room_id: "room.dev".to_string(),
+            topic: "build".to_string(),
+            peer_node_id: alice_peer.node_id,
+            from_agent_id: "agent.alice".to_string(),
+            to_agent_id: "agent.bob".to_string(),
+            payload: OpaquePayload::from_bytes(b"private retry room event".to_vec()),
+        };
+
+        let error = deliver_remote_room_event_from_paths(&paths, delivery.clone())
+            .expect_err("room event metadata write failure fails before replay commit");
+        let replay_cache = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
+        let inbox =
+            messages::list_agent_inbox(Some(bob_home.clone()), "agent.bob").expect("inbox reads");
+
+        assert!(error.to_string().contains("inspect room events"));
+        assert!(inbox.is_empty());
+        assert!(!replay_cache.contains("roomenv.retry"));
+        assert!(!replay_cache.contains("room_event_envelope"));
+
+        fs::remove_dir(&paths.room_events).expect("room events blocker removes");
+        let entry = deliver_remote_room_event_from_paths(&paths, delivery)
+            .expect("retry delivers after metadata path is repaired");
+        let events = list_room_events(Some(bob_home.clone())).expect("room events read");
+        let inbox =
+            messages::list_agent_inbox(Some(bob_home.clone()), "agent.bob").expect("inbox reads");
+        let replay_cache = fs::read_to_string(&paths.replay_cache).expect("replay cache reads");
+
+        assert_eq!(entry.envelope_id, "roomenv.retry");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, "room_event.retry");
+        assert_eq!(inbox.len(), 1);
+        assert!(replay_cache.contains("roomenv.retry"));
+        assert!(replay_cache.contains("room_event_envelope"));
     }
 
     #[test]
