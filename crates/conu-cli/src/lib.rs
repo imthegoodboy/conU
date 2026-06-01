@@ -10157,6 +10157,7 @@ fn parse_https_update_url(
     {
         return Err(format!("release update policy {label} URL is invalid"));
     }
+    validate_update_url_path(&path_and_query, label)?;
 
     let (host, port) = parse_update_authority(authority, label)?;
     validate_update_public_host(&host, label)?;
@@ -10199,6 +10200,61 @@ fn parse_update_authority(authority: &str, label: &str) -> Result<(String, u16),
         _ => (authority, 443),
     };
     Ok((host.trim().to_ascii_lowercase(), port))
+}
+
+fn validate_update_url_path(path_and_query: &str, label: &str) -> Result<(), String> {
+    let path = path_and_query.split('?').next().unwrap_or_default();
+    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+        if segment == "." || segment == ".." {
+            return Err(format!(
+                "release update policy {label} path must not contain dot segments"
+            ));
+        }
+        let decoded = percent_decode_update_path_segment(segment, label)?;
+        if decoded == b"." || decoded == b".." {
+            return Err(format!(
+                "release update policy {label} path must not contain dot segments"
+            ));
+        }
+        if decoded.contains(&b'/') || decoded.contains(&b'\\') {
+            return Err(format!(
+                "release update policy {label} path must not contain encoded separators"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn percent_decode_update_path_segment(segment: &str, label: &str) -> Result<Vec<u8>, String> {
+    let bytes = segment.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(format!("release update policy {label} URL is invalid"));
+            }
+            let high = hex_value(bytes[index + 1])
+                .ok_or_else(|| format!("release update policy {label} URL is invalid"))?;
+            let low = hex_value(bytes[index + 2])
+                .ok_or_else(|| format!("release update policy {label} URL is invalid"))?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Ok(decoded)
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn validate_update_public_host(host: &str, label: &str) -> Result<(), String> {
@@ -11621,6 +11677,60 @@ mod tests {
 
         assert_eq!(output.code, 1);
         assert!(output.stderr.contains("host must be public"));
+    }
+
+    #[test]
+    fn update_check_rejects_traversal_shaped_remote_policy_url_paths() {
+        for (url, expected) in [
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/../conu-0.1.0-update-policy.json",
+                "path must not contain dot segments",
+            ),
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/%2e%2e/conu-0.1.0-update-policy.json",
+                "path must not contain dot segments",
+            ),
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/v0.1.0%2fother/conu-0.1.0-update-policy.json",
+                "path must not contain encoded separators",
+            ),
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/v0.1.0%5cother/conu-0.1.0-update-policy.json",
+                "path must not contain encoded separators",
+            ),
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/bad%zz/conu-0.1.0-update-policy.json",
+                "URL is invalid",
+            ),
+        ] {
+            let output = run(["update", "check", "--policy-url", url]);
+
+            assert_eq!(output.code, 1, "{url}: {}", output.stderr);
+            assert!(output.stderr.contains(expected), "{url}: {}", output.stderr);
+            assert!(!output.stderr.contains("private message contents"));
+        }
+    }
+
+    #[test]
+    fn update_policy_metadata_url_validation_rejects_traversal_shaped_paths() {
+        for (url, expected) in [
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/../v0.1.0",
+                "path must not contain dot segments",
+            ),
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/%2e%2e/v0.1.0",
+                "path must not contain dot segments",
+            ),
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/v0.1.0%2fother",
+                "path must not contain encoded separators",
+            ),
+        ] {
+            let error =
+                validate_public_https_url(url, "releaseBaseUrl").expect_err("URL should fail");
+            assert!(error.contains(expected), "{url}: {error}");
+        }
     }
 
     #[test]
