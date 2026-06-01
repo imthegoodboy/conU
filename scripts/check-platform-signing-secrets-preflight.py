@@ -143,10 +143,10 @@ def audit_environment(
     for secret in PKCS12_SECRETS:
         data_value = env.get(secret.data_env, "")
         password_value = env.get(secret.password_env, "")
-        checks[f"{secret.key}Pkcs12Configured"] = bool(data_value)
-        checks[f"{secret.key}PasswordConfigured"] = bool(password_value)
+        checks[f"{secret.key}Pkcs12Configured"] = is_nonblank_secret_value(data_value)
+        checks[f"{secret.key}PasswordConfigured"] = is_nonblank_secret_value(password_value)
 
-        if not data_value:
+        if not is_nonblank_secret_value(data_value):
             missing.append(secret.data_env)
         else:
             try:
@@ -159,13 +159,13 @@ def audit_environment(
                 checks[f"{secret.key}Pkcs12NonEmpty"] = True
                 checks[f"{secret.key}Pkcs12SizeAllowed"] = True
 
-        if not password_value:
+        if not is_nonblank_secret_value(password_value):
             missing.append(secret.password_env)
 
     for key, name in TEXT_SECRET_ENVS:
         value = env.get(name, "")
-        checks[f"{key}Configured"] = bool(value)
-        if not value:
+        checks[f"{key}Configured"] = is_nonblank_secret_value(value)
+        if not is_nonblank_secret_value(value):
             missing.append(name)
 
     validate_text_secret_shapes(env, checks, issues)
@@ -263,6 +263,10 @@ def validate_text_secret_shapes(
 
 def is_single_line_text_secret(value: str) -> bool:
     return all(character >= " " and character != "\x7f" for character in value)
+
+
+def is_nonblank_secret_value(value: str) -> bool:
+    return value.strip() != ""
 
 
 def validate_timestamp_url(

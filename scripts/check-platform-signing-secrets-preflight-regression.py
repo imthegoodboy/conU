@@ -39,6 +39,22 @@ def main() -> int:
     failed = run_preflight(missing_env, "--skip-pkcs12-parse", "--json")
     assert_failed(failed, "missing")
 
+    blank_env = minimal_env(base64.b64encode(b"not-a-real-pkcs12").decode("ascii"))
+    blank_names = (
+        module.WINDOWS_PASSWORD_ENV,
+        module.MACOS_PASSWORD_ENV,
+        module.MACOS_CODESIGN_IDENTITY_ENV,
+        module.MACOS_NOTARY_PASSWORD_ENV,
+    )
+    for name in blank_names:
+        blank_env[name] = "   "
+    failed = run_preflight(blank_env, "--skip-pkcs12-parse", "--json")
+    assert_failed(failed, "missing")
+    report = json.loads(failed.stdout)
+    if not set(blank_names).issubset(set(report["missing"])):
+        raise AssertionError(f"blank signing values were not reported missing:\n{failed.stdout}")
+    assert_not_leaked(failed.stdout, P12_PASSWORD)
+
     invalid_env = minimal_env(base64.b64encode(b"not-a-real-pkcs12").decode("ascii"))
     invalid_env[module.WINDOWS_PFX_ENV] = f"not strict base64 {SENTINEL}"
     invalid_env[module.WINDOWS_TIMESTAMP_URL_ENV] = f"https://user:{SENTINEL}@timestamp.example.invalid/?token={SENTINEL}"
