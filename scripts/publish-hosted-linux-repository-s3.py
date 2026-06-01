@@ -247,10 +247,14 @@ def build_publish_plan(args: argparse.Namespace) -> PublishPlan:
 
     repository = read_json_file(site_dir / "repository.json", "repository.json")
     cache_policy = read_json_file(site_dir / "cache-policy.json", "cache-policy.json")
+    headers_text = read_bounded_ascii_file(site_dir / "_headers", "_headers", max_bytes=MAX_METADATA_BYTES)
+    assert_no_forbidden_text(headers_text, "_headers")
     base_url = validate_base_url(args.base_url or str(repository.get("baseUrl", "")))
     version = validate_repository_json(repository, base_url, args.expected_version)
     validate_cache_policy_json(cache_policy, base_url, version)
     rules = parse_cache_rules(cache_policy)
+    headers_entries = parse_headers_file(headers_text)
+    validate_headers_match_policy(headers_entries, rules)
 
     files = collect_files(site_dir, bucket, prefix, rules)
     if not files:
@@ -441,6 +445,45 @@ def validate_cache_path(path: str, label: str) -> str:
             f"{label} contains forbidden local-state segment: {', '.join(forbidden)}"
         )
     return path
+
+
+def parse_headers_file(text: str) -> dict[str, dict[str, str]]:
+    entries: dict[str, dict[str, str]] = {}
+    current_path: str | None = None
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(" ") or line.startswith("\t"):
+            if current_path is None:
+                raise PublicationError("_headers contains a header before any path")
+            stripped = line.strip()
+            if ":" not in stripped:
+                raise PublicationError("_headers contains a malformed header line")
+            name, value = stripped.split(":", 1)
+            entries[current_path][name.strip().lower()] = value.strip()
+            continue
+        current_path = validate_cache_path(line.strip(), "_headers path")
+        if current_path in entries:
+            raise PublicationError(f"_headers contains duplicate path: {current_path}")
+        entries[current_path] = {}
+    return entries
+
+
+def validate_headers_match_policy(
+    headers_entries: dict[str, dict[str, str]],
+    rules: list[dict[str, Any]],
+) -> None:
+    expected = {
+        path: {"cache-control": rule["cacheControl"]}
+        for rule in rules
+        for path in rule["paths"]
+    }
+    actual = {
+        path: {"cache-control": headers.get("cache-control", "")}
+        for path, headers in headers_entries.items()
+    }
+    if actual != expected:
+        raise PublicationError("_headers Cache-Control rules do not match cache-policy.json")
 
 
 def collect_files(

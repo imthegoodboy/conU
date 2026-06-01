@@ -121,6 +121,20 @@ def main() -> int:
         bad_cache_result = run_publisher_raw(bad_cache_control, "--dry-run")
         assert_failure("bad Cache-Control", bad_cache_result, "Cache-Control")
 
+        bad_headers = temp / "bad-headers-site"
+        shutil.copytree(site_dir, bad_headers)
+        (bad_headers / "_headers").write_text(
+            "/repository.json\n  Cache-Control: public, max-age=31536000, immutable\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        bad_headers_result = run_publisher_raw(bad_headers, "--dry-run")
+        assert_failure(
+            "bad _headers cache policy",
+            bad_headers_result,
+            "_headers Cache-Control rules",
+        )
+
         unsafe_cache_path = temp / "unsafe-cache-path-site"
         shutil.copytree(site_dir, unsafe_cache_path)
         cache_policy_path = unsafe_cache_path / "cache-policy.json"
