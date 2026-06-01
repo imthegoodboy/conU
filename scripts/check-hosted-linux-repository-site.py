@@ -294,6 +294,24 @@ def main() -> int:
             "must not include params, query, or fragment",
         )
 
+        credential_url = temp / "credential-url"
+        shutil.copytree(dist, credential_url)
+        expect_failure(
+            "base URL with credentials",
+            credential_url,
+            "https://token@example.com/conu",
+            "must not include credentials",
+        )
+
+        encoded_base_url = temp / "encoded-base-url"
+        shutil.copytree(dist, encoded_base_url)
+        expect_failure(
+            "encoded base URL",
+            encoded_base_url,
+            f"{BASE_URL}/%2e%2e%2fother",
+            "path must not contain encoded separators",
+        )
+
     print("Hosted Linux repository site regression checks passed")
     return 0
 
