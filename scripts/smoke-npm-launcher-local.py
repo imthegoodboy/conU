@@ -42,7 +42,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    dist = args.dist.resolve()
+    dist = validate_input_directory(args.dist, "release dist directory")
     package_dir = args.package_dir.resolve()
     if not package_dir.joinpath("package.json").exists():
         raise SystemExit(f"missing npm package manifest in {package_dir}")
@@ -88,6 +88,15 @@ def require_tool(*names: str) -> str:
         if found:
             return found
     raise SystemExit(f"required tool not found on PATH: {' or '.join(names)}")
+
+
+def validate_input_directory(path: Path, label: str) -> Path:
+    path = path.expanduser()
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+    return path.resolve()
 
 
 def read_manifest_target(archive: Path) -> str:

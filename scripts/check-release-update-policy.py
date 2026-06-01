@@ -105,6 +105,14 @@ def main() -> int:
         )
         with mock.patch.object(Path, "is_symlink", return_value=True):
             expect_module_failure(
+                "symlinked release dist directory",
+                lambda: generator.validate_input_directory(
+                    dist,
+                    "release dist directory",
+                ),
+                "must not be a symlink",
+            )
+            expect_module_failure(
                 "symlinked source asset",
                 lambda: generator.validate_source_file(
                     dist / PLATFORM_ARCHIVES[0],

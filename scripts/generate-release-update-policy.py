@@ -114,11 +114,10 @@ def main() -> int:
     repo = validate_repo(args.repo)
     channel = validate_channel(args.channel or infer_channel(version))
     release_base_url = validate_release_base_url(args.release_base_url, repo, tag)
-    dist = args.dist.resolve()
-    output_dir = args.output_dir.resolve()
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"release dist directory does not exist: {dist}")
+    dist = validate_input_directory(args.dist, "release dist directory")
+    output_dir = args.output_dir.expanduser()
     prepare_output_directory(output_dir)
+    output_dir = output_dir.resolve()
 
     policy = build_update_policy(
         dist=dist,
@@ -665,6 +664,15 @@ def prepare_output_directory(path: Path) -> None:
     if path.exists() and not path.is_dir():
         raise SystemExit(f"release update policy output path must be a directory: {path}")
     path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_input_directory(path: Path, label: str) -> Path:
+    path = path.expanduser()
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+    return path.resolve()
 
 
 def validate_output_file(path: Path, label: str) -> None:

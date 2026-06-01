@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -198,6 +199,16 @@ def run_source_file_preflights() -> None:
     signer = load_signer()
     with tempfile.TemporaryDirectory(prefix="conu-rpm-package-signing-file-check-") as temp_text:
         temp = Path(temp_text)
+
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_action_failure(
+                lambda: signer.validate_input_directory(
+                    temp / "dist",
+                    "release dist directory",
+                ),
+                "must not be a symlink",
+                "RPM signing symlink dist directory",
+            )
 
         valid = temp / "valid"
         valid.mkdir()

@@ -58,9 +58,7 @@ class RepositoryMetadataBudget:
 
 def main() -> int:
     args = parse_args()
-    dist = args.dist.resolve()
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"release dist directory does not exist: {dist}")
+    dist = validate_input_directory(args.dist, "release dist directory")
 
     gpg = shutil.which("gpg")
     if gpg is None:
@@ -394,6 +392,15 @@ def write_deterministic_zip_bytes(archive: zipfile.ZipFile, name: str, data: byt
     info.compress_type = zipfile.ZIP_STORED
     info.external_attr = 0o644 << 16
     archive.writestr(info, data)
+
+
+def validate_input_directory(path: Path, label: str) -> Path:
+    path = path.expanduser()
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+    return path.resolve()
 
 
 def verify_sha256_sidecar(path: Path, label: str) -> None:

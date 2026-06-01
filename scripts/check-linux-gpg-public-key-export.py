@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +131,16 @@ def run_output_file_preflights() -> None:
     exporter = load_exporter()
     with tempfile.TemporaryDirectory(prefix="conu-linux-public-key-output-check-") as temp_text:
         temp = Path(temp_text)
+
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_action_failure(
+                lambda: exporter.validate_input_directory(
+                    temp / "dist",
+                    "release dist directory",
+                ),
+                "must not be a symlink",
+                "public-key symlink dist directory",
+            )
 
         output = temp / PUBLIC_KEY_ASSET
         exporter.write_public_key_asset(output, PUBLIC_KEY_FIXTURE)

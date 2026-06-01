@@ -51,9 +51,7 @@ class RpmPackageBudget:
 
 def main() -> int:
     args = parse_args()
-    dist = args.dist.resolve()
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"release dist directory does not exist: {dist}")
+    dist = validate_input_directory(args.dist, "release dist directory")
 
     packages = rpm_package_assets(dist)
     if not packages:
@@ -230,6 +228,15 @@ def write_sha256_sidecar(path: Path) -> None:
             temp_path.unlink()
         except FileNotFoundError:
             pass
+
+
+def validate_input_directory(path: Path, label: str) -> Path:
+    path = path.expanduser()
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+    return path.resolve()
 
 
 def validate_rpm_package(

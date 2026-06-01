@@ -58,9 +58,7 @@ class SignableAssetBudget:
 
 def main() -> int:
     args = parse_args()
-    dist = args.dist.resolve()
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"release dist directory does not exist: {dist}")
+    dist = validate_input_directory(args.dist, "release dist directory")
 
     gpg = shutil.which("gpg")
     if gpg is None:
@@ -262,6 +260,15 @@ def validate_signable_asset(path: Path, budget: SignableAssetBudget) -> int:
     )
     budget.add(size)
     return size
+
+
+def validate_input_directory(path: Path, label: str) -> Path:
+    path = path.expanduser()
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+    return path.resolve()
 
 
 def prepare_signature_output(signature: Path) -> None:
