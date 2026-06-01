@@ -3165,38 +3165,14 @@ fn write_credential_manifest_records(
     {
         ensure_relay_directory(parent, "create relay credential file directory")?;
     }
-    let _existing_target_is_regular =
-        regular_relay_file_exists(path, "inspect relay credential file replacement")?;
-
-    let temp_path = credential_manifest_temp_path(path)?;
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = options
-        .open(&temp_path)
-        .map_err(|error| RelayError::io("create temporary relay credential file", error))?;
-    if let Err(error) = file
-        .write_all(contents.as_bytes())
-        .and_then(|_| file.sync_all())
-    {
-        let _ = fs::remove_file(&temp_path);
-        return Err(RelayError::io(
-            "write temporary relay credential file",
-            error,
-        ));
-    }
-    drop(file);
-
-    #[cfg(windows)]
-    if _existing_target_is_regular {
-        fs::remove_file(path)
-            .map_err(|error| RelayError::io("replace relay credential file", error))?;
-    }
-
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(RelayError::io("replace relay credential file", error));
-    }
-    Ok(())
+    write_relay_metadata_file(
+        path,
+        &contents,
+        "inspect relay credential file replacement",
+        "create temporary relay credential file",
+        "write temporary relay credential file",
+        "replace relay credential file",
+    )
 }
 
 fn render_credential_manifest_records(
@@ -3223,17 +3199,6 @@ fn render_credential_manifest_records(
         output.push_str(&record.render()?);
     }
     Ok(output)
-}
-
-fn credential_manifest_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
-    let file_name = path.file_name().ok_or(RelayError::InvalidConfig(
-        "relay credential file path must include a file name",
-    ))?;
-    Ok(path.with_file_name(format!(
-        ".{}.{}.tmp",
-        file_name.to_string_lossy(),
-        current_unix_nanos()
-    )))
 }
 
 fn ensure_relay_directory(path: &Path, action: &'static str) -> Result<(), RelayError> {
@@ -3282,7 +3247,7 @@ fn write_relay_metadata_file(
     write_temp_action: &'static str,
     replace_action: &'static str,
 ) -> Result<(), RelayError> {
-    let _existing_target_is_regular = regular_relay_file_exists(path, inspect_action)?;
+    let expected_metadata = inspect_optional_regular_relay_file(path, inspect_action)?;
     let temp_path = relay_metadata_temp_path(path)?;
     let mut file = OpenOptions::new()
         .write(true)
@@ -3298,65 +3263,113 @@ fn write_relay_metadata_file(
     }
     drop(file);
 
-    #[cfg(windows)]
-    if _existing_target_is_regular {
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(RelayError::io(replace_action, error)),
+    let result = replace_regular_relay_file_with_temp(
+        path,
+        &temp_path,
+        expected_metadata.as_ref(),
+        inspect_action,
+        replace_action,
+    );
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+fn replace_regular_relay_file_with_temp(
+    path: &Path,
+    temp_path: &Path,
+    expected_metadata: Option<&fs::Metadata>,
+    inspect_action: &'static str,
+    replace_action: &'static str,
+) -> Result<(), RelayError> {
+    match expected_metadata {
+        Some(expected_metadata) => {
+            let current_metadata = inspect_existing_regular_relay_file(path, inspect_action)?;
+            if !relay_manifest_file_metadata_matches(expected_metadata, &current_metadata) {
+                return Err(RelayError::io(
+                    inspect_action,
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "relay file path changed before replacement",
+                    ),
+                ));
+            }
+        }
+        None => {
+            if inspect_optional_regular_relay_file(path, inspect_action)?.is_some() {
+                return Err(RelayError::io(
+                    inspect_action,
+                    io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "relay file path appeared before replacement",
+                    ),
+                ));
+            }
         }
     }
 
-    #[cfg(windows)]
-    {
-        if let Err(error) = fs::rename(&temp_path, path) {
-            if !matches!(
-                error.kind(),
-                io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
-            ) {
-                let _ = fs::remove_file(&temp_path);
-                return Err(RelayError::io(replace_action, error));
-            }
-            match regular_relay_file_exists(path, inspect_action) {
-                Ok(true) => match fs::remove_file(path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        let _ = fs::remove_file(&temp_path);
-                        return Err(RelayError::io(replace_action, error));
-                    }
-                },
-                Ok(false) => {}
-                Err(error) => {
-                    let _ = fs::remove_file(&temp_path);
-                    return Err(error);
-                }
-            }
-            if let Err(error) = fs::rename(&temp_path, path) {
-                let _ = fs::remove_file(&temp_path);
-                return Err(RelayError::io(replace_action, error));
-            }
-        }
-        Ok(())
+    replace_regular_relay_file_after_validation(path, temp_path, expected_metadata, replace_action)
+}
+
+#[cfg(not(windows))]
+fn replace_regular_relay_file_after_validation(
+    path: &Path,
+    temp_path: &Path,
+    _expected_metadata: Option<&fs::Metadata>,
+    replace_action: &'static str,
+) -> Result<(), RelayError> {
+    fs::rename(temp_path, path).map_err(|error| RelayError::io(replace_action, error))
+}
+
+#[cfg(windows)]
+fn replace_regular_relay_file_after_validation(
+    path: &Path,
+    temp_path: &Path,
+    expected_metadata: Option<&fs::Metadata>,
+    replace_action: &'static str,
+) -> Result<(), RelayError> {
+    if expected_metadata.is_none() {
+        return fs::rename(temp_path, path).map_err(|error| RelayError::io(replace_action, error));
     }
 
-    #[cfg(not(windows))]
-    {
-        if let Err(error) = fs::rename(&temp_path, path) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(RelayError::io(replace_action, error));
+    let backup_path = relay_metadata_backup_path(path)?;
+    fs::rename(path, &backup_path).map_err(|error| RelayError::io(replace_action, error))?;
+
+    if let Err(error) = fs::rename(temp_path, path) {
+        let restore_result = fs::rename(&backup_path, path);
+        let _ = fs::remove_file(temp_path);
+        if let Err(restore_error) = restore_result {
+            return Err(RelayError::io(
+                "restore relay file after failed replacement",
+                restore_error,
+            ));
         }
-        Ok(())
+        return Err(RelayError::io(replace_action, error));
     }
+
+    let _ = fs::remove_file(&backup_path);
+    Ok(())
 }
 
 fn relay_metadata_temp_path(path: &Path) -> Result<PathBuf, RelayError> {
+    relay_metadata_sidecar_path(path, "tmp")
+}
+
+#[cfg(windows)]
+fn relay_metadata_backup_path(path: &Path) -> Result<PathBuf, RelayError> {
+    relay_metadata_sidecar_path(path, "backup")
+}
+
+fn relay_metadata_sidecar_path(path: &Path, suffix: &str) -> Result<PathBuf, RelayError> {
     let file_name = path.file_name().ok_or(RelayError::InvalidConfig(
         "relay metadata file path must include a file name",
     ))?;
     Ok(path.with_file_name(format!(
-        ".{}.{}.tmp",
+        ".{}.{}-{}-{}",
         file_name.to_string_lossy(),
+        suffix,
+        std::process::id(),
         current_unix_nanos()
     )))
 }
@@ -3721,34 +3734,14 @@ fn write_hosted_tenant_manifest(
     {
         ensure_relay_directory(parent, "create hosted tenant file directory")?;
     }
-    let _existing_target_is_regular =
-        regular_relay_file_exists(path, "inspect hosted tenant file replacement")?;
-    let temp_path = credential_manifest_temp_path(path)?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)
-        .map_err(|error| RelayError::io("create temporary hosted tenant file", error))?;
-    if let Err(error) = file
-        .write_all(contents.as_bytes())
-        .and_then(|_| file.sync_all())
-    {
-        let _ = fs::remove_file(&temp_path);
-        return Err(RelayError::io("write temporary hosted tenant file", error));
-    }
-    drop(file);
-
-    #[cfg(windows)]
-    if _existing_target_is_regular {
-        fs::remove_file(path)
-            .map_err(|error| RelayError::io("replace hosted tenant file", error))?;
-    }
-
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(RelayError::io("replace hosted tenant file", error));
-    }
-    Ok(())
+    write_relay_metadata_file(
+        path,
+        &contents,
+        "inspect hosted tenant file replacement",
+        "create temporary hosted tenant file",
+        "write temporary hosted tenant file",
+        "replace hosted tenant file",
+    )
 }
 
 fn hosted_tenant_update(
@@ -8184,6 +8177,102 @@ mod tests {
                 .expect("token dir symlink metadata")
                 .file_type()
                 .is_symlink()
+        );
+    }
+
+    #[test]
+    fn relay_metadata_file_replacement_replaces_existing_contents() {
+        let home = test_home("relay-metadata-replacement");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("metadata.toml");
+        fs::write(&path, "version = \"1\"\nstatus = \"old\"\n").expect("metadata writes");
+
+        write_relay_metadata_file(
+            &path,
+            "version = \"1\"\nstatus = \"new\"\n",
+            "inspect relay metadata test",
+            "create temporary relay metadata test",
+            "write temporary relay metadata test",
+            "replace relay metadata test",
+        )
+        .expect("metadata replaces");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("metadata reads"),
+            "version = \"1\"\nstatus = \"new\"\n"
+        );
+    }
+
+    #[test]
+    fn relay_metadata_file_replacement_rejects_changed_target_without_replacing_file() {
+        let home = test_home("relay-metadata-replacement-race");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("metadata.toml");
+        let changed = "version = \"1\"\nstatus = \"changed-before-replace\"\n";
+        fs::write(&path, "version = \"1\"\nstatus = \"old\"\n").expect("metadata writes");
+        let expected = inspect_existing_regular_relay_file(&path, "inspect relay metadata test")
+            .expect("metadata inspect");
+        let temp_path = relay_metadata_temp_path(&path).expect("temp path");
+        fs::write(&temp_path, "version = \"1\"\nstatus = \"new\"\n").expect("temp writes");
+        fs::write(&path, changed).expect("metadata changes before replacement");
+
+        let error = replace_regular_relay_file_with_temp(
+            &path,
+            &temp_path,
+            Some(&expected),
+            "inspect relay metadata test",
+            "replace relay metadata test",
+        )
+        .expect_err("changed target should fail closed");
+
+        let _ = fs::remove_file(&temp_path);
+        assert!(error.to_string().contains("changed before replacement"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("metadata reads"),
+            changed,
+            "changed live metadata must not be overwritten by stale replacement"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relay_metadata_file_replacement_rejects_unwritable_parent_without_truncating_existing_file()
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = test_home("relay-metadata-unwritable-parent");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("metadata.toml");
+        let original = "version = \"1\"\nstatus = \"old\"\n";
+        fs::write(&path, original).expect("metadata writes");
+        let original_permissions = fs::metadata(&home)
+            .expect("home metadata reads")
+            .permissions();
+        let mut locked_permissions = original_permissions.clone();
+        locked_permissions.set_mode(0o500);
+        fs::set_permissions(&home, locked_permissions).expect("home permissions lock");
+
+        let result = write_relay_metadata_file(
+            &path,
+            "version = \"1\"\nstatus = \"new\"\n",
+            "inspect unwritable relay metadata",
+            "create temporary unwritable relay metadata",
+            "write temporary unwritable relay metadata",
+            "replace unwritable relay metadata",
+        );
+
+        fs::set_permissions(&home, original_permissions).expect("home permissions restore");
+        let error = result.expect_err("unwritable parent should fail before replacement");
+
+        assert!(
+            error
+                .to_string()
+                .contains("create temporary unwritable relay metadata")
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("metadata reads"),
+            original,
+            "failed staged replacement must leave existing relay metadata unchanged"
         );
     }
 
