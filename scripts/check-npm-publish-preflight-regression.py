@@ -85,11 +85,29 @@ def run_version_consistency_tests(module) -> None:
 def run_token_tests(module) -> None:
     env_name = "CONU_TEST_NPM_TOKEN"
     original = os.environ.pop(env_name, None)
+    malformed_token = "token-value-with-hidden-whitespace"
     try:
         assert_raises(
             lambda: module.validate_required_token(env_name),
             "is required",
         )
+        for value in (
+            " token-value",
+            "token-value ",
+            f"{malformed_token}\ncontinued",
+            f"{malformed_token}\tcontinued",
+        ):
+            os.environ[env_name] = value
+            try:
+                module.validate_required_token(env_name)
+            except ValueError as exc:
+                rendered = str(exc)
+                if "single-line token value" not in rendered:
+                    raise AssertionError(f"unexpected token validation error: {rendered}") from exc
+                if malformed_token in rendered or value in rendered:
+                    raise AssertionError("token validation error leaked the token value") from exc
+            else:
+                raise AssertionError("malformed token value unexpectedly passed validation")
         os.environ[env_name] = "token-value"
         module.validate_required_token(env_name)
     finally:

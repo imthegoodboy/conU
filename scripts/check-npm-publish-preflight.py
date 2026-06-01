@@ -106,6 +106,14 @@ def validate_required_token(env_name: str | None) -> None:
     value = os.environ.get(env_name, "")
     if not value.strip():
         raise ValueError(f"{env_name} is required for tagged npm publication")
+    if not is_single_line_token_value(value):
+        raise ValueError(
+            f"{env_name} must be a single-line token value without whitespace or control characters"
+        )
+
+
+def is_single_line_token_value(value: str) -> bool:
+    return all(character > " " and character != "\x7f" for character in value)
 
 
 def npm_version_exists(npm: str, package: PackageInfo) -> bool:
