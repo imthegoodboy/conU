@@ -432,6 +432,56 @@ def run_custom_repository_tests(module) -> None:
     ):
         raise AssertionError("encoded custom repository base URL separator failure was missing")
 
+    invalid_endpoint_paths = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_custom_secrets(module),
+        variable_values={
+            module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/",
+            module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+            module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+            module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com/api/%2e%2e/v1",
+            module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+        },
+        pages_payload=None,
+        release_payload=None,
+        npm_registry_check=False,
+    )
+    if invalid_endpoint_paths.ready:
+        raise AssertionError("encoded custom repository endpoint URL dot segment should fail")
+    parsed_invalid_endpoint_paths = assert_safe_report(invalid_endpoint_paths)
+    if (
+        "custom repository S3 endpoint URL path must not contain dot segments"
+        not in json.dumps(parsed_invalid_endpoint_paths)
+    ):
+        raise AssertionError("encoded custom repository endpoint URL dot segment failure was missing")
+
+    invalid_endpoint_separator = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_custom_secrets(module),
+        variable_values={
+            module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/",
+            module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+            module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+            module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com/api%2fv1",
+            module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+        },
+        pages_payload=None,
+        release_payload=None,
+        npm_registry_check=False,
+    )
+    if invalid_endpoint_separator.ready:
+        raise AssertionError("encoded custom repository endpoint URL separator should fail")
+    parsed_invalid_endpoint_separator = assert_safe_report(invalid_endpoint_separator)
+    if (
+        "custom repository S3 endpoint URL path must not contain encoded separators"
+        not in json.dumps(parsed_invalid_endpoint_separator)
+    ):
+        raise AssertionError("encoded custom repository endpoint URL separator failure was missing")
+
 
 def run_safe_failure_tests(module) -> None:
     invalid = module.audit_tagged_release_readiness(
