@@ -513,14 +513,20 @@ fn write_pairing_invite_with_mode(
 }
 
 fn move_used_invite(paths: &StatePaths, invite: &PairingInvite) -> Result<(), TrustError> {
+    ensure_pairing_invite_directory(paths)?;
     ensure_pairing_used_directory(paths)?;
     let source = paths
         .pairing_invites_dir
         .join(format!("{}.pair", invite.code));
     let target = paths.pairing_used_dir.join(format!("{}.pair", invite.code));
-    ensure_path_available(&target, "reserve used pairing invitation")?;
-    fs::rename(&source, &target)
-        .map_err(|error| TrustError::io("move used pairing invitation", &source, error))
+    state::archive_regular_state_file_no_replace(
+        &source,
+        &target,
+        "inspect used pairing invitation before archive",
+        "reserve used pairing invitation",
+        "move used pairing invitation",
+    )
+    .map_err(TrustError::from)
 }
 
 fn ensure_used_invite_target_available(
@@ -2079,6 +2085,81 @@ mod tests {
             fs::read_to_string(outside.join("invites").join("123456.pair"))
                 .expect("outside invite reads"),
             test_pairing_invite_contents()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn used_pairing_invite_symlink_is_rejected_without_moving_target() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("pairing-used-source-symlink");
+        let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let paths = StatePaths::from_home(home.clone());
+        let pending_path = paths
+            .pairing_invites_dir
+            .join(format!("{}.pair", invite.code));
+        let used_path = paths.pairing_used_dir.join(format!("{}.pair", invite.code));
+        let outside = home.with_extension("outside-pairing-used-source");
+        fs::write(&outside, test_pairing_invite_contents()).expect("outside invite writes");
+        fs::remove_file(&pending_path).expect("pending invite removes");
+        symlink(&outside, &pending_path).expect("pending invite symlink creates");
+
+        let error = move_used_invite(&paths, &invite)
+            .expect_err("symlinked pending invite should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("inspect used pairing invitation before archive")
+        );
+        assert!(!used_path.exists());
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside invite reads"),
+            test_pairing_invite_contents()
+        );
+        assert!(
+            fs::symlink_metadata(&pending_path)
+                .expect("pending invite metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pairing_invites_directory_symlink_is_rejected_without_moving_invite() {
+        use std::os::unix::fs::symlink;
+
+        let home = test_home("pairing-invites-dir-move-symlink");
+        let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let paths = StatePaths::from_home(home.clone());
+        let outside = home.with_extension("outside-pairing-invites-dir-move");
+        let outside_invite = outside.join(format!("{}.pair", invite.code));
+        fs::remove_dir_all(&paths.pairing_invites_dir).expect("invites dir removes");
+        fs::create_dir_all(&outside).expect("outside invites dir creates");
+        fs::write(&outside_invite, test_pairing_invite_contents()).expect("outside invite writes");
+        symlink(&outside, &paths.pairing_invites_dir).expect("invites dir symlink creates");
+
+        let error = move_used_invite(&paths, &invite)
+            .expect_err("symlinked invites directory should fail closed");
+
+        assert!(error.to_string().contains("state directory"));
+        assert_eq!(
+            fs::read_to_string(&outside_invite).expect("outside invite reads"),
+            test_pairing_invite_contents()
+        );
+        assert!(
+            !paths
+                .pairing_used_dir
+                .join(format!("{}.pair", invite.code))
+                .exists()
+        );
+        assert!(
+            fs::symlink_metadata(&paths.pairing_invites_dir)
+                .expect("invites dir metadata")
+                .file_type()
+                .is_symlink()
         );
     }
 
