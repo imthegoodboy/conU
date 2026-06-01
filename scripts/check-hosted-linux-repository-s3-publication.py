@@ -78,6 +78,54 @@ def main() -> int:
         )
         assert_failure("base URL mismatch", mismatch, "repository.json baseUrl does not match")
 
+        encoded_base_result = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--base-url",
+            f"{BASE_URL}/%2e%2e%2fother",
+        )
+        assert_failure(
+            "encoded base URL",
+            encoded_base_result,
+            "repository base URL path must not contain encoded separators",
+        )
+
+        query_download_url = temp / "query-download-url-site"
+        shutil.copytree(site_dir, query_download_url)
+        repository_path = query_download_url / "repository.json"
+        repository = json.loads(repository_path.read_text(encoding="ascii"))
+        repository["downloads"]["hostedBundleUrl"] += "?token=value"
+        repository_path.write_text(
+            json.dumps(repository, indent=2, sort_keys=True) + "\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        query_download_result = run_publisher_raw(query_download_url, "--dry-run")
+        assert_failure(
+            "query download URL",
+            query_download_result,
+            "must not include params, query, or fragment",
+        )
+
+        escaped_dot_download_url = temp / "escaped-dot-download-url-site"
+        shutil.copytree(site_dir, escaped_dot_download_url)
+        repository_path = escaped_dot_download_url / "repository.json"
+        repository = json.loads(repository_path.read_text(encoding="ascii"))
+        repository["downloads"]["hostedBundleUrl"] = repository["downloads"][
+            "hostedBundleUrl"
+        ].replace("/downloads/", "/downloads/%2e%2e/")
+        repository_path.write_text(
+            json.dumps(repository, indent=2, sort_keys=True) + "\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        escaped_dot_result = run_publisher_raw(escaped_dot_download_url, "--dry-run")
+        assert_failure(
+            "escaped dot download URL",
+            escaped_dot_result,
+            "path must not contain dot segments",
+        )
+
         forbidden = temp / "forbidden-site"
         shutil.copytree(site_dir, forbidden)
         (forbidden / "README.txt").write_text("NPM_TOKEN\n", encoding="ascii")

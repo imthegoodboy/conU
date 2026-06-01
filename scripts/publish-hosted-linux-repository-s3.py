@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -338,6 +338,11 @@ def validate_base_url(raw: str) -> str:
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise PublicationError("repository base URL path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise PublicationError("repository base URL path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise PublicationError("repository base URL path must not contain encoded separators")
     normalized_path = "/" + "/".join(parts) if parts else ""
     return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
 
@@ -373,10 +378,74 @@ def validate_repository_json(
     for guard in ("payloadDisplayed", "tokenDisplayed", "keyMaterialDisplayed"):
         if repository.get(guard) is not False:
             raise PublicationError(f"repository.json expected {guard}=false")
-    for key in ("apt", "rpm", "downloads", "cachePolicy"):
-        if not isinstance(repository.get(key), dict):
-            raise PublicationError(f"repository.json {key} metadata is missing")
+    apt = require_object(repository, "apt", "repository.json")
+    rpm = require_object(repository, "rpm", "repository.json")
+    downloads = require_object(repository, "downloads", "repository.json")
+    cache_policy = require_object(repository, "cachePolicy", "repository.json")
+
+    expected_fields = {
+        "apt.repositoryUrl": (apt.get("repositoryUrl"), f"{base_url}/apt"),
+        "apt.keyUrl": (apt.get("keyUrl"), f"{base_url}/apt/{PUBLIC_KEY_NAME}"),
+        "rpm.repositoryUrl": (rpm.get("repositoryUrl"), f"{base_url}/rpm"),
+        "rpm.repoFileUrl": (rpm.get("repoFileUrl"), f"{base_url}/install/conu.repo"),
+        "rpm.keyUrl": (rpm.get("keyUrl"), f"{base_url}/rpm/{PUBLIC_KEY_NAME}"),
+        "cachePolicy.policyUrl": (cache_policy.get("policyUrl"), f"{base_url}/cache-policy.json"),
+        "cachePolicy.headersFileUrl": (cache_policy.get("headersFileUrl"), f"{base_url}/_headers"),
+    }
+    for name, (actual, expected) in expected_fields.items():
+        if actual != expected:
+            raise PublicationError(f"repository.json {name} does not match baseUrl")
+    if cache_policy.get("hostMustApply") is not True:
+        raise PublicationError("repository.json expected cachePolicy.hostMustApply=true")
+    for field in ("hostedBundleUrl", "hostedBundleChecksumUrl", "hostedBundleSignatureUrl"):
+        path = url_to_base_path(base_url, downloads.get(field), f"repository.json downloads.{field}")
+        if not path.startswith("/downloads/"):
+            raise PublicationError(f"repository.json downloads.{field} must point under baseUrl")
     return version
+
+
+def require_object(parent: dict[str, Any], key: str, label: str) -> dict[str, Any]:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        raise PublicationError(f"{label} {key} metadata is missing")
+    return value
+
+
+def url_to_base_path(base_url: str, value: str, label: str) -> str:
+    if not isinstance(value, str):
+        raise PublicationError(f"{label} must be a URL string")
+    parsed_base = urlparse(base_url)
+    parsed_value = urlparse(value)
+    if parsed_value.username or parsed_value.password:
+        raise PublicationError(f"{label} must not include credentials")
+    if parsed_value.params or parsed_value.query or parsed_value.fragment:
+        raise PublicationError(f"{label} must not include params, query, or fragment")
+    if (parsed_value.scheme, parsed_value.netloc) != (parsed_base.scheme, parsed_base.netloc):
+        raise PublicationError(f"{label} points outside repository origin")
+    base_path = parsed_base.path.rstrip("/")
+    value_path = parsed_value.path.rstrip("/")
+    path_parts = [part for part in parsed_value.path.split("/") if part]
+    if any(part in {".", ".."} for part in path_parts):
+        raise PublicationError(f"{label} path must not contain dot segments")
+    decoded_path_parts = [unquote(part) for part in path_parts]
+    if any(part in {".", ".."} for part in decoded_path_parts):
+        raise PublicationError(f"{label} path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_path_parts):
+        raise PublicationError(f"{label} path must not contain encoded separators")
+    forbidden = sorted({part.lower() for part in decoded_path_parts} & FORBIDDEN_SEGMENTS)
+    if forbidden:
+        raise PublicationError(
+            f"{label} path contains forbidden local-state segment: {', '.join(forbidden)}"
+        )
+    if base_path:
+        if value_path != base_path and not value_path.startswith(f"{base_path}/"):
+            raise PublicationError(f"{label} points outside repository path")
+        relative = value_path[len(base_path) :]
+    else:
+        relative = value_path
+    if not relative.startswith("/"):
+        relative = f"/{relative}"
+    return validate_cache_path(relative or "/", f"{label} path")
 
 
 def validate_cache_policy_json(

@@ -68,6 +68,12 @@ def main() -> int:
                 VERSION,
                 allow_loopback_http=False,
             )
+            run_checker_expect_failure(
+                f"{base_url}/%2e%2e%2fother",
+                "encoded separators",
+                "--expected-version",
+                VERSION,
+            )
 
         missing_cache_header = temp / "missing-cache-header"
         shutil.copytree(site_root, missing_cache_header)
@@ -161,6 +167,27 @@ def main() -> int:
             run_checker_expect_failure(
                 base_url,
                 "must not include params, query, or fragment",
+                "--expected-version",
+                VERSION,
+            )
+
+        escaped_dot_download_url = temp / "escaped-dot-download-url"
+        shutil.copytree(site_root, escaped_dot_download_url)
+        with serve_site(escaped_dot_download_url, mode="good") as base_url:
+            rewrite_base_url(escaped_dot_download_url, PLACEHOLDER_BASE_URL, base_url)
+            repository_path = escaped_dot_download_url / "repository.json"
+            repository = json.loads(repository_path.read_text(encoding="ascii"))
+            repository["downloads"]["hostedBundleUrl"] = repository["downloads"][
+                "hostedBundleUrl"
+            ].replace("/downloads/", "/downloads/%2e%2e/")
+            repository_path.write_text(
+                json.dumps(repository, indent=2, sort_keys=True) + "\n",
+                encoding="ascii",
+                newline="\n",
+            )
+            run_checker_expect_failure(
+                base_url,
+                "path must not contain dot segments",
                 "--expected-version",
                 VERSION,
             )
