@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
@@ -228,10 +228,16 @@ def validate_release_base_url(raw: str, repo: str, tag: str) -> str:
         raise SystemExit("release update policy base URL must not include credentials")
     if parsed.params or parsed.query or parsed.fragment:
         raise SystemExit("release update policy base URL must not include params, query, or fragment")
-    normalized_path = "/" + "/".join(part for part in parsed.path.split("/") if part)
-    if normalized_path == "/":
-        normalized_path = ""
-    return urlunparse(("https", parsed.netloc, normalized_path, "", "", ""))
+    parts = [part for part in parsed.path.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        raise SystemExit("release update policy base URL path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise SystemExit("release update policy base URL path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise SystemExit("release update policy base URL path must not contain encoded separators")
+    normalized_path = "/" + "/".join(parts) if parts else ""
+    return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
 
 
 def build_update_policy(
