@@ -236,6 +236,28 @@ def run_expected_job_permission_tests(module) -> None:
         raise AssertionError("extra expected permission issue was not reported")
 
 
+def run_unsafe_environment_file_write_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - run: echo build\n",
+            "      - run: |\n"
+            "          {\n"
+            "            echo \"CONU_MACOS_CODESIGN_IDENTITY=$MACOS_CODESIGN_IDENTITY\"\n"
+            "          } >> \"$GITHUB_ENV\"\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("unsafe GITHUB_ENV secret-derived echo should fail")
+    parsed = assert_safe_report(report)
+    rendered = json.dumps(parsed)
+    if "echoes secret-derived MACOS_CODESIGN_IDENTITY directly to GITHUB_ENV" not in rendered:
+        raise AssertionError("unsafe GITHUB_ENV write issue was not reported")
+    if not parsed["unsafeEnvironmentFileWrites"]:
+        raise AssertionError("unsafe GITHUB_ENV write finding was not listed")
+
+
 def main() -> int:
     module = load_module()
     run_ready_tests(module)
@@ -243,6 +265,7 @@ def main() -> int:
     run_forbidden_event_tests(module)
     run_unexpected_job_write_tests(module)
     run_expected_job_permission_tests(module)
+    run_unsafe_environment_file_write_tests(module)
     print("GitHub workflow permissions regression checks passed")
     return 0
 

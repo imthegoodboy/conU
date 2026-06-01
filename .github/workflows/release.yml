@@ -339,11 +339,22 @@ jobs:
             --password "$MACOS_NOTARY_PASSWORD" \
             --keychain "$keychain_path"
           rm -f "$cert_path"
-          {
-            echo "CONU_MACOS_CODESIGN_IDENTITY=$MACOS_CODESIGN_IDENTITY"
-            echo "CONU_MACOS_KEYCHAIN=$keychain_path"
-            echo "CONU_MACOS_NOTARY_KEYCHAIN_PROFILE=conu-notary-profile"
-          } >> "$GITHUB_ENV"
+
+          append_github_env() {
+            name="$1"
+            value="$2"
+            case "$value" in
+              *$'\n'*|*$'\r'*|*$'\t'*|*$'\177'*)
+                echo "::error::$name must be a single-line value before writing to GITHUB_ENV"
+                exit 1
+                ;;
+            esac
+            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_ENV"
+          }
+
+          append_github_env CONU_MACOS_CODESIGN_IDENTITY "$MACOS_CODESIGN_IDENTITY"
+          append_github_env CONU_MACOS_KEYCHAIN "$keychain_path"
+          append_github_env CONU_MACOS_NOTARY_KEYCHAIN_PROFILE "conu-notary-profile"
       - name: Build package
         env:
           CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}
