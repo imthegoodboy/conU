@@ -8,10 +8,28 @@ import stat
 import tempfile
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 def main() -> int:
     smoke = load_smoke_helpers()
+
+    with fixture_dir() as root:
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_action_failure(
+                lambda: smoke.validate_input_directory(root / "dist", "release dist directory"),
+                "must not be a symlink",
+                "release smoke symlink dist directory",
+            )
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-linked.zip"
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_action_failure(
+                lambda: smoke.read_manifest_target(archive),
+                "must not be a symlink",
+                "release smoke symlink archive",
+            )
 
     with fixture_dir() as root:
         bin_dir = root / "bin"
