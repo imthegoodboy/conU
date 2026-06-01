@@ -148,6 +148,16 @@ def run_env_file_tests(module) -> None:
         if set(values.values()) != {SENSITIVE_SENTINEL}:
             raise AssertionError("env file did not preserve configured values")
 
+        whitespace_env_file = temp_path / "whitespace.env"
+        whitespace_secret = f"  {SENSITIVE_SENTINEL}  "
+        secure_write_text(whitespace_env_file, f"NPM_TOKEN={whitespace_secret}\n")
+        whitespace_values = module.load_env_file_values(
+            whitespace_env_file,
+            module.REQUIRED_RELEASE_SECRETS,
+        )
+        if whitespace_values["NPM_TOKEN"] != whitespace_secret:
+            raise AssertionError("env file parser trimmed secret value whitespace")
+
         directory_env_file = temp_path / "directory.env"
         directory_env_file.mkdir()
         assert_raises(

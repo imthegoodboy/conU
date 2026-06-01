@@ -74,11 +74,11 @@ def load_env_file_values(path: Path, names: tuple[str, ...]) -> dict[str, str]:
 
     lines = env_text.splitlines()
     for line_number, raw_line in enumerate(lines, start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
             continue
+        line = raw_line.lstrip()
         if line.startswith("export "):
-            line = line[len("export ") :].strip()
+            line = line[len("export ") :].lstrip()
         if "=" not in line:
             raise ValueError(f"env file line {line_number} is not KEY=VALUE")
         key, value = line.split("=", 1)
@@ -87,7 +87,6 @@ def load_env_file_values(path: Path, names: tuple[str, ...]) -> dict[str, str]:
             raise ValueError(f"env file line {line_number} uses an unsupported key")
         if key in values:
             raise ValueError(f"env file line {line_number} duplicates key: {key}")
-        value = value.strip()
         if (
             len(value) >= 2
             and value[0] == value[-1]
