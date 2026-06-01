@@ -2990,6 +2990,7 @@ fn required(
 }
 
 fn write_new_secret_file(path: &Path, contents: &str) -> Result<bool, SecurityError> {
+    ensure_secret_contents_within_limit(path, contents.len())?;
     match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(mut file) => {
             set_sensitive_file_permissions(&file, path)?;
@@ -3006,24 +3007,175 @@ fn write_new_secret_file(path: &Path, contents: &str) -> Result<bool, SecurityEr
 }
 
 fn replace_secret_file(path: &Path, contents: &str) -> Result<(), SecurityError> {
-    ensure_replaceable_secret_file(path)?;
-    let mut file = OpenOptions::new()
+    ensure_secret_contents_within_limit(path, contents.len())?;
+    let metadata = regular_secret_file_metadata(path, "inspect replacement security file")?;
+    let file = OpenOptions::new()
         .write(true)
         .open(path)
         .map_err(|error| SecurityError::io("open replacement security file", path, error))?;
     set_sensitive_file_permissions(&file, path)?;
-    file.set_len(0)
-        .map_err(|error| SecurityError::io("truncate replacement security file", path, error))?;
-    file.write_all(contents.as_bytes())
+    validate_opened_replaceable_secret_file(path, &metadata, &file)?;
+    drop(file);
+
+    let temp_path = write_replacement_secret_temp_file(path, contents)?;
+    let result = replace_secret_file_with_temp(path, &temp_path, &metadata);
+    if result.is_err() {
+        remove_temp_secret_file(&temp_path);
+    }
+    result
+}
+
+fn write_replacement_secret_temp_file(
+    path: &Path,
+    contents: &str,
+) -> Result<PathBuf, SecurityError> {
+    let parent = secret_file_parent(path);
+    if !security_directory_exists(parent)? {
+        return Err(SecurityError::io(
+            "write replacement security file",
+            parent,
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "security directory path is missing",
+            ),
+        ));
+    }
+
+    for attempt in 0..16 {
+        let temp_path = replacement_secret_temp_path(path, attempt);
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(SecurityError::io(
+                    "write replacement security file",
+                    &temp_path,
+                    error,
+                ));
+            }
+        };
+
+        if let Err(error) = set_sensitive_file_permissions(&file, &temp_path) {
+            drop(file);
+            remove_temp_secret_file(&temp_path);
+            return Err(error);
+        }
+
+        let write_result = file
+            .write_all(contents.as_bytes())
+            .and_then(|_| file.sync_all());
+        drop(file);
+
+        if let Err(error) = write_result {
+            remove_temp_secret_file(&temp_path);
+            return Err(SecurityError::io(
+                "write replacement security file",
+                &temp_path,
+                error,
+            ));
+        }
+
+        return Ok(temp_path);
+    }
+
+    Err(SecurityError::io(
+        "write replacement security file",
+        path,
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not reserve a unique security replacement file",
+        ),
+    ))
+}
+
+fn replace_secret_file_with_temp(
+    path: &Path,
+    temp_path: &Path,
+    expected_metadata: &fs::Metadata,
+) -> Result<(), SecurityError> {
+    let current_metadata = regular_secret_file_metadata(path, "inspect replacement security file")?;
+    if !secret_file_write_target_matches(expected_metadata, &current_metadata) {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "security file path changed before replacement".to_string(),
+        });
+    }
+
+    fs::rename(temp_path, path)
         .map_err(|error| SecurityError::io("write replacement security file", path, error))
+}
+
+fn validate_opened_replaceable_secret_file(
+    path: &Path,
+    expected_metadata: &fs::Metadata,
+    file: &fs::File,
+) -> Result<(), SecurityError> {
+    let path_metadata = regular_secret_file_metadata(path, "inspect replacement security file")?;
+    if !secret_file_metadata_matches(expected_metadata, &path_metadata) {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "security file path changed while opening".to_string(),
+        });
+    }
+
+    let opened_metadata = file
+        .metadata()
+        .map_err(|error| SecurityError::io("inspect opened security file", path, error))?;
+    if !opened_metadata.is_file()
+        || opened_metadata.len() > MAX_SECURITY_KEY_FILE_BYTES
+        || !secret_file_metadata_matches(expected_metadata, &opened_metadata)
+    {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: "opened security file does not match inspected path".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn ensure_secret_contents_within_limit(
+    path: &Path,
+    contents_len: usize,
+) -> Result<(), SecurityError> {
+    if contents_len as u64 > MAX_SECURITY_KEY_FILE_BYTES {
+        return Err(SecurityError::InvalidKey {
+            path: path.to_path_buf(),
+            reason: format!("security key file exceeds {MAX_SECURITY_KEY_FILE_BYTES} bytes"),
+        });
+    }
+    Ok(())
+}
+
+fn secret_file_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn replacement_secret_temp_path(path: &Path, attempt: u8) -> PathBuf {
+    let parent = secret_file_parent(path);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("security");
+    parent.join(format!(
+        ".{file_name}.tmp-{}-{}-{attempt}",
+        std::process::id(),
+        current_unix_nanos()
+    ))
+}
+
+fn remove_temp_secret_file(path: &Path) {
+    let _ = fs::remove_file(path);
 }
 
 fn ensure_existing_secret_file(path: &Path) -> Result<(), SecurityError> {
     ensure_regular_secret_file(path, "inspect existing security file")
-}
-
-fn ensure_replaceable_secret_file(path: &Path) -> Result<(), SecurityError> {
-    ensure_regular_secret_file(path, "inspect replacement security file")
 }
 
 fn remove_existing_secret_file(
@@ -3107,8 +3259,17 @@ fn secret_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata)
     expected.len() == current.len() && secret_file_identity_matches(expected, current)
 }
 
+fn secret_file_write_target_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    secret_file_stable_identity_matches(expected, current)
+}
+
 #[cfg(unix)]
 fn secret_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    secret_file_stable_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn secret_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
 
     expected.dev() == current.dev() && expected.ino() == current.ino()
@@ -3118,15 +3279,27 @@ fn secret_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata)
 fn secret_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
-    expected.file_attributes() == current.file_attributes()
-        && expected.creation_time() == current.creation_time()
+    secret_file_stable_identity_matches(expected, current)
         && expected.last_write_time() == current.last_write_time()
         && expected.file_size() == current.file_size()
+}
+
+#[cfg(windows)]
+fn secret_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
 }
 
 #[cfg(not(any(unix, windows)))]
 fn secret_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     expected.modified().ok() == current.modified().ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn secret_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    secret_file_identity_matches(expected, current)
 }
 
 fn secret_file_exists(path: &Path) -> Result<bool, SecurityError> {
@@ -3318,7 +3491,6 @@ fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
-#[cfg(test)]
 fn current_unix_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3435,6 +3607,70 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&target).expect("target reads"),
             "existing secret"
+        );
+    }
+
+    #[test]
+    fn replacement_secret_file_replaces_existing_contents() {
+        let home = test_home("replace-secret-atomic");
+        fs::create_dir_all(&home).expect("home directory created");
+        let path = home.join("secret.key");
+        fs::write(&path, "version = \"1\"\nkey_id = \"old\"\n").expect("original writes");
+
+        replace_secret_file(&path, "version = \"1\"\nkey_id = \"new\"\n")
+            .expect("secret replacement succeeds");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("replacement reads"),
+            "version = \"1\"\nkey_id = \"new\"\n"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("replacement metadata reads")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_secret_file_rejects_unwritable_parent_without_truncating_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = test_home("replace-secret-unwritable-parent");
+        fs::create_dir_all(&home).expect("home directory created");
+        let path = home.join("secret.key");
+        let original = "version = \"1\"\nkey_id = \"old\"\n";
+        fs::write(&path, original).expect("original writes");
+        let original_permissions = fs::metadata(&home)
+            .expect("home metadata reads")
+            .permissions();
+        let mut locked_permissions = original_permissions.clone();
+        locked_permissions.set_mode(0o500);
+        fs::set_permissions(&home, locked_permissions).expect("home permissions lock");
+
+        let result = replace_secret_file(&path, "version = \"1\"\nkey_id = \"new\"\n");
+
+        fs::set_permissions(&home, original_permissions).expect("home permissions restore");
+        let error = result.expect_err("unwritable parent should fail before replacement");
+
+        assert!(
+            error
+                .to_string()
+                .contains("write replacement security file")
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("original still reads"),
+            original,
+            "failed staged rewrite must leave existing security file unchanged"
         );
     }
 
