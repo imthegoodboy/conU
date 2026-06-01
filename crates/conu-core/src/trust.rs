@@ -744,25 +744,167 @@ fn write_trust_file(
     open_action: &'static str,
     write_action: &'static str,
 ) -> Result<(), TrustError> {
-    let mut file = if let Some(metadata) = regular_trust_file_metadata(path, open_action)? {
-        let file = OpenOptions::new()
-            .write(true)
-            .open(path)
-            .map_err(|error| TrustError::io(open_action, path, error))?;
-        validate_opened_regular_trust_file(path, open_action, &metadata, &file)?;
-        file
+    ensure_trust_file_contents_within_limit(path, contents.len(), write_action)?;
+
+    if regular_trust_file_metadata(path, open_action)?.is_some() {
+        replace_existing_trust_file(path, contents, open_action, write_action)
     } else {
-        OpenOptions::new()
+        let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)
-            .map_err(|error| TrustError::io(create_action, path, error))?
-    };
+            .map_err(|error| TrustError::io(create_action, path, error))?;
 
-    file.set_len(0)
+        file.write_all(contents.as_bytes())
+            .map_err(|error| TrustError::io(write_action, path, error))
+    }
+}
+
+fn replace_existing_trust_file(
+    path: &Path,
+    contents: &str,
+    open_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), TrustError> {
+    let Some(metadata) = regular_trust_file_metadata(path, open_action)? else {
+        return Err(TrustError::io(
+            open_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "trust file path is missing"),
+        ));
+    };
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
         .map_err(|error| TrustError::io(open_action, path, error))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| TrustError::io(write_action, path, error))
+    validate_opened_regular_trust_file(path, open_action, &metadata, &file)?;
+    drop(file);
+
+    let temp_path = write_replacement_trust_temp_file(path, contents, write_action)?;
+    let result =
+        replace_trust_file_with_temp(path, &temp_path, &metadata, open_action, write_action);
+    if result.is_err() {
+        remove_temp_trust_file(&temp_path);
+    }
+    result
+}
+
+fn write_replacement_trust_temp_file(
+    path: &Path,
+    contents: &str,
+    write_action: &'static str,
+) -> Result<PathBuf, TrustError> {
+    let parent = trust_file_parent(path);
+    if !state::state_directory_exists(parent, "inspect trust directory")? {
+        return Err(TrustError::io(
+            write_action,
+            parent,
+            io::Error::new(io::ErrorKind::NotFound, "trust directory path is missing"),
+        ));
+    }
+
+    for attempt in 0..16 {
+        let temp_path = replacement_trust_temp_path(path, attempt);
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(TrustError::io(write_action, &temp_path, error)),
+        };
+
+        let write_result = file
+            .write_all(contents.as_bytes())
+            .and_then(|_| file.sync_all());
+        drop(file);
+
+        if let Err(error) = write_result {
+            remove_temp_trust_file(&temp_path);
+            return Err(TrustError::io(write_action, &temp_path, error));
+        }
+
+        return Ok(temp_path);
+    }
+
+    Err(TrustError::io(
+        write_action,
+        path,
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not reserve a unique trust replacement file",
+        ),
+    ))
+}
+
+fn replace_trust_file_with_temp(
+    path: &Path,
+    temp_path: &Path,
+    expected_metadata: &fs::Metadata,
+    open_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), TrustError> {
+    let Some(current_metadata) = regular_trust_file_metadata(path, open_action)? else {
+        return Err(TrustError::io(
+            open_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "trust file path is missing"),
+        ));
+    };
+    if !trust_file_write_target_matches(expected_metadata, &current_metadata) {
+        return Err(TrustError::io(
+            open_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trust file path changed before replacement",
+            ),
+        ));
+    }
+
+    fs::rename(temp_path, path).map_err(|error| TrustError::io(write_action, path, error))
+}
+
+fn ensure_trust_file_contents_within_limit(
+    path: &Path,
+    contents_len: usize,
+    action: &'static str,
+) -> Result<(), TrustError> {
+    if contents_len as u64 > MAX_TRUST_FILE_BYTES {
+        return Err(TrustError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("trust file exceeds {MAX_TRUST_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn trust_file_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn replacement_trust_temp_path(path: &Path, attempt: u8) -> PathBuf {
+    let parent = trust_file_parent(path);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("trust");
+    parent.join(format!(
+        ".{file_name}.tmp-{}-{}-{attempt}",
+        process::id(),
+        current_unix_nanos()
+    ))
+}
+
+fn remove_temp_trust_file(path: &Path) {
+    let _ = fs::remove_file(path);
 }
 
 fn validate_opened_regular_trust_file(
@@ -847,8 +989,17 @@ fn trust_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) 
     expected.len() == current.len() && trust_file_identity_matches(expected, current)
 }
 
+fn trust_file_write_target_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    trust_file_stable_identity_matches(expected, current)
+}
+
 #[cfg(unix)]
 fn trust_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    trust_file_stable_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn trust_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
 
     expected.dev() == current.dev() && expected.ino() == current.ino()
@@ -858,15 +1009,27 @@ fn trust_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) 
 fn trust_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
-    expected.file_attributes() == current.file_attributes()
-        && expected.creation_time() == current.creation_time()
+    trust_file_stable_identity_matches(expected, current)
         && expected.last_write_time() == current.last_write_time()
         && expected.file_size() == current.file_size()
+}
+
+#[cfg(windows)]
+fn trust_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
 }
 
 #[cfg(not(any(unix, windows)))]
 fn trust_file_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
     expected.modified().ok() == current.modified().ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn trust_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    trust_file_identity_matches(expected, current)
 }
 
 fn parse_trust_store(contents: &str) -> Result<Vec<TrustedPeer>, TrustError> {
@@ -1500,6 +1663,64 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&replacement).expect("replacement reads"),
             "version = \"1\"\nchanged = true\n"
+        );
+    }
+
+    #[test]
+    fn write_trust_file_replaces_existing_contents() {
+        let home = test_home("trust-atomic-rewrite");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("trust.toml");
+        fs::write(&path, "version = \"1\"\n").expect("trust writes");
+
+        write_trust_file(
+            &path,
+            "version = \"1\"\nupdated = true\n",
+            "create trust store",
+            "open trust store",
+            "write trust store",
+        )
+        .expect("trust rewrites");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("trust reads"),
+            "version = \"1\"\nupdated = true\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_trust_file_rejects_unwritable_parent_without_truncating_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = test_home("trust-atomic-rewrite-unwritable-parent");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("trust.toml");
+        let original = test_trust_store_contents();
+        fs::write(&path, original).expect("trust writes");
+        let original_permissions = fs::metadata(&home)
+            .expect("home metadata reads")
+            .permissions();
+        let mut locked_permissions = original_permissions.clone();
+        locked_permissions.set_mode(0o500);
+        fs::set_permissions(&home, locked_permissions).expect("home permissions lock");
+
+        let result = write_trust_file(
+            &path,
+            "version = \"1\"\nchanged = true\n",
+            "create unwritable trust store",
+            "open unwritable trust store",
+            "write unwritable trust store",
+        );
+
+        fs::set_permissions(&home, original_permissions).expect("home permissions restore");
+        let error = result.expect_err("unwritable parent should fail before replacement");
+
+        assert!(error.to_string().contains("write unwritable trust store"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("trust reads"),
+            original,
+            "failed staged rewrite must leave existing trust store unchanged"
         );
     }
 
