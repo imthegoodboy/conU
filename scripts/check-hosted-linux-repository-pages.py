@@ -271,6 +271,80 @@ def main() -> int:
             "absolute https URL",
         )
 
+        encoded_base = temp / "encoded-base"
+        shutil.copytree(dist, encoded_base)
+        repository = read_site_json(encoded_base / SITE_BUNDLE)
+        cache_policy = read_site_json_member(encoded_base / SITE_BUNDLE, "cache-policy.json")
+        encoded_url = f"{BASE_URL}/%2e%2e%2fother"
+        rewrite_repository_base_url(repository, encoded_url)
+        cache_policy["baseUrl"] = encoded_url
+        rewrite_site_zip(
+            encoded_base / SITE_BUNDLE,
+            {
+                "repository.json": json.dumps(repository, indent=2, sort_keys=True).encode("ascii")
+                + b"\n",
+                "cache-policy.json": json.dumps(cache_policy, indent=2, sort_keys=True).encode("ascii")
+                + b"\n",
+            },
+        )
+        sign_site(encoded_base / SITE_BUNDLE)
+        expect_failure(
+            "encoded repository base URL",
+            encoded_base / SITE_BUNDLE,
+            temp / "encoded-base-pages",
+            "baseUrl path must not contain encoded separators",
+        )
+
+        off_origin_key = temp / "off-origin-key"
+        shutil.copytree(dist, off_origin_key)
+        repository = read_site_json(off_origin_key / SITE_BUNDLE)
+        repository["apt"]["keyUrl"] = "https://evil.example/conu-linux-gpg-key.asc"
+        rewrite_site_zip(
+            off_origin_key / SITE_BUNDLE,
+            {"repository.json": json.dumps(repository, indent=2, sort_keys=True).encode("ascii") + b"\n"},
+        )
+        sign_site(off_origin_key / SITE_BUNDLE)
+        expect_failure(
+            "off-origin APT key URL",
+            off_origin_key / SITE_BUNDLE,
+            temp / "off-origin-key-pages",
+            "repository.json apt.keyUrl points outside repository origin",
+        )
+
+        query_download = temp / "query-download"
+        shutil.copytree(dist, query_download)
+        repository = read_site_json(query_download / SITE_BUNDLE)
+        repository["downloads"]["hostedBundleUrl"] += "?token=value"
+        rewrite_site_zip(
+            query_download / SITE_BUNDLE,
+            {"repository.json": json.dumps(repository, indent=2, sort_keys=True).encode("ascii") + b"\n"},
+        )
+        sign_site(query_download / SITE_BUNDLE)
+        expect_failure(
+            "query download URL",
+            query_download / SITE_BUNDLE,
+            temp / "query-download-pages",
+            "repository.json downloads.hostedBundleUrl must not include params, query, or fragment",
+        )
+
+        escaped_download = temp / "escaped-download"
+        shutil.copytree(dist, escaped_download)
+        repository = read_site_json(escaped_download / SITE_BUNDLE)
+        repository["downloads"]["hostedBundleUrl"] = repository["downloads"][
+            "hostedBundleUrl"
+        ].replace("/downloads/", "/downloads/%2e%2e/")
+        rewrite_site_zip(
+            escaped_download / SITE_BUNDLE,
+            {"repository.json": json.dumps(repository, indent=2, sort_keys=True).encode("ascii") + b"\n"},
+        )
+        sign_site(escaped_download / SITE_BUNDLE)
+        expect_failure(
+            "escaped download URL",
+            escaped_download / SITE_BUNDLE,
+            temp / "escaped-download-pages",
+            "repository.json downloads.hostedBundleUrl path must not contain dot segments",
+        )
+
         non_empty_output = temp / "non-empty"
         non_empty_output.mkdir()
         (non_empty_output / "existing.txt").write_text("existing\n", encoding="ascii")
@@ -490,6 +564,27 @@ def read_site_json(path: Path) -> dict:
 def read_site_json_member(path: Path, name: str) -> dict:
     with zipfile.ZipFile(path) as archive:
         return json.loads(archive.read(name).decode("ascii"))
+
+
+def rewrite_repository_base_url(repository: dict, base_url: str) -> None:
+    repository["baseUrl"] = base_url
+    repository["apt"]["sourceList"] = (
+        f"deb [signed-by=/usr/share/keyrings/{PUBLIC_KEY}] {base_url}/apt ./"
+    )
+    repository["apt"]["repositoryUrl"] = f"{base_url}/apt"
+    repository["apt"]["keyUrl"] = f"{base_url}/apt/{PUBLIC_KEY}"
+    repository["rpm"]["repositoryUrl"] = f"{base_url}/rpm"
+    repository["rpm"]["repoFileUrl"] = f"{base_url}/install/conu.repo"
+    repository["rpm"]["keyUrl"] = f"{base_url}/rpm/{PUBLIC_KEY}"
+    repository["downloads"]["hostedBundleUrl"] = f"{base_url}/downloads/{HOSTED_BUNDLE}"
+    repository["downloads"]["hostedBundleChecksumUrl"] = (
+        f"{base_url}/downloads/{HOSTED_BUNDLE}.sha256"
+    )
+    repository["downloads"]["hostedBundleSignatureUrl"] = (
+        f"{base_url}/downloads/{HOSTED_BUNDLE}.asc"
+    )
+    repository["cachePolicy"]["policyUrl"] = f"{base_url}/cache-policy.json"
+    repository["cachePolicy"]["headersFileUrl"] = f"{base_url}/_headers"
 
 
 def sign_site(path: Path) -> None:

@@ -14,7 +14,7 @@ import sys
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
@@ -184,14 +184,22 @@ def validate_base_url(raw: str) -> str:
             "CONU_LINUX_REPOSITORY_BASE_URL"
         )
     parsed = urlparse(raw)
+    if parsed.username or parsed.password:
+        raise SystemExit("hosted Linux repository base URL must not include credentials")
     if parsed.scheme != "https" or not parsed.netloc:
         raise SystemExit("hosted Linux repository base URL must be an absolute https URL")
     if parsed.params or parsed.query or parsed.fragment:
         raise SystemExit("hosted Linux repository base URL must not include params, query, or fragment")
-    normalized_path = "/" + "/".join(part for part in parsed.path.split("/") if part)
-    if normalized_path == "/":
-        normalized_path = ""
-    return urlunparse(("https", parsed.netloc, normalized_path, "", "", ""))
+    parts = [part for part in parsed.path.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        raise SystemExit("hosted Linux repository base URL path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise SystemExit("hosted Linux repository base URL path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise SystemExit("hosted Linux repository base URL path must not contain encoded separators")
+    normalized_path = "/" + "/".join(parts) if parts else ""
+    return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
 
 
 def hosted_repository_bundle_filename(version: str) -> str:

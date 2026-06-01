@@ -14,7 +14,7 @@ import sys
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
@@ -445,9 +445,7 @@ def validate_repository_json(version: str, data: bytes) -> str:
     base_url = repository.get("baseUrl")
     if not isinstance(base_url, str):
         raise SystemExit("repository.json baseUrl is missing")
-    parsed = urlparse(base_url)
-    if parsed.scheme != "https" or not parsed.netloc or parsed.params or parsed.query or parsed.fragment:
-        raise SystemExit("repository.json baseUrl must be an absolute https URL without params, query, or fragment")
+    base_url = validate_repository_base_url(base_url)
     expected = {
         "payloadDisplayed": False,
         "tokenDisplayed": False,
@@ -458,22 +456,129 @@ def validate_repository_json(version: str, data: bytes) -> str:
             raise SystemExit(f"repository.json expected {key}=false")
     apt = repository.get("apt")
     rpm = repository.get("rpm")
-    if not isinstance(apt, dict) or not isinstance(rpm, dict):
-        raise SystemExit("repository.json apt/rpm metadata is missing")
-    if apt.get("repositoryUrl") != f"{base_url}/apt":
-        raise SystemExit("repository.json APT repository URL does not match baseUrl")
-    if rpm.get("repositoryUrl") != f"{base_url}/rpm":
-        raise SystemExit("repository.json RPM repository URL does not match baseUrl")
+    downloads = repository.get("downloads")
+    if not isinstance(apt, dict) or not isinstance(rpm, dict) or not isinstance(downloads, dict):
+        raise SystemExit("repository.json apt/rpm/download metadata is missing")
+    hosted_bundle = f"conu-{version}-hosted-linux-repositories.zip"
+    expected_paths = {
+        "repository.json apt.repositoryUrl": (apt.get("repositoryUrl"), "/apt"),
+        "repository.json apt.keyUrl": (apt.get("keyUrl"), f"/apt/{PUBLIC_KEY_NAME}"),
+        "repository.json rpm.repositoryUrl": (rpm.get("repositoryUrl"), "/rpm"),
+        "repository.json rpm.repoFileUrl": (rpm.get("repoFileUrl"), "/install/conu.repo"),
+        "repository.json rpm.keyUrl": (rpm.get("keyUrl"), f"/rpm/{PUBLIC_KEY_NAME}"),
+        "repository.json downloads.hostedBundleUrl": (
+            downloads.get("hostedBundleUrl"),
+            f"/downloads/{hosted_bundle}",
+        ),
+        "repository.json downloads.hostedBundleChecksumUrl": (
+            downloads.get("hostedBundleChecksumUrl"),
+            f"/downloads/{hosted_bundle}.sha256",
+        ),
+        "repository.json downloads.hostedBundleSignatureUrl": (
+            downloads.get("hostedBundleSignatureUrl"),
+            f"/downloads/{hosted_bundle}.asc",
+        ),
+    }
+    for label, (actual, expected_path) in expected_paths.items():
+        if url_to_base_path(base_url, actual, label) != expected_path:
+            raise SystemExit(f"{label} does not match baseUrl")
+    expected_source = f"deb [signed-by=/usr/share/keyrings/{PUBLIC_KEY_NAME}] {base_url}/apt ./"
+    if apt.get("sourceList") != expected_source:
+        raise SystemExit("repository.json APT source list does not match baseUrl")
     cache_policy = repository.get("cachePolicy")
     if not isinstance(cache_policy, dict):
         raise SystemExit("repository.json cachePolicy metadata is missing")
-    if cache_policy.get("policyUrl") != f"{base_url}/cache-policy.json":
+    if url_to_base_path(
+        base_url,
+        cache_policy.get("policyUrl"),
+        "repository.json cachePolicy.policyUrl",
+    ) != "/cache-policy.json":
         raise SystemExit("repository.json cache policy URL does not match baseUrl")
-    if cache_policy.get("headersFileUrl") != f"{base_url}/_headers":
+    if url_to_base_path(
+        base_url,
+        cache_policy.get("headersFileUrl"),
+        "repository.json cachePolicy.headersFileUrl",
+    ) != "/_headers":
         raise SystemExit("repository.json cache headers URL does not match baseUrl")
     if cache_policy.get("hostMustApply") is not True:
         raise SystemExit("repository.json expected cachePolicy.hostMustApply=true")
     return base_url
+
+
+def validate_repository_base_url(raw: str) -> str:
+    parsed = urlparse(raw.strip())
+    if parsed.username or parsed.password:
+        raise SystemExit("repository.json baseUrl must not include credentials")
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise SystemExit("repository.json baseUrl must be an absolute https URL")
+    if parsed.params or parsed.query or parsed.fragment:
+        raise SystemExit("repository.json baseUrl must not include params, query, or fragment")
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if any(part in {".", ".."} for part in path_parts):
+        raise SystemExit("repository.json baseUrl path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in path_parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise SystemExit("repository.json baseUrl path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise SystemExit("repository.json baseUrl path must not contain encoded separators")
+    normalized_path = "/" + "/".join(path_parts) if path_parts else ""
+    return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
+
+
+def url_to_base_path(base_url: str, value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise SystemExit(f"{label} must be a URL string")
+    parsed_base = urlparse(base_url)
+    parsed_value = urlparse(value)
+    if parsed_value.username or parsed_value.password:
+        raise SystemExit(f"{label} must not include credentials")
+    if parsed_value.params or parsed_value.query or parsed_value.fragment:
+        raise SystemExit(f"{label} must not include params, query, or fragment")
+    if (parsed_value.scheme, parsed_value.netloc.lower()) != (
+        parsed_base.scheme,
+        parsed_base.netloc.lower(),
+    ):
+        raise SystemExit(f"{label} points outside repository origin")
+    base_path = parsed_base.path.rstrip("/")
+    value_path = parsed_value.path.rstrip("/")
+    path_parts = [part for part in parsed_value.path.split("/") if part]
+    if any(part in {".", ".."} for part in path_parts):
+        raise SystemExit(f"{label} path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in path_parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise SystemExit(f"{label} path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise SystemExit(f"{label} path must not contain encoded separators")
+    forbidden = sorted({part.lower() for part in decoded_parts} & FORBIDDEN_SEGMENTS)
+    if forbidden:
+        raise SystemExit(
+            f"{label} path contains forbidden local-state segment: {', '.join(forbidden)}"
+        )
+    if base_path:
+        if value_path != base_path and not value_path.startswith(f"{base_path}/"):
+            raise SystemExit(f"{label} points outside repository path")
+        relative = value_path[len(base_path) :]
+    else:
+        relative = value_path
+    if not relative.startswith("/"):
+        relative = f"/{relative}"
+    return validate_repository_path(relative or "/", f"{label} path")
+
+
+def validate_repository_path(path: str, label: str) -> str:
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise SystemExit(f"{label} must be an absolute path")
+    if "\\" in path:
+        raise SystemExit(f"{label} must not contain backslashes")
+    if "?" in path or "#" in path:
+        raise SystemExit(f"{label} must not contain query or fragment")
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        raise SystemExit(f"{label} must not contain empty or dot segments")
+    forbidden = sorted({part.lower() for part in parts[1:]} & FORBIDDEN_SEGMENTS)
+    if forbidden:
+        raise SystemExit(f"{label} contains forbidden local-state segment: {', '.join(forbidden)}")
+    return path
 
 
 def validate_cache_policy_json(version: str, base_url: str, data: bytes) -> None:
