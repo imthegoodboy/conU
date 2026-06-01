@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SITE_CHECKER = ROOT / "scripts" / "check-hosted-linux-repository-site.py"
 PAGES_PREPARER = ROOT / "scripts" / "prepare-hosted-linux-repository-pages.py"
 PUBLISHER = ROOT / "scripts" / "publish-hosted-linux-repository-s3.py"
+PREFLIGHT = ROOT / "scripts" / "check-custom-linux-repository-publication-preflight.py"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 VERSION = "0.1.0"
@@ -24,6 +25,7 @@ BUCKET = "conu-packages-fixture"
 PREFIX = "public/conu"
 HOSTED_BUNDLE = f"conu-{VERSION}-hosted-linux-repositories.zip"
 SITE_BUNDLE = f"conu-{VERSION}-hosted-linux-repository-site.zip"
+SENSITIVE_SENTINEL = "do-not-print-this-secret-value"
 
 
 def main() -> int:
@@ -309,6 +311,7 @@ def main() -> int:
             symlink_entry_result = run_publisher_raw(symlink_entry, "--dry-run")
             assert_failure("symlinked site entry", symlink_entry_result, "site entry must not be a symlink")
 
+    assert_preflight()
     assert_workflow_wiring()
     print("Hosted Linux repository S3 publication regression checks passed")
     return 0
@@ -504,6 +507,105 @@ def assert_failure(description: str, result: subprocess.CompletedProcess[str], e
         raise AssertionError(f"{description} failed with {result.stdout!r}, expected {expected!r}")
 
 
+def assert_preflight() -> None:
+    valid = run_preflight_raw(preflight_env())
+    if valid.returncode != 0:
+        raise AssertionError(f"custom repository preflight failed unexpectedly: {valid.stdout!r}")
+    valid_report = json.loads(valid.stdout)
+    assert_safe_preflight_report(valid_report)
+    if not valid_report["ready"]:
+        raise AssertionError(f"custom repository preflight should be ready: {valid_report!r}")
+
+    missing_env = preflight_env()
+    missing_env.pop("CONU_LINUX_REPOSITORY_S3_BUCKET")
+    missing_env["CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY"] = "   "
+    missing = run_preflight_raw(missing_env)
+    if missing.returncode == 0:
+        raise AssertionError("missing custom repository preflight config unexpectedly passed")
+    missing_report = json.loads(missing.stdout)
+    assert_safe_preflight_report(missing_report)
+    for name in (
+        "CONU_LINUX_REPOSITORY_S3_BUCKET",
+        "CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY",
+    ):
+        if name not in missing_report["missing"]:
+            raise AssertionError(f"custom repository preflight did not report missing {name}")
+
+    invalid_env = preflight_env()
+    invalid_env["CONU_LINUX_REPOSITORY_BASE_URL"] = (
+        f"https://user:{SENSITIVE_SENTINEL}@packages.example.com/conu"
+    )
+    invalid_env["CONU_LINUX_REPOSITORY_S3_PREFIX"] = "bad//prefix"
+    invalid_env["CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL"] = (
+        f"https://user:{SENSITIVE_SENTINEL}@s3.example.com"
+    )
+    invalid_env["CONU_LINUX_REPOSITORY_AWS_REGION"] = "us east 1"
+    invalid_env["CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID"] = (
+        f"access-key\n{SENSITIVE_SENTINEL}"
+    )
+    invalid = run_preflight_raw(invalid_env)
+    if invalid.returncode == 0:
+        raise AssertionError("invalid custom repository preflight config unexpectedly passed")
+    invalid_report = json.loads(invalid.stdout)
+    assert_safe_preflight_report(invalid_report)
+    rendered = json.dumps(invalid_report)
+    for expected in (
+        "custom repository base URL must not include credentials",
+        "custom repository S3 prefix must not contain empty path segments",
+        "custom repository S3 endpoint URL must not include credentials",
+        "custom repository AWS region must not contain whitespace",
+        "single-line secret value",
+    ):
+        if expected not in rendered:
+            raise AssertionError(f"custom repository preflight missed {expected!r}")
+
+
+def preflight_env() -> dict[str, str]:
+    return {
+        "CONU_LINUX_REPOSITORY_BASE_URL": BASE_URL,
+        "CONU_LINUX_REPOSITORY_S3_BUCKET": BUCKET,
+        "CONU_LINUX_REPOSITORY_S3_PREFIX": PREFIX,
+        "CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL": "https://s3.example.com",
+        "CONU_LINUX_REPOSITORY_AWS_REGION": "us-east-1",
+        "CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID": "AKIAEXAMPLEKEY",
+        "CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY": "secret/access+key=example",
+        "CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN": "optional-session-token",
+    }
+
+
+def run_preflight_raw(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    run_env = os.environ.copy()
+    for name in preflight_env():
+        run_env.pop(name, None)
+    run_env.update(env)
+    return subprocess.run(
+        [sys.executable, str(PREFLIGHT), "--json"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=run_env,
+    )
+
+
+def assert_safe_preflight_report(report: dict[str, object]) -> None:
+    rendered = json.dumps(report)
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("custom repository preflight leaked a secret value")
+    for flag in (
+        "payloadDisplayed",
+        "contentsDisplayed",
+        "tokenDisplayed",
+        "tokenHashDisplayed",
+        "keyMaterialDisplayed",
+        "secretValuesDisplayed",
+    ):
+        if report.get(flag) is not False:
+            raise AssertionError(f"custom repository preflight report did not set {flag}=false")
+
+
 def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
     try:
         os.symlink(target, link, target_is_directory=target_is_directory)
@@ -522,6 +624,7 @@ def assert_workflow_wiring() -> None:
         "Publish Custom Linux Repository S3 Site",
         "Linux Repository Publication Gate",
         "CONU_LINUX_REPOSITORY_S3_BUCKET",
+        "python scripts/check-custom-linux-repository-publication-preflight.py",
         "python scripts/publish-hosted-linux-repository-s3.py",
         "needs: [github-release, linux-repository-pages, custom-linux-repository-publish]",
         "needs: [github-release, linux-repository-publication]",
