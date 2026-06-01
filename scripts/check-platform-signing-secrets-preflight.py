@@ -237,6 +237,15 @@ def validate_text_secret_shapes(
     checks: dict[str, bool],
     issues: list[str],
 ) -> None:
+    for key, name in TEXT_SECRET_ENVS:
+        value = env.get(name, "")
+        if not value:
+            continue
+        valid = is_single_line_text_secret(value)
+        checks[f"{key}SingleLine"] = valid
+        if not valid:
+            issues.append(f"{name} must be a single-line text value without control characters")
+
     apple_id = env.get(MACOS_NOTARY_APPLE_ID_ENV, "")
     if apple_id:
         valid = "@" in apple_id and not any(character.isspace() for character in apple_id)
@@ -250,6 +259,10 @@ def validate_text_secret_shapes(
         checks["macosNotaryTeamIdShapeValid"] = valid
         if not valid:
             issues.append(f"{MACOS_NOTARY_TEAM_ID_ENV} must be a 10-character uppercase Apple Team ID")
+
+
+def is_single_line_text_secret(value: str) -> bool:
+    return all(character >= " " and character != "\x7f" for character in value)
 
 
 def validate_timestamp_url(
