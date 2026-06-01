@@ -3311,18 +3311,30 @@ fn write_relay_metadata_file_once(
 
 fn relay_metadata_replace_should_retry(error: &RelayError) -> bool {
     match error {
-        RelayError::Io { source, .. } => matches!(
-            source.kind(),
-            io::ErrorKind::NotFound
-                | io::ErrorKind::AlreadyExists
-                | io::ErrorKind::PermissionDenied
-                | io::ErrorKind::WouldBlock
-                | io::ErrorKind::Interrupted
-        ),
+        RelayError::Io { source, .. } => {
+            matches!(
+                source.kind(),
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::AlreadyExists
+                    | io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::WouldBlock
+                    | io::ErrorKind::Interrupted
+            ) || relay_metadata_replace_invalid_input_should_retry(source)
+        }
         RelayError::InvalidConfig(_)
         | RelayError::InvalidConfigValue(_)
         | RelayError::Protocol(_) => false,
     }
+}
+
+fn relay_metadata_replace_invalid_input_should_retry(source: &io::Error) -> bool {
+    if source.kind() != io::ErrorKind::InvalidInput {
+        return false;
+    }
+
+    let message = source.to_string();
+    message.contains("relay file path changed before replacement")
+        || message.contains("relay file path appeared before replacement")
 }
 
 fn replace_regular_relay_file_with_temp(
@@ -8281,6 +8293,35 @@ mod tests {
             changed,
             "changed live metadata must not be overwritten by stale replacement"
         );
+    }
+
+    #[test]
+    fn relay_metadata_replacement_retries_transient_path_change_errors() {
+        let changed = RelayError::io(
+            "inspect relay metadata test",
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relay file path changed before replacement",
+            ),
+        );
+        let appeared = RelayError::io(
+            "inspect relay metadata test",
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relay file path appeared before replacement",
+            ),
+        );
+        let unsafe_target = RelayError::io(
+            "inspect relay metadata test",
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "relay file path is not a regular file",
+            ),
+        );
+
+        assert!(relay_metadata_replace_should_retry(&changed));
+        assert!(relay_metadata_replace_should_retry(&appeared));
+        assert!(!relay_metadata_replace_should_retry(&unsafe_target));
     }
 
     #[cfg(unix)]
