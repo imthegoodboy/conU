@@ -61,6 +61,15 @@ def main() -> int:
     assert_failed(failed, "Apple ID")
     assert_not_leaked(failed.stdout, SENTINEL)
 
+    multiline_text_env = minimal_env(base64.b64encode(b"not-a-real-pkcs12").decode("ascii"))
+    multiline_text_env[
+        module.MACOS_CODESIGN_IDENTITY_ENV
+    ] = f"Developer ID Application: conU Regression\nINJECTED={SENTINEL}"
+    multiline_text_env[module.MACOS_NOTARY_PASSWORD_ENV] = f"app-password\t{SENTINEL}"
+    failed = run_preflight(multiline_text_env, "--skip-pkcs12-parse")
+    assert_failed(failed, "single-line text value")
+    assert_not_leaked(failed.stdout, SENTINEL)
+
     openssl = shutil.which("openssl")
     if openssl is None:
         print("Platform signing-secret OpenSSL parse regression skipped: openssl is unavailable")
