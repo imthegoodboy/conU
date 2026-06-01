@@ -121,6 +121,17 @@ def main() -> int:
         bad_cache_result = run_publisher_raw(bad_cache_control, "--dry-run")
         assert_failure("bad Cache-Control", bad_cache_result, "Cache-Control")
 
+        symlink_site_target = temp / "symlink-site-target"
+        shutil.copytree(site_dir, symlink_site_target)
+        symlink_site_root = temp / "symlink-site-root"
+        if try_symlink(symlink_site_target, symlink_site_root, target_is_directory=True):
+            symlink_site_result = run_publisher_raw(symlink_site_root, "--dry-run")
+            assert_failure(
+                "symlinked site directory",
+                symlink_site_result,
+                "site directory must not be a symlink",
+            )
+
         symlink_metadata = temp / "symlink-metadata-site"
         shutil.copytree(site_dir, symlink_metadata)
         metadata_target = temp / "repository-target.json"
