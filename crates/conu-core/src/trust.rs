@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::relay_endpoint::{self, RelayEndpointError};
 use crate::state::{self, StateError, StatePaths};
 use crate::{direct_transport, security};
 
@@ -1206,23 +1207,16 @@ fn validate_display_name(value: String) -> Result<String, TrustError> {
 }
 
 fn validate_endpoint(value: String) -> Result<String, TrustError> {
-    let value = value.trim().to_string();
-    if value.is_empty() {
-        return Err(TrustError::InvalidRequest {
-            reason: "relay endpoint cannot be empty".to_string(),
-        });
-    }
-    if !value.starts_with("ws://") && !value.starts_with("wss://") {
-        return Err(TrustError::InvalidRequest {
-            reason: "relay endpoint must start with ws:// or wss://".to_string(),
-        });
-    }
-    if value.len() > 220 || value.chars().any(char::is_whitespace) {
-        return Err(TrustError::InvalidRequest {
-            reason: "relay endpoint is invalid".to_string(),
-        });
-    }
-    Ok(value)
+    relay_endpoint::validate_relay_endpoint(value).map_err(|error| {
+        let reason = match error {
+            RelayEndpointError::Empty => "relay endpoint cannot be empty",
+            RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+            RelayEndpointError::Invalid => "relay endpoint is invalid",
+        };
+        TrustError::InvalidRequest {
+            reason: reason.to_string(),
+        }
+    })
 }
 
 fn validate_hex(value: String, field: &'static str) -> Result<String, TrustError> {
@@ -1751,6 +1745,47 @@ mod tests {
             peer.relay_endpoint.as_deref(),
             Some("wss://relay.example.com/conu")
         );
+    }
+
+    #[test]
+    fn relay_endpoint_rejects_secret_bearing_config_without_echoing_value() {
+        let home = test_home("secret-relay-config");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let secret_endpoint = "wss://user:secret@relay.example.com/conu?token=private#fragment";
+        fs::write(
+            &init.paths.config,
+            format!("version = \"1\"\ndefault_relay = \"{secret_endpoint}\"\n"),
+        )
+        .expect("config writes");
+
+        let error = configured_relay_endpoint(&init.paths)
+            .expect_err("secret-bearing relay endpoint should fail");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("relay endpoint is invalid"));
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("token=private"));
+    }
+
+    #[test]
+    fn legacy_peer_card_rejects_secret_bearing_relay_endpoint_without_echoing_value() {
+        let alice_home = test_home("secret-card-alice");
+        let bob_home = test_home("secret-card-bob");
+        let mut bob_card = export_peer_card(Some(bob_home)).expect("bob card exports");
+        bob_card.relay_endpoint =
+            "wss://user:secret@relay.example.com/conu?token=private#fragment".to_string();
+        bob_card.signing_public_key_hex = None;
+        bob_card.signature_algorithm = None;
+        bob_card.signature_key_id = None;
+        bob_card.signature_hex = None;
+
+        let error = trust_peer_card(Some(alice_home), bob_card)
+            .expect_err("secret-bearing relay endpoint should fail");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("relay endpoint is invalid"));
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("token=private"));
     }
 
     #[test]

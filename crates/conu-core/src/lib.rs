@@ -7,6 +7,7 @@ pub mod observability;
 pub mod policy;
 pub mod relay;
 pub mod relay_delivery;
+pub(crate) mod relay_endpoint;
 pub mod rooms;
 pub mod routes;
 pub mod runtime;

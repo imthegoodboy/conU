@@ -14,6 +14,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use native_tls::{HandshakeError, TlsConnector, TlsStream};
 
+use crate::relay_endpoint::{self, RelayEndpointError};
+
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const MAX_HTTP_HEADER_BYTES: usize = 8192;
 const MAX_FRAME_BYTES: usize = 256 * 1024;
@@ -1978,6 +1980,15 @@ enum RelayScheme {
 
 impl ParsedEndpoint {
     fn parse(endpoint: &str) -> Result<Self, RelayFrameError> {
+        relay_endpoint::validate_relay_endpoint(endpoint.to_string()).map_err(|error| {
+            let reason = match error {
+                RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+                RelayEndpointError::Empty | RelayEndpointError::Invalid => {
+                    "relay endpoint is invalid"
+                }
+            };
+            RelayFrameError::new(reason)
+        })?;
         let (scheme, rest, default_port) = if let Some(rest) = endpoint.strip_prefix("ws://") {
             (RelayScheme::Ws, rest, 80)
         } else if let Some(rest) = endpoint.strip_prefix("wss://") {
@@ -2819,5 +2830,17 @@ mod tests {
             .expect_err("non websocket endpoint fails");
 
         assert!(error.to_string().contains("ws:// or wss://"));
+    }
+
+    #[test]
+    fn endpoint_parser_rejects_secret_bearing_urls_without_echoing_value() {
+        let secret_endpoint = "wss://user:secret@relay.example.com/conu?token=private#fragment";
+        let error = ParsedEndpoint::parse(secret_endpoint)
+            .expect_err("secret-bearing relay endpoint should fail");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("relay endpoint is invalid"));
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("token=private"));
     }
 }

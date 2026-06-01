@@ -13,10 +13,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use conu_protocol::AgentCapabilities;
 
 use crate::agents::{self, AgentPresence, SignedAgentCard};
-use crate::relay_delivery;
+use crate::relay_endpoint::{self, RelayEndpointError};
 use crate::routes::{self, RouteTransport};
 use crate::state::{self, StateError, StatePaths};
 use crate::trust::{self, TrustStatus, TrustedPeer};
+use crate::{direct_transport, relay_delivery};
 
 const SESSION_VERSION: &str = "1";
 const DEFAULT_RELAY_ENDPOINT: &str = "ws://127.0.0.1:8787";
@@ -657,12 +658,14 @@ fn parse_remote_agents(contents: &str) -> Result<Vec<RemoteAgentRecord>, Session
 }
 
 fn session_from_values(values: &HashMap<String, String>) -> Result<RemoteSession, SessionError> {
+    let route = validate_identifier(required(values, "route")?, "route")?;
+    let relay_endpoint = validate_endpoint(required(values, "relay_endpoint")?, &route)?;
     Ok(RemoteSession {
         peer_node_id: validate_identifier(required(values, "peer_node_id")?, "peer node id")?,
         display_name: validate_display_name(required(values, "display_name")?)?,
         state: RemoteSessionState::from_str(&required(values, "state")?),
-        route: validate_identifier(required(values, "route")?, "route")?,
-        relay_endpoint: validate_endpoint(required(values, "relay_endpoint")?)?,
+        route,
+        relay_endpoint,
         reconnect_attempts: parse_u64(&required(values, "reconnect_attempts")?)?,
         remote_agent_count: parse_usize(&required(values, "remote_agent_count")?)?,
         last_seen_unix: parse_u64(&required(values, "last_seen_unix")?)?,
@@ -810,7 +813,7 @@ fn relay_endpoint(paths: &StatePaths) -> Result<String, SessionError> {
         .filter(|value| !value.trim().is_empty())
         .cloned()
         .unwrap_or_else(|| DEFAULT_RELAY_ENDPOINT.to_string());
-    validate_endpoint(endpoint)
+    validate_endpoint(endpoint, "relay-websocket")
 }
 
 fn append_session_log(
@@ -929,24 +932,33 @@ fn validate_display_name(value: String) -> Result<String, SessionError> {
     Ok(value)
 }
 
-fn validate_endpoint(value: String) -> Result<String, SessionError> {
+fn validate_endpoint(value: String, route: &str) -> Result<String, SessionError> {
     let value = value.trim().to_string();
     if value.is_empty() {
         return Err(SessionError::InvalidRecord {
             reason: "relay endpoint cannot be empty".to_string(),
         });
     }
-    if value.len() > 200 {
-        return Err(SessionError::InvalidRecord {
-            reason: "relay endpoint is too long".to_string(),
-        });
+    match route {
+        "direct-quic" => {
+            direct_transport::validate_direct_peer_endpoint(&value).map_err(|_| {
+                SessionError::InvalidRecord {
+                    reason: "session endpoint is invalid".to_string(),
+                }
+            })?;
+            Ok(value)
+        }
+        _ => relay_endpoint::validate_relay_endpoint(value).map_err(|error| {
+            let reason = match error {
+                RelayEndpointError::Empty => "relay endpoint cannot be empty",
+                RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+                RelayEndpointError::Invalid => "relay endpoint is invalid",
+            };
+            SessionError::InvalidRecord {
+                reason: reason.to_string(),
+            }
+        }),
     }
-    if value.chars().any(char::is_whitespace) {
-        return Err(SessionError::InvalidRecord {
-            reason: "relay endpoint cannot contain whitespace".to_string(),
-        });
-    }
-    Ok(value)
 }
 
 fn parse_u64(value: &str) -> Result<u64, SessionError> {
@@ -1061,6 +1073,28 @@ mod tests {
         assert!(log.contains("payload=not_observed"));
         assert!(!log.contains("private message contents"));
         assert!(!log.contains("Review this code"));
+    }
+
+    #[test]
+    fn session_sync_rejects_secret_bearing_relay_endpoint_without_echoing_value() {
+        let home = test_home("session-secret-relay-config");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let invite = trust::create_pairing_invite(Some(home.clone())).expect("invite creates");
+        trust::join_pairing_code(Some(home.clone()), &invite.code).expect("joins");
+        let secret_endpoint = "wss://user:secret@relay.example.com/conu?token=private#fragment";
+        fs::write(
+            &init.paths.config,
+            format!("version = \"1\"\ndefault_relay = \"{secret_endpoint}\"\n"),
+        )
+        .expect("config writes");
+
+        let error = sync_remote_sessions(Some(home))
+            .expect_err("secret-bearing relay endpoint should fail");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("relay endpoint is invalid"));
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("token=private"));
     }
 
     #[test]
