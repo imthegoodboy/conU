@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,19 @@ ALLOWED_PERMISSION_KEYS = (
 TOP_LEVEL_PERMISSIONS = {
     "contents": "read",
 }
+SECRET_LIKE_ENV_TOKENS = (
+    "PASSWORD",
+    "TOKEN",
+    "SECRET",
+    "KEY",
+    "IDENTITY",
+    "P12",
+    "PFX",
+    "GPG",
+)
+UNSAFE_GITHUB_ENV_ECHO_RE = re.compile(
+    r"\becho\s+[\"']?([A-Z0-9_]+)=\$([A-Z0-9_]+)"
+)
 EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "release-preflight"): {
         "actions": "read",
@@ -66,6 +80,7 @@ class WorkflowPermissionsReadiness:
     checked_workflows: tuple[str, ...]
     workflows_with_explicit_top_level_permissions: tuple[str, ...]
     jobs_with_write_permissions: tuple[str, ...]
+    unsafe_environment_file_writes: tuple[str, ...]
     forbidden_events: tuple[str, ...]
     issues: tuple[str, ...]
 
@@ -79,6 +94,7 @@ class WorkflowPermissionsReadiness:
                 self.workflows_with_explicit_top_level_permissions
             ),
             "jobsWithWritePermissions": list(self.jobs_with_write_permissions),
+            "unsafeEnvironmentFileWrites": list(self.unsafe_environment_file_writes),
             "forbiddenEvents": list(self.forbidden_events),
             "issues": list(self.issues),
             "payloadDisplayed": False,
@@ -190,6 +206,38 @@ def load_workflow(path: Path) -> dict[str, Any]:
     return payload
 
 
+def audit_environment_file_writes(path: Path) -> tuple[str, ...]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    findings: list[str] = []
+    for index, line in enumerate(lines):
+        match = UNSAFE_GITHUB_ENV_ECHO_RE.search(line.strip())
+        if match is None:
+            continue
+        output_name, source_name = match.groups()
+        if not is_secret_like_env_name(output_name) and not is_secret_like_env_name(source_name):
+            continue
+        if not has_nearby_github_env_redirect(lines, index):
+            continue
+        findings.append(
+            f"{path.name}:line {index + 1} echoes secret-derived {source_name} directly to GITHUB_ENV"
+        )
+    return tuple(findings)
+
+
+def is_secret_like_env_name(name: str) -> bool:
+    return any(token in name for token in SECRET_LIKE_ENV_TOKENS)
+
+
+def has_nearby_github_env_redirect(lines: list[str], index: int) -> bool:
+    start = max(0, index - 3)
+    end = min(len(lines), index + 4)
+    return any("GITHUB_ENV" in lines[position] for position in range(start, end))
+
+
 def workflow_trigger(payload: dict[str, Any]) -> Any:
     if "on" in payload:
         return payload["on"]
@@ -265,6 +313,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
     checked: list[str] = []
     explicit_top_level: list[str] = []
     write_jobs: list[str] = []
+    unsafe_env_writes: list[str] = []
     forbidden_events_seen: set[str] = set()
 
     if not workflow_paths:
@@ -274,6 +323,9 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         workflow_name = path.name
         checked.append(workflow_name)
         payload = load_workflow(path)
+        for finding in audit_environment_file_writes(path):
+            unsafe_env_writes.append(finding)
+            issues.append(finding)
 
         events = event_names(workflow_trigger(payload))
         for event in events:
@@ -351,6 +403,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         checked_workflows=tuple(sorted(checked)),
         workflows_with_explicit_top_level_permissions=tuple(sorted(explicit_top_level)),
         jobs_with_write_permissions=tuple(sorted(write_jobs)),
+        unsafe_environment_file_writes=tuple(sorted(unsafe_env_writes)),
         forbidden_events=tuple(sorted(forbidden_events_seen)),
         issues=tuple(issues),
     )
