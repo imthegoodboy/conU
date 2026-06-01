@@ -481,6 +481,8 @@ fn write_new_file_with_actions(
     create_action: &'static str,
     write_action: &'static str,
 ) -> Result<(), StateError> {
+    ensure_state_contents_within_limit(path, contents.len(), write_action)?;
+
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -644,6 +646,8 @@ pub(crate) fn write_regular_state_file(
         }
     }
 
+    ensure_state_contents_within_limit(path, contents.len(), write_action)?;
+
     let mut file = open_existing_regular_state_file_for_write(path, inspect_action, open_action)?;
     file.set_len(0)
         .map_err(|error| StateError::io(open_action, path, error))?;
@@ -665,6 +669,8 @@ pub(crate) fn rewrite_existing_regular_state_file(
             io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
         ));
     }
+
+    ensure_state_contents_within_limit(path, contents.len(), write_action)?;
 
     let mut file = open_existing_regular_state_file_for_write(path, inspect_action, open_action)?;
     file.set_len(0)
@@ -707,16 +713,72 @@ pub(crate) fn append_regular_state_file(
     }
 
     let mut file = open_existing_regular_state_file_for_append(path, inspect_action, open_action)?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| StateError::io(open_action, path, error))?;
+    ensure_state_append_within_limit(path, metadata.len(), contents.len(), write_action)?;
     file.write_all(contents.as_bytes())
         .map_err(|error| StateError::io(write_action, path, error))
 }
 
 pub(crate) fn ensure_regular_state_file_appendable(
     path: &Path,
+    additional_bytes: usize,
     inspect_action: &'static str,
     open_action: &'static str,
 ) -> Result<(), StateError> {
-    open_existing_regular_state_file_for_append(path, inspect_action, open_action).map(|_| ())
+    let file = open_existing_regular_state_file_for_append(path, inspect_action, open_action)?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| StateError::io(open_action, path, error))?;
+    ensure_state_append_within_limit(path, metadata.len(), additional_bytes, open_action)
+}
+
+fn ensure_state_contents_within_limit(
+    path: &Path,
+    contents_len: usize,
+    action: &'static str,
+) -> Result<(), StateError> {
+    if contents_len as u64 > MAX_STATE_FILE_BYTES {
+        return Err(StateError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("state file exceeds {MAX_STATE_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_state_append_within_limit(
+    path: &Path,
+    current_len: u64,
+    additional_bytes: usize,
+    action: &'static str,
+) -> Result<(), StateError> {
+    let Some(new_len) = current_len.checked_add(additional_bytes as u64) else {
+        return Err(StateError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("state file exceeds {MAX_STATE_FILE_BYTES} bytes"),
+            ),
+        ));
+    };
+    if new_len > MAX_STATE_FILE_BYTES {
+        return Err(StateError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("state file exceeds {MAX_STATE_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn open_existing_regular_state_file_for_write(
@@ -1199,6 +1261,80 @@ mod tests {
         let optional_error = optional_error.to_string();
         assert!(optional_error.contains("state file exceeds"));
         assert!(!optional_error.contains(private_marker));
+    }
+
+    #[test]
+    fn write_regular_state_file_rejects_oversized_contents_without_truncating_existing_file() {
+        let home = test_home("oversized-state-write");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("state.toml");
+        let original = "version = \"1\"\nstatus = \"kept\"\n";
+        fs::write(&path, original).expect("state writes");
+        let oversized = "a".repeat((MAX_STATE_FILE_BYTES + 1) as usize);
+
+        let error = write_regular_state_file(
+            &path,
+            &oversized,
+            "inspect oversized state write",
+            "create oversized state",
+            "open oversized state",
+            "write oversized state",
+        )
+        .expect_err("oversized state write fails before truncating");
+
+        assert!(error.to_string().contains("state file exceeds"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("state reads"),
+            original,
+            "oversized write must not truncate existing state"
+        );
+    }
+
+    #[test]
+    fn append_regular_state_file_rejects_oversized_new_file() {
+        let home = test_home("oversized-state-append-new");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("state.log");
+        let oversized = "a".repeat((MAX_STATE_FILE_BYTES + 1) as usize);
+
+        let error = append_regular_state_file(
+            &path,
+            &oversized,
+            "inspect oversized state append",
+            "create oversized append state",
+            "open oversized append state",
+            "write oversized append state",
+        )
+        .expect_err("oversized append create fails");
+
+        assert!(error.to_string().contains("state file exceeds"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn append_regular_state_file_rejects_growth_past_limit_without_modifying_file() {
+        let home = test_home("oversized-state-append-existing");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("state.log");
+        let original = "a".repeat((MAX_STATE_FILE_BYTES - 2) as usize);
+        fs::write(&path, &original).expect("state writes");
+
+        let error = append_regular_state_file(
+            &path,
+            "bbb",
+            "inspect bounded state append",
+            "create bounded append state",
+            "open bounded append state",
+            "write bounded append state",
+        )
+        .expect_err("append beyond state limit fails");
+
+        assert!(error.to_string().contains("state file exceeds"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("state reads"),
+            original,
+            "oversized append must leave existing state unchanged"
+        );
     }
 
     #[test]
