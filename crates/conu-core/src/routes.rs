@@ -20,6 +20,8 @@ use crate::trust::{self, TrustStatus, TrustedPeer};
 const ROUTE_VERSION: &str = "1";
 const DEFAULT_RELAY_ENDPOINT: &str = "ws://127.0.0.1:8787";
 const RELAY_WEBSOCKET_LATENCY_MS: u64 = 80;
+const DIRECT_QUIC_INVALID_ENDPOINT: &str = "quic://invalid";
+const DIRECT_QUIC_UNCONFIGURED_ENDPOINT: &str = "quic://unconfigured";
 const DIRECT_QUIC_PROBE_FAILED: &str = "direct_quic_probe_failed";
 const NAT_TRAVERSAL_UNAVAILABLE: &str = "nat_traversal_unavailable";
 const CANDIDATE_SOURCE_NONE: &str = "none";
@@ -446,8 +448,8 @@ impl DirectCandidate {
     fn display_endpoint(&self) -> String {
         match self.endpoint.as_deref() {
             Some(endpoint) if valid_direct_endpoint(endpoint) => endpoint.to_string(),
-            Some(_) => "quic://invalid".to_string(),
-            None => "quic://unconfigured".to_string(),
+            Some(_) => DIRECT_QUIC_INVALID_ENDPOINT.to_string(),
+            None => DIRECT_QUIC_UNCONFIGURED_ENDPOINT.to_string(),
         }
     }
 }
@@ -1027,7 +1029,7 @@ fn validate_route_endpoint(value: String, transport: RouteTransport) -> Result<S
     let value = value.trim().to_string();
     match transport {
         RouteTransport::DirectQuic => {
-            if value != "quic://invalid" {
+            if !is_direct_route_placeholder(&value) {
                 direct_transport::validate_direct_peer_endpoint(&value).map_err(|_| {
                     RouteError::InvalidRecord {
                         reason: "endpoint is invalid".to_string(),
@@ -1038,6 +1040,13 @@ fn validate_route_endpoint(value: String, transport: RouteTransport) -> Result<S
         }
         RouteTransport::RelayWebSocket => validate_endpoint(value),
     }
+}
+
+fn is_direct_route_placeholder(value: &str) -> bool {
+    matches!(
+        value,
+        DIRECT_QUIC_INVALID_ENDPOINT | DIRECT_QUIC_UNCONFIGURED_ENDPOINT
+    )
 }
 
 fn valid_direct_endpoint(value: &str) -> bool {
@@ -1228,6 +1237,7 @@ mod tests {
             RouteTransport::RelayWebSocket
         );
         assert_eq!(direct.state, RouteState::Unavailable);
+        assert_eq!(direct.endpoint, DIRECT_QUIC_UNCONFIGURED_ENDPOINT);
         assert!(!direct.direct_attempted);
         assert_eq!(
             direct.failure_reason.as_deref(),
@@ -1329,7 +1339,7 @@ mod tests {
             selected.expect("selected").transport,
             RouteTransport::RelayWebSocket
         );
-        assert_eq!(direct.endpoint, "quic://invalid");
+        assert_eq!(direct.endpoint, DIRECT_QUIC_INVALID_ENDPOINT);
         assert!(!direct.direct_attempted);
         assert_eq!(
             direct.failure_reason.as_deref(),
@@ -1346,7 +1356,7 @@ mod tests {
             route_id(
                 &peer.peer_node_id,
                 RouteTransport::DirectQuic,
-                Some("quic://invalid")
+                Some(DIRECT_QUIC_INVALID_ENDPOINT)
             )
         );
         assert_ne!(
@@ -1418,7 +1428,7 @@ mod tests {
             selected.expect("selected").transport,
             RouteTransport::RelayWebSocket
         );
-        assert_eq!(direct.endpoint, "quic://invalid");
+        assert_eq!(direct.endpoint, DIRECT_QUIC_INVALID_ENDPOINT);
         assert!(!direct.direct_attempted);
         assert_eq!(
             direct.failure_reason.as_deref(),
