@@ -32,9 +32,10 @@ def main() -> int:
 
     local_smoke = load_local_smoke_helpers()
     dist = local_smoke.validate_input_directory(args.dist, "release dist directory")
-    package_dir = args.package_dir.resolve()
-    if not package_dir.joinpath("package.json").exists():
-        raise SystemExit(f"missing npm package manifest in {package_dir}")
+    package_dir = local_smoke.validate_package_directory(
+        args.package_dir,
+        "@conu/cli package directory",
+    )
 
     node = local_smoke.require_tool("node")
     npm = local_smoke.require_tool("npm", "npm.cmd")
