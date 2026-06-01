@@ -106,6 +106,32 @@ def main() -> int:
             rewrite_base_url(bad_cache_policy, PLACEHOLDER_BASE_URL, base_url)
             run_checker_expect_failure(base_url, "tokenDisplayed=false", "--expected-version", VERSION)
 
+        unsafe_cache_path = temp / "unsafe-cache-path"
+        shutil.copytree(site_root, unsafe_cache_path)
+        cache_policy_path = unsafe_cache_path / "cache-policy.json"
+        cache_policy = json.loads(cache_policy_path.read_text(encoding="ascii"))
+        cache_policy["rules"][0]["paths"].append("/.git/config")
+        cache_policy_path.write_text(
+            json.dumps(cache_policy, indent=2, sort_keys=True) + "\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        headers_path = unsafe_cache_path / "_headers"
+        headers_path.write_text(
+            headers_path.read_text(encoding="ascii")
+            + "\n/.git/config\n  Cache-Control: no-cache\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        with serve_site(unsafe_cache_path, mode="good") as base_url:
+            rewrite_base_url(unsafe_cache_path, PLACEHOLDER_BASE_URL, base_url)
+            run_checker_expect_failure(
+                base_url,
+                "forbidden local-state segment",
+                "--expected-version",
+                VERSION,
+            )
+
         bad_base_url = temp / "bad-base-url"
         shutil.copytree(site_root, bad_base_url)
         with serve_site(bad_base_url, mode="good") as base_url:

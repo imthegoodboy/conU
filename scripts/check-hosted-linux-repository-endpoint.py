@@ -34,6 +34,17 @@ FORBIDDEN_TEXT = (
     "payload_hex",
     "ciphertext_body",
 )
+FORBIDDEN_PATH_SEGMENTS = {
+    ".conu",
+    ".git",
+    ".github",
+    "logs",
+    "messages",
+    "node_modules",
+    "routes",
+    "runtime",
+    "security",
+}
 
 
 class EndpointReadinessError(ValueError):
@@ -440,6 +451,24 @@ def require_object(parent: dict[str, Any], key: str, label: str) -> dict[str, An
     return value
 
 
+def validate_repository_path(path: str, label: str) -> str:
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise EndpointReadinessError(f"{label} must be an absolute path")
+    if "\\" in path:
+        raise EndpointReadinessError(f"{label} must not contain backslashes")
+    if "?" in path or "#" in path:
+        raise EndpointReadinessError(f"{label} must not contain query or fragment")
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        raise EndpointReadinessError(f"{label} must not contain empty or dot segments")
+    forbidden = sorted({part.lower() for part in parts[1:]} & FORBIDDEN_PATH_SEGMENTS)
+    if forbidden:
+        raise EndpointReadinessError(
+            f"{label} contains forbidden local-state segment: {', '.join(forbidden)}"
+        )
+    return path
+
+
 def parse_cache_rules(cache_policy: dict[str, Any]) -> list[dict[str, Any]]:
     raw_rules = cache_policy.get("rules")
     if not isinstance(raw_rules, list) or not raw_rules:
@@ -460,14 +489,14 @@ def parse_cache_rules(cache_policy: dict[str, Any]) -> list[dict[str, Any]]:
             raise EndpointReadinessError(f"cache-policy.json cache rule {kind} paths are missing")
         clean_paths: list[str] = []
         for path in paths:
-            if not isinstance(path, str) or not path.startswith("/"):
-                raise EndpointReadinessError(f"cache-policy.json cache rule {kind} contains a non-absolute path")
-            if "?" in path or "#" in path:
-                raise EndpointReadinessError(f"cache-policy.json cache rule {kind} contains a query or fragment")
-            if path in seen_paths:
-                raise EndpointReadinessError(f"cache-policy.json duplicates cache path {path}")
-            seen_paths.add(path)
-            clean_paths.append(path)
+            clean_path = validate_repository_path(
+                path,
+                f"cache-policy.json cache rule {kind} path",
+            )
+            if clean_path in seen_paths:
+                raise EndpointReadinessError(f"cache-policy.json duplicates cache path {clean_path}")
+            seen_paths.add(clean_path)
+            clean_paths.append(clean_path)
         rules.append(
             {
                 "kind": kind,
@@ -493,9 +522,7 @@ def parse_headers_file(text: str) -> dict[str, dict[str, str]]:
             name, value = stripped.split(":", 1)
             entries[current_path][name.strip().lower()] = value.strip()
             continue
-        current_path = line.strip()
-        if not current_path.startswith("/"):
-            raise EndpointReadinessError("_headers contains a non-absolute path")
+        current_path = validate_repository_path(line.strip(), "_headers path")
         if current_path in entries:
             raise EndpointReadinessError(f"_headers contains duplicate path: {current_path}")
         entries[current_path] = {}
@@ -583,7 +610,7 @@ def url_to_base_path(base_url: str, value: str, label: str) -> str:
         relative = value_path
     if not relative.startswith("/"):
         relative = f"/{relative}"
-    return relative or "/"
+    return validate_repository_path(relative or "/", f"{label} path")
 
 
 def cache_control_for_path(path: str, rules: list[dict[str, Any]]) -> str:
