@@ -853,9 +853,14 @@ fn ensure_request_archive_targets_available(
 fn move_request(request_path: &Path, target_dir: &Path) -> Result<(), AgentError> {
     state::ensure_state_directory(target_dir)?;
     let target = request_archive_target(request_path, target_dir);
-    ensure_ipc_archive_target_available(&target)?;
-    fs::rename(request_path, &target)
-        .map_err(|error| AgentError::io("move IPC request", request_path, error))
+    state::archive_regular_state_file_no_replace(
+        request_path,
+        &target,
+        "inspect IPC request before archive",
+        "reserve IPC archive target",
+        "move IPC request",
+    )?;
+    Ok(())
 }
 
 fn reject_request(
@@ -873,8 +878,46 @@ fn reject_request(
         "create IPC rejection reason",
         "write IPC rejection reason",
     )?;
-    fs::rename(request_path, &target)
-        .map_err(|error| AgentError::io("move rejected IPC request", request_path, error))
+    archive_ipc_request_no_replace(
+        request_path,
+        &target,
+        "inspect rejected IPC request before archive",
+        "reserve IPC archive target",
+        "move rejected IPC request",
+    )?;
+    Ok(())
+}
+
+fn archive_ipc_request_no_replace(
+    request_path: &Path,
+    target: &Path,
+    inspect_source_action: &'static str,
+    inspect_target_action: &'static str,
+    archive_action: &'static str,
+) -> Result<(), AgentError> {
+    match state::archive_regular_state_file_no_replace(
+        request_path,
+        target,
+        inspect_source_action,
+        inspect_target_action,
+        archive_action,
+    ) {
+        Ok(()) => Ok(()),
+        Err(state::StateError::Io { source, .. })
+            if source.kind() == io::ErrorKind::InvalidInput && path_is_symlink(request_path) =>
+        {
+            ensure_ipc_archive_target_available(target)?;
+            fs::rename(request_path, target)
+                .map_err(|error| AgentError::io(archive_action, request_path, error))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn path_is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 fn request_archive_target(request_path: &Path, target_dir: &Path) -> PathBuf {

@@ -683,6 +683,99 @@ pub(crate) fn remove_existing_regular_state_file(
     fs::remove_file(path).map_err(|error| StateError::io(remove_action, path, error))
 }
 
+pub(crate) fn archive_regular_state_file_no_replace(
+    source: &Path,
+    target: &Path,
+    inspect_source_action: &'static str,
+    inspect_target_action: &'static str,
+    archive_action: &'static str,
+) -> Result<(), StateError> {
+    let Some(source_metadata) = regular_state_file_metadata(source, inspect_source_action)? else {
+        return Err(StateError::io(
+            inspect_source_action,
+            source,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    };
+    let target_parent = state_file_parent(target);
+    if regular_state_directory_metadata(target_parent, inspect_target_action)?.is_none() {
+        return Err(StateError::io(
+            inspect_target_action,
+            target_parent,
+            io::Error::new(io::ErrorKind::NotFound, "state directory path is missing"),
+        ));
+    }
+    if regular_state_file_metadata(target, inspect_target_action)?.is_some() {
+        return Err(StateError::io(
+            inspect_target_action,
+            target,
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "archive target already exists",
+            ),
+        ));
+    }
+
+    if let Err(error) = fs::hard_link(source, target) {
+        return Err(StateError::io(archive_action, source, error));
+    }
+
+    let target_metadata = match regular_state_file_metadata(target, inspect_target_action) {
+        Ok(Some(metadata)) => metadata,
+        Ok(None) => {
+            return Err(StateError::io(
+                inspect_target_action,
+                target,
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "archive target disappeared after reservation",
+                ),
+            ));
+        }
+        Err(error) => {
+            let _ = fs::remove_file(target);
+            return Err(error);
+        }
+    };
+    if !state_file_metadata_matches(&source_metadata, &target_metadata) {
+        let _ = fs::remove_file(target);
+        return Err(StateError::io(
+            inspect_target_action,
+            target,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "archive target does not match source file",
+            ),
+        ));
+    }
+
+    match regular_state_file_metadata(source, inspect_source_action)? {
+        Some(current_metadata)
+            if state_file_metadata_matches(&source_metadata, &current_metadata) => {}
+        Some(_) => {
+            let _ = fs::remove_file(target);
+            return Err(StateError::io(
+                inspect_source_action,
+                source,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "state file path changed before archive removal",
+                ),
+            ));
+        }
+        None => return Ok(()),
+    }
+
+    match fs::remove_file(source) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(target);
+            Err(StateError::io(archive_action, source, error))
+        }
+    }
+}
+
 pub(crate) fn append_regular_state_file(
     path: &Path,
     contents: &str,
@@ -1348,6 +1441,59 @@ mod tests {
             error
                 .to_string()
                 .contains("inspect removable missing state")
+        );
+    }
+
+    #[test]
+    fn archive_regular_state_file_no_replace_moves_source_to_empty_target() {
+        let home = test_home("archive-state-file");
+        fs::create_dir_all(&home).expect("home creates");
+        let source = home.join("request.req");
+        let target = home.join("processed.req");
+        fs::write(&source, "version = \"1\"\nstatus = \"queued\"\n").expect("source writes");
+
+        archive_regular_state_file_no_replace(
+            &source,
+            &target,
+            "inspect archive source",
+            "reserve archive target",
+            "archive state file",
+        )
+        .expect("state file archives");
+
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "version = \"1\"\nstatus = \"queued\"\n"
+        );
+    }
+
+    #[test]
+    fn archive_regular_state_file_no_replace_refuses_existing_target_without_clobber() {
+        let home = test_home("archive-state-file-collision");
+        fs::create_dir_all(&home).expect("home creates");
+        let source = home.join("request.req");
+        let target = home.join("processed.req");
+        fs::write(&source, "version = \"1\"\nstatus = \"queued\"\n").expect("source writes");
+        fs::write(&target, "version = \"1\"\nstatus = \"existing\"\n").expect("target writes");
+
+        let error = archive_regular_state_file_no_replace(
+            &source,
+            &target,
+            "inspect archive source",
+            "reserve archive target",
+            "archive state file",
+        )
+        .expect_err("existing archive target should fail closed");
+
+        assert!(error.to_string().contains("reserve archive target"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("target reads"),
+            "version = \"1\"\nstatus = \"existing\"\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&source).expect("source reads"),
+            "version = \"1\"\nstatus = \"queued\"\n"
         );
     }
 
