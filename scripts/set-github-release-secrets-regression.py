@@ -157,6 +157,13 @@ def run_env_file_tests(module) -> None:
         )
         if whitespace_values["NPM_TOKEN"] != whitespace_secret:
             raise AssertionError("env file parser trimmed secret value whitespace")
+        if module.missing_required_values(
+            whitespace_values,
+            ("NPM_TOKEN",),
+        ):
+            raise AssertionError("env file parser treated padded secret value as missing")
+        if module.missing_required_values({"NPM_TOKEN": "   "}, ("NPM_TOKEN",)) != ("NPM_TOKEN",):
+            raise AssertionError("whitespace-only env file secret value should be missing")
 
         directory_env_file = temp_path / "directory.env"
         directory_env_file.mkdir()
@@ -330,6 +337,12 @@ def run_dry_run_tests(module) -> None:
             lambda: module.configure_release_secrets("owner/repo", "gh", partial, dry_run=True),
             missing_name,
         )
+        blank = dict(values)
+        blank[missing_name] = "   "
+        assert_raises(
+            lambda: module.configure_release_secrets("owner/repo", "gh", blank, dry_run=True),
+            missing_name,
+        )
 
         calls = []
 
@@ -437,6 +450,28 @@ def run_env_file_main_tests(module) -> None:
                 raise AssertionError("env-file check output omitted checked secret names")
             if SENSITIVE_SENTINEL in rendered:
                 raise AssertionError("env-file check output leaked a secret value")
+
+            blank_env_file = Path(temp_dir) / "blank.env"
+            blank_lines = [
+                f"{name}={SENSITIVE_SENTINEL}"
+                for name in module.REQUIRED_RELEASE_SECRETS
+            ]
+            blank_lines[0] = f"{module.REQUIRED_RELEASE_SECRETS[0]}=   "
+            secure_write_text(blank_env_file, "\n".join(blank_lines) + "\n")
+            exit_code, rendered = call_main(
+                [
+                    "set-github-release-secrets.py",
+                    "--env-file",
+                    str(blank_env_file),
+                    "--check-env-file",
+                ]
+            )
+            if exit_code == 0:
+                raise AssertionError("env-file check should fail on blank secret values")
+            if module.REQUIRED_RELEASE_SECRETS[0] not in rendered:
+                raise AssertionError("blank-value report omitted the blank secret name")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("blank-value report leaked a secret value")
 
             exit_code, rendered = call_main(
                 [

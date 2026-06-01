@@ -159,7 +159,11 @@ def validate_env_file_permissions(mode: int, path: Path) -> None:
 
 
 def missing_required_values(values: Mapping[str, str], names: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(name for name in names if not values.get(name))
+    return tuple(
+        name
+        for name in names
+        if (value := values.get(name)) is None or value.strip() == ""
+    )
 
 
 def set_secret(gh: str, repo: str, name: str, value: str) -> None:
