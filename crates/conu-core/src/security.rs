@@ -914,8 +914,10 @@ pub fn ensure_replay_id_recordable_from_paths(
     if replay_cache_contains_id(&contents, id) {
         return Err(SecurityError::ReplayDetected { id: id.to_string() });
     }
+    let entry = render_replay_cache_entry(id, source);
     state::ensure_regular_state_file_appendable(
         &paths.replay_cache,
+        entry.len(),
         "inspect replay cache",
         "open replay cache",
     )?;
@@ -935,12 +937,7 @@ pub fn record_replay_id_from_paths(
         return Err(SecurityError::ReplayDetected { id: id.to_string() });
     }
 
-    let entry = format!(
-        "\n[[seen]]\nid = \"{}\"\nsource = \"{}\"\nfirst_seen_unix = {}\n",
-        escape_file_value(id),
-        escape_file_value(source),
-        current_unix_seconds()
-    );
+    let entry = render_replay_cache_entry(id, source);
     state::append_regular_state_file(
         &paths.replay_cache,
         &entry,
@@ -950,6 +947,15 @@ pub fn record_replay_id_from_paths(
         "write replay cache",
     )?;
     Ok(())
+}
+
+fn render_replay_cache_entry(id: &str, source: &str) -> String {
+    format!(
+        "\n[[seen]]\nid = \"{}\"\nsource = \"{}\"\nfirst_seen_unix = {}\n",
+        escape_file_value(id),
+        escape_file_value(source),
+        current_unix_seconds()
+    )
 }
 
 fn read_replay_cache_contents(paths: &StatePaths) -> Result<String, SecurityError> {
