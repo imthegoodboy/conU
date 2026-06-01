@@ -711,6 +711,14 @@ pub(crate) fn append_regular_state_file(
         .map_err(|error| StateError::io(write_action, path, error))
 }
 
+pub(crate) fn ensure_regular_state_file_appendable(
+    path: &Path,
+    inspect_action: &'static str,
+    open_action: &'static str,
+) -> Result<(), StateError> {
+    open_existing_regular_state_file_for_append(path, inspect_action, open_action).map(|_| ())
+}
+
 fn open_existing_regular_state_file_for_write(
     path: &Path,
     inspect_action: &'static str,
