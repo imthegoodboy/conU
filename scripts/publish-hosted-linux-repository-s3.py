@@ -234,9 +234,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_publish_plan(args: argparse.Namespace) -> PublishPlan:
-    site_dir = args.site_dir.resolve()
-    if not site_dir.exists() or not site_dir.is_dir():
-        raise PublicationError(f"site directory does not exist: {args.site_dir}")
+    site_dir = validate_site_directory(args.site_dir)
     bucket = validate_bucket(args.bucket)
     prefix = validate_prefix(args.prefix)
     validate_endpoint_url(args.endpoint_url)
@@ -265,6 +263,15 @@ def build_publish_plan(args: argparse.Namespace) -> PublishPlan:
         prefix=prefix,
         files=files,
     )
+
+
+def validate_site_directory(path: Path) -> Path:
+    site_dir = path.expanduser()
+    if site_dir.is_symlink():
+        raise PublicationError(f"site directory must not be a symlink: {path}")
+    if not site_dir.exists() or not site_dir.is_dir():
+        raise PublicationError(f"site directory does not exist: {path}")
+    return site_dir.resolve()
 
 
 def validate_bucket(raw: str) -> str:
