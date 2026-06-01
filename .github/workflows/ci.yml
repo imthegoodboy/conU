@@ -115,7 +115,7 @@ jobs:
       - name: Test
         run: cargo test --workspace
       - name: Python compile
-        run: python -m py_compile sdk/python/conu_sdk/__init__.py examples/python/local_agent_pair.py
+        run: python scripts/check-python-script-compile.py
       - name: Doctor smoke
         run: cargo run -p conu-cli -- doctor --json
       - name: Production readiness smoke gate
