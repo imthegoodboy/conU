@@ -646,13 +646,7 @@ pub(crate) fn write_regular_state_file(
         }
     }
 
-    ensure_state_contents_within_limit(path, contents.len(), write_action)?;
-
-    let mut file = open_existing_regular_state_file_for_write(path, inspect_action, open_action)?;
-    file.set_len(0)
-        .map_err(|error| StateError::io(open_action, path, error))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| StateError::io(write_action, path, error))
+    replace_existing_regular_state_file(path, contents, inspect_action, open_action, write_action)
 }
 
 pub(crate) fn rewrite_existing_regular_state_file(
@@ -670,13 +664,7 @@ pub(crate) fn rewrite_existing_regular_state_file(
         ));
     }
 
-    ensure_state_contents_within_limit(path, contents.len(), write_action)?;
-
-    let mut file = open_existing_regular_state_file_for_write(path, inspect_action, open_action)?;
-    file.set_len(0)
-        .map_err(|error| StateError::io(open_action, path, error))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| StateError::io(write_action, path, error))
+    replace_existing_regular_state_file(path, contents, inspect_action, open_action, write_action)
 }
 
 pub(crate) fn remove_existing_regular_state_file(
@@ -779,6 +767,137 @@ fn ensure_state_append_within_limit(
         ));
     }
     Ok(())
+}
+
+fn replace_existing_regular_state_file(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+    open_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), StateError> {
+    ensure_state_contents_within_limit(path, contents.len(), write_action)?;
+    let file = open_existing_regular_state_file_for_write(path, inspect_action, open_action)?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| StateError::io(open_action, path, error))?;
+    drop(file);
+
+    let temp_path = write_replacement_state_temp_file(path, contents, write_action)?;
+    let result = replace_regular_state_file_with_temp(
+        path,
+        &temp_path,
+        &metadata,
+        inspect_action,
+        write_action,
+    );
+    if result.is_err() {
+        remove_temp_state_file(&temp_path);
+    }
+    result
+}
+
+fn write_replacement_state_temp_file(
+    path: &Path,
+    contents: &str,
+    write_action: &'static str,
+) -> Result<PathBuf, StateError> {
+    let parent = state_file_parent(path);
+    if regular_state_directory_metadata(parent, write_action)?.is_none() {
+        return Err(StateError::io(
+            write_action,
+            parent,
+            io::Error::new(io::ErrorKind::NotFound, "state directory path is missing"),
+        ));
+    }
+
+    for attempt in 0..16 {
+        let temp_path = replacement_state_temp_path(path, attempt);
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(StateError::io(write_action, &temp_path, error)),
+        };
+
+        let write_result = file
+            .write_all(contents.as_bytes())
+            .and_then(|_| file.sync_all());
+        drop(file);
+
+        if let Err(error) = write_result {
+            remove_temp_state_file(&temp_path);
+            return Err(StateError::io(write_action, &temp_path, error));
+        }
+
+        return Ok(temp_path);
+    }
+
+    Err(StateError::io(
+        write_action,
+        path,
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not reserve a unique state replacement file",
+        ),
+    ))
+}
+
+fn replace_regular_state_file_with_temp(
+    path: &Path,
+    temp_path: &Path,
+    expected_metadata: &fs::Metadata,
+    inspect_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), StateError> {
+    let Some(current_metadata) = regular_state_file_metadata(path, inspect_action)? else {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "state file path is missing"),
+        ));
+    };
+    if !state_file_write_target_matches(expected_metadata, &current_metadata) {
+        return Err(StateError::io(
+            inspect_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "state file path changed before replacement",
+            ),
+        ));
+    }
+
+    fs::rename(temp_path, path).map_err(|error| StateError::io(write_action, path, error))
+}
+
+fn state_file_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn replacement_state_temp_path(path: &Path, attempt: u8) -> PathBuf {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("state");
+    parent.join(format!(
+        ".{file_name}.tmp-{}-{}-{attempt}",
+        process::id(),
+        current_unix_nanos()
+    ))
+}
+
+fn remove_temp_state_file(path: &Path) {
+    let _ = fs::remove_file(path);
 }
 
 fn open_existing_regular_state_file_for_write(
@@ -1287,6 +1406,65 @@ mod tests {
             fs::read_to_string(&path).expect("state reads"),
             original,
             "oversized write must not truncate existing state"
+        );
+    }
+
+    #[test]
+    fn rewrite_existing_regular_state_file_replaces_existing_contents() {
+        let home = test_home("atomic-state-rewrite");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("state.toml");
+        fs::write(&path, "version = \"1\"\nstatus = \"old\"\n").expect("state writes");
+
+        rewrite_existing_regular_state_file(
+            &path,
+            "version = \"1\"\nstatus = \"new\"\n",
+            "inspect atomic state rewrite",
+            "open atomic state rewrite",
+            "write atomic state rewrite",
+        )
+        .expect("state rewrite succeeds");
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("state reads"),
+            "version = \"1\"\nstatus = \"new\"\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_regular_state_file_rejects_unwritable_parent_without_truncating_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = test_home("atomic-state-rewrite-unwritable-parent");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("state.toml");
+        let original = "version = \"1\"\nstatus = \"kept\"\n";
+        fs::write(&path, original).expect("state writes");
+        let original_permissions = fs::metadata(&home)
+            .expect("home metadata reads")
+            .permissions();
+        let mut locked_permissions = original_permissions.clone();
+        locked_permissions.set_mode(0o500);
+        fs::set_permissions(&home, locked_permissions).expect("home permissions lock");
+
+        let result = write_regular_state_file(
+            &path,
+            "version = \"1\"\nstatus = \"replacement\"\n",
+            "inspect unwritable parent state",
+            "create unwritable parent state",
+            "open unwritable parent state",
+            "write unwritable parent state",
+        );
+
+        fs::set_permissions(&home, original_permissions).expect("home permissions restore");
+        let error = result.expect_err("unwritable parent should fail before replacement");
+
+        assert!(error.to_string().contains("write unwritable parent state"));
+        assert_eq!(
+            fs::read_to_string(&path).expect("state reads"),
+            original,
+            "failed staged rewrite must leave existing state unchanged"
         );
     }
 
