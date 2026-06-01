@@ -6265,6 +6265,11 @@ impl RelaySessionState {
         }
 
         let now = current_unix_millis_u64();
+        if !self.records.contains_key(node_id) {
+            if let Some(record) = Self::load_record_from_storage(storage, node_id)? {
+                self.records.insert(record.node_id.clone(), record);
+            }
+        }
         let Some(record) = self.records.get(node_id) else {
             return Ok(false);
         };
@@ -6275,6 +6280,34 @@ impl RelaySessionState {
         }
 
         Ok(record.session_id == session_id)
+    }
+
+    fn load_record_from_storage(
+        storage: &RelaySessionStorage,
+        node_id: &str,
+    ) -> Result<Option<RelaySessionRecord>, RelayError> {
+        let RelaySessionStorage::FileBacked(root) = storage else {
+            return Ok(None);
+        };
+        let path = relay_session_record_path(root, node_id);
+
+        for attempt in 0..RELAY_SESSION_STATE_LOAD_ATTEMPTS {
+            match read_session_file(&path) {
+                Ok(record) => return Ok(record),
+                Err(error)
+                    if relay_session_load_should_retry(&error)
+                        && attempt + 1 < RELAY_SESSION_STATE_LOAD_ATTEMPTS =>
+                {
+                    thread::sleep(RELAY_SESSION_STATE_LOAD_RETRY_DELAY);
+                }
+                Err(RelayError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                    return Ok(None);
+                }
+                Err(_) => return Ok(None),
+            }
+        }
+
+        Ok(None)
     }
 
     fn record_authenticated(
@@ -11082,6 +11115,34 @@ token_displayed = true\n",
         let debug = format!("{loaded_state:?}");
         assert!(!debug.contains(&first_session));
         assert!(!debug.contains("test-token"));
+    }
+
+    #[test]
+    fn relay_session_resume_reloads_file_backed_record_on_demand() {
+        let session_dir = test_home("relay-session-on-demand").join("sessions");
+        let session_storage =
+            RelaySessionStorage::file_backed(session_dir).expect("storage config");
+        let session_id = "relay_node.a_on_demand".to_string();
+        let record = RelaySessionRecord::new(
+            "node.a",
+            &session_id,
+            current_unix_millis_u64(),
+            RelaySessionPolicy::default(),
+        );
+        persist_session_record(&session_storage, &record).expect("session record persists");
+
+        let mut sessions = RelaySessionState::default();
+
+        assert!(
+            sessions
+                .can_resume("node.a", &session_id, &session_storage)
+                .expect("session resume checks")
+        );
+        assert!(
+            !sessions
+                .can_resume("node.b", &session_id, &session_storage)
+                .expect("cross-node resume checks")
+        );
     }
 
     #[test]
