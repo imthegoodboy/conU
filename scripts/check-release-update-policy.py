@@ -191,6 +191,34 @@ def main() -> int:
         )
 
         expect_failure(
+            "release base URL with credentials",
+            dist,
+            "must not include credentials",
+            release_base_url="https://token@github.com/imthegoodboy/conU/releases/download/v0.1.0",
+        )
+
+        expect_failure(
+            "release base URL with raw dot segment",
+            dist,
+            "path must not contain dot segments",
+            release_base_url="https://github.com/imthegoodboy/conU/releases/download/../v0.1.0",
+        )
+
+        expect_failure(
+            "release base URL with encoded dot segment",
+            dist,
+            "path must not contain dot segments",
+            release_base_url="https://github.com/imthegoodboy/conU/releases/download/%2e%2e/v0.1.0",
+        )
+
+        expect_failure(
+            "release base URL with encoded separator",
+            dist,
+            "path must not contain encoded separators",
+            release_base_url="https://github.com/imthegoodboy/conU/releases/download/v0.1.0%2fother",
+        )
+
+        expect_failure(
             "tag mismatch",
             dist,
             "does not match version",
