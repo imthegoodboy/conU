@@ -46,6 +46,14 @@ def main() -> int:
     assert_failed(failed, "strict base64")
     assert_not_leaked(failed.stdout, SENTINEL)
 
+    malformed_timestamp_env = minimal_env(base64.b64encode(b"not-a-real-pkcs12").decode("ascii"))
+    malformed_timestamp_env[
+        module.WINDOWS_TIMESTAMP_URL_ENV
+    ] = f"https://timestamp-{SENTINEL}.example.invalid:"
+    failed = run_preflight(malformed_timestamp_env, "--skip-pkcs12-parse")
+    assert_failed(failed, "valid host and authority")
+    assert_not_leaked(failed.stdout, SENTINEL)
+
     invalid_apple_env = minimal_env(base64.b64encode(b"not-a-real-pkcs12").decode("ascii"))
     invalid_apple_env[module.MACOS_NOTARY_APPLE_ID_ENV] = f"{SENTINEL} invalid"
     invalid_apple_env[module.MACOS_NOTARY_TEAM_ID_ENV] = "not-a-team-id"
