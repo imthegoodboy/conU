@@ -44,6 +44,7 @@ def main() -> int:
     archives = sorted(dist.glob("*.zip")) + sorted(dist.glob("*.tar.gz"))
     if not archives:
         raise SystemExit(f"no release archives found in {dist}")
+    validate_served_dist_assets(dist)
 
     smoked = 0
     skipped = 0
@@ -119,6 +120,23 @@ def npm_asset_name(package_dir: Path, local_smoke) -> str:
     platform_key = local_smoke.npm_platform_key()
     extension = ".tar.gz" if platform_key.startswith("linux-") else ".zip"
     return f"conu-{version}-{platform_key}{extension}"
+
+
+def validate_served_dist_assets(dist: Path) -> None:
+    for root, dir_names, file_names in os.walk(dist, followlinks=False):
+        root_path = Path(root)
+        for name in sorted([*dir_names, *file_names]):
+            path = root_path / name
+            relative = path.relative_to(dist).as_posix()
+            if path.is_symlink():
+                raise SystemExit(
+                    f"npm download smoke served asset must not be a symlink: {relative}"
+                )
+            if not path.is_dir() and not path.is_file():
+                raise SystemExit(
+                    "npm download smoke served asset must be a regular file or directory: "
+                    f"{relative}"
+                )
 
 
 def install_npm_package_from_release_base(

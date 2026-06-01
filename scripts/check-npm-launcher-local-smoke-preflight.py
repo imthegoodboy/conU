@@ -13,6 +13,7 @@ from unittest import mock
 
 def main() -> int:
     smoke = load_smoke_helpers()
+    download_smoke = load_download_smoke_helpers()
 
     with fixture_dir() as root:
         with mock.patch.object(Path, "is_symlink", return_value=True):
@@ -58,6 +59,44 @@ def main() -> int:
                 lambda: smoke.read_manifest_target(archive),
                 "must not be a symlink",
                 "npm smoke symlink archive",
+            )
+
+    with fixture_dir() as root:
+        dist = root / "dist"
+        dist.mkdir()
+        dist.joinpath("conu-0.1.0-host.zip.sha256").write_text("checksum\n", encoding="utf-8")
+        download_smoke.validate_served_dist_assets(dist)
+
+    with fixture_dir() as root:
+        dist = root / "dist"
+        dist.mkdir()
+        dist.joinpath("conu-0.1.0-host.zip.sha256").write_text("checksum\n", encoding="utf-8")
+        with mock.patch.object(
+            Path,
+            "is_symlink",
+            lambda path: path.name.endswith(".sha256"),
+        ):
+            expect_action_failure(
+                lambda: download_smoke.validate_served_dist_assets(dist),
+                "served asset must not be a symlink",
+                "npm download smoke symlink served checksum",
+            )
+
+    with fixture_dir() as root:
+        dist = root / "dist"
+        dist.mkdir()
+        nested = dist / "nested"
+        nested.mkdir()
+        nested.joinpath("asset.txt").write_text("asset\n", encoding="utf-8")
+        with mock.patch.object(
+            Path,
+            "is_symlink",
+            lambda path: path.name == "nested",
+        ):
+            expect_action_failure(
+                lambda: download_smoke.validate_served_dist_assets(dist),
+                "served asset must not be a symlink",
+                "npm download smoke symlink served directory",
             )
 
     with fixture_dir() as root:
@@ -299,6 +338,19 @@ def main() -> int:
 def load_smoke_helpers():
     helper_path = Path(__file__).with_name("smoke-npm-launcher-local.py")
     spec = importlib.util.spec_from_file_location("conu_npm_launcher_local_smoke", helper_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"could not load helper script {helper_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_download_smoke_helpers():
+    helper_path = Path(__file__).with_name("smoke-npm-launcher-download.py")
+    spec = importlib.util.spec_from_file_location(
+        "conu_npm_launcher_download_smoke",
+        helper_path,
+    )
     if spec is None or spec.loader is None:
         raise SystemExit(f"could not load helper script {helper_path}")
     module = importlib.util.module_from_spec(spec)
