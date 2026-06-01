@@ -35,6 +35,8 @@ jobs:
         run: python scripts/check-platform-signing-secrets-preflight-regression.py
       - name: GitHub release secret readiness regression
         run: python scripts/check-github-release-secret-readiness-regression.py
+      - name: Release secret env preflight regression
+        run: python scripts/check-release-secret-env-preflight-regression.py
       - name: GitHub release secret setup regression
         run: python scripts/set-github-release-secrets-regression.py
       - name: GitHub main branch protection regression
