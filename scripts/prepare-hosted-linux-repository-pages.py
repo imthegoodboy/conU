@@ -513,6 +513,7 @@ def validate_repository_base_url(raw: str) -> str:
         raise SystemExit("repository.json baseUrl must be an absolute https URL")
     if parsed.params or parsed.query or parsed.fragment:
         raise SystemExit("repository.json baseUrl must not include params, query, or fragment")
+    netloc = normalize_url_netloc(parsed, "repository.json baseUrl")
     path_parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in path_parts):
         raise SystemExit("repository.json baseUrl path must not contain dot segments")
@@ -522,7 +523,25 @@ def validate_repository_base_url(raw: str) -> str:
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise SystemExit("repository.json baseUrl path must not contain encoded separators")
     normalized_path = "/" + "/".join(path_parts) if path_parts else ""
-    return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
+    return urlunparse(("https", netloc, normalized_path, "", "", ""))
+
+
+def normalize_url_netloc(parsed, label: str) -> str:
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise SystemExit(f"{label} authority is invalid") from exc
+    if not host:
+        raise SystemExit(f"{label} authority must include a host")
+    if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
+        raise SystemExit(f"{label} authority is invalid")
+    host = host.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if port is None:
+        return host
+    return f"{host}:{port}"
 
 
 def url_to_base_path(base_url: str, value: object, label: str) -> str:

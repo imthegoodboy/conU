@@ -55,6 +55,7 @@ def normalize_https_url(value: str, field_name: str) -> str:
         raise ValueError(f"{field_name} must be an absolute HTTPS URL")
     if parsed.params or parsed.query or parsed.fragment:
         raise ValueError(f"{field_name} must not contain params, query, or fragment")
+    netloc = normalize_url_netloc(parsed, field_name)
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise ValueError(f"{field_name} path must not contain dot segments")
@@ -64,7 +65,25 @@ def normalize_https_url(value: str, field_name: str) -> str:
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise ValueError(f"{field_name} path must not contain encoded separators")
     path = "/" + "/".join(parts) if parts else ""
-    return urlunparse(("https", parsed.netloc.lower(), path, "", "", ""))
+    return urlunparse(("https", netloc, path, "", "", ""))
+
+
+def normalize_url_netloc(parsed, field_name: str) -> str:
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{field_name} authority is invalid") from exc
+    if not host:
+        raise ValueError(f"{field_name} authority must include a host")
+    if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
+        raise ValueError(f"{field_name} authority is invalid")
+    host = host.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if port is None:
+        return host
+    return f"{host}:{port}"
 
 
 def default_pages_base_url(repo: str) -> str:

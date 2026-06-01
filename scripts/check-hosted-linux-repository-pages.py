@@ -50,6 +50,17 @@ def main() -> int:
         assert_pages_output(pages, site)
 
         preparer = load_pages_preparer()
+        for bad_url in (
+            "https://imthegoodboy.github.io:bad/conU",
+            "https://imthegoodboy.github.io:/conU",
+            "https://:443/conU",
+            "https://imthegoodboy.github.io:443x/conU",
+        ):
+            expect_action_failure(
+                lambda bad_url=bad_url: preparer.validate_repository_base_url(bad_url),
+                "authority",
+                "malformed repository base URL authority",
+            )
         expect_zip_bound_failure(
             preparer,
             site,

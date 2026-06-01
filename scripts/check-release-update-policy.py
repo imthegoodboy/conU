@@ -197,6 +197,19 @@ def main() -> int:
             release_base_url="https://token@github.com/imthegoodboy/conU/releases/download/v0.1.0",
         )
 
+        for bad_url in (
+            "https://github.com:bad/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://github.com:/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://:443/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://github.com:443x/imthegoodboy/conU/releases/download/v0.1.0",
+        ):
+            expect_failure(
+                "malformed release base URL authority",
+                dist,
+                "authority",
+                release_base_url=bad_url,
+            )
+
         expect_failure(
             "release base URL with raw dot segment",
             dist,

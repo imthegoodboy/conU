@@ -190,6 +190,7 @@ def validate_base_url(raw: str) -> str:
         raise SystemExit("hosted Linux repository base URL must be an absolute https URL")
     if parsed.params or parsed.query or parsed.fragment:
         raise SystemExit("hosted Linux repository base URL must not include params, query, or fragment")
+    netloc = normalize_url_netloc(parsed, "hosted Linux repository base URL")
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise SystemExit("hosted Linux repository base URL path must not contain dot segments")
@@ -199,7 +200,25 @@ def validate_base_url(raw: str) -> str:
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise SystemExit("hosted Linux repository base URL path must not contain encoded separators")
     normalized_path = "/" + "/".join(parts) if parts else ""
-    return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
+    return urlunparse(("https", netloc, normalized_path, "", "", ""))
+
+
+def normalize_url_netloc(parsed, label: str) -> str:
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise SystemExit(f"{label} authority is invalid") from exc
+    if not host:
+        raise SystemExit(f"{label} authority must include a host")
+    if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
+        raise SystemExit(f"{label} authority is invalid")
+    host = host.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if port is None:
+        return host
+    return f"{host}:{port}"
 
 
 def hosted_repository_bundle_filename(version: str) -> str:
