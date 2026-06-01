@@ -44,6 +44,8 @@ const RELAY_ABUSE_FILE_VERSION: &str = "1";
 const HOSTED_TENANT_FILE_VERSION: &str = "1";
 const RELAY_SESSION_STATE_LOAD_ATTEMPTS: usize = 6;
 const RELAY_SESSION_STATE_LOAD_RETRY_DELAY: Duration = Duration::from_millis(20);
+const RELAY_METADATA_REPLACE_ATTEMPTS: usize = 6;
+const RELAY_METADATA_REPLACE_RETRY_DELAY: Duration = Duration::from_millis(20);
 const LOCAL_DEV_TOKEN: &str = "local-dev-token";
 const MIN_PUBLIC_BIND_TOKEN_LEN: usize = 24;
 const MAX_TOKEN_LEN: usize = 200;
@@ -3247,6 +3249,37 @@ fn write_relay_metadata_file(
     write_temp_action: &'static str,
     replace_action: &'static str,
 ) -> Result<(), RelayError> {
+    for attempt in 0..RELAY_METADATA_REPLACE_ATTEMPTS {
+        match write_relay_metadata_file_once(
+            path,
+            contents,
+            inspect_action,
+            create_temp_action,
+            write_temp_action,
+            replace_action,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if relay_metadata_replace_should_retry(&error)
+                    && attempt + 1 < RELAY_METADATA_REPLACE_ATTEMPTS =>
+            {
+                thread::sleep(RELAY_METADATA_REPLACE_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    unreachable!("relay metadata replacement loop always returns")
+}
+
+fn write_relay_metadata_file_once(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+    create_temp_action: &'static str,
+    write_temp_action: &'static str,
+    replace_action: &'static str,
+) -> Result<(), RelayError> {
     let expected_metadata = inspect_optional_regular_relay_file(path, inspect_action)?;
     let temp_path = relay_metadata_temp_path(path)?;
     let mut file = OpenOptions::new()
@@ -3274,6 +3307,22 @@ fn write_relay_metadata_file(
         let _ = fs::remove_file(&temp_path);
     }
     result
+}
+
+fn relay_metadata_replace_should_retry(error: &RelayError) -> bool {
+    match error {
+        RelayError::Io { source, .. } => matches!(
+            source.kind(),
+            io::ErrorKind::NotFound
+                | io::ErrorKind::AlreadyExists
+                | io::ErrorKind::PermissionDenied
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::Interrupted
+        ),
+        RelayError::InvalidConfig(_)
+        | RelayError::InvalidConfigValue(_)
+        | RelayError::Protocol(_) => false,
+    }
 }
 
 fn replace_regular_relay_file_with_temp(
