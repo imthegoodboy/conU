@@ -25,6 +25,7 @@ use crate::relay::{
     RelayClientFrame, RelayEnvelopeKind, RelayForward, RelayFrameError, RelayHello,
     RelayOpaqueBody, RelayServerFrame, RelayWebSocketClient,
 };
+use crate::relay_endpoint::{self, RelayEndpointError};
 use crate::rooms;
 use crate::security::{self, PeerEncryptedPayload, SecurityError};
 use crate::sessions::{self, SessionError};
@@ -1979,18 +1980,16 @@ fn value_or_empty<'a>(values: &'a HashMap<String, String>, key: &str) -> &'a str
 }
 
 fn validate_endpoint(value: String) -> Result<String, RelayDeliveryError> {
-    let value = value.trim().to_string();
-    if !value.starts_with("ws://") && !value.starts_with("wss://") {
-        return Err(RelayDeliveryError::InvalidRequest {
-            reason: "relay endpoint must start with ws:// or wss://".to_string(),
-        });
-    }
-    if value.len() > 220 || value.chars().any(char::is_whitespace) {
-        return Err(RelayDeliveryError::InvalidRequest {
-            reason: "relay endpoint is invalid".to_string(),
-        });
-    }
-    Ok(value)
+    relay_endpoint::validate_relay_endpoint(value).map_err(|error| {
+        let reason = match error {
+            RelayEndpointError::Empty => "relay endpoint cannot be empty",
+            RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+            RelayEndpointError::Invalid => "relay endpoint is invalid",
+        };
+        RelayDeliveryError::InvalidRequest {
+            reason: reason.to_string(),
+        }
+    })
 }
 
 fn validate_identifier(value: String, field: &'static str) -> Result<String, RelayDeliveryError> {
@@ -2491,6 +2490,28 @@ mod tests {
 
         assert!(should_sync);
         assert_eq!(endpoint, "wss://relay.example.com/conu");
+    }
+
+    #[test]
+    fn relay_endpoint_validation_rejects_secret_bearing_config_without_echoing_value() {
+        let home = test_home("runtime-secret-relay-config");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let secret_endpoint = "wss://user:secret@relay.example.com/conu?token=private#fragment";
+        fs::write(
+            &init.paths.config,
+            format!(
+                "version = \"1\"\ndefault_relay = \"{secret_endpoint}\"\nrelay_auto_sync = true\n"
+            ),
+        )
+        .expect("config writes");
+
+        let error = configured_relay_endpoint(&init.paths)
+            .expect_err("secret-bearing relay endpoint should fail");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("relay endpoint is invalid"));
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("token=private"));
     }
 
     #[cfg(unix)]

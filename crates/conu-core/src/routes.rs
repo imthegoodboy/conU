@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::direct_transport;
+use crate::relay_endpoint::{self, RelayEndpointError};
 use crate::state::{self, StateError, StatePaths};
 use crate::trust::{self, TrustStatus, TrustedPeer};
 
@@ -858,12 +859,14 @@ fn parse_probes(contents: &str) -> Result<Vec<RouteProbe>, RouteError> {
 fn route_from_values(values: &HashMap<String, String>) -> Result<RouteRecord, RouteError> {
     let latency_ms = parse_u64(&required(values, "latency_ms")?)?;
     let failure_reason = optional_clean(values.get("failure_reason"));
+    let transport = RouteTransport::from_str(&required(values, "transport")?);
+    let endpoint = validate_route_endpoint(required(values, "endpoint")?, transport)?;
     Ok(RouteRecord {
         route_id: validate_identifier(required(values, "route_id")?, "route id")?,
         peer_node_id: validate_identifier(required(values, "peer_node_id")?, "peer node id")?,
         display_name: validate_display_name(required(values, "display_name")?)?,
-        transport: RouteTransport::from_str(&required(values, "transport")?),
-        endpoint: validate_endpoint(required(values, "endpoint")?)?,
+        transport,
+        endpoint,
         state: RouteState::from_str(&required(values, "state")?),
         score: parse_u16(&required(values, "score")?)?,
         latency_ms: if latency_ms == 0 {
@@ -890,12 +893,14 @@ fn route_from_values(values: &HashMap<String, String>) -> Result<RouteRecord, Ro
 
 fn probe_from_values(values: &HashMap<String, String>) -> Result<RouteProbe, RouteError> {
     let latency_ms = parse_u64(&required(values, "latency_ms")?)?;
+    let transport = RouteTransport::from_str(&required(values, "transport")?);
+    let endpoint = validate_route_endpoint(required(values, "endpoint")?, transport)?;
     Ok(RouteProbe {
         probe_id: validate_identifier(required(values, "probe_id")?, "probe id")?,
         route_id: validate_identifier(required(values, "route_id")?, "route id")?,
         peer_node_id: validate_identifier(required(values, "peer_node_id")?, "peer node id")?,
-        transport: RouteTransport::from_str(&required(values, "transport")?),
-        endpoint: validate_endpoint(required(values, "endpoint")?)?,
+        transport,
+        endpoint,
         outcome: validate_identifier(required(values, "outcome")?, "outcome")?,
         score: parse_u16(&required(values, "score")?)?,
         latency_ms: if latency_ms == 0 {
@@ -1006,18 +1011,33 @@ fn validate_display_name(value: String) -> Result<String, RouteError> {
 }
 
 fn validate_endpoint(value: String) -> Result<String, RouteError> {
+    relay_endpoint::validate_relay_endpoint(value).map_err(|error| {
+        let reason = match error {
+            RelayEndpointError::Empty => "endpoint cannot be empty",
+            RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+            RelayEndpointError::Invalid => "endpoint is invalid",
+        };
+        RouteError::InvalidRecord {
+            reason: reason.to_string(),
+        }
+    })
+}
+
+fn validate_route_endpoint(value: String, transport: RouteTransport) -> Result<String, RouteError> {
     let value = value.trim().to_string();
-    if value.is_empty() {
-        return Err(RouteError::InvalidRecord {
-            reason: "endpoint cannot be empty".to_string(),
-        });
+    match transport {
+        RouteTransport::DirectQuic => {
+            if value != "quic://invalid" {
+                direct_transport::validate_direct_peer_endpoint(&value).map_err(|_| {
+                    RouteError::InvalidRecord {
+                        reason: "endpoint is invalid".to_string(),
+                    }
+                })?;
+            }
+            Ok(value)
+        }
+        RouteTransport::RelayWebSocket => validate_endpoint(value),
     }
-    if value.len() > 220 || value.chars().any(char::is_whitespace) {
-        return Err(RouteError::InvalidRecord {
-            reason: "endpoint is invalid".to_string(),
-        });
-    }
-    Ok(value)
 }
 
 fn valid_direct_endpoint(value: &str) -> bool {
@@ -1344,6 +1364,27 @@ mod tests {
             assert!(!contents.contains("BEGIN PRIVATE KEY"));
             assert!(!contents.contains("private message contents"));
         }
+    }
+
+    #[test]
+    fn relay_endpoint_config_rejects_secret_bearing_url_without_echoing_value() {
+        let home = test_home("secret-relay-route-config");
+        trusted_peer(&home);
+        let secret_endpoint = "wss://user:secret@relay.example.com/conu?token=private#fragment";
+        fs::write(
+            StatePaths::from_home(home.clone()).config,
+            format!(
+                "version = \"1\"\ndefault_relay = \"{secret_endpoint}\"\nnat_profile = \"public\"\n"
+            ),
+        )
+        .expect("config writes");
+
+        let error = sync_routes(Some(home)).expect_err("secret-bearing relay endpoint should fail");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("endpoint is invalid"));
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("token=private"));
     }
 
     #[test]
