@@ -788,18 +788,19 @@ fn write_runtime_control_file(
     inspect_action: &'static str,
     create_action: &'static str,
     open_action: &'static str,
-    truncate_action: &'static str,
+    _truncate_action: &'static str,
     write_action: &'static str,
 ) -> Result<(), RuntimeError> {
+    ensure_runtime_control_contents_within_limit(path, contents.len(), write_action)?;
+
     match regular_runtime_control_metadata(path, inspect_action)? {
-        Some(_) => {
-            let mut file =
-                open_existing_runtime_control_for_write(path, inspect_action, open_action)?;
-            file.set_len(0)
-                .map_err(|error| RuntimeError::io(truncate_action, path, error))?;
-            file.write_all(contents.as_bytes())
-                .map_err(|error| RuntimeError::io(write_action, path, error))
-        }
+        Some(_) => replace_existing_runtime_control_file(
+            path,
+            contents,
+            inspect_action,
+            open_action,
+            write_action,
+        ),
         None => {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -810,6 +811,151 @@ fn write_runtime_control_file(
                 .map_err(|error| RuntimeError::io(write_action, path, error))
         }
     }
+}
+
+fn replace_existing_runtime_control_file(
+    path: &Path,
+    contents: &str,
+    inspect_action: &'static str,
+    open_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), RuntimeError> {
+    let file = open_existing_runtime_control_for_write(path, inspect_action, open_action)?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| RuntimeError::io(open_action, path, error))?;
+    drop(file);
+
+    let temp_path = write_replacement_runtime_control_temp_file(path, contents, write_action)?;
+    let result = replace_runtime_control_file_with_temp(
+        path,
+        &temp_path,
+        &metadata,
+        inspect_action,
+        write_action,
+    );
+    if result.is_err() {
+        remove_temp_runtime_control_file(&temp_path);
+    }
+    result
+}
+
+fn write_replacement_runtime_control_temp_file(
+    path: &Path,
+    contents: &str,
+    write_action: &'static str,
+) -> Result<PathBuf, RuntimeError> {
+    let parent = runtime_control_parent(path);
+    if !state::state_directory_exists(parent, "inspect runtime directory")? {
+        return Err(RuntimeError::io(
+            write_action,
+            parent,
+            io::Error::new(io::ErrorKind::NotFound, "runtime directory path is missing"),
+        ));
+    }
+
+    for attempt in 0..16 {
+        let temp_path = replacement_runtime_control_temp_path(path, attempt);
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(RuntimeError::io(write_action, &temp_path, error)),
+        };
+
+        let write_result = file
+            .write_all(contents.as_bytes())
+            .and_then(|_| file.sync_all());
+        drop(file);
+
+        if let Err(error) = write_result {
+            remove_temp_runtime_control_file(&temp_path);
+            return Err(RuntimeError::io(write_action, &temp_path, error));
+        }
+
+        return Ok(temp_path);
+    }
+
+    Err(RuntimeError::io(
+        write_action,
+        path,
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not reserve a unique runtime control replacement file",
+        ),
+    ))
+}
+
+fn replace_runtime_control_file_with_temp(
+    path: &Path,
+    temp_path: &Path,
+    expected_metadata: &fs::Metadata,
+    inspect_action: &'static str,
+    write_action: &'static str,
+) -> Result<(), RuntimeError> {
+    let Some(current_metadata) = regular_runtime_control_metadata(path, inspect_action)? else {
+        return Err(RuntimeError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "runtime control path is missing"),
+        ));
+    };
+    if !runtime_control_write_target_matches(expected_metadata, &current_metadata) {
+        return Err(RuntimeError::io(
+            inspect_action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "runtime control path changed before replacement",
+            ),
+        ));
+    }
+
+    fs::rename(temp_path, path).map_err(|error| RuntimeError::io(write_action, path, error))
+}
+
+fn ensure_runtime_control_contents_within_limit(
+    path: &Path,
+    contents_len: usize,
+    action: &'static str,
+) -> Result<(), RuntimeError> {
+    if contents_len as u64 > MAX_RUNTIME_CONTROL_FILE_BYTES {
+        return Err(RuntimeError::io(
+            action,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("runtime control file exceeds {MAX_RUNTIME_CONTROL_FILE_BYTES} bytes"),
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn runtime_control_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn replacement_runtime_control_temp_path(path: &Path, attempt: u8) -> PathBuf {
+    let parent = runtime_control_parent(path);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("runtime-control");
+    parent.join(format!(
+        ".{file_name}.tmp-{}-{}-{attempt}",
+        process::id(),
+        current_unix_nanos()
+    ))
+}
+
+fn remove_temp_runtime_control_file(path: &Path) {
+    let _ = fs::remove_file(path);
 }
 
 fn open_existing_runtime_control_for_write(
@@ -1106,7 +1252,6 @@ fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
-#[cfg(test)]
 fn current_unix_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1192,6 +1337,78 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&replacement).expect("replacement reads"),
             "version = \"1\"\nstate = \"running\"\n"
+        );
+    }
+
+    #[test]
+    fn runtime_control_rewrite_replaces_existing_contents() {
+        let home = test_home("runtime-control-atomic-rewrite");
+        let paths = StatePaths::from_home(home);
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir creates");
+        fs::write(
+            &paths.runtime_status,
+            "version = \"1\"\nstate = \"offline\"\n",
+        )
+        .expect("status writes");
+
+        write_runtime_control_file(
+            &paths.runtime_status,
+            "version = \"1\"\nstate = \"running\"\n",
+            "inspect runtime status",
+            "create runtime status",
+            "open runtime status",
+            "truncate runtime status",
+            "write runtime status",
+        )
+        .expect("runtime status rewrites");
+
+        assert_eq!(
+            fs::read_to_string(&paths.runtime_status).expect("status reads"),
+            "version = \"1\"\nstate = \"running\"\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_control_rewrite_rejects_unwritable_parent_without_truncating_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = test_home("runtime-control-atomic-rewrite-unwritable-parent");
+        let paths = StatePaths::from_home(home);
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir creates");
+        let original = "version = \"1\"\nstate = \"offline\"\n";
+        fs::write(&paths.runtime_status, original).expect("status writes");
+        let original_permissions = fs::metadata(&paths.runtime_dir)
+            .expect("runtime dir metadata reads")
+            .permissions();
+        let mut locked_permissions = original_permissions.clone();
+        locked_permissions.set_mode(0o500);
+        fs::set_permissions(&paths.runtime_dir, locked_permissions)
+            .expect("runtime dir permissions lock");
+
+        let result = write_runtime_control_file(
+            &paths.runtime_status,
+            "version = \"1\"\nstate = \"running\"\n",
+            "inspect unwritable runtime status",
+            "create unwritable runtime status",
+            "open unwritable runtime status",
+            "truncate unwritable runtime status",
+            "write unwritable runtime status",
+        );
+
+        fs::set_permissions(&paths.runtime_dir, original_permissions)
+            .expect("runtime dir permissions restore");
+        let error = result.expect_err("unwritable parent should fail before replacement");
+
+        assert!(
+            error
+                .to_string()
+                .contains("write unwritable runtime status")
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.runtime_status).expect("status reads"),
+            original,
+            "failed staged rewrite must leave existing runtime status unchanged"
         );
     }
 
