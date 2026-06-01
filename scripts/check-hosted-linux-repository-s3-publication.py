@@ -95,6 +95,25 @@ def main() -> int:
             "must not include params, query, or fragment",
         )
 
+        escaped_dot_download_url = temp / "escaped-dot-download-url-site"
+        shutil.copytree(site_dir, escaped_dot_download_url)
+        repository_path = escaped_dot_download_url / "repository.json"
+        repository = json.loads(repository_path.read_text(encoding="ascii"))
+        repository["downloads"]["hostedBundleUrl"] = repository["downloads"][
+            "hostedBundleUrl"
+        ].replace("/downloads/", "/downloads/%2e%2e/")
+        repository_path.write_text(
+            json.dumps(repository, indent=2, sort_keys=True) + "\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        escaped_dot_result = run_publisher_raw(escaped_dot_download_url, "--dry-run")
+        assert_failure(
+            "escaped dot download URL",
+            escaped_dot_result,
+            "path must not contain dot segments",
+        )
+
         forbidden = temp / "forbidden-site"
         shutil.copytree(site_dir, forbidden)
         (forbidden / "README.txt").write_text("NPM_TOKEN\n", encoding="ascii")

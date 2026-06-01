@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 
@@ -265,6 +265,9 @@ def normalize_base_url(raw_value: str, *, allow_loopback_http: bool) -> str:
             )
     path_parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in path_parts):
+        raise EndpointReadinessError("hosted Linux repository base URL path must not contain dot segments")
+    decoded_path_parts = [unquote(part) for part in path_parts]
+    if any(part in {".", ".."} for part in decoded_path_parts):
         raise EndpointReadinessError("hosted Linux repository base URL path must not contain dot segments")
     path = "/" + "/".join(path_parts) if path_parts else ""
     netloc = normalize_netloc(host_lower, parsed.port)
@@ -602,6 +605,16 @@ def url_to_base_path(base_url: str, value: str, label: str) -> str:
     path_parts = [part for part in parsed_value.path.split("/") if part]
     if any(part in {".", ".."} for part in path_parts):
         raise EndpointReadinessError(f"{label} path must not contain dot segments")
+    decoded_path_parts = [unquote(part) for part in path_parts]
+    if any(part in {".", ".."} for part in decoded_path_parts):
+        raise EndpointReadinessError(f"{label} path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_path_parts):
+        raise EndpointReadinessError(f"{label} path must not contain encoded separators")
+    forbidden = sorted({part.lower() for part in decoded_path_parts} & FORBIDDEN_PATH_SEGMENTS)
+    if forbidden:
+        raise EndpointReadinessError(
+            f"{label} path contains forbidden local-state segment: {', '.join(forbidden)}"
+        )
     if base_path:
         if value_path != base_path and not value_path.startswith(f"{base_path}/"):
             raise EndpointReadinessError(f"{label} points outside repository path")

@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -338,6 +338,9 @@ def validate_base_url(raw: str) -> str:
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise PublicationError("repository base URL path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise PublicationError("repository base URL path must not contain dot segments")
     normalized_path = "/" + "/".join(parts) if parts else ""
     return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
 
@@ -422,6 +425,16 @@ def url_to_base_path(base_url: str, value: str, label: str) -> str:
     path_parts = [part for part in parsed_value.path.split("/") if part]
     if any(part in {".", ".."} for part in path_parts):
         raise PublicationError(f"{label} path must not contain dot segments")
+    decoded_path_parts = [unquote(part) for part in path_parts]
+    if any(part in {".", ".."} for part in decoded_path_parts):
+        raise PublicationError(f"{label} path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_path_parts):
+        raise PublicationError(f"{label} path must not contain encoded separators")
+    forbidden = sorted({part.lower() for part in decoded_path_parts} & FORBIDDEN_SEGMENTS)
+    if forbidden:
+        raise PublicationError(
+            f"{label} path contains forbidden local-state segment: {', '.join(forbidden)}"
+        )
     if base_path:
         if value_path != base_path and not value_path.startswith(f"{base_path}/"):
             raise PublicationError(f"{label} points outside repository path")
