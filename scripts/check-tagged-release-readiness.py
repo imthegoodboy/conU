@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from github_release_secrets import (
     REQUIRED_RELEASE_SECRETS,
@@ -281,6 +281,11 @@ def normalize_custom_base_url(raw: str) -> str:
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise ValueError("custom repository base URL path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise ValueError("custom repository base URL path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise ValueError("custom repository base URL path must not contain encoded separators")
     path = "/" + "/".join(parts) if parts else ""
     return urlunparse(("https", parsed.netloc.lower(), path, "", "", ""))
 
