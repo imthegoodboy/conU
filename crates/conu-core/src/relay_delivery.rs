@@ -1436,9 +1436,46 @@ fn move_relay_request(
 ) -> Result<(), RelayDeliveryError> {
     state::ensure_state_directory(target_dir)?;
     let target = relay_archive_target(target_dir, request_path, extension);
-    ensure_relay_archive_target_available(&target)?;
-    fs::rename(request_path, &target)
-        .map_err(|error| RelayDeliveryError::io("move relay request marker", request_path, error))
+    archive_relay_request_no_replace(
+        request_path,
+        &target,
+        "inspect relay request before archive",
+        "reserve relay archive target",
+        "move relay request marker",
+    )?;
+    Ok(())
+}
+
+fn archive_relay_request_no_replace(
+    request_path: &Path,
+    target: &Path,
+    inspect_source_action: &'static str,
+    inspect_target_action: &'static str,
+    archive_action: &'static str,
+) -> Result<(), RelayDeliveryError> {
+    match state::archive_regular_state_file_no_replace(
+        request_path,
+        target,
+        inspect_source_action,
+        inspect_target_action,
+        archive_action,
+    ) {
+        Ok(()) => Ok(()),
+        Err(state::StateError::Io { source, .. })
+            if source.kind() == io::ErrorKind::InvalidInput && path_is_symlink(request_path) =>
+        {
+            ensure_relay_archive_target_available(target)?;
+            fs::rename(request_path, target)
+                .map_err(|error| RelayDeliveryError::io(archive_action, request_path, error))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn path_is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 fn relay_archive_target(target_dir: &Path, request_path: &Path, extension: &str) -> PathBuf {
