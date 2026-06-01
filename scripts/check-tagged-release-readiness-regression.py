@@ -382,6 +382,56 @@ def run_custom_repository_tests(module) -> None:
         if expected not in rendered_invalid_optional:
             raise AssertionError(f"expected optional variable failure was missing: {expected}")
 
+    invalid_base_paths = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_custom_secrets(module),
+        variable_values={
+            module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/%2e%2e/v0.1.0",
+            module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+            module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+            module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com",
+            module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+        },
+        pages_payload=None,
+        release_payload=None,
+        npm_registry_check=False,
+    )
+    if invalid_base_paths.ready:
+        raise AssertionError("encoded custom repository base URL dot segment should fail")
+    parsed_invalid_base_paths = assert_safe_report(invalid_base_paths)
+    if (
+        "custom repository base URL path must not contain dot segments"
+        not in json.dumps(parsed_invalid_base_paths)
+    ):
+        raise AssertionError("encoded custom repository base URL dot segment failure was missing")
+
+    invalid_base_separator = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_custom_secrets(module),
+        variable_values={
+            module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/v0.1.0%2fother",
+            module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+            module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+            module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com",
+            module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+        },
+        pages_payload=None,
+        release_payload=None,
+        npm_registry_check=False,
+    )
+    if invalid_base_separator.ready:
+        raise AssertionError("encoded custom repository base URL separator should fail")
+    parsed_invalid_base_separator = assert_safe_report(invalid_base_separator)
+    if (
+        "custom repository base URL path must not contain encoded separators"
+        not in json.dumps(parsed_invalid_base_separator)
+    ):
+        raise AssertionError("encoded custom repository base URL separator failure was missing")
+
 
 def run_safe_failure_tests(module) -> None:
     invalid = module.audit_tagged_release_readiness(

@@ -77,6 +77,13 @@ def run_audit_tests(module) -> None:
     assert_not_ready_for(module, "public", False, "public")
     assert_not_ready_for(module, "html_url", "https://packages.example.com/conu/", "default base URL")
     assert_not_ready_for(module, "source", {"branch": "gh-pages", "path": "/"}, "main:/")
+    credentialed_payload = ready_payload()
+    credentialed_payload["html_url"] = f"https://user:{SENSITIVE_SENTINEL}@owner.github.io/repo/"
+    credentialed_report = module.audit_pages_readiness("owner/repo", credentialed_payload)
+    if credentialed_report.ready:
+        raise AssertionError("credentialed Pages html_url should not be ready")
+    if SENSITIVE_SENTINEL in json.dumps(credentialed_report.as_json()):
+        raise AssertionError("credentialed Pages html_url leaked into readiness report")
 
     custom = module.audit_pages_readiness(
         "owner/repo",
@@ -88,6 +95,30 @@ def run_audit_tests(module) -> None:
     assert_raises(
         lambda: module.audit_pages_readiness("owner/repo", None, "http://packages.example.com/conu"),
         "HTTPS",
+    )
+    assert_raises(
+        lambda: module.audit_pages_readiness(
+            "owner/repo",
+            None,
+            f"https://user:{SENSITIVE_SENTINEL}@packages.example.com/conu",
+        ),
+        "credentials",
+    )
+    assert_raises(
+        lambda: module.audit_pages_readiness(
+            "owner/repo",
+            None,
+            "https://packages.example.com/conu/%2e%2e/v0.1.0",
+        ),
+        "dot segments",
+    )
+    assert_raises(
+        lambda: module.audit_pages_readiness(
+            "owner/repo",
+            None,
+            "https://packages.example.com/conu/v0.1.0%2fother",
+        ),
+        "encoded separators",
     )
     default_custom = module.audit_pages_readiness(
         "owner/repo",

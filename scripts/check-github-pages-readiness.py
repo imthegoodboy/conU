@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 from github_release_secrets import find_gh, infer_repo, run_gh_json
 
@@ -49,11 +49,21 @@ def normalize_https_url(value: str, field_name: str) -> str:
     if not raw:
         raise ValueError(f"{field_name} must not be empty")
     parsed = urlparse(raw)
+    if parsed.username or parsed.password:
+        raise ValueError(f"{field_name} must not include credentials")
     if parsed.scheme.lower() != "https" or not parsed.netloc:
         raise ValueError(f"{field_name} must be an absolute HTTPS URL")
     if parsed.params or parsed.query or parsed.fragment:
         raise ValueError(f"{field_name} must not contain params, query, or fragment")
-    path = parsed.path.rstrip("/")
+    parts = [part for part in parsed.path.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        raise ValueError(f"{field_name} path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise ValueError(f"{field_name} path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise ValueError(f"{field_name} path must not contain encoded separators")
+    path = "/" + "/".join(parts) if parts else ""
     return urlunparse(("https", parsed.netloc.lower(), path, "", "", ""))
 
 
@@ -69,7 +79,7 @@ def normalize_payload_url(payload: dict[str, Any]) -> str:
     try:
         return normalize_https_url(value, "GitHub Pages html_url")
     except ValueError:
-        return value.strip()
+        return ""
 
 
 def source_is_main_root(payload: dict[str, Any]) -> bool:
