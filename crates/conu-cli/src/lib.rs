@@ -10190,14 +10190,21 @@ fn parse_update_authority(authority: &str, label: &str) -> Result<(String, u16),
 
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port_text))
-            if !port_text.is_empty() && port_text.chars().all(|c| c.is_ascii_digit()) =>
+            if !host.is_empty()
+                && !port_text.is_empty()
+                && port_text.chars().all(|c| c.is_ascii_digit()) =>
         {
             let port = port_text
                 .parse::<u16>()
                 .map_err(|_| format!("release update policy {label} port is invalid"))?;
             (host, port)
         }
-        _ => (authority, 443),
+        Some((_host, _port_text)) => {
+            return Err(format!(
+                "release update policy {label} authority is invalid"
+            ));
+        }
+        None => (authority, 443),
     };
     Ok((host.trim().to_ascii_lowercase(), port))
 }
@@ -11677,6 +11684,40 @@ mod tests {
 
         assert_eq!(output.code, 1);
         assert!(output.stderr.contains("host must be public"));
+    }
+
+    #[test]
+    fn update_check_rejects_malformed_remote_policy_url_authorities() {
+        for url in [
+            "https://github.com:/conu-0.1.0-update-policy.json",
+            "https://github.com:bad/conu-0.1.0-update-policy.json",
+            "https://github.com:443x/conu-0.1.0-update-policy.json",
+            "https://:443/conu-0.1.0-update-policy.json",
+        ] {
+            let output = run(["update", "check", "--policy-url", url]);
+
+            assert_eq!(output.code, 1, "{url}: {}", output.stderr);
+            assert!(
+                output.stderr.contains("authority is invalid"),
+                "{url}: {}",
+                output.stderr
+            );
+            assert!(!output.stderr.contains("private message contents"));
+        }
+    }
+
+    #[test]
+    fn update_policy_metadata_url_validation_rejects_malformed_authorities() {
+        for url in [
+            "https://github.com:/releases/download/v0.1.0",
+            "https://github.com:bad/releases/download/v0.1.0",
+            "https://github.com:443x/releases/download/v0.1.0",
+            "https://:443/releases/download/v0.1.0",
+        ] {
+            let error =
+                validate_public_https_url(url, "releaseBaseUrl").expect_err("URL should fail");
+            assert!(error.contains("authority is invalid"), "{url}: {error}");
+        }
     }
 
     #[test]
