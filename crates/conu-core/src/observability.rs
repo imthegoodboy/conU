@@ -234,22 +234,32 @@ fn rotate_one_log(path: &Path, keep_archives: usize) -> Result<usize, Observabil
             continue;
         }
         if index == keep_archives {
-            fs::remove_file(&source).map_err(|error| {
-                ObservabilityError::io("remove old log archive", &source, error)
-            })?;
+            remove_existing_regular_log_file(
+                &source,
+                "inspect log archive",
+                "remove old log archive",
+            )?;
             removed += 1;
         } else {
             let target = archive_path(path, index + 1);
-            ensure_log_archive_target_available(&target)?;
-            fs::rename(&source, &target)
-                .map_err(|error| ObservabilityError::io("shift log archive", &source, error))?;
+            archive_regular_log_file_no_replace(
+                &source,
+                &target,
+                "inspect log archive",
+                "reserve log archive target",
+                "shift log archive",
+            )?;
         }
     }
 
     let first_archive = archive_path(path, 1);
-    ensure_log_archive_target_available(&first_archive)?;
-    fs::rename(path, &first_archive)
-        .map_err(|error| ObservabilityError::io("rotate active log", path, error))?;
+    archive_regular_log_file_no_replace(
+        path,
+        &first_archive,
+        "inspect active log before rotation",
+        "reserve log archive target",
+        "rotate active log",
+    )?;
     OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -257,6 +267,115 @@ fn rotate_one_log(path: &Path, keep_archives: usize) -> Result<usize, Observabil
         .map_err(|error| ObservabilityError::io("create fresh active log", path, error))?;
 
     Ok(removed)
+}
+
+fn remove_existing_regular_log_file(
+    path: &Path,
+    inspect_action: &'static str,
+    remove_action: &'static str,
+) -> Result<(), ObservabilityError> {
+    if regular_log_metadata(path, inspect_action)?.is_none() {
+        return Err(ObservabilityError::io(
+            inspect_action,
+            path,
+            io::Error::new(io::ErrorKind::NotFound, "log path does not exist"),
+        ));
+    }
+
+    fs::remove_file(path).map_err(|error| ObservabilityError::io(remove_action, path, error))
+}
+
+fn archive_regular_log_file_no_replace(
+    source: &Path,
+    target: &Path,
+    inspect_source_action: &'static str,
+    inspect_target_action: &'static str,
+    archive_action: &'static str,
+) -> Result<(), ObservabilityError> {
+    let Some(source_metadata) = regular_log_metadata(source, inspect_source_action)? else {
+        return Err(ObservabilityError::io(
+            inspect_source_action,
+            source,
+            io::Error::new(io::ErrorKind::NotFound, "log path does not exist"),
+        ));
+    };
+
+    let target_parent = path_parent(target);
+    if !state::state_directory_exists(target_parent, inspect_target_action)? {
+        return Err(ObservabilityError::io(
+            inspect_target_action,
+            target_parent,
+            io::Error::new(io::ErrorKind::NotFound, "log archive directory is missing"),
+        ));
+    }
+    if regular_log_metadata(target, inspect_target_action)?.is_some() {
+        return Err(ObservabilityError::io(
+            inspect_target_action,
+            target,
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "log archive target already exists",
+            ),
+        ));
+    }
+
+    fs::hard_link(source, target)
+        .map_err(|error| ObservabilityError::io(archive_action, source, error))?;
+
+    let target_metadata = match regular_log_metadata(target, inspect_target_action) {
+        Ok(Some(metadata)) => metadata,
+        Ok(None) => {
+            return Err(ObservabilityError::io(
+                inspect_target_action,
+                target,
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "log archive target disappeared after reservation",
+                ),
+            ));
+        }
+        Err(error) => {
+            let _ = fs::remove_file(target);
+            return Err(error);
+        }
+    };
+    if !log_file_metadata_matches(&source_metadata, &target_metadata) {
+        let _ = fs::remove_file(target);
+        return Err(ObservabilityError::io(
+            inspect_target_action,
+            target,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "log archive target does not match source file",
+            ),
+        ));
+    }
+
+    match regular_log_metadata(source, inspect_source_action)? {
+        Some(current_metadata)
+            if log_file_metadata_matches(&source_metadata, &current_metadata) => {}
+        Some(_) => {
+            let _ = fs::remove_file(target);
+            return Err(ObservabilityError::io(
+                inspect_source_action,
+                source,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "log file path changed before archive removal",
+                ),
+            ));
+        }
+        None => return Ok(()),
+    }
+
+    match fs::remove_file(source) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(target);
+            Err(ObservabilityError::io(archive_action, source, error))
+        }
+    }
 }
 
 fn regular_log_metadata(
@@ -282,6 +401,38 @@ fn regular_log_metadata(
     }
 }
 
+fn log_file_metadata_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.len() == current.len() && log_file_stable_identity_matches(expected, current)
+}
+
+#[cfg(unix)]
+fn log_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    expected.dev() == current.dev() && expected.ino() == current.ino()
+}
+
+#[cfg(windows)]
+fn log_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    expected.file_attributes() == current.file_attributes()
+        && expected.creation_time() == current.creation_time()
+        && expected.last_write_time() == current.last_write_time()
+        && expected.file_size() == current.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn log_file_stable_identity_matches(expected: &fs::Metadata, current: &fs::Metadata) -> bool {
+    expected.modified().ok() == current.modified().ok()
+}
+
+fn path_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 fn active_log_metadata(path: &Path) -> Result<Option<fs::Metadata>, ObservabilityError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -302,25 +453,6 @@ fn ensure_regular_log_file(path: &Path, action: &'static str) -> Result<(), Obse
             action,
             path,
             io::Error::new(io::ErrorKind::NotFound, "log path does not exist"),
-        )),
-    }
-}
-
-fn ensure_log_archive_target_available(path: &Path) -> Result<(), ObservabilityError> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Err(ObservabilityError::io(
-            "reserve log archive target",
-            path,
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "log archive target already exists",
-            ),
-        )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(ObservabilityError::io(
-            "inspect log archive target",
-            path,
-            error,
         )),
     }
 }
@@ -410,6 +542,38 @@ mod tests {
         assert_eq!(
             fs::read_to_string(paths.logs_dir.join("conud.log.2")).expect("archive two reads"),
             "archive one\n"
+        );
+    }
+
+    #[test]
+    fn rotates_log_larger_than_state_file_limit() {
+        let home = test_home("rotate-oversized-log");
+        let paths = StatePaths::from_home(home);
+        fs::create_dir_all(&paths.logs_dir).expect("logs directory");
+        fs::write(
+            paths.logs_dir.join("conud.log"),
+            vec![b'x'; 1024 * 1024 + 1],
+        )
+        .expect("oversized log writes");
+
+        let report = rotate_logs_from_paths(
+            &paths,
+            LogRotationPolicy::new(1, 2).expect("policy validates"),
+        )
+        .expect("oversized log rotates");
+
+        assert_eq!(report.files_rotated, 1);
+        assert_eq!(
+            fs::metadata(paths.logs_dir.join("conud.log.1"))
+                .expect("oversized archive metadata")
+                .len(),
+            1024 * 1024 + 1
+        );
+        assert_eq!(
+            fs::metadata(paths.logs_dir.join("conud.log"))
+                .expect("fresh active metadata")
+                .len(),
+            0
         );
     }
 
