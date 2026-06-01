@@ -78,6 +78,18 @@ def main() -> int:
         )
         assert_failure("base URL mismatch", mismatch, "repository.json baseUrl does not match")
 
+        encoded_base_result = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--base-url",
+            f"{BASE_URL}/%2e%2e%2fother",
+        )
+        assert_failure(
+            "encoded base URL",
+            encoded_base_result,
+            "repository base URL path must not contain encoded separators",
+        )
+
         query_download_url = temp / "query-download-url-site"
         shutil.copytree(site_dir, query_download_url)
         repository_path = query_download_url / "repository.json"

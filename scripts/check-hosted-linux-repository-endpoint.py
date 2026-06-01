@@ -269,6 +269,10 @@ def normalize_base_url(raw_value: str, *, allow_loopback_http: bool) -> str:
     decoded_path_parts = [unquote(part) for part in path_parts]
     if any(part in {".", ".."} for part in decoded_path_parts):
         raise EndpointReadinessError("hosted Linux repository base URL path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_path_parts):
+        raise EndpointReadinessError(
+            "hosted Linux repository base URL path must not contain encoded separators"
+        )
     path = "/" + "/".join(path_parts) if path_parts else ""
     netloc = normalize_netloc(host_lower, parsed.port)
     return urlunparse((scheme, netloc, path, "", "", ""))

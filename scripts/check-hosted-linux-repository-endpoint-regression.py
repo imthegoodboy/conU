@@ -68,6 +68,12 @@ def main() -> int:
                 VERSION,
                 allow_loopback_http=False,
             )
+            run_checker_expect_failure(
+                f"{base_url}/%2e%2e%2fother",
+                "encoded separators",
+                "--expected-version",
+                VERSION,
+            )
 
         missing_cache_header = temp / "missing-cache-header"
         shutil.copytree(site_root, missing_cache_header)

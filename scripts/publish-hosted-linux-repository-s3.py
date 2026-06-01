@@ -341,6 +341,8 @@ def validate_base_url(raw: str) -> str:
     decoded_parts = [unquote(part) for part in parts]
     if any(part in {".", ".."} for part in decoded_parts):
         raise PublicationError("repository base URL path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise PublicationError("repository base URL path must not contain encoded separators")
     normalized_path = "/" + "/".join(parts) if parts else ""
     return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
 
