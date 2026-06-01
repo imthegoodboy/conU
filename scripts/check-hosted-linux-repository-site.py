@@ -303,6 +303,21 @@ def main() -> int:
             "must not include credentials",
         )
 
+        for index, bad_url in enumerate((
+            "https://packages.example.com:bad/conu",
+            "https://packages.example.com:/conu",
+            "https://:443/conu",
+            "https://packages.example.com:443x/conu",
+        )):
+            malformed_url = temp / f"malformed-url-{index}"
+            shutil.copytree(dist, malformed_url)
+            expect_failure(
+                "malformed base URL authority",
+                malformed_url,
+                bad_url,
+                "authority",
+            )
+
         encoded_base_url = temp / "encoded-base-url"
         shutil.copytree(dist, encoded_base_url)
         expect_failure(

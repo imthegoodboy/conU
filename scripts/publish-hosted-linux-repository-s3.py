@@ -316,6 +316,7 @@ def validate_endpoint_url(raw: str) -> str:
         raise PublicationError("S3 endpoint URL must not include params, query, or fragment")
     if not parsed.scheme or not parsed.netloc:
         raise PublicationError("S3 endpoint URL must be absolute")
+    netloc = normalize_url_netloc(parsed, "S3 endpoint URL")
     host = (parsed.hostname or "").lower()
     scheme = parsed.scheme.lower()
     if scheme != "https" and not (scheme == "http" and is_loopback_host(host)):
@@ -329,7 +330,7 @@ def validate_endpoint_url(raw: str) -> str:
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise PublicationError("S3 endpoint URL path must not contain encoded separators")
     path = "/" + "/".join(parts) if parts else ""
-    return urlunparse((scheme, parsed.netloc.lower(), path, "", "", ""))
+    return urlunparse((scheme, netloc, path, "", "", ""))
 
 
 def is_loopback_host(host: str) -> bool:
@@ -345,6 +346,7 @@ def validate_base_url(raw: str) -> str:
         raise PublicationError("repository base URL must be an absolute HTTPS URL")
     if parsed.params or parsed.query or parsed.fragment:
         raise PublicationError("repository base URL must not include params, query, or fragment")
+    netloc = normalize_url_netloc(parsed, "repository base URL")
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise PublicationError("repository base URL path must not contain dot segments")
@@ -354,7 +356,25 @@ def validate_base_url(raw: str) -> str:
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise PublicationError("repository base URL path must not contain encoded separators")
     normalized_path = "/" + "/".join(parts) if parts else ""
-    return urlunparse(("https", parsed.netloc.lower(), normalized_path, "", "", ""))
+    return urlunparse(("https", netloc, normalized_path, "", "", ""))
+
+
+def normalize_url_netloc(parsed, label: str) -> str:
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise PublicationError(f"{label} authority is invalid") from exc
+    if not host:
+        raise PublicationError(f"{label} authority must include a host")
+    if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
+        raise PublicationError(f"{label} authority is invalid")
+    host = host.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if port is None:
+        return host
+    return f"{host}:{port}"
 
 
 def read_json_file(path: Path, label: str) -> dict[str, Any]:

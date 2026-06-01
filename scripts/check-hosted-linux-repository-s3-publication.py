@@ -90,6 +90,24 @@ def main() -> int:
             "repository base URL path must not contain encoded separators",
         )
 
+        for bad_url in (
+            "https://packages.example.com:bad/conu",
+            "https://packages.example.com:/conu",
+            "https://:443/conu",
+            "https://packages.example.com:443x/conu",
+        ):
+            malformed_base = run_publisher_raw(
+                site_dir,
+                "--dry-run",
+                "--base-url",
+                bad_url,
+            )
+            assert_failure(
+                "malformed repository base URL authority",
+                malformed_base,
+                "repository base URL authority",
+            )
+
         query_download_url = temp / "query-download-url-site"
         shutil.copytree(site_dir, query_download_url)
         repository_path = query_download_url / "repository.json"
@@ -181,6 +199,24 @@ def main() -> int:
             encoded_separator_endpoint,
             "S3 endpoint URL path must not contain encoded separators",
         )
+
+        for bad_url in (
+            "https://s3.example.com:bad/api",
+            "https://s3.example.com:/api",
+            "https://:443/api",
+            "https://s3.example.com:443x/api",
+        ):
+            malformed_endpoint = run_publisher_raw(
+                site_dir,
+                "--dry-run",
+                "--endpoint-url",
+                bad_url,
+            )
+            assert_failure(
+                "malformed endpoint URL authority",
+                malformed_endpoint,
+                "S3 endpoint URL authority",
+            )
 
         oversized_metadata = temp / "oversized-metadata-site"
         shutil.copytree(site_dir, oversized_metadata)

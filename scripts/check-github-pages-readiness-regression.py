@@ -104,6 +104,16 @@ def run_audit_tests(module) -> None:
         ),
         "credentials",
     )
+    for bad_url, expected in (
+        ("https://packages.example.com:bad/conu", "authority is invalid"),
+        ("https://packages.example.com:/conu", "authority is invalid"),
+        ("https://:443/conu", "authority must include a host"),
+        ("https://packages.example.com:443x/conu", "authority is invalid"),
+    ):
+        assert_raises(
+            lambda bad_url=bad_url: module.audit_pages_readiness("owner/repo", None, bad_url),
+            expected,
+        )
     assert_raises(
         lambda: module.audit_pages_readiness(
             "owner/repo",

@@ -74,6 +74,18 @@ def main() -> int:
                 "--expected-version",
                 VERSION,
             )
+            for bad_url, expected in (
+                (f"{base_url}:bad", "authority"),
+                (f"{base_url}:", "authority"),
+                ("http://:443/conu", "host"),
+                (f"{base_url}:443x", "authority"),
+            ):
+                run_checker_expect_failure(
+                    bad_url,
+                    expected,
+                    "--expected-version",
+                    VERSION,
+                )
 
         missing_cache_header = temp / "missing-cache-header"
         shutil.copytree(site_root, missing_cache_header)

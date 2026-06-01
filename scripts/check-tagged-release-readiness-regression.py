@@ -432,6 +432,31 @@ def run_custom_repository_tests(module) -> None:
     ):
         raise AssertionError("encoded custom repository base URL separator failure was missing")
 
+    invalid_base_authority = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_custom_secrets(module),
+        variable_values={
+            module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com:bad/conu",
+            module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+            module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+            module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com",
+            module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+        },
+        pages_payload=None,
+        release_payload=None,
+        npm_registry_check=False,
+    )
+    if invalid_base_authority.ready:
+        raise AssertionError("malformed custom repository base URL authority should fail")
+    parsed_invalid_base_authority = assert_safe_report(invalid_base_authority)
+    if (
+        "custom repository base URL authority is invalid"
+        not in json.dumps(parsed_invalid_base_authority)
+    ):
+        raise AssertionError("malformed custom repository base URL authority failure was missing")
+
     invalid_endpoint_paths = module.audit_tagged_release_readiness(
         repo="owner/repo",
         tag=TAG,
@@ -481,6 +506,31 @@ def run_custom_repository_tests(module) -> None:
         not in json.dumps(parsed_invalid_endpoint_separator)
     ):
         raise AssertionError("encoded custom repository endpoint URL separator failure was missing")
+
+    invalid_endpoint_authority = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_custom_secrets(module),
+        variable_values={
+            module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/",
+            module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+            module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+            module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com:/api",
+            module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+        },
+        pages_payload=None,
+        release_payload=None,
+        npm_registry_check=False,
+    )
+    if invalid_endpoint_authority.ready:
+        raise AssertionError("malformed custom repository endpoint URL authority should fail")
+    parsed_invalid_endpoint_authority = assert_safe_report(invalid_endpoint_authority)
+    if (
+        "custom repository S3 endpoint URL authority is invalid"
+        not in json.dumps(parsed_invalid_endpoint_authority)
+    ):
+        raise AssertionError("malformed custom repository endpoint URL authority failure was missing")
 
 
 def run_safe_failure_tests(module) -> None:

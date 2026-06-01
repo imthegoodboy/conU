@@ -278,6 +278,7 @@ def normalize_custom_base_url(raw: str) -> str:
         raise ValueError("custom repository base URL must be an absolute HTTPS URL")
     if parsed.params or parsed.query or parsed.fragment:
         raise ValueError("custom repository base URL must not include params, query, or fragment")
+    netloc = normalize_url_netloc(parsed, "custom repository base URL")
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise ValueError("custom repository base URL path must not contain dot segments")
@@ -287,7 +288,7 @@ def normalize_custom_base_url(raw: str) -> str:
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise ValueError("custom repository base URL path must not contain encoded separators")
     path = "/" + "/".join(parts) if parts else ""
-    return urlunparse(("https", parsed.netloc.lower(), path, "", "", ""))
+    return urlunparse(("https", netloc, path, "", "", ""))
 
 
 def validate_bucket(raw: str) -> str:
@@ -330,6 +331,7 @@ def validate_endpoint_url(raw: str) -> str:
         raise ValueError("custom repository S3 endpoint URL must not include params, query, or fragment")
     if not parsed.scheme or not parsed.netloc:
         raise ValueError("custom repository S3 endpoint URL must be absolute")
+    netloc = normalize_url_netloc(parsed, "custom repository S3 endpoint URL")
     host = (parsed.hostname or "").lower()
     scheme = parsed.scheme.lower()
     if scheme != "https" and not (scheme == "http" and is_loopback_host(host)):
@@ -343,7 +345,25 @@ def validate_endpoint_url(raw: str) -> str:
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise ValueError("custom repository S3 endpoint URL path must not contain encoded separators")
     path = "/" + "/".join(parts) if parts else ""
-    return urlunparse((scheme, parsed.netloc.lower(), path, "", "", ""))
+    return urlunparse((scheme, netloc, path, "", "", ""))
+
+
+def normalize_url_netloc(parsed, label: str) -> str:
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{label} authority is invalid") from exc
+    if not host:
+        raise ValueError(f"{label} authority must include a host")
+    if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
+        raise ValueError(f"{label} authority is invalid")
+    host = host.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if port is None:
+        return host
+    return f"{host}:{port}"
 
 
 def validate_region(raw: str) -> str:

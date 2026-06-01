@@ -253,7 +253,10 @@ def normalize_base_url(raw_value: str, *, allow_loopback_http: bool) -> str:
         raise EndpointReadinessError(
             "hosted Linux repository base URL must not include params, query, or fragment"
         )
-    host = parsed.hostname
+    try:
+        host = parsed.hostname
+    except ValueError as exc:
+        raise EndpointReadinessError("hosted Linux repository base URL authority is invalid") from exc
     if not host:
         raise EndpointReadinessError("hosted Linux repository base URL must include a host")
     scheme = parsed.scheme.lower()
@@ -263,6 +266,7 @@ def normalize_base_url(raw_value: str, *, allow_loopback_http: bool) -> str:
             raise EndpointReadinessError(
                 "hosted Linux repository base URL must be an absolute HTTPS URL"
             )
+    port = validate_url_port(parsed, "hosted Linux repository base URL")
     path_parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in path_parts):
         raise EndpointReadinessError("hosted Linux repository base URL path must not contain dot segments")
@@ -274,8 +278,18 @@ def normalize_base_url(raw_value: str, *, allow_loopback_http: bool) -> str:
             "hosted Linux repository base URL path must not contain encoded separators"
         )
     path = "/" + "/".join(path_parts) if path_parts else ""
-    netloc = normalize_netloc(host_lower, parsed.port)
+    netloc = normalize_netloc(host_lower, port)
     return urlunparse((scheme, netloc, path, "", "", ""))
+
+
+def validate_url_port(parsed, label: str) -> int | None:
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise EndpointReadinessError(f"{label} authority is invalid") from exc
+    if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
+        raise EndpointReadinessError(f"{label} authority is invalid")
+    return port
 
 
 def normalize_netloc(host: str, port: int | None) -> str:
