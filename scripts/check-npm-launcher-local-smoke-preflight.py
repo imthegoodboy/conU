@@ -8,10 +8,19 @@ import stat
 import tempfile
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 
 def main() -> int:
     smoke = load_smoke_helpers()
+
+    with fixture_dir() as root:
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_action_failure(
+                lambda: smoke.validate_input_directory(root / "dist", "release dist directory"),
+                "must not be a symlink",
+                "npm smoke symlink dist directory",
+            )
 
     with fixture_dir() as root:
         bin_dir = root / "bin"

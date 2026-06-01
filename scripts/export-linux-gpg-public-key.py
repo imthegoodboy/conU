@@ -34,9 +34,7 @@ OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 def main() -> int:
     args = parse_args()
-    dist = args.dist.resolve()
-    if not dist.exists() or not dist.is_dir():
-        raise SystemExit(f"release dist directory does not exist: {dist}")
+    dist = validate_input_directory(args.dist, "release dist directory")
     output_name = validate_output_name(args.output_name)
     output = dist / output_name
     prepare_public_key_output(output)
@@ -132,6 +130,15 @@ def validate_public_key_bytes(public_key: bytes) -> None:
         raise SystemExit("exported Linux GPG key was not an armored public key")
     if b"PRIVATE KEY BLOCK" in public_key:
         raise SystemExit("refusing to write private key material as a public-key asset")
+
+
+def validate_input_directory(path: Path, label: str) -> Path:
+    path = path.expanduser()
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path}")
+    if not path.exists() or not path.is_dir():
+        raise SystemExit(f"{label} does not exist: {path}")
+    return path.resolve()
 
 
 def prepare_public_key_output(path: Path) -> None:

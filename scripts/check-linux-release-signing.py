@@ -276,6 +276,14 @@ def run_source_selection_checks() -> None:
 
         with mock.patch.object(Path, "is_symlink", return_value=True):
             expect_module_failure(
+                "symlinked release dist directory",
+                lambda: signer.validate_input_directory(
+                    temp / "dist",
+                    "release dist directory",
+                ),
+                "must not be a symlink",
+            )
+            expect_module_failure(
                 "symlinked signable asset",
                 lambda: signer.validate_signable_asset(
                     asset,
