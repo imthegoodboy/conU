@@ -262,9 +262,17 @@ def validate_timestamp_url(
         return
 
     parsed = urlparse(value)
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        host = None
+        port = None
     valid = (
         parsed.scheme in {"http", "https"}
         and bool(parsed.netloc)
+        and bool(host)
+        and not (port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"))
         and not parsed.username
         and parsed.password is None
         and not parsed.query
@@ -274,7 +282,7 @@ def validate_timestamp_url(
     checks["windowsTimestampUrlValid"] = valid
     if not valid:
         issues.append(
-            f"{WINDOWS_TIMESTAMP_URL_ENV} must be an absolute http(s) URL without credentials, query, or fragment"
+            f"{WINDOWS_TIMESTAMP_URL_ENV} must be an absolute http(s) URL with a valid host and authority, without credentials, query, or fragment"
         )
 
 
