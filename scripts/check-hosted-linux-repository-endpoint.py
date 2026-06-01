@@ -407,7 +407,8 @@ def validate_repository_json(base_url: str, repository: dict[str, Any]) -> str:
         raise EndpointReadinessError("repository.json expected cachePolicy.hostMustApply=true")
     for field in ("hostedBundleUrl", "hostedBundleChecksumUrl", "hostedBundleSignatureUrl"):
         value = downloads.get(field)
-        if not isinstance(value, str) or not value.startswith(f"{base_url}/downloads/"):
+        path = url_to_base_path(base_url, value, f"repository.json downloads.{field}")
+        if not path.startswith("/downloads/"):
             raise EndpointReadinessError(f"repository.json downloads.{field} must point under baseUrl")
     return version
 
@@ -563,10 +564,17 @@ def url_to_base_path(base_url: str, value: str, label: str) -> str:
         raise EndpointReadinessError(f"{label} must be a URL string")
     parsed_base = urlparse(base_url)
     parsed_value = urlparse(value)
+    if parsed_value.username or parsed_value.password:
+        raise EndpointReadinessError(f"{label} must not include credentials")
+    if parsed_value.params or parsed_value.query or parsed_value.fragment:
+        raise EndpointReadinessError(f"{label} must not include params, query, or fragment")
     if (parsed_value.scheme, parsed_value.netloc) != (parsed_base.scheme, parsed_base.netloc):
         raise EndpointReadinessError(f"{label} points outside repository origin")
     base_path = parsed_base.path.rstrip("/")
     value_path = parsed_value.path.rstrip("/")
+    path_parts = [part for part in parsed_value.path.split("/") if part]
+    if any(part in {".", ".."} for part in path_parts):
+        raise EndpointReadinessError(f"{label} path must not contain dot segments")
     if base_path:
         if value_path != base_path and not value_path.startswith(f"{base_path}/"):
             raise EndpointReadinessError(f"{label} points outside repository path")

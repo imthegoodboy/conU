@@ -120,6 +120,25 @@ def main() -> int:
             )
             run_checker_expect_failure(base_url, "repository.json baseUrl", "--expected-version", VERSION)
 
+        query_download_url = temp / "query-download-url"
+        shutil.copytree(site_root, query_download_url)
+        with serve_site(query_download_url, mode="good") as base_url:
+            rewrite_base_url(query_download_url, PLACEHOLDER_BASE_URL, base_url)
+            repository_path = query_download_url / "repository.json"
+            repository = json.loads(repository_path.read_text(encoding="ascii"))
+            repository["downloads"]["hostedBundleUrl"] += "?token=value"
+            repository_path.write_text(
+                json.dumps(repository, indent=2, sort_keys=True) + "\n",
+                encoding="ascii",
+                newline="\n",
+            )
+            run_checker_expect_failure(
+                base_url,
+                "must not include params, query, or fragment",
+                "--expected-version",
+                VERSION,
+            )
+
     print("Hosted Linux repository endpoint regression checks passed")
     return 0
 
