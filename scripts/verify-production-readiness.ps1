@@ -370,6 +370,9 @@ try {
         Invoke-ReadinessStep "npm package content check" {
             & python scripts/verify-npm-package-contents.py
         }
+        Invoke-ReadinessStep "npm package public metadata regression" {
+            & python scripts/verify-npm-package-contents-regression.py
+        }
         Invoke-ReadinessStep "npm publish preflight" {
             & python scripts/check-npm-publish-preflight.py
         }
