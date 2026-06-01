@@ -146,6 +146,42 @@ def main() -> int:
         )
         assert_failure("bad endpoint URL", bad_endpoint, "S3 endpoint URL must use HTTPS")
 
+        raw_dot_endpoint = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--endpoint-url",
+            "https://s3.example.com/api/../v1",
+        )
+        assert_failure(
+            "raw dot endpoint URL",
+            raw_dot_endpoint,
+            "S3 endpoint URL path must not contain dot segments",
+        )
+
+        encoded_dot_endpoint = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--endpoint-url",
+            "https://s3.example.com/api/%2e%2e/v1",
+        )
+        assert_failure(
+            "encoded dot endpoint URL",
+            encoded_dot_endpoint,
+            "S3 endpoint URL path must not contain dot segments",
+        )
+
+        encoded_separator_endpoint = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--endpoint-url",
+            "https://s3.example.com/api%2fv1",
+        )
+        assert_failure(
+            "encoded separator endpoint URL",
+            encoded_separator_endpoint,
+            "S3 endpoint URL path must not contain encoded separators",
+        )
+
         oversized_metadata = temp / "oversized-metadata-site"
         shutil.copytree(site_dir, oversized_metadata)
         (oversized_metadata / "repository.json").write_text(

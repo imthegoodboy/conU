@@ -317,9 +317,19 @@ def validate_endpoint_url(raw: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         raise PublicationError("S3 endpoint URL must be absolute")
     host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and is_loopback_host(host)):
+    scheme = parsed.scheme.lower()
+    if scheme != "https" and not (scheme == "http" and is_loopback_host(host)):
         raise PublicationError("S3 endpoint URL must use HTTPS except loopback HTTP")
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+    parts = [part for part in parsed.path.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        raise PublicationError("S3 endpoint URL path must not contain dot segments")
+    decoded_parts = [unquote(part) for part in parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise PublicationError("S3 endpoint URL path must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise PublicationError("S3 endpoint URL path must not contain encoded separators")
+    path = "/" + "/".join(parts) if parts else ""
+    return urlunparse((scheme, parsed.netloc.lower(), path, "", "", ""))
 
 
 def is_loopback_host(host: str) -> bool:
