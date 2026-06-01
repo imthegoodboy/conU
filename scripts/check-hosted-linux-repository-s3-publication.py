@@ -78,6 +78,23 @@ def main() -> int:
         )
         assert_failure("base URL mismatch", mismatch, "repository.json baseUrl does not match")
 
+        query_download_url = temp / "query-download-url-site"
+        shutil.copytree(site_dir, query_download_url)
+        repository_path = query_download_url / "repository.json"
+        repository = json.loads(repository_path.read_text(encoding="ascii"))
+        repository["downloads"]["hostedBundleUrl"] += "?token=value"
+        repository_path.write_text(
+            json.dumps(repository, indent=2, sort_keys=True) + "\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        query_download_result = run_publisher_raw(query_download_url, "--dry-run")
+        assert_failure(
+            "query download URL",
+            query_download_result,
+            "must not include params, query, or fragment",
+        )
+
         forbidden = temp / "forbidden-site"
         shutil.copytree(site_dir, forbidden)
         (forbidden / "README.txt").write_text("NPM_TOKEN\n", encoding="ascii")
