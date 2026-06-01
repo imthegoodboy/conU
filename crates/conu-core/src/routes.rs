@@ -1017,7 +1017,7 @@ fn validate_endpoint(value: String) -> Result<String, RouteError> {
         let reason = match error {
             RelayEndpointError::Empty => "endpoint cannot be empty",
             RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
-            RelayEndpointError::Invalid => "endpoint is invalid",
+            RelayEndpointError::Invalid => "relay endpoint is invalid",
         };
         RouteError::InvalidRecord {
             reason: reason.to_string(),
