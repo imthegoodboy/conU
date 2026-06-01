@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import platform
@@ -15,13 +16,17 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 
 REQUIRED_BINARIES = ("conu", "conud", "conu-relay", "conu-mcp")
 DEFAULT_PACKAGE_DIR = Path("packaging/npm/conu-cli")
+MAX_ARCHIVE_BYTES = 1_000_000_000
 MAX_MEMBER_BYTES = 512_000_000
 MAX_MEMBER_COUNT = 10_000
 MAX_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
+OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+OPEN_BINARY = getattr(os, "O_BINARY", 0)
 
 
 class ExtractState:
@@ -43,9 +48,7 @@ def main() -> int:
     args = parser.parse_args()
 
     dist = validate_input_directory(args.dist, "release dist directory")
-    package_dir = args.package_dir.resolve()
-    if not package_dir.joinpath("package.json").exists():
-        raise SystemExit(f"missing npm package manifest in {package_dir}")
+    package_dir = validate_package_directory(args.package_dir, "@conu/cli package directory")
 
     node = require_tool("node")
     npm = require_tool("npm", "npm.cmd")
@@ -99,6 +102,16 @@ def validate_input_directory(path: Path, label: str) -> Path:
     return path.resolve()
 
 
+def validate_package_directory(path: Path, label: str) -> Path:
+    package_dir = validate_input_directory(path, label)
+    package_json = package_dir / "package.json"
+    if package_json.is_symlink():
+        raise SystemExit(f"npm package manifest must not be a symlink: {package_json}")
+    if not package_json.exists() or not package_json.is_file():
+        raise SystemExit(f"missing npm package manifest in {package_dir}")
+    return package_dir
+
+
 def read_manifest_target(archive: Path) -> str:
     manifest_bytes = read_archive_member(archive, "manifest.toml")
     if manifest_bytes is None:
@@ -119,49 +132,61 @@ def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:
     expected_root = expected_archive_root(archive)
     state = ExtractState()
     if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive) as package:
-            found: bytes | None = None
-            root_style: str | None = None
-            for member in package.infolist():
-                normalized, root_style, is_file = validate_zip_member_for_read(
-                    archive.name,
-                    member,
-                    expected_root,
-                    state,
-                    root_style,
-                )
-                if not is_file:
-                    continue
-                if normalized == normalized_name:
-                    if found is not None:
-                        raise SystemExit(
-                            f"{archive.name} contains duplicate archive path: {normalized_name}"
-                        )
-                    found = package.read(member)
-            return found
+        archive_file, _size = open_regular_file(
+            archive,
+            "release archive",
+            max_bytes=MAX_ARCHIVE_BYTES,
+        )
+        with archive_file:
+            with zipfile.ZipFile(archive_file) as package:
+                found: bytes | None = None
+                root_style: str | None = None
+                for member in package.infolist():
+                    normalized, root_style, is_file = validate_zip_member_for_read(
+                        archive.name,
+                        member,
+                        expected_root,
+                        state,
+                        root_style,
+                    )
+                    if not is_file:
+                        continue
+                    if normalized == normalized_name:
+                        if found is not None:
+                            raise SystemExit(
+                                f"{archive.name} contains duplicate archive path: {normalized_name}"
+                            )
+                        found = package.read(member)
+                return found
 
     if archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive, "r|gz") as package:
-            found: bytes | None = None
-            root_style: str | None = None
-            for member in package:
-                normalized, root_style, is_file = validate_tar_member_for_read(
-                    archive.name,
-                    member,
-                    expected_root,
-                    state,
-                    root_style,
-                )
-                if not is_file:
-                    continue
-                if normalized == normalized_name:
-                    if found is not None:
-                        raise SystemExit(
-                            f"{archive.name} contains duplicate archive path: {normalized_name}"
-                        )
-                    file_object = package.extractfile(member)
-                    found = file_object.read() if file_object is not None else None
-            return found
+        archive_file, _size = open_regular_file(
+            archive,
+            "release archive",
+            max_bytes=MAX_ARCHIVE_BYTES,
+        )
+        with archive_file:
+            with tarfile.open(fileobj=archive_file, mode="r|gz") as package:
+                found: bytes | None = None
+                root_style: str | None = None
+                for member in package:
+                    normalized, root_style, is_file = validate_tar_member_for_read(
+                        archive.name,
+                        member,
+                        expected_root,
+                        state,
+                        root_style,
+                    )
+                    if not is_file:
+                        continue
+                    if normalized == normalized_name:
+                        if found is not None:
+                            raise SystemExit(
+                                f"{archive.name} contains duplicate archive path: {normalized_name}"
+                            )
+                        file_object = package.extractfile(member)
+                        found = file_object.read() if file_object is not None else None
+                return found
 
     raise SystemExit(f"unsupported release archive {archive.name}")
 
@@ -343,85 +368,125 @@ def extract_archive(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     state = ExtractState()
     if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive) as package:
-            for member in package.infolist():
-                if member.filename.endswith("/"):
-                    if member.file_size != 0:
-                        raise SystemExit(
-                            f"{archive.name} contains directory member with data: "
-                            f"{member.filename}"
+        archive_file, _size = open_regular_file(
+            archive,
+            "release archive",
+            max_bytes=MAX_ARCHIVE_BYTES,
+        )
+        with archive_file:
+            with zipfile.ZipFile(archive_file) as package:
+                for member in package.infolist():
+                    if member.filename.endswith("/"):
+                        if member.file_size != 0:
+                            raise SystemExit(
+                                f"{archive.name} contains directory member with data: "
+                                f"{member.filename}"
+                            )
+                        validate_extract_entry(
+                            archive.name,
+                            member.filename,
+                            0,
+                            state,
+                            allow_empty=True,
                         )
-                    validate_extract_entry(
+                        continue
+                    if member.flag_bits & 0x1:
+                        raise SystemExit(
+                            f"{archive.name} contains encrypted zip member: {member.filename}"
+                        )
+                    file_type = (member.external_attr >> 16) & 0o170000
+                    if file_type == stat.S_IFLNK:
+                        raise SystemExit(
+                            f"{archive.name} contains unsupported link member: {member.filename}"
+                        )
+                    if file_type not in {0, stat.S_IFREG}:
+                        raise SystemExit(
+                            f"{archive.name} contains unsupported zip member: {member.filename}"
+                        )
+                    output_path = checked_extract_path(
                         archive.name,
+                        destination,
                         member.filename,
-                        0,
+                        member.file_size,
                         state,
-                        allow_empty=True,
                     )
-                    continue
-                if member.flag_bits & 0x1:
-                    raise SystemExit(
-                        f"{archive.name} contains encrypted zip member: {member.filename}"
-                    )
-                file_type = (member.external_attr >> 16) & 0o170000
-                if file_type == stat.S_IFLNK:
-                    raise SystemExit(
-                        f"{archive.name} contains unsupported link member: {member.filename}"
-                    )
-                if file_type not in {0, stat.S_IFREG}:
-                    raise SystemExit(
-                        f"{archive.name} contains unsupported zip member: {member.filename}"
-                    )
-                output_path = checked_extract_path(
-                    archive.name,
-                    destination,
-                    member.filename,
-                    member.file_size,
-                    state,
-                )
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_bytes(package.read(member))
-                unix_mode = (member.external_attr >> 16) & 0o777
-                if unix_mode:
-                    output_path.chmod(unix_mode)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_bytes(package.read(member))
+                    unix_mode = (member.external_attr >> 16) & 0o777
+                    if unix_mode:
+                        output_path.chmod(unix_mode)
         return
 
     if archive.name.endswith(".tar.gz"):
-        with tarfile.open(archive, "r|gz") as package:
-            for member in package:
-                if member.isdir():
-                    if member.size != 0:
-                        raise SystemExit(
-                            f"{archive.name} contains directory member with data: {member.name}"
+        archive_file, _size = open_regular_file(
+            archive,
+            "release archive",
+            max_bytes=MAX_ARCHIVE_BYTES,
+        )
+        with archive_file:
+            with tarfile.open(fileobj=archive_file, mode="r|gz") as package:
+                for member in package:
+                    if member.isdir():
+                        if member.size != 0:
+                            raise SystemExit(
+                                f"{archive.name} contains directory member with data: {member.name}"
+                            )
+                        validate_extract_entry(
+                            archive.name,
+                            member.name,
+                            0,
+                            state,
+                            allow_empty=True,
                         )
-                    validate_extract_entry(
+                        continue
+                    if not member.isfile():
+                        raise SystemExit(
+                            f"{archive.name} contains unsupported non-file member: {member.name}"
+                        )
+                    output_path = checked_extract_path(
                         archive.name,
+                        destination,
                         member.name,
-                        0,
+                        member.size,
                         state,
-                        allow_empty=True,
                     )
-                    continue
-                if not member.isfile():
-                    raise SystemExit(
-                        f"{archive.name} contains unsupported non-file member: {member.name}"
-                    )
-                output_path = checked_extract_path(
-                    archive.name,
-                    destination,
-                    member.name,
-                    member.size,
-                    state,
-                )
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                file_object = package.extractfile(member)
-                if file_object is None:
-                    raise SystemExit(f"{archive.name} could not read member {member.name}")
-                output_path.write_bytes(file_object.read())
-                output_path.chmod(member.mode & 0o777)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_object = package.extractfile(member)
+                    if file_object is None:
+                        raise SystemExit(f"{archive.name} could not read member {member.name}")
+                    output_path.write_bytes(file_object.read())
+                    output_path.chmod(member.mode & 0o777)
         return
 
     raise SystemExit(f"unsupported release archive {archive.name}")
+
+
+def open_regular_file(path: Path, label: str, *, max_bytes: int) -> tuple[BinaryIO, int]:
+    if path.is_symlink():
+        raise SystemExit(f"{label} must not be a symlink: {path.name}")
+    if not path.exists():
+        raise SystemExit(f"missing {label}: {path.name}")
+    flags = os.O_RDONLY | OPEN_BINARY | OPEN_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SystemExit(f"{label} must not be a symlink: {path.name}") from exc
+        if not path.exists():
+            raise SystemExit(f"missing {label}: {path.name}") from exc
+        if not path.is_file():
+            raise SystemExit(f"{label} must be a regular file: {path.name}") from exc
+        raise SystemExit(f"{label} could not be opened: {path.name}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SystemExit(f"{label} must be a regular file: {path.name}")
+        if metadata.st_size > max_bytes:
+            raise SystemExit(f"{label} is too large: {path.name}")
+        return os.fdopen(fd, "rb"), metadata.st_size
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def checked_extract_path(

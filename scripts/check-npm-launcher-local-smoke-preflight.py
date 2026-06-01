@@ -23,6 +23,44 @@ def main() -> int:
             )
 
     with fixture_dir() as root:
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_action_failure(
+                lambda: smoke.validate_package_directory(
+                    root / "package",
+                    "@conu/cli package directory",
+                ),
+                "must not be a symlink",
+                "npm smoke symlink package directory",
+            )
+
+    with fixture_dir() as root:
+        package_dir = root / "package"
+        package_dir.mkdir()
+        package_dir.joinpath("package.json").write_text("{}", encoding="utf-8")
+        with mock.patch.object(
+            Path,
+            "is_symlink",
+            lambda path: path.name == "package.json",
+        ):
+            expect_action_failure(
+                lambda: smoke.validate_package_directory(
+                    package_dir,
+                    "@conu/cli package directory",
+                ),
+                "npm package manifest must not be a symlink",
+                "npm smoke symlink package manifest",
+            )
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-linked.zip"
+        with mock.patch.object(Path, "is_symlink", return_value=True):
+            expect_action_failure(
+                lambda: smoke.read_manifest_target(archive),
+                "must not be a symlink",
+                "npm smoke symlink archive",
+            )
+
+    with fixture_dir() as root:
         bin_dir = root / "bin"
         write_binaries(bin_dir, smoke)
         smoke.verify_archive_binaries(Path("fixture.zip"), bin_dir)
