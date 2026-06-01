@@ -123,26 +123,15 @@ jobs:
       - name: Validate custom Linux repository publication config
         if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL != ''
         env:
+          CONU_LINUX_REPOSITORY_BASE_URL: ${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}
           CONU_LINUX_REPOSITORY_S3_BUCKET: ${{ vars.CONU_LINUX_REPOSITORY_S3_BUCKET }}
+          CONU_LINUX_REPOSITORY_S3_PREFIX: ${{ vars.CONU_LINUX_REPOSITORY_S3_PREFIX }}
+          CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL: ${{ vars.CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL }}
+          CONU_LINUX_REPOSITORY_AWS_REGION: ${{ vars.CONU_LINUX_REPOSITORY_AWS_REGION }}
           CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID }}
           CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY }}
-        run: |
-          set -eu
-          missing=""
-          for name in \
-            CONU_LINUX_REPOSITORY_S3_BUCKET \
-            CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID \
-            CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY; do
-            eval "value=\${$name:-}"
-            if [ -z "$value" ]; then
-              missing="$missing $name"
-            fi
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::Custom Linux repository base URL is configured, but custom publication setting(s) are missing:$missing"
-            exit 1
-          fi
-          echo "Custom Linux repository publication config is present."
+          CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN }}
+        run: python scripts/check-custom-linux-repository-publication-preflight.py
       - name: Note unsigned smoke mode
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: echo "Non-tag release workflow run; signing and npm publication secrets are not required."
