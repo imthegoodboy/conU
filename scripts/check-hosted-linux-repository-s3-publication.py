@@ -121,6 +121,23 @@ def main() -> int:
         bad_cache_result = run_publisher_raw(bad_cache_control, "--dry-run")
         assert_failure("bad Cache-Control", bad_cache_result, "Cache-Control")
 
+        unsafe_cache_path = temp / "unsafe-cache-path-site"
+        shutil.copytree(site_dir, unsafe_cache_path)
+        cache_policy_path = unsafe_cache_path / "cache-policy.json"
+        cache_policy = json.loads(cache_policy_path.read_text(encoding="ascii"))
+        cache_policy["rules"][0]["paths"].append("/.git/config")
+        cache_policy_path.write_text(
+            json.dumps(cache_policy, indent=2, sort_keys=True) + "\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        unsafe_cache_result = run_publisher_raw(unsafe_cache_path, "--dry-run")
+        assert_failure(
+            "unsafe cache path",
+            unsafe_cache_result,
+            "forbidden local-state segment",
+        )
+
         symlink_site_target = temp / "symlink-site-target"
         shutil.copytree(site_dir, symlink_site_target)
         symlink_site_root = temp / "symlink-site-root"

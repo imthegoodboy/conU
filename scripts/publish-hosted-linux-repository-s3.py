@@ -416,16 +416,31 @@ def parse_cache_rules(cache_policy: dict[str, Any]) -> list[dict[str, Any]]:
             raise PublicationError(f"cache-policy.json cache rule {kind} paths are missing")
         clean_paths: list[str] = []
         for path in paths:
-            if not isinstance(path, str) or not path.startswith("/"):
-                raise PublicationError(f"cache-policy.json cache rule {kind} contains a non-absolute path")
-            if "?" in path or "#" in path:
-                raise PublicationError(f"cache-policy.json cache rule {kind} contains a query or fragment")
-            if path in seen_paths:
-                raise PublicationError(f"cache-policy.json duplicates cache path {path}")
-            seen_paths.add(path)
-            clean_paths.append(path)
+            clean_path = validate_cache_path(path, f"cache-policy.json cache rule {kind} path")
+            if clean_path in seen_paths:
+                raise PublicationError(f"cache-policy.json duplicates cache path {clean_path}")
+            seen_paths.add(clean_path)
+            clean_paths.append(clean_path)
         rules.append({"kind": kind, "paths": tuple(clean_paths), "cacheControl": cache_control})
     return rules
+
+
+def validate_cache_path(path: str, label: str) -> str:
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise PublicationError(f"{label} must be an absolute path")
+    if "\\" in path:
+        raise PublicationError(f"{label} must not contain backslashes")
+    if "?" in path or "#" in path:
+        raise PublicationError(f"{label} must not contain query or fragment")
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        raise PublicationError(f"{label} must not contain empty or dot segments")
+    forbidden = sorted({part.lower() for part in parts[1:]} & FORBIDDEN_SEGMENTS)
+    if forbidden:
+        raise PublicationError(
+            f"{label} contains forbidden local-state segment: {', '.join(forbidden)}"
+        )
+    return path
 
 
 def collect_files(
