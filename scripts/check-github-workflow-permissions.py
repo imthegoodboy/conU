@@ -47,6 +47,81 @@ RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
     "python scripts/check-npm-publish-preflight.py "
     "--registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check"
 )
+RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
+    tuple[str, str, tuple[tuple[str, str], ...]],
+    ...,
+] = (
+    (
+        "Validate tag target CI and release branch",
+        "validate tag target CI and release branch",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "tagged release readiness command",
+                "python scripts/check-tagged-release-readiness.py --repo "
+                '"$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" --ci-only '
+                '--ci-head "$GITHUB_SHA" --require-default-branch-head',
+            ),
+        ),
+    ),
+    (
+        "Validate GitHub main branch protection",
+        "validate GitHub main branch protection",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "main branch protection command",
+                'python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY"',
+            ),
+        ),
+    ),
+    (
+        "Validate GitHub Actions permissions",
+        "validate GitHub Actions permissions",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "Actions permissions command",
+                'python scripts/check-github-actions-permissions.py --repo "$GITHUB_REPOSITORY"',
+            ),
+        ),
+    ),
+    (
+        "Validate GitHub workflow permissions",
+        "validate GitHub workflow permissions",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            (
+                "workflow permissions command",
+                "python scripts/check-github-workflow-permissions.py",
+            ),
+        ),
+    ),
+    (
+        "Validate GitHub repository security",
+        "validate GitHub repository security",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "repository security command",
+                'python scripts/check-github-repository-security.py --repo "$GITHUB_REPOSITORY"',
+            ),
+        ),
+    ),
+    (
+        "Validate npm token authentication and registry availability",
+        "validate npm token authentication and registry availability",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            ("NPM token env", "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"),
+            ("npm auth/registry command", RELEASE_PREFLIGHT_NPM_AUTH_COMMAND),
+        ),
+    ),
+)
 RELEASE_PUBLICATION_GATE_STEP = "Check Linux repository publication result"
 RELEASE_PUBLICATION_GATE_SNIPPETS: tuple[tuple[str, str], ...] = (
     (
@@ -352,23 +427,16 @@ def audit_required_release_preflight_steps(path: Path) -> tuple[str, ...]:
     if not block:
         return ("release.yml must define release-preflight job",)
 
-    step = extract_named_step_block(
-        block,
-        "Validate npm token authentication and registry availability",
-    )
-    if not step:
-        issues.append(
-            "release.yml:release-preflight must validate npm token authentication and registry availability"
-        )
-        return tuple(issues)
-    if "if: startsWith(github.ref, 'refs/tags/v')" not in step:
-        issues.append("release.yml:release-preflight npm auth/registry check must be tag-gated")
-    if "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}" not in step:
-        issues.append(
-            "release.yml:release-preflight npm auth/registry check must use NODE_AUTH_TOKEN from NPM_TOKEN"
-        )
-    if RELEASE_PREFLIGHT_NPM_AUTH_COMMAND not in step:
-        issues.append("release.yml:release-preflight npm auth/registry command is missing")
+    for step_name, description, required_snippets in RELEASE_PREFLIGHT_REQUIRED_STEPS:
+        step = extract_named_step_block(block, step_name)
+        if not step:
+            issues.append(f"release.yml:release-preflight must {description}")
+            continue
+        for label, snippet in required_snippets:
+            if snippet not in step:
+                issues.append(
+                    f"release.yml:release-preflight {description} is missing {label}"
+                )
     return tuple(issues)
 
 

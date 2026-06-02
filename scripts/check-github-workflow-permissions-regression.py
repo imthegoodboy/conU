@@ -67,6 +67,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo preflight
+      - name: Validate tag target CI and release branch
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-tagged-release-readiness.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" --ci-only --ci-head "$GITHUB_SHA" --require-default-branch-head
+      - name: Validate GitHub main branch protection
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY"
+      - name: Validate GitHub Actions permissions
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-actions-permissions.py --repo "$GITHUB_REPOSITORY"
+      - name: Validate GitHub workflow permissions
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python scripts/check-github-workflow-permissions.py
+      - name: Validate GitHub repository security
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-repository-security.py --repo "$GITHUB_REPOSITORY"
       - name: Validate npm token authentication and registry availability
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -290,13 +313,83 @@ def run_required_release_preflight_tests(module) -> None:
         module,
         None,
         ready_release().replace(
+            "      - name: Validate GitHub workflow permissions\n"
+            "        if: startsWith(github.ref, 'refs/tags/v')\n"
+            "        run: python scripts/check-github-workflow-permissions.py\n",
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing release workflow permissions preflight should fail")
+    if (
+        "release.yml:release-preflight must validate GitHub workflow permissions"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("missing release workflow permissions preflight issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '        run: python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY"\n',
+            "        run: echo skipped-main-protection\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("weakened main branch protection preflight should fail")
+    if (
+        "release.yml:release-preflight validate GitHub main branch protection "
+        "is missing main branch protection command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("weakened main branch protection preflight issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate GitHub repository security\n"
+            "        if: startsWith(github.ref, 'refs/tags/v')\n",
+            "      - name: Validate GitHub repository security\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("untagged repository security preflight should fail")
+    if (
+        "release.yml:release-preflight validate GitHub repository security "
+        "is missing tag gate"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("untagged repository security preflight issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '        run: python scripts/check-tagged-release-readiness.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME" --ci-only --ci-head "$GITHUB_SHA" --require-default-branch-head\n',
+            '        run: python scripts/check-tagged-release-readiness.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"\n',
+        ),
+    )
+    if report.ready:
+        raise AssertionError("weakened tag/default-branch release preflight should fail")
+    if (
+        "release.yml:release-preflight validate tag target CI and release branch "
+        "is missing tagged release readiness command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("weakened tag/default-branch preflight issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
             "        run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check\n",
             "        run: python scripts/check-npm-publish-preflight.py\n",
         ),
     )
     if report.ready:
         raise AssertionError("missing early npm auth/registry preflight should fail")
-    if "release.yml:release-preflight npm auth/registry command is missing" not in json.dumps(assert_safe_report(report)):
+    if (
+        "release.yml:release-preflight validate npm token authentication "
+        "and registry availability is missing npm auth/registry command"
+    ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("missing early npm auth/registry preflight issue was not reported")
 
 
