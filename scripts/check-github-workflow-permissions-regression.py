@@ -193,14 +193,99 @@ jobs:
         shell: pwsh
         run: ./scripts/verify-production-readiness.ps1 -SmokeOnly
   build:
+    name: Build ${{ matrix.name }}
     needs: [packages, production-readiness]
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       id-token: write
       attestations: write
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-2025-vs2026
+            script: powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -PackageSuffix windows-x64
+            artifact: |
+              dist/*.zip
+              dist/*.zip.sha256
+          - name: linux-x64
+            os: ubuntu-latest
+            script: PACKAGE_SUFFIX=linux-x64 sh scripts/build-release.sh
+            artifact: |
+              dist/*.tar.gz
+              dist/*.tar.gz.sha256
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            script: PACKAGE_SUFFIX=linux-arm64 sh scripts/build-release.sh
+            artifact: |
+              dist/*.tar.gz
+              dist/*.tar.gz.sha256
+          - name: macos-arm64
+            os: macos-15
+            script: PACKAGE_SUFFIX=macos-arm64 sh scripts/build-release.sh
+            artifact: |
+              dist/*.zip
+              dist/*.zip.sha256
+          - name: macos-x64
+            os: macos-15-intel
+            script: PACKAGE_SUFFIX=macos-x64 sh scripts/build-release.sh
+            artifact: |
+              dist/*.zip
+              dist/*.zip.sha256
+    env:
+      CONU_SIGNING_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
     steps:
-      - run: echo build
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Configure macOS signing keychain
+        if: runner.os == 'macOS'
+        env:
+          MACOS_P12_BASE64: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          MACOS_P12_PASSWORD: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.CONU_MACOS_CODESIGN_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.CONU_MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.CONU_MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.CONU_MACOS_NOTARY_PASSWORD }}
+        run: |
+          set -eu
+          append_github_env() {
+            name="$1"
+            value="$2"
+            printf '%s=%s\\n' "$name" "$value" >> "$GITHUB_ENV"
+          }
+          if [ "${CONU_SIGNING_REQUIRED:-0}" = "1" ]; then
+            echo "signing required"
+          fi
+          xcrun notarytool store-credentials conu-notary-profile
+          append_github_env CONU_MACOS_CODESIGN_IDENTITY "$MACOS_CODESIGN_IDENTITY"
+          append_github_env CONU_MACOS_KEYCHAIN "$keychain_path"
+          append_github_env CONU_MACOS_NOTARY_KEYCHAIN_PROFILE "conu-notary-profile"
+      - name: Build package
+        env:
+          CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}
+          CONU_WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PASSWORD }}
+          CONU_WINDOWS_TIMESTAMP_URL: ${{ secrets.CONU_WINDOWS_TIMESTAMP_URL }}
+        run: ${{ matrix.script }}
+      - name: Verify release artifact
+        run: python scripts/verify-release-artifacts.py dist
+      - name: Smoke release artifact install
+        run: python scripts/smoke-release-artifacts.py dist
+      - name: Smoke npm launcher local install
+        run: python scripts/smoke-npm-launcher-local.py dist
+      - name: Smoke npm launcher download install
+        run: python scripts/smoke-npm-launcher-download.py dist
+      - name: Attest release artifact provenance
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ matrix.artifact }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: conu-${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
   github-release:
     needs: build
     permissions:
@@ -766,6 +851,108 @@ def run_required_production_readiness_job_tests(module) -> None:
         raise AssertionError("missing production readiness Windows runner was not reported")
 
 
+def run_required_build_job_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "    runs-on: ${{ matrix.os }}\n",
+            "    runs-on: ubuntu-latest\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("build job without matrix runner should fail")
+    if "release.yml:build is missing matrix runner" not in json.dumps(
+        assert_safe_report(report)
+    ):
+        raise AssertionError("missing build matrix runner was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "          - name: linux-arm64\n",
+            "          - name: linux-aarch64\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("build job without Linux arm64 target should fail")
+    if "release.yml:build is missing Linux arm64 target" not in json.dumps(
+        assert_safe_report(report)
+    ):
+        raise AssertionError("missing Linux arm64 build target was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: python scripts/verify-release-artifacts.py dist\n",
+            "        run: echo skipped-artifact-verifier\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("build job without artifact verifier should fail")
+    if (
+        "release.yml:build verify release artifact is missing "
+        "release artifact verifier command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing build artifact verifier was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        uses: actions/attest@v4.1.0\n",
+            "        uses: actions/upload-artifact@v7.0.1\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("build job without artifact attestation should fail")
+    if (
+        "release.yml:build attest release artifact provenance is missing "
+        "artifact attestation action"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing build artifact attestation was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "          subject-path: ${{ matrix.artifact }}\n",
+            "          subject-path: dist/*\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("build job without matrix attestation subject should fail")
+    if (
+        "release.yml:build attest release artifact provenance is missing "
+        "attestation subject path"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing matrix attestation subject was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: ${{ matrix.script }}\n",
+            "        run: echo skipped-matrix-build\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("build job without matrix build command should fail")
+    if (
+        "release.yml:build build release package is missing matrix build command"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("missing matrix build command was not reported")
+
+
 def run_required_github_release_gate_tests(module) -> None:
     report = with_fixture(
         module,
@@ -1059,11 +1246,14 @@ def run_unsafe_environment_file_write_tests(module) -> None:
         module,
         None,
         ready_release().replace(
-            "      - run: echo build\n",
-            "      - run: |\n"
+            "      - name: Verify release artifact\n",
+            "      - name: Unsafe env write\n"
+            "        run: |\n"
             "          {\n"
             "            echo \"CONU_MACOS_CODESIGN_IDENTITY=$MACOS_CODESIGN_IDENTITY\"\n"
-            "          } >> \"$GITHUB_ENV\"\n",
+            "          } >> \"$GITHUB_ENV\"\n"
+            "      - name: Verify release artifact\n",
+            1,
         ),
     )
     if report.ready:
@@ -1087,6 +1277,7 @@ def main() -> int:
     run_required_release_job_needs_tests(module)
     run_required_package_checks_job_tests(module)
     run_required_production_readiness_job_tests(module)
+    run_required_build_job_tests(module)
     run_required_github_release_gate_tests(module)
     run_required_linux_repository_publication_job_tests(module)
     run_required_npm_publication_gate_tests(module)
