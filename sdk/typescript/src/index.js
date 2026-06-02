@@ -251,7 +251,7 @@ export class ConuClient {
     return this.runJson(
       this.conuBin,
       ["messages", "send", fromAgentId, toAgentId, "--stdin", "--json"],
-      toBuffer(payload),
+      toBuffer(payload, this.conuBin),
     );
   }
 
@@ -268,7 +268,7 @@ export class ConuClient {
         "--stdin",
         "--json",
       ],
-      toBuffer(payload),
+      toBuffer(payload, this.conuBin),
     );
   }
 
@@ -292,7 +292,7 @@ export class ConuClient {
     return this.runJson(
       this.conuBin,
       ["rooms", "publish", roomId, fromAgentId, topic, "--stdin", "--json"],
-      toBuffer(payload),
+      toBuffer(payload, this.conuBin),
     );
   }
 
@@ -341,7 +341,7 @@ export class ConuClient {
     return this.runJson(
       this.conuBin,
       ["relay", "credential", "set", "--stdin", "--json"],
-      toBuffer(token),
+      toBuffer(token, this.conuBin),
     );
   }
 
@@ -365,7 +365,7 @@ export class ConuClient {
     return this.runJson(
       this.conuBin,
       ["streams", "write", streamId, "--stdin", "--json"],
-      toBuffer(payload),
+      toBuffer(payload, this.conuBin),
     );
   }
 
@@ -507,14 +507,24 @@ function decode(value) {
   return Buffer.from(value).toString("utf8");
 }
 
-function toBuffer(value) {
-  if (Buffer.isBuffer(value)) {
-    return value;
+function toBuffer(value, binary) {
+  try {
+    if (Buffer.isBuffer(value)) {
+      return value;
+    }
+    if (value instanceof Uint8Array) {
+      return Buffer.from(value);
+    }
+    if (typeof value === "string") {
+      return Buffer.from(value, "utf8");
+    }
+  } catch (_error) {
+    // Fall through to the redacted SDK boundary error below.
   }
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value);
-  }
-  return Buffer.from(String(value), "utf8");
+  throw new ConuError(
+    `conU stdin payload could not be encoded: ${safeCommandForError(binary)}`,
+    resultForError({ code: 1 }, binary),
+  );
 }
 
 function boolArg(value) {

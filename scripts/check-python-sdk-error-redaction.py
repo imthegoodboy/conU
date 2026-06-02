@@ -688,6 +688,29 @@ def run_stdin_secret_failure_redaction_test(module) -> None:
         raise AssertionError("Python SDK stdin failure should retain only safe command metadata")
 
 
+def run_stdin_payload_encoding_redaction_test(module) -> None:
+    class SecretPayload:
+        def __str__(self) -> str:
+            raise RuntimeError(f"payload conversion exposed {SENSITIVE_ENDPOINT}")
+
+    def fake_run(_argv, **_kwargs):
+        raise AssertionError("Python SDK should not execute subprocess for invalid payload")
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.send_message("agent.alpha", "agent.beta", SecretPayload())
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 1)
+    else:
+        raise AssertionError("expected Python SDK stdin payload encoding failure")
+
+    assert_redacted(rendered)
+    if "conU stdin payload could not be encoded: conu-test.exe [arguments redacted]" not in rendered:
+        raise AssertionError("Python SDK payload encoding error should retain safe metadata only")
+
+
 def main() -> int:
     module = load_sdk()
     run_success_result_metadata_test(module)
@@ -703,6 +726,7 @@ def main() -> int:
     run_mcp_shape_redaction_tests(module)
     run_command_surface_parity_test(module)
     run_stdin_secret_failure_redaction_test(module)
+    run_stdin_payload_encoding_redaction_test(module)
     print("Python SDK error redaction regression checks passed")
     return 0
 

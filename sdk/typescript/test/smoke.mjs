@@ -274,6 +274,47 @@ assert.throws(
   },
 );
 
+let invalidPayloadRunnerCalled = false;
+const invalidPayloadClient = new ConuClient({
+  conuBin: "C:/tools/conu-test.exe",
+  runner() {
+    invalidPayloadRunnerCalled = true;
+    throw new Error("runner should not execute for invalid payload");
+  },
+});
+const invalidPayload = {
+  toString() {
+    throw new Error(`payload conversion leaked ${secretEndpoint}`);
+  },
+};
+
+assert.throws(
+  () => invalidPayloadClient.sendMessage("agent.alpha", "agent.beta", invalidPayload),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU stdin payload could not be encoded: conu-test.exe [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.stdout, "");
+    assert.equal(error.result.stderr, "");
+    assert.equal(error.result.code, 1);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+assert.equal(invalidPayloadRunnerCalled, false);
+
 for (const runner of [
   () => null,
   () => ({
