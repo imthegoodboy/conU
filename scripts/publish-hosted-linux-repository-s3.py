@@ -815,9 +815,17 @@ def parse_aws_cli(raw: str) -> list[str]:
         parsed = shlex.split(command, posix=os.name != "nt")
     except ValueError as exc:
         raise PublicationError(f"AWS CLI command could not be parsed: {exc}") from exc
+    if os.name == "nt":
+        parsed = [strip_matching_quotes(item) for item in parsed]
     if not parsed:
         raise PublicationError("AWS CLI command must not be empty")
     return parsed
+
+
+def strip_matching_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def run_endpoint_check(plan: PublishPlan, args: argparse.Namespace) -> None:

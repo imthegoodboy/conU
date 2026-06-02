@@ -26,6 +26,9 @@ PREFIX = "public/conu"
 HOSTED_BUNDLE = f"conu-{VERSION}-hosted-linux-repositories.zip"
 SITE_BUNDLE = f"conu-{VERSION}-hosted-linux-repository-site.zip"
 SENSITIVE_SENTINEL = "do-not-print-this-secret-value"
+PUBLISHER_TIMEOUT_SECONDS = 300
+PREPARER_TIMEOUT_SECONDS = 60
+PREFLIGHT_TIMEOUT_SECONDS = 60
 
 
 def main() -> int:
@@ -344,6 +347,7 @@ def run_preparer(site: Path, output_dir: Path) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
+        timeout=PREPARER_TIMEOUT_SECONDS,
     ).stdout
 
 
@@ -383,6 +387,7 @@ def run_publisher_raw(
         encoding="utf-8",
         errors="replace",
         env=run_env,
+        timeout=PUBLISHER_TIMEOUT_SECONDS,
     )
 
 
@@ -414,8 +419,8 @@ def assert_publication_report(report: dict, *, published: bool) -> None:
         raise AssertionError(f"publication report cache classes were {cache_classes!r}")
 
 
-def write_fake_aws(temp: Path) -> Path:
-    fake_py = temp / "fake_aws.py"
+def write_fake_aws(temp: Path) -> str:
+    fake_py = temp / "fake aws.py"
     fake_py.write_text(
         "\n".join(
             [
@@ -450,22 +455,7 @@ def write_fake_aws(temp: Path) -> Path:
         encoding="ascii",
         newline="\n",
     )
-    if os.name == "nt":
-        fake_cmd = temp / "fake-aws.cmd"
-        fake_cmd.write_text(
-            f"@echo off\r\n\"{sys.executable}\" \"{fake_py}\" %*\r\n",
-            encoding="ascii",
-            newline="\r\n",
-        )
-        return fake_cmd
-    fake_sh = temp / "fake-aws"
-    fake_sh.write_text(
-        f"#!/bin/sh\nexec \"{sys.executable}\" \"{fake_py}\" \"$@\"\n",
-        encoding="ascii",
-        newline="\n",
-    )
-    fake_sh.chmod(0o755)
-    return fake_sh
+    return subprocess.list2cmdline([sys.executable, str(fake_py)])
 
 
 def assert_fake_aws_log(log: Path, expected_count: int) -> None:
@@ -587,6 +577,7 @@ def run_preflight_raw(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         encoding="utf-8",
         errors="replace",
         env=run_env,
+        timeout=PREFLIGHT_TIMEOUT_SECONDS,
     )
 
 

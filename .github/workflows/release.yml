@@ -603,6 +603,8 @@ jobs:
           mkdir -p "$KEY_DIR" "$GNUPG_HOME"
           chmod 700 "$GNUPG_HOME"
           gh release download "$TAG_NAME" --repo "$GH_REPO" --pattern conu-linux-gpg-key.asc --dir "$KEY_DIR"
+          gh release download "$TAG_NAME" --repo "$GH_REPO" --pattern conu-linux-gpg-key.asc.sha256 --dir "$KEY_DIR"
+          (cd "$KEY_DIR" && sha256sum -c conu-linux-gpg-key.asc.sha256)
           export GNUPGHOME="$GNUPG_HOME"
           gpg --batch --yes --import "$KEY_DIR/conu-linux-gpg-key.asc"
           EXPECTED_FINGERPRINT="$(printf '%s' "$CONU_LINUX_GPG_KEY_FINGERPRINT" | tr -d '[:space:]:' | sed 's/^0[xX]//' | tr '[:lower:]' '[:upper:]')"

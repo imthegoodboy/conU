@@ -1305,6 +1305,15 @@ GITHUB_RELEASE_REQUIRED_STEPS: tuple[
                 'conu-linux-gpg-key.asc --dir "$KEY_DIR"',
             ),
             (
+                "public key checksum download",
+                'gh release download "$TAG_NAME" --repo "$GH_REPO" --pattern '
+                'conu-linux-gpg-key.asc.sha256 --dir "$KEY_DIR"',
+            ),
+            (
+                "public key checksum verification",
+                '(cd "$KEY_DIR" && sha256sum -c conu-linux-gpg-key.asc.sha256)',
+            ),
+            (
                 "fingerprint comparison",
                 'if [ "$ACTUAL_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]; then',
             ),
