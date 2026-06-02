@@ -10,6 +10,9 @@ const { BINARIES, binarySuffix, vendorDir } = require("../lib/platform");
 const packageRoot = path.resolve(__dirname, "..");
 
 function main() {
+  const installScript = fs.readFileSync(path.join(packageRoot, "scripts", "install.js"), "utf8");
+  expectNotIncludes(installScript, 'stdio: "inherit"', "installer child output privacy guard");
+
   const checkOnly = runNode([path.join(packageRoot, "scripts", "install.js"), "--check-only"]);
   expectNoLocalPath(checkOnly, packageRoot, "check-only package root");
   expectNoLocalPath(checkOnly, vendorDir(), "check-only vendor dir");
@@ -100,6 +103,12 @@ function expectNoLocalPath(output, value, label) {
 function expectIncludes(output, value, label) {
   if (!output.includes(value)) {
     throw new Error(`${label}: expected output to include ${value}`);
+  }
+}
+
+function expectNotIncludes(output, value, label) {
+  if (output.includes(value)) {
+    throw new Error(`${label}: expected output not to include ${value}`);
   }
 }
 
