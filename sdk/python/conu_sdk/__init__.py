@@ -316,7 +316,7 @@ class ConuClient:
             to_agent_id,
             "--stdin",
             "--json",
-            input_bytes=_to_bytes(payload),
+            input_bytes=_to_bytes(payload, self.conu_bin),
         )
 
     def send_remote_message(
@@ -336,7 +336,7 @@ class ConuClient:
             peer_node_id,
             "--stdin",
             "--json",
-            input_bytes=_to_bytes(payload),
+            input_bytes=_to_bytes(payload, self.conu_bin),
         )
 
     def create_room(
@@ -382,7 +382,7 @@ class ConuClient:
             topic,
             "--stdin",
             "--json",
-            input_bytes=_to_bytes(payload),
+            input_bytes=_to_bytes(payload, self.conu_bin),
         )
 
     def room_topic_policies(self) -> dict[str, Any]:
@@ -454,7 +454,7 @@ class ConuClient:
             "set",
             "--stdin",
             "--json",
-            input_bytes=_to_bytes(token),
+            input_bytes=_to_bytes(token, self.conu_bin),
         )
 
     def clear_relay_credential(self) -> dict[str, Any]:
@@ -489,7 +489,7 @@ class ConuClient:
             stream_id,
             "--stdin",
             "--json",
-            input_bytes=_to_bytes(payload),
+            input_bytes=_to_bytes(payload, self.conu_bin),
         )
 
     def close_stream(self, stream_id: str) -> dict[str, Any]:
@@ -716,12 +716,20 @@ def _safe_mcp_error(error: Any) -> str:
     return "unknown MCP error"
 
 
-def _to_bytes(value: bytes | bytearray | memoryview | str) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, (bytearray, memoryview)):
-        return bytes(value)
-    return str(value).encode("utf-8")
+def _to_bytes(value: Any, binary: str) -> bytes:
+    try:
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, (bytearray, memoryview)):
+            return bytes(value)
+        if isinstance(value, str):
+            return value.encode("utf-8")
+    except Exception:
+        pass
+    raise ConuError(
+        f"conU stdin payload could not be encoded: {_safe_command_for_error(binary)}",
+        _result_for_error(1, binary),
+    ) from None
 
 
 def _hex_to_bytes(payload_hex: str, binary: str) -> bytes:
