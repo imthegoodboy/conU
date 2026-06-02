@@ -250,6 +250,43 @@ def run_repository_governance_tests(module) -> None:
             raise AssertionError(f"repository governance issue was not reported: {expected}")
 
 
+def run_main_branch_protection_caller_tests(module) -> None:
+    original_loader = module.load_script_module
+    captured: dict[str, object] = {}
+
+    class BranchModuleFixture:
+        DEFAULT_BRANCH = "main"
+        DEFAULT_REQUIRED_STATUS_CHECKS = ("Packages",)
+
+        @staticmethod
+        def load_branch_protection(repo: str, branch: str, gh: str) -> dict[str, object]:
+            captured["repo"] = repo
+            captured["branch"] = branch
+            captured["gh"] = gh
+            return {}
+
+        @staticmethod
+        def audit_branch_protection(**kwargs):
+            captured.update(kwargs)
+            return GovernanceFixture(
+                schema="conu.githubMainBranchProtection.v1",
+                ready=True,
+            )
+
+    try:
+        module.load_script_module = lambda script, name: BranchModuleFixture
+        report = module.audit_main_branch_protection("owner/repo", "gh", "main")
+    finally:
+        module.load_script_module = original_loader
+
+    if report.ready is not True:
+        raise AssertionError("expected branch protection fixture to pass")
+    if captured.get("require_admin_enforcement") is not True:
+        raise AssertionError("tagged release readiness must require admin enforcement")
+    if captured.get("required_status_checks") != BranchModuleFixture.DEFAULT_REQUIRED_STATUS_CHECKS:
+        raise AssertionError("tagged release readiness must keep default required status checks")
+
+
 def run_ci_readiness_tests(module) -> None:
     report = module.audit_tagged_release_readiness(
         repo="owner/repo",
@@ -749,6 +786,7 @@ def main() -> int:
     run_ready_pages_tests(module)
     run_workflow_permissions_tests(module)
     run_repository_governance_tests(module)
+    run_main_branch_protection_caller_tests(module)
     run_ci_readiness_tests(module)
     run_release_branch_readiness_tests(module)
     run_missing_secret_tests(module)

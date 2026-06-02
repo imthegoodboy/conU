@@ -745,6 +745,7 @@ def audit_main_branch_protection(repo: str, gh: str, branch: str) -> Any:
         branch=normalized_branch,
         protection_payload=payload,
         required_status_checks=branch_module.DEFAULT_REQUIRED_STATUS_CHECKS,
+        require_admin_enforcement=True,
     )
 
 
