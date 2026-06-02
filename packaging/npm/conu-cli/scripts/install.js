@@ -125,7 +125,7 @@ function installFromExtractedArchive(root) {
 function extractArchive(archivePath, destination) {
   validateArchiveMembers(archivePath);
 
-  const tar = spawnSync("tar", ["-xf", archivePath, "-C", destination], { stdio: "inherit" });
+  const tar = spawnSync("tar", ["-xf", archivePath, "-C", destination], { stdio: "ignore" });
   if (tar.status === 0) {
     return;
   }
@@ -142,7 +142,7 @@ function extractArchive(archivePath, destination) {
         archivePath,
         destination
       ],
-      { stdio: "inherit" }
+      { stdio: "ignore" }
     );
     if (ps.status === 0) {
       return;
