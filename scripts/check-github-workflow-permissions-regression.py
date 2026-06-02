@@ -2386,6 +2386,25 @@ def run_unsafe_environment_file_write_tests(module) -> None:
     if "writes secret-derived NODE_AUTH_TOKEN directly to GITHUB_ENV" not in rendered:
         raise AssertionError("unsafe GITHUB_ENV heredoc write issue was not reported")
 
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '          append_github_env CONU_MACOS_NOTARY_KEYCHAIN_PROFILE "conu-notary-profile"\n',
+            '          append_github_env CONU_MACOS_NOTARY_KEYCHAIN_PROFILE "conu-notary-profile"\n'
+            '          append_github_env NODE_AUTH_TOKEN "$NODE_AUTH_TOKEN"\n',
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("extra secret-like append_github_env call should fail")
+    rendered = json.dumps(assert_safe_report(report))
+    if (
+        "uses unapproved append_github_env helper call for secret-like NODE_AUTH_TOKEN"
+        not in rendered
+    ):
+        raise AssertionError("extra append_github_env helper call issue was not reported")
+
 
 def main() -> int:
     module = load_module()

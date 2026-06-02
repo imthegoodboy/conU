@@ -45,6 +45,14 @@ UNSAFE_GITHUB_ENV_ECHO_RE = re.compile(
 )
 SHELL_VARIABLE_RE = re.compile(r"\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)(?:\})?")
 GITHUB_ENV_ASSIGNMENT_NAME_RE = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*=")
+GITHUB_ENV_HELPER_CALL_RE = re.compile(
+    r"^append_github_env\s+([A-Z][A-Z0-9_]*)\b(.*)$"
+)
+SAFE_GITHUB_ENV_HELPER_CALLS = (
+    'append_github_env CONU_MACOS_CODESIGN_IDENTITY "$MACOS_CODESIGN_IDENTITY"',
+    'append_github_env CONU_MACOS_KEYCHAIN "$keychain_path"',
+    'append_github_env CONU_MACOS_NOTARY_KEYCHAIN_PROFILE "conu-notary-profile"',
+)
 RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
     "python scripts/check-npm-publish-preflight.py "
     "--registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check"
@@ -1743,7 +1751,22 @@ def audit_environment_file_writes(path: Path) -> tuple[str, ...]:
     findings: list[str] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith("append_github_env "):
+        helper_match = GITHUB_ENV_HELPER_CALL_RE.search(stripped)
+        if helper_match is not None:
+            if stripped in SAFE_GITHUB_ENV_HELPER_CALLS:
+                continue
+            output_name, helper_args = helper_match.groups()
+            source_names = tuple(
+                name
+                for name in SHELL_VARIABLE_RE.findall(helper_args)
+                if is_secret_like_env_name(name)
+            )
+            if is_secret_like_env_name(output_name) or source_names:
+                finding_name = source_names[0] if source_names else output_name
+                findings.append(
+                    f"{path.name}:line {index + 1} uses unapproved "
+                    f"append_github_env helper call for secret-like {finding_name}"
+                )
             continue
         if not has_nearby_github_env_redirect(lines, index):
             continue
