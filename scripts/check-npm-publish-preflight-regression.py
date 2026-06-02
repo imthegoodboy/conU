@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 
 SCRIPT = Path(__file__).with_name("check-npm-publish-preflight.py")
@@ -117,6 +118,84 @@ def run_token_tests(module) -> None:
             os.environ[env_name] = original
 
 
+class FakeResponse:
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status = status
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def read(self, _size: int) -> bytes:
+        return self.body
+
+
+def run_token_auth_tests(module) -> None:
+    env_name = "CONU_TEST_NPM_TOKEN"
+    original = os.environ.pop(env_name, None)
+    original_urlopen = module.urlopen
+    token = "token-value"
+    try:
+        assert_raises(
+            lambda: module.validate_token_authentication(None),
+            "requires --require-token-env",
+        )
+
+        os.environ[env_name] = token
+
+        def successful_urlopen(request, timeout):
+            if timeout != 15:
+                raise AssertionError("unexpected token auth timeout")
+            if request.get_header("Authorization") != f"Bearer {token}":
+                raise AssertionError("token auth request did not use bearer authorization")
+            return FakeResponse(200, b'{"username":"imthegoodboy"}')
+
+        module.urlopen = successful_urlopen
+        module.validate_token_authentication(env_name)
+
+        def unauthorized_urlopen(*_args, **_kwargs):
+            raise HTTPError(module.NPM_WHOAMI_URL, 401, "Unauthorized", {}, None)
+
+        module.urlopen = unauthorized_urlopen
+        try:
+            module.validate_token_authentication(env_name)
+        except ValueError as exc:
+            rendered = str(exc)
+            if "authentication failed" not in rendered:
+                raise AssertionError(f"unexpected token auth error: {rendered}") from exc
+            if token in rendered:
+                raise AssertionError("token auth error leaked the token value") from exc
+        else:
+            raise AssertionError("invalid npm token unexpectedly passed authentication")
+
+        def malformed_json_urlopen(*_args, **_kwargs):
+            return FakeResponse(200, b'{"ok": true}')
+
+        module.urlopen = malformed_json_urlopen
+        assert_raises(
+            lambda: module.validate_token_authentication(env_name),
+            "did not return an npm username",
+        )
+
+        def oversized_urlopen(*_args, **_kwargs):
+            return FakeResponse(200, b"x" * (module.MAX_WHOAMI_RESPONSE_BYTES + 1))
+
+        module.urlopen = oversized_urlopen
+        assert_raises(
+            lambda: module.validate_token_authentication(env_name),
+            "response was too large",
+        )
+    finally:
+        module.urlopen = original_urlopen
+        if original is None:
+            os.environ.pop(env_name, None)
+        else:
+            os.environ[env_name] = original
+
+
 def main() -> int:
     module = load_module()
     original_run = subprocess.run
@@ -124,6 +203,7 @@ def main() -> int:
         run_registry_tests(module)
         run_version_consistency_tests(module)
         run_token_tests(module)
+        run_token_auth_tests(module)
     finally:
         module.subprocess.run = original_run
     print("npm publish preflight regression checks passed")

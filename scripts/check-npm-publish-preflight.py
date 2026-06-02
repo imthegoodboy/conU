@@ -13,9 +13,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+NPM_WHOAMI_URL = "https://registry.npmjs.org/-/whoami"
+MAX_WHOAMI_RESPONSE_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,41 @@ def is_single_line_token_value(value: str) -> bool:
     return all(character > " " and character != "\x7f" for character in value)
 
 
+def validate_token_authentication(env_name: str | None) -> None:
+    if not env_name:
+        raise ValueError("--token-auth-check requires --require-token-env")
+
+    validate_required_token(env_name)
+    token = os.environ[env_name]
+    request = Request(NPM_WHOAMI_URL, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urlopen(request, timeout=15) as response:
+            body = response.read(MAX_WHOAMI_RESPONSE_BYTES + 1)
+            status = response.status
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            raise ValueError(f"npm token authentication failed for {env_name}") from exc
+        raise ValueError(
+            f"npm token authentication check failed for {env_name}: HTTP {exc.code}"
+        ) from exc
+    except (OSError, TimeoutError, URLError) as exc:
+        raise ValueError(f"npm token authentication check failed for {env_name}") from exc
+
+    if status != 200:
+        raise ValueError(f"npm token authentication check failed for {env_name}: HTTP {status}")
+    if len(body) > MAX_WHOAMI_RESPONSE_BYTES:
+        raise ValueError(f"npm token authentication check response was too large for {env_name}")
+
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"npm token authentication check returned invalid JSON for {env_name}") from exc
+
+    username = parsed.get("username")
+    if not isinstance(username, str) or not is_single_line_token_value(username):
+        raise ValueError(f"npm token authentication check did not return an npm username for {env_name}")
+
+
 def npm_version_exists(npm: str, package: PackageInfo) -> bool:
     result = subprocess.run(
         [npm, "view", f"{package.name}@{package.version}", "version", "--json"],
@@ -196,6 +235,11 @@ def parse_args() -> argparse.Namespace:
         help="require this environment variable to be non-empty without printing its value",
     )
     parser.add_argument(
+        "--token-auth-check",
+        action="store_true",
+        help="verify the required npm token can authenticate without printing its value",
+    )
+    parser.add_argument(
         "--npm",
         default="",
         help=argparse.SUPPRESS,
@@ -212,6 +256,8 @@ def main() -> int:
         packages = tuple(validate_manifest(repo, rule) for rule in selected_packages(args.package))
         validate_package_version_consistency(packages)
         validate_required_token(args.require_token_env or None)
+        if args.token_auth_check:
+            validate_token_authentication(args.require_token_env or None)
 
         if args.registry_check:
             npm = args.npm or find_npm()
@@ -222,8 +268,13 @@ def main() -> int:
         return 1
 
     checked = ", ".join(f"{package.name}@{package.version}" for package in packages)
-    registry_note = " with registry availability" if args.registry_check else ""
-    print(f"npm publish preflight passed{registry_note}: {checked}")
+    notes = []
+    if args.registry_check:
+        notes.append("registry availability")
+    if args.token_auth_check:
+        notes.append("token authentication")
+    note = f" with {' and '.join(notes)}" if notes else ""
+    print(f"npm publish preflight passed{note}: {checked}")
     return 0
 
 
