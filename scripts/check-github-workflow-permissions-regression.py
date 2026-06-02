@@ -41,9 +41,95 @@ permissions:
   contents: read
 jobs:
   packages:
+    name: Packages
     runs-on: ubuntu-latest
     steps:
-      - run: echo {SENSITIVE_SENTINEL}
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install package tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg openssl
+      - name: Python script compile
+        run: python scripts/check-python-script-compile.py
+      - name: Production readiness toolchain regression
+        run: python scripts/check-production-readiness-toolchain.py
+      - name: Smoke output privacy regression
+        run: python scripts/check-smoke-output-privacy.py
+      - name: Release version consistency
+        run: python scripts/verify-release-versions.py
+      - name: Release artifact verifier regression
+        run: python scripts/check-release-artifact-verifier.py
+      - name: Release artifact smoke preflight regression
+        run: python scripts/check-release-artifact-smoke-preflight.py
+      - name: Package-manager manifest regression
+        run: python scripts/check-package-manager-manifests.py
+      - name: Package-manager submission bundle regression
+        run: python scripts/check-package-manager-submissions.py
+      - name: Linux signing secret preflight regression
+        run: python scripts/check-linux-signing-secrets-preflight-regression.py
+      - name: Platform signing secret value preflight regression
+        run: python scripts/check-platform-signing-secrets-preflight-regression.py
+      - name: GitHub release secret readiness regression
+        run: python scripts/check-github-release-secret-readiness-regression.py
+      - name: Release secret env preflight regression
+        run: python scripts/check-release-secret-env-preflight-regression.py
+      - name: GitHub release secret setup regression
+        run: python scripts/set-github-release-secrets-regression.py
+      - name: GitHub main branch protection regression
+        run: python scripts/check-github-main-protection-regression.py
+      - name: GitHub Actions permissions regression
+        run: python scripts/check-github-actions-permissions-regression.py
+      - name: GitHub workflow permissions regression
+        run: python scripts/check-github-workflow-permissions-regression.py
+      - name: GitHub repository security regression
+        run: python scripts/check-github-repository-security-regression.py
+      - name: GitHub Pages readiness regression
+        run: python scripts/check-github-pages-readiness-regression.py
+      - name: GitHub Release asset publication regression
+        run: python scripts/check-github-release-assets-published-regression.py
+      - name: GitHub Release clobber preflight regression
+        run: python scripts/check-github-release-clobber-preflight-regression.py
+      - name: Tagged release readiness regression
+        run: python scripts/check-tagged-release-readiness-regression.py
+      - name: RPM package signing regression
+        run: python scripts/check-rpm-package-signing.py
+      - name: Linux release signing regression
+        run: python scripts/check-linux-release-signing.py
+      - name: Linux repository signing regression
+        run: python scripts/check-linux-repository-signing.py
+      - name: Hosted Linux repository bundle regression
+        run: python scripts/check-hosted-linux-repositories.py
+      - name: Hosted Linux repository site regression
+        run: python scripts/check-hosted-linux-repository-site.py
+      - name: Hosted Linux repository Pages regression
+        run: python scripts/check-hosted-linux-repository-pages.py
+      - name: Hosted Linux repository endpoint regression
+        run: python scripts/check-hosted-linux-repository-endpoint-regression.py
+      - name: Hosted Linux repository S3 publication regression
+        run: python scripts/check-hosted-linux-repository-s3-publication.py
+      - name: Release update policy regression
+        run: python scripts/check-release-update-policy.py
+      - name: Release update download/apply gate regression
+        run: python scripts/check-release-update-download-gate.py
+      - name: Linux GPG public-key export regression
+        run: python scripts/check-linux-gpg-public-key-export.py
+      - name: TypeScript SDK check
+        run: npm run check --prefix sdk/typescript
+      - name: npm launcher check
+        run: npm run check --prefix packaging/npm/conu-cli
+      - name: npm launcher local smoke preflight regression
+        run: python scripts/check-npm-launcher-local-smoke-preflight.py
+      - name: Verify npm package contents
+        run: python scripts/verify-npm-package-contents.py
+      - name: npm package public metadata regression
+        run: python scripts/verify-npm-package-contents-regression.py
+      - name: npm publish preflight
+        run: python scripts/check-npm-publish-preflight.py
+      - name: npm publish preflight regression
+        run: python scripts/check-npm-publish-preflight-regression.py
 """
 
 
@@ -869,6 +955,42 @@ def run_unexpected_job_write_tests(module) -> None:
     rendered = json.dumps(assert_safe_report(report))
     if "ci.yml:packages must not request write permission for contents" not in rendered:
         raise AssertionError("unexpected write issue was not reported")
+
+
+def run_required_ci_package_checks_job_tests(module) -> None:
+    report = with_fixture(
+        module,
+        ready_ci().replace(
+            "          node-version: 24\n",
+            "          node-version: 22\n",
+            1,
+        ),
+        None,
+    )
+    if report.ready:
+        raise AssertionError("weakened CI package Node LTS setup should fail")
+    if "ci.yml:packages is missing Node version" not in json.dumps(
+        assert_safe_report(report)
+    ):
+        raise AssertionError("weakened CI package Node version was not reported")
+
+    report = with_fixture(
+        module,
+        ready_ci().replace(
+            "        run: python scripts/check-github-workflow-permissions-regression.py\n",
+            "        run: echo skipped-workflow-permissions-regression\n",
+        ),
+        None,
+    )
+    if report.ready:
+        raise AssertionError("missing CI workflow permissions regression should fail")
+    if (
+        "ci.yml:packages run GitHub workflow permissions regression is "
+        "missing workflow permissions regression command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError(
+            "missing CI workflow permissions regression was not reported"
+        )
 
 
 def run_expected_job_permission_tests(module) -> None:
@@ -2103,6 +2225,7 @@ def main() -> int:
     run_forbidden_event_tests(module)
     run_checkout_credential_persistence_tests(module)
     run_unexpected_job_write_tests(module)
+    run_required_ci_package_checks_job_tests(module)
     run_expected_job_permission_tests(module)
     run_required_release_preflight_tests(module)
     run_required_release_job_needs_tests(module)
