@@ -274,6 +274,80 @@ assert.throws(
   },
 );
 
+let invalidArgumentRunnerCalled = false;
+const invalidArgumentClient = new ConuClient({
+  conuBin: "C:/tools/conu-test.exe",
+  runner() {
+    invalidArgumentRunnerCalled = true;
+    throw new Error("runner should not execute for invalid command argument");
+  },
+});
+const invalidArgument = {
+  toString() {
+    throw new Error(`argument conversion leaked ${secretEndpoint}`);
+  },
+};
+
+assert.throws(
+  () =>
+    invalidArgumentClient.trustPeer("node.peer", "Peer", "aa", {
+      relayEndpoint: invalidArgument,
+    }),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU command argument could not be encoded: conu-test.exe [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+assert.equal(invalidArgumentRunnerCalled, false);
+
+let invalidMcpArgumentRunnerCalled = false;
+const invalidMcpArgumentClient = new ConuClient({
+  mcpBin: "conu-mcp-test",
+  runner() {
+    invalidMcpArgumentRunnerCalled = true;
+    throw new Error("runner should not execute for invalid MCP argument");
+  },
+});
+
+assert.throws(
+  () => invalidMcpArgumentClient.receiveMessage(invalidArgument, "env.local.1"),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU command argument could not be encoded: conu-mcp-test [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu-mcp-test", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+assert.equal(invalidMcpArgumentRunnerCalled, false);
+
 let invalidPayloadRunnerCalled = false;
 const invalidPayloadClient = new ConuClient({
   conuBin: "C:/tools/conu-test.exe",

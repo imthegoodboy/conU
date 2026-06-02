@@ -78,7 +78,12 @@ export class ConuClient {
   }
 
   exportAgentCard(agentId) {
-    return this.runJson(this.conuBin, ["agents", "export", agentId, "--json"]);
+    return this.runJson(this.conuBin, [
+      "agents",
+      "export",
+      commandArg(agentId, this.conuBin),
+      "--json",
+    ]);
   }
 
   trustAgentCard(card) {
@@ -86,20 +91,20 @@ export class ConuClient {
     return this.runJson(this.conuBin, [
       "agents",
       "trust",
-      String(card.agentId),
-      String(card.displayName),
+      commandArg(card.agentId, this.conuBin),
+      commandArg(card.displayName, this.conuBin),
       "--node",
-      String(card.nodeId),
+      commandArg(card.nodeId, this.conuBin),
       "--kind",
-      String(card.kind ?? "remote-agent"),
+      commandArg(card.kind ?? "remote-agent", this.conuBin),
       "--signing-key",
-      String(card.signingPublicKeyHex),
+      commandArg(card.signingPublicKeyHex, this.conuBin),
       "--signature",
-      String(card.signatureHex),
+      commandArg(card.signatureHex, this.conuBin),
       "--signature-key-id",
-      String(card.signatureKeyId),
+      commandArg(card.signatureKeyId, this.conuBin),
       "--signature-algorithm",
-      String(card.signatureAlgorithm ?? "Ed25519"),
+      commandArg(card.signatureAlgorithm ?? "Ed25519", this.conuBin),
       "--messages",
       boolArg(cardBool(capabilities, "messages", true)),
       "--streams",
@@ -123,7 +128,7 @@ export class ConuClient {
   }
 
   setPeerPolicy(peerNodeId, options = {}) {
-    const args = ["peers", "policy", peerNodeId, "--json"];
+    const args = ["peers", "policy", commandArg(peerNodeId, this.conuBin), "--json"];
     pushOptionalBool(args, "--messages", options.messages);
     pushOptionalBool(args, "--streams", options.streams);
     pushOptionalBool(args, "--rooms", options.rooms);
@@ -140,29 +145,29 @@ export class ConuClient {
     const args = [
       "peers",
       "trust",
-      peerNodeId,
-      displayName,
+      commandArg(peerNodeId, this.conuBin),
+      commandArg(displayName, this.conuBin),
       "--exchange-key",
-      exchangePublicKeyHex,
+      commandArg(exchangePublicKeyHex, this.conuBin),
       "--json",
     ];
     if (options.relayEndpoint !== undefined) {
-      args.push("--relay", String(options.relayEndpoint));
+      args.push("--relay", commandArg(options.relayEndpoint, this.conuBin));
     }
     if (options.directQuicEndpoint !== undefined) {
-      args.push("--direct", String(options.directQuicEndpoint));
+      args.push("--direct", commandArg(options.directQuicEndpoint, this.conuBin));
     }
     if (options.signingPublicKeyHex !== undefined) {
-      args.push("--signing-key", String(options.signingPublicKeyHex));
+      args.push("--signing-key", commandArg(options.signingPublicKeyHex, this.conuBin));
     }
     if (options.signatureHex !== undefined) {
-      args.push("--signature", String(options.signatureHex));
+      args.push("--signature", commandArg(options.signatureHex, this.conuBin));
     }
     if (options.signatureKeyId !== undefined) {
-      args.push("--signature-key-id", String(options.signatureKeyId));
+      args.push("--signature-key-id", commandArg(options.signatureKeyId, this.conuBin));
     }
     if (options.signatureAlgorithm !== undefined) {
-      args.push("--signature-algorithm", String(options.signatureAlgorithm));
+      args.push("--signature-algorithm", commandArg(options.signatureAlgorithm, this.conuBin));
     }
     return this.runJson(this.conuBin, args);
   }
@@ -188,13 +193,18 @@ export class ConuClient {
   }
 
   inbox(agentId) {
-    return this.runJson(this.conuBin, ["messages", "inbox", agentId, "--json"]);
+    return this.runJson(this.conuBin, [
+      "messages",
+      "inbox",
+      commandArg(agentId, this.conuBin),
+      "--json",
+    ]);
   }
 
   receiveMessage(agentId, envelopeId, options = {}) {
     return this.callMcpTool("conu_receive_message", {
-      agentId: String(agentId),
-      envelopeId: String(envelopeId),
+      agentId: commandArg(agentId, this.mcpBin),
+      envelopeId: commandArg(envelopeId, this.mcpBin),
       includePayload: Boolean(options.includePayload),
     });
   }
@@ -218,10 +228,10 @@ export class ConuClient {
     return this.runJson(this.conuBin, [
       "agents",
       "register",
-      agentId,
-      displayName,
+      commandArg(agentId, this.conuBin),
+      commandArg(displayName, this.conuBin),
       "--kind",
-      String(options.kind ?? "local-agent"),
+      commandArg(options.kind ?? "local-agent", this.conuBin),
       "--messages",
       boolArg(options.messages ?? true),
       "--streams",
@@ -240,9 +250,9 @@ export class ConuClient {
     return this.runJson(this.conuBin, [
       "agents",
       "heartbeat",
-      agentId,
+      commandArg(agentId, this.conuBin),
       "--presence",
-      presence,
+      commandArg(presence, this.conuBin),
       "--json",
     ]);
   }
@@ -250,7 +260,14 @@ export class ConuClient {
   sendMessage(fromAgentId, toAgentId, payload) {
     return this.runJson(
       this.conuBin,
-      ["messages", "send", fromAgentId, toAgentId, "--stdin", "--json"],
+      [
+        "messages",
+        "send",
+        commandArg(fromAgentId, this.conuBin),
+        commandArg(toAgentId, this.conuBin),
+        "--stdin",
+        "--json",
+      ],
       toBuffer(payload, this.conuBin),
     );
   }
@@ -261,10 +278,10 @@ export class ConuClient {
       [
         "messages",
         "send",
-        fromAgentId,
-        toAgentId,
+        commandArg(fromAgentId, this.conuBin),
+        commandArg(toAgentId, this.conuBin),
         "--peer",
-        peerNodeId,
+        commandArg(peerNodeId, this.conuBin),
         "--stdin",
         "--json",
       ],
@@ -276,22 +293,36 @@ export class ConuClient {
     return this.runJson(this.conuBin, [
       "rooms",
       "create",
-      roomId,
-      displayName,
+      commandArg(roomId, this.conuBin),
+      commandArg(displayName, this.conuBin),
       "--agent",
-      agentId,
+      commandArg(agentId, this.conuBin),
       "--json",
     ]);
   }
 
   joinRoom(roomId, agentId) {
-    return this.runJson(this.conuBin, ["rooms", "join", roomId, agentId, "--json"]);
+    return this.runJson(this.conuBin, [
+      "rooms",
+      "join",
+      commandArg(roomId, this.conuBin),
+      commandArg(agentId, this.conuBin),
+      "--json",
+    ]);
   }
 
   publishRoomEvent(roomId, fromAgentId, topic, payload) {
     return this.runJson(
       this.conuBin,
-      ["rooms", "publish", roomId, fromAgentId, topic, "--stdin", "--json"],
+      [
+        "rooms",
+        "publish",
+        commandArg(roomId, this.conuBin),
+        commandArg(fromAgentId, this.conuBin),
+        commandArg(topic, this.conuBin),
+        "--stdin",
+        "--json",
+      ],
       toBuffer(payload, this.conuBin),
     );
   }
@@ -301,7 +332,14 @@ export class ConuClient {
   }
 
   setRoomTopicPolicy(roomId, agentId, topic, options = {}) {
-    const args = ["rooms", "policy", roomId, agentId, topic, "--json"];
+    const args = [
+      "rooms",
+      "policy",
+      commandArg(roomId, this.conuBin),
+      commandArg(agentId, this.conuBin),
+      commandArg(topic, this.conuBin),
+      "--json",
+    ];
     pushOptionalBool(args, "--publish", options.publish);
     pushOptionalBool(args, "--subscribe", options.subscribe);
     return this.runJson(this.conuBin, args);
@@ -311,16 +349,22 @@ export class ConuClient {
     return this.runJson(this.conuBin, [
       "connect",
       "local",
-      fromAgentId,
-      toAgentId,
+      commandArg(fromAgentId, this.conuBin),
+      commandArg(toAgentId, this.conuBin),
       "--kind",
-      kind,
+      commandArg(kind, this.conuBin),
       "--json",
     ]);
   }
 
   connectRoom(roomId, agentId) {
-    return this.runJson(this.conuBin, ["connect", "room", roomId, agentId, "--json"]);
+    return this.runJson(this.conuBin, [
+      "connect",
+      "room",
+      commandArg(roomId, this.conuBin),
+      commandArg(agentId, this.conuBin),
+      "--json",
+    ]);
   }
 
   relaySync(waitMs = 1000) {
@@ -328,7 +372,7 @@ export class ConuClient {
       "relay",
       "sync",
       "--wait-ms",
-      String(waitMs),
+      commandArg(waitMs, this.conuBin),
       "--json",
     ]);
   }
@@ -353,10 +397,10 @@ export class ConuClient {
     return this.runJson(this.conuBin, [
       "streams",
       "open",
-      fromAgentId,
-      toAgentId,
+      commandArg(fromAgentId, this.conuBin),
+      commandArg(toAgentId, this.conuBin),
       "--kind",
-      kind,
+      commandArg(kind, this.conuBin),
       "--json",
     ]);
   }
@@ -364,7 +408,7 @@ export class ConuClient {
   writeStream(streamId, payload) {
     return this.runJson(
       this.conuBin,
-      ["streams", "write", streamId, "--stdin", "--json"],
+      ["streams", "write", commandArg(streamId, this.conuBin), "--stdin", "--json"],
       toBuffer(payload, this.conuBin),
     );
   }
@@ -380,10 +424,10 @@ export class ConuClient {
   rotateLogs(options = {}) {
     const args = ["logs", "rotate", "--json"];
     if (options.maxBytes !== undefined) {
-      args.push("--max-bytes", String(options.maxBytes));
+      args.push("--max-bytes", commandArg(options.maxBytes, this.conuBin));
     }
     if (options.keep !== undefined) {
-      args.push("--keep", String(options.keep));
+      args.push("--keep", commandArg(options.keep, this.conuBin));
     }
     return this.runJson(this.conuBin, args);
   }
@@ -505,6 +549,27 @@ function decode(value) {
     return "";
   }
   return Buffer.from(value).toString("utf8");
+}
+
+function commandArg(value, binary) {
+  try {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (
+      typeof value === "number"
+      || typeof value === "boolean"
+      || typeof value === "bigint"
+    ) {
+      return String(value);
+    }
+  } catch (_error) {
+    // Fall through to the redacted SDK boundary error below.
+  }
+  throw new ConuError(
+    `conU command argument could not be encoded: ${safeCommandForError(binary)}`,
+    resultForError({ code: 1 }, binary),
+  );
 }
 
 function toBuffer(value, binary) {
@@ -631,7 +696,7 @@ function safeCommandForError(binary) {
 }
 
 function safeBinaryName(binary) {
-  const value = String(binary ?? "conu").trim();
+  const value = typeof binary === "string" ? binary.trim() : "conu";
   if (value.includes("://") || /[@?#]/.test(value)) {
     return "conu";
   }
