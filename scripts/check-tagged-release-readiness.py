@@ -156,6 +156,9 @@ class TaggedReleaseReadiness:
     ci: CiReadiness
     release_branch: ReleaseBranchReadiness
     workflow_permissions: Any
+    main_branch_protection: Any
+    actions_permissions: Any
+    repository_security: Any
     issues: tuple[str, ...]
 
     def as_json(self) -> dict[str, Any]:
@@ -172,6 +175,9 @@ class TaggedReleaseReadiness:
             "ci": self.ci.as_json(),
             "releaseBranch": self.release_branch.as_json(),
             "workflowPermissions": self.workflow_permissions.as_json(),
+            "mainBranchProtection": self.main_branch_protection.as_json(),
+            "actionsPermissions": self.actions_permissions.as_json(),
+            "repositorySecurity": self.repository_security.as_json(),
             "issues": list(self.issues),
             "payloadDisplayed": False,
             "tokenDisplayed": False,
@@ -727,6 +733,68 @@ def audit_workflow_permissions(workflow_dir: Path | None = None) -> Any:
     return workflow_module.audit_workflows(workflow_module.find_workflow_paths(target_dir))
 
 
+def audit_main_branch_protection(repo: str, gh: str, branch: str) -> Any:
+    branch_module = load_script_module(
+        "check-github-main-protection.py",
+        "check_github_main_protection_for_tagged_release",
+    )
+    normalized_branch = branch.strip() or branch_module.DEFAULT_BRANCH
+    payload = branch_module.load_branch_protection(repo, normalized_branch, gh)
+    return branch_module.audit_branch_protection(
+        repo=repo,
+        branch=normalized_branch,
+        protection_payload=payload,
+        required_status_checks=branch_module.DEFAULT_REQUIRED_STATUS_CHECKS,
+    )
+
+
+def audit_actions_permissions(repo: str, gh: str) -> Any:
+    actions_module = load_script_module(
+        "check-github-actions-permissions.py",
+        "check_github_actions_permissions_for_tagged_release",
+    )
+    actions_payload = actions_module.load_actions_permissions(repo, gh)
+    workflow_payload = actions_module.load_workflow_permissions(repo, gh)
+    selected_actions_payload = None
+    if actions_payload.get("allowed_actions") == "selected":
+        selected_actions_payload = actions_module.load_selected_actions(repo, gh)
+    return actions_module.audit_actions_permissions(
+        repo=repo,
+        actions_payload=actions_payload,
+        workflow_payload=workflow_payload,
+        selected_actions_payload=selected_actions_payload,
+        required_patterns=actions_module.DEFAULT_REQUIRED_SELECTED_PATTERNS,
+    )
+
+
+def audit_repository_security(repo: str, gh: str) -> Any:
+    security_module = load_script_module(
+        "check-github-repository-security.py",
+        "check_github_repository_security_for_tagged_release",
+    )
+    repo_payload = security_module.load_repo_payload(repo, gh)
+    vulnerability_alerts_enabled = security_module.load_vulnerability_alert_status(repo, gh)
+    dependabot_alerts = security_module.load_alerts(
+        repo,
+        gh,
+        "dependabot/alerts",
+        "gh api Dependabot alerts",
+    )
+    secret_scanning_alerts = security_module.load_alerts(
+        repo,
+        gh,
+        "secret-scanning/alerts",
+        "gh api secret scanning alerts",
+    )
+    return security_module.audit_repository_security(
+        repo=repo,
+        repo_payload=repo_payload,
+        vulnerability_alerts_enabled=vulnerability_alerts_enabled,
+        dependabot_alerts=dependabot_alerts,
+        secret_scanning_alerts=secret_scanning_alerts,
+    )
+
+
 def combine_issues(
     release_secrets: Any,
     linux_repository: LinuxRepositoryReadiness,
@@ -735,6 +803,9 @@ def combine_issues(
     ci: CiReadiness,
     release_branch: ReleaseBranchReadiness,
     workflow_permissions: Any,
+    main_branch_protection: Any,
+    actions_permissions: Any,
+    repository_security: Any,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     for name in release_secrets.missing:
@@ -755,6 +826,12 @@ def combine_issues(
         issues.append(f"release branch readiness: {issue}")
     for issue in workflow_permissions.issues:
         issues.append(f"workflow readiness: {issue}")
+    for issue in main_branch_protection.issues:
+        issues.append(f"main branch protection readiness: {issue}")
+    for issue in actions_permissions.issues:
+        issues.append(f"GitHub Actions permissions readiness: {issue}")
+    for issue in repository_security.issues:
+        issues.append(f"GitHub repository security readiness: {issue}")
     return tuple(issues)
 
 
@@ -779,6 +856,9 @@ def audit_tagged_release_readiness(
     release_branch_sha: str = "",
     workflow_permissions: Any | None = None,
     workflow_dir: Path | None = None,
+    main_branch_protection: Any | None = None,
+    actions_permissions: Any | None = None,
+    repository_security: Any | None = None,
 ) -> TaggedReleaseReadiness:
     release_secrets = audit_secret_names(repo, secret_names)
     linux_repository = audit_linux_repository(repo, variable_values, secret_names, pages_payload)
@@ -805,6 +885,12 @@ def audit_tagged_release_readiness(
         if workflow_permissions is not None
         else audit_workflow_permissions(workflow_dir)
     )
+    if main_branch_protection is None:
+        raise ValueError("main branch protection readiness report is required")
+    if actions_permissions is None:
+        raise ValueError("GitHub Actions permissions readiness report is required")
+    if repository_security is None:
+        raise ValueError("GitHub repository security readiness report is required")
     issues = combine_issues(
         release_secrets,
         linux_repository,
@@ -813,6 +899,9 @@ def audit_tagged_release_readiness(
         ci,
         branch_readiness,
         workflow_readiness,
+        main_branch_protection,
+        actions_permissions,
+        repository_security,
     )
     return TaggedReleaseReadiness(
         repo=repo,
@@ -826,6 +915,9 @@ def audit_tagged_release_readiness(
         ci=ci,
         release_branch=branch_readiness,
         workflow_permissions=workflow_readiness,
+        main_branch_protection=main_branch_protection,
+        actions_permissions=actions_permissions,
+        repository_security=repository_security,
         issues=issues,
     )
 
@@ -837,7 +929,7 @@ def print_text_report(report: TaggedReleaseReadiness) -> None:
         branch_note = " and release branch check" if report.release_branch.checked else ""
         print(
             "Tagged release readiness passed"
-            f"{npm_note}{ci_note}{branch_note} and workflow permissions check: "
+            f"{npm_note}{ci_note}{branch_note}, workflow permissions, and repository governance checks: "
             f"{report.repo}@{report.tag} ({report.linux_repository.mode})"
         )
         return
@@ -1012,6 +1104,10 @@ def main() -> int:
                 "check_github_pages_loader_for_tagged_release",
             )
             pages_payload = pages_module.load_pages_metadata(repo, gh)
+        governance_branch = args.release_branch.strip() or release_branch or load_default_branch(repo, gh)
+        main_branch_protection = audit_main_branch_protection(repo, gh, governance_branch)
+        actions_permissions = audit_actions_permissions(repo, gh)
+        repository_security = audit_repository_security(repo, gh)
         report = audit_tagged_release_readiness(
             repo=repo,
             tag=tag,
@@ -1030,6 +1126,9 @@ def main() -> int:
             release_branch=release_branch,
             release_target_sha=release_target_sha,
             release_branch_sha=release_branch_sha,
+            main_branch_protection=main_branch_protection,
+            actions_permissions=actions_permissions,
+            repository_security=repository_security,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Tagged release readiness failed: {exc}", file=sys.stderr)
