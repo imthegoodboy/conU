@@ -90,11 +90,74 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/check-github-repository-security.py --repo "$GITHUB_REPOSITORY"
+      - name: Check tagged release secrets
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}
+          CONU_WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PASSWORD }}
+          CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD }}
+          CONU_MACOS_CODESIGN_IDENTITY: ${{ secrets.CONU_MACOS_CODESIGN_IDENTITY }}
+          CONU_MACOS_NOTARY_APPLE_ID: ${{ secrets.CONU_MACOS_NOTARY_APPLE_ID }}
+          CONU_MACOS_NOTARY_TEAM_ID: ${{ secrets.CONU_MACOS_NOTARY_TEAM_ID }}
+          CONU_MACOS_NOTARY_PASSWORD: ${{ secrets.CONU_MACOS_NOTARY_PASSWORD }}
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: python scripts/check-release-secret-env-preflight.py
       - name: Validate npm token authentication and registry availability
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check
+      - name: Install signing preflight tools
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg openssl
+      - name: Validate platform signing secret values
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}
+          CONU_WINDOWS_SIGN_CERT_PASSWORD: ${{ secrets.CONU_WINDOWS_SIGN_CERT_PASSWORD }}
+          CONU_WINDOWS_TIMESTAMP_URL: ${{ secrets.CONU_WINDOWS_TIMESTAMP_URL }}
+          CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD: ${{ secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD }}
+          CONU_MACOS_CODESIGN_IDENTITY: ${{ secrets.CONU_MACOS_CODESIGN_IDENTITY }}
+          CONU_MACOS_NOTARY_APPLE_ID: ${{ secrets.CONU_MACOS_NOTARY_APPLE_ID }}
+          CONU_MACOS_NOTARY_TEAM_ID: ${{ secrets.CONU_MACOS_NOTARY_TEAM_ID }}
+          CONU_MACOS_NOTARY_PASSWORD: ${{ secrets.CONU_MACOS_NOTARY_PASSWORD }}
+        run: python scripts/check-platform-signing-secrets-preflight.py --require-openssl
+      - name: Validate Linux signing secrets
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/check-linux-signing-secrets-preflight.py
+      - name: Validate default GitHub Pages repository settings
+        if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-pages-readiness.py --repo "$GITHUB_REPOSITORY"
+      - name: Validate GitHub Release tag is unpublished
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-release-clobber-preflight.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"
+      - name: Validate custom Linux repository publication config
+        if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL != ''
+        env:
+          CONU_LINUX_REPOSITORY_BASE_URL: ${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}
+          CONU_LINUX_REPOSITORY_S3_BUCKET: ${{ vars.CONU_LINUX_REPOSITORY_S3_BUCKET }}
+          CONU_LINUX_REPOSITORY_S3_PREFIX: ${{ vars.CONU_LINUX_REPOSITORY_S3_PREFIX }}
+          CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL: ${{ vars.CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL }}
+          CONU_LINUX_REPOSITORY_AWS_REGION: ${{ vars.CONU_LINUX_REPOSITORY_AWS_REGION }}
+          CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID }}
+          CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY }}
+          CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN }}
+        run: python scripts/check-custom-linux-repository-publication-preflight.py
   packages:
     needs: release-preflight
     runs-on: ubuntu-latest
@@ -683,6 +746,121 @@ def run_required_release_preflight_tests(module) -> None:
     ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("missing early npm auth/registry preflight issue was not reported")
 
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: python scripts/check-release-secret-env-preflight.py\n",
+            "        run: echo skipped-release-secret-env-preflight\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing tagged release secret preflight should fail")
+    if (
+        "release.yml:release-preflight check tagged release secrets "
+        "is missing release secret env command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing tagged release secret preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg openssl\n",
+            "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing signing preflight OpenSSL install should fail")
+    if (
+        "release.yml:release-preflight install signing preflight tools is missing "
+        "signing preflight tool install command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing signing preflight tool install was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: python scripts/check-platform-signing-secrets-preflight.py --require-openssl\n",
+            "        run: python scripts/check-platform-signing-secrets-preflight.py\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("weakened platform signing value preflight should fail")
+    if (
+        "release.yml:release-preflight validate platform signing secret values "
+        "is missing platform signing secret value command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("weakened platform signing value preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: python scripts/check-linux-signing-secrets-preflight.py\n",
+            "        run: echo skipped-linux-signing-secret-preflight\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing Linux signing secret preflight should fail")
+    if (
+        "release.yml:release-preflight validate Linux signing secrets "
+        "is missing Linux signing secret command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing Linux signing secret preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL == ''\n",
+            "        if: startsWith(github.ref, 'refs/tags/v')\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("default Pages preflight without mode gate should fail")
+    if (
+        "release.yml:release-preflight validate default GitHub Pages "
+        "repository settings is missing default repository mode gate"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing default Pages preflight mode gate was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '        run: python scripts/check-github-release-clobber-preflight.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"\n',
+            "        run: echo skipped-release-clobber-preflight\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing release clobber preflight should fail")
+    if (
+        "release.yml:release-preflight validate GitHub Release tag is unpublished "
+        "is missing release clobber preflight command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing release clobber preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: python scripts/check-custom-linux-repository-publication-preflight.py\n",
+            "        run: echo skipped-custom-repository-preflight\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing custom repository publication preflight should fail")
+    if (
+        "release.yml:release-preflight validate custom Linux repository "
+        "publication config is missing custom repository preflight command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing custom repository preflight was not reported")
+
 
 def run_required_release_job_needs_tests(module) -> None:
     report = with_fixture(
@@ -1043,8 +1221,8 @@ def run_required_linux_repository_publication_job_tests(module) -> None:
         module,
         None,
         ready_release().replace(
-            "    if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL == ''\n",
-            "",
+            "\n    if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL == ''\n",
+            "\n",
             1,
         ),
     )
@@ -1077,8 +1255,9 @@ def run_required_linux_repository_publication_job_tests(module) -> None:
         module,
         None,
         ready_release().replace(
-            "    if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL != ''\n",
-            "",
+            "\n    if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL != ''\n",
+            "\n",
+            1,
         ),
     )
     if report.ready:

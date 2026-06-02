@@ -113,12 +113,254 @@ RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
         ),
     ),
     (
+        "Check tagged release secrets",
+        "check tagged release secrets",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            (
+                "Windows signing cert env",
+                "CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ "
+                "secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}",
+            ),
+            (
+                "Windows signing password env",
+                "CONU_WINDOWS_SIGN_CERT_PASSWORD: ${{ "
+                "secrets.CONU_WINDOWS_SIGN_CERT_PASSWORD }}",
+            ),
+            (
+                "macOS P12 secret env",
+                "CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ "
+                "secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}",
+            ),
+            (
+                "macOS P12 password env",
+                "CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD: ${{ "
+                "secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD }}",
+            ),
+            (
+                "macOS codesign identity env",
+                "CONU_MACOS_CODESIGN_IDENTITY: ${{ secrets.CONU_MACOS_CODESIGN_IDENTITY }}",
+            ),
+            (
+                "macOS notary Apple ID env",
+                "CONU_MACOS_NOTARY_APPLE_ID: ${{ secrets.CONU_MACOS_NOTARY_APPLE_ID }}",
+            ),
+            (
+                "macOS notary team env",
+                "CONU_MACOS_NOTARY_TEAM_ID: ${{ secrets.CONU_MACOS_NOTARY_TEAM_ID }}",
+            ),
+            (
+                "macOS notary password env",
+                "CONU_MACOS_NOTARY_PASSWORD: ${{ secrets.CONU_MACOS_NOTARY_PASSWORD }}",
+            ),
+            (
+                "Linux GPG private key env",
+                "CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ "
+                "secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}",
+            ),
+            (
+                "Linux GPG passphrase env",
+                "CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}",
+            ),
+            (
+                "Linux GPG key id env",
+                "CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}",
+            ),
+            (
+                "Linux GPG fingerprint env",
+                "CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ "
+                "secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}",
+            ),
+            ("NPM token env", "NPM_TOKEN: ${{ secrets.NPM_TOKEN }}"),
+            (
+                "release secret env command",
+                "python scripts/check-release-secret-env-preflight.py",
+            ),
+        ),
+    ),
+    (
         "Validate npm token authentication and registry availability",
         "validate npm token authentication and registry availability",
         (
             ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
             ("NPM token env", "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"),
             ("npm auth/registry command", RELEASE_PREFLIGHT_NPM_AUTH_COMMAND),
+        ),
+    ),
+    (
+        "Install signing preflight tools",
+        "install signing preflight tools",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            (
+                "signing preflight tool install command",
+                "sudo apt-get update && sudo apt-get install -y "
+                "--no-install-recommends gnupg openssl",
+            ),
+        ),
+    ),
+    (
+        "Validate platform signing secret values",
+        "validate platform signing secret values",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            (
+                "Windows signing cert env",
+                "CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ "
+                "secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}",
+            ),
+            (
+                "Windows signing password env",
+                "CONU_WINDOWS_SIGN_CERT_PASSWORD: ${{ "
+                "secrets.CONU_WINDOWS_SIGN_CERT_PASSWORD }}",
+            ),
+            (
+                "Windows timestamp URL env",
+                "CONU_WINDOWS_TIMESTAMP_URL: ${{ secrets.CONU_WINDOWS_TIMESTAMP_URL }}",
+            ),
+            (
+                "macOS P12 secret env",
+                "CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ "
+                "secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}",
+            ),
+            (
+                "macOS P12 password env",
+                "CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD: ${{ "
+                "secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD }}",
+            ),
+            (
+                "macOS codesign identity env",
+                "CONU_MACOS_CODESIGN_IDENTITY: ${{ secrets.CONU_MACOS_CODESIGN_IDENTITY }}",
+            ),
+            (
+                "macOS notary Apple ID env",
+                "CONU_MACOS_NOTARY_APPLE_ID: ${{ secrets.CONU_MACOS_NOTARY_APPLE_ID }}",
+            ),
+            (
+                "macOS notary team env",
+                "CONU_MACOS_NOTARY_TEAM_ID: ${{ secrets.CONU_MACOS_NOTARY_TEAM_ID }}",
+            ),
+            (
+                "macOS notary password env",
+                "CONU_MACOS_NOTARY_PASSWORD: ${{ secrets.CONU_MACOS_NOTARY_PASSWORD }}",
+            ),
+            (
+                "platform signing secret value command",
+                "python scripts/check-platform-signing-secrets-preflight.py "
+                "--require-openssl",
+            ),
+        ),
+    ),
+    (
+        "Validate Linux signing secrets",
+        "validate Linux signing secrets",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            (
+                "Linux GPG private key env",
+                "CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ "
+                "secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}",
+            ),
+            (
+                "Linux GPG passphrase env",
+                "CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}",
+            ),
+            (
+                "Linux GPG key id env",
+                "CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}",
+            ),
+            (
+                "Linux GPG fingerprint env",
+                "CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ "
+                "secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}",
+            ),
+            (
+                "Linux signing secret command",
+                "python scripts/check-linux-signing-secrets-preflight.py",
+            ),
+        ),
+    ),
+    (
+        "Validate default GitHub Pages repository settings",
+        "validate default GitHub Pages repository settings",
+        (
+            (
+                "default repository mode gate",
+                "if: startsWith(github.ref, 'refs/tags/v') && "
+                "vars.CONU_LINUX_REPOSITORY_BASE_URL == ''",
+            ),
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "GitHub Pages readiness command",
+                'python scripts/check-github-pages-readiness.py --repo "$GITHUB_REPOSITORY"',
+            ),
+        ),
+    ),
+    (
+        "Validate GitHub Release tag is unpublished",
+        "validate GitHub Release tag is unpublished",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "release clobber preflight command",
+                'python scripts/check-github-release-clobber-preflight.py --repo '
+                '"$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"',
+            ),
+        ),
+    ),
+    (
+        "Validate custom Linux repository publication config",
+        "validate custom Linux repository publication config",
+        (
+            (
+                "custom repository mode gate",
+                "if: startsWith(github.ref, 'refs/tags/v') && "
+                "vars.CONU_LINUX_REPOSITORY_BASE_URL != ''",
+            ),
+            (
+                "custom repository base URL env",
+                "CONU_LINUX_REPOSITORY_BASE_URL: ${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}",
+            ),
+            (
+                "custom repository bucket env",
+                "CONU_LINUX_REPOSITORY_S3_BUCKET: ${{ "
+                "vars.CONU_LINUX_REPOSITORY_S3_BUCKET }}",
+            ),
+            (
+                "custom repository prefix env",
+                "CONU_LINUX_REPOSITORY_S3_PREFIX: ${{ "
+                "vars.CONU_LINUX_REPOSITORY_S3_PREFIX }}",
+            ),
+            (
+                "custom repository endpoint env",
+                "CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL: ${{ "
+                "vars.CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL }}",
+            ),
+            (
+                "custom repository region env",
+                "CONU_LINUX_REPOSITORY_AWS_REGION: ${{ "
+                "vars.CONU_LINUX_REPOSITORY_AWS_REGION }}",
+            ),
+            (
+                "custom repository access key env",
+                "CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID: ${{ "
+                "secrets.CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID }}",
+            ),
+            (
+                "custom repository secret key env",
+                "CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY: ${{ "
+                "secrets.CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY }}",
+            ),
+            (
+                "custom repository session token env",
+                "CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN: ${{ "
+                "secrets.CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN }}",
+            ),
+            (
+                "custom repository preflight command",
+                "python scripts/check-custom-linux-repository-publication-preflight.py",
+            ),
         ),
     ),
 )
