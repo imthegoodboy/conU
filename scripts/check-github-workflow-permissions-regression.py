@@ -67,11 +67,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo preflight
-      - name: Validate npm token authentication
+      - name: Validate npm token authentication and registry availability
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: python scripts/check-npm-publish-preflight.py --require-token-env NODE_AUTH_TOKEN --token-auth-check
+        run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check
   build:
     permissions:
       contents: read
@@ -246,14 +246,14 @@ def run_required_release_preflight_tests(module) -> None:
         module,
         None,
         ready_release().replace(
-            "        run: python scripts/check-npm-publish-preflight.py --require-token-env NODE_AUTH_TOKEN --token-auth-check\n",
+            "        run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check\n",
             "        run: python scripts/check-npm-publish-preflight.py\n",
         ),
     )
     if report.ready:
-        raise AssertionError("missing early npm auth preflight should fail")
-    if "release.yml:release-preflight npm auth command is missing" not in json.dumps(assert_safe_report(report)):
-        raise AssertionError("missing early npm auth preflight issue was not reported")
+        raise AssertionError("missing early npm auth/registry preflight should fail")
+    if "release.yml:release-preflight npm auth/registry command is missing" not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing early npm auth/registry preflight issue was not reported")
 
 
 def run_unsafe_environment_file_write_tests(module) -> None:
