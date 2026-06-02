@@ -529,14 +529,7 @@ class ConuClient:
         input_bytes: bytes | None = None,
     ) -> dict[str, Any]:
         result = self._run(binary, *args, input_bytes=input_bytes)
-        try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError:
-            safe_result = _result_for_error(1, binary)
-            raise ConuError(
-                f"conU command returned invalid JSON: {_safe_command_for_error(binary)}",
-                safe_result,
-            ) from None
+        return _parse_json_for_sdk(result.stdout, binary, "conU command returned invalid JSON")
 
     def _call_mcp_tool(
         self,

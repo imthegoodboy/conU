@@ -179,6 +179,30 @@ def run_invalid_json_redaction_test(module) -> None:
         raise AssertionError("Python SDK JSON parse error should retain only safe command metadata")
 
 
+def run_non_object_json_redaction_test(module) -> None:
+    class JsonCompleted:
+        stdout = json.dumps([f"array item with {SENSITIVE_ENDPOINT}"]).encode("utf-8")
+        stderr = SENSITIVE_STDERR.encode("utf-8")
+        returncode = 0
+
+    def fake_run(argv, **_kwargs):
+        return JsonCompleted()
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.status()
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 1)
+    else:
+        raise AssertionError("expected Python SDK non-object JSON failure")
+
+    assert_redacted(rendered)
+    if "conU command returned invalid JSON: conu-test.exe [arguments redacted]" not in rendered:
+        raise AssertionError("Python SDK non-object JSON error should retain safe metadata only")
+
+
 def run_receive_message_helper_test(module) -> None:
     captured_requests: list[dict] = []
 
@@ -316,6 +340,24 @@ def run_mcp_shape_redaction_tests(module) -> None:
             },
             lambda client: client.receive_message("agent.beta", "env.local.1"),
             "conU MCP tool failed: code -32602: conu-mcp-test.exe [arguments redacted]",
+        ),
+        (
+            "MCP text non-object JSON",
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps([f"array item with {SENSITIVE_ENDPOINT}"]),
+                        }
+                    ],
+                    "isError": False,
+                },
+            },
+            lambda client: client.receive_message("agent.beta", "env.local.1"),
+            "conU MCP tool returned invalid JSON: conu-mcp-test.exe [arguments redacted]",
         ),
     )
 
@@ -546,6 +588,7 @@ def main() -> int:
     run_failed_command_redaction_test(module)
     run_spawn_error_redaction_test(module)
     run_invalid_json_redaction_test(module)
+    run_non_object_json_redaction_test(module)
     run_receive_message_helper_test(module)
     run_mcp_shape_redaction_tests(module)
     run_command_surface_parity_test(module)

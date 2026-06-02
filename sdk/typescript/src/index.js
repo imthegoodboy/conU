@@ -561,11 +561,16 @@ function safeMcpError(error) {
 }
 
 function parseJsonForSdk(text, binary, message) {
+  let value;
   try {
-    return JSON.parse(text);
+    value = JSON.parse(text);
   } catch (_error) {
     throw new ConuError(message, resultForError({ code: 1 }, binary));
   }
+  if (!isRecord(value)) {
+    throw new ConuError(message, resultForError({ code: 1 }, binary));
+  }
+  return value;
 }
 
 function resultForError(result, binary) {
