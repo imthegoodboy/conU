@@ -285,8 +285,8 @@ def run_value_preflight_tests(module) -> None:
     finally:
         module.subprocess.run = original_run
 
-    if len(calls) != 2:
-        raise AssertionError(f"expected two value preflight calls, got {len(calls)}")
+    if len(calls) != 3:
+        raise AssertionError(f"expected three value preflight calls, got {len(calls)}")
     rendered = "\n".join(" ".join(args) for args, _kwargs in calls)
     if "check-platform-signing-secrets-preflight.py" not in rendered:
         raise AssertionError("platform signing secret value preflight was not called")
@@ -294,6 +294,10 @@ def run_value_preflight_tests(module) -> None:
         raise AssertionError("OpenSSL requirement was not passed to platform preflight")
     if "check-linux-signing-secrets-preflight.py" not in rendered:
         raise AssertionError("Linux signing secret preflight was not called")
+    if "check-npm-publish-preflight.py" not in rendered:
+        raise AssertionError("npm token authentication preflight was not called")
+    if "--token-auth-check" not in rendered:
+        raise AssertionError("npm token authentication flag was not passed")
     if SENSITIVE_SENTINEL in rendered:
         raise AssertionError("secret value was passed in value preflight arguments")
     for _args, kwargs in calls:

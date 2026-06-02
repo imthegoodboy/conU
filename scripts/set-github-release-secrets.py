@@ -205,6 +205,16 @@ def run_value_preflights(
                 str(SCRIPT_DIR / "check-linux-signing-secrets-preflight.py"),
             ],
         ),
+        (
+            "npm token authentication preflight",
+            [
+                python_executable,
+                str(SCRIPT_DIR / "check-npm-publish-preflight.py"),
+                "--require-token-env",
+                "NPM_TOKEN",
+                "--token-auth-check",
+            ],
+        ),
     ]
     env = None
     if values is not None:
