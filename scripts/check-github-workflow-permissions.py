@@ -81,7 +81,8 @@ RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
             ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
             (
                 "main branch protection command",
-                'python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY"',
+                'python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY" '
+                "--require-admin-enforcement",
             ),
         ),
     ),

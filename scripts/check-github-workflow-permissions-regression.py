@@ -196,7 +196,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY"
+        run: python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY" --require-admin-enforcement
       - name: Validate GitHub Actions permissions
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -1191,7 +1191,7 @@ def run_required_release_preflight_tests(module) -> None:
         module,
         None,
         ready_release().replace(
-            '        run: python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY"\n',
+            '        run: python scripts/check-github-main-protection.py --repo "$GITHUB_REPOSITORY" --require-admin-enforcement\n',
             "        run: echo skipped-main-protection\n",
         ),
     )
@@ -1202,6 +1202,25 @@ def run_required_release_preflight_tests(module) -> None:
         "is missing main branch protection command"
     ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("weakened main branch protection preflight issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            ' --require-admin-enforcement\n',
+            "\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("main branch protection preflight without admin enforcement should fail")
+    if (
+        "release.yml:release-preflight validate GitHub main branch protection "
+        "is missing main branch protection command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError(
+            "missing admin enforcement in main branch protection preflight was not reported"
+        )
 
     report = with_fixture(
         module,
