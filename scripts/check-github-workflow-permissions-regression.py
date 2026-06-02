@@ -509,6 +509,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/check-github-release-clobber-preflight.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"
+      - name: Verify local GitHub Release asset set
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: python scripts/check-github-release-assets-published.py --tag "$TAG_NAME" --dist-dir dist
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1609,6 +1613,42 @@ def run_required_github_release_gate_tests(module) -> None:
         not in json.dumps(assert_safe_report(report))
     ):
         raise AssertionError("missing late GitHub Release clobber preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Verify local GitHub Release asset set\n"
+            "        env:\n"
+            "          TAG_NAME: ${{ github.ref_name }}\n"
+            '        run: python scripts/check-github-release-assets-published.py --tag "$TAG_NAME" --dist-dir dist\n',
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing local GitHub Release asset-set preflight should fail")
+    if (
+        "release.yml:github-release must verify local GitHub Release asset set"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("missing local GitHub Release asset-set preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '        run: python scripts/check-github-release-assets-published.py --tag "$TAG_NAME" --dist-dir dist\n',
+            "        run: echo skipped-local-asset-check\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("weakened local GitHub Release asset-set preflight should fail")
+    if (
+        "release.yml:github-release verify local GitHub Release asset set "
+        "is missing local release asset preflight command"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("weakened local GitHub Release asset-set preflight was not reported")
 
     report = with_fixture(
         module,

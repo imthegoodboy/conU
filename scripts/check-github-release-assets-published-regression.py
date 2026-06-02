@@ -209,6 +209,74 @@ def run_audit_tests(module) -> None:
     assert_raises(lambda: module.validate_tag("vlatest"), "semver")
 
 
+def run_dist_tests(module) -> None:
+    with tempfile.TemporaryDirectory(prefix="conu-release-dist-assets-") as temp_dir:
+        dist = Path(temp_dir) / "dist"
+        dist.mkdir()
+        for name in module.expected_release_asset_names(TEST_VERSION):
+            (dist / name).write_bytes(b"asset\n")
+
+        payload = module.load_dist_metadata(TEST_TAG, dist)
+        report = module.audit_release_assets("local/dist", TEST_TAG, payload)
+        if not report.ready:
+            raise AssertionError(f"expected local dist report to pass, got {report.issues!r}")
+
+        unexpected = dist / "conu-0.1.0-extra.txt"
+        unexpected.write_text(SENSITIVE_SENTINEL, encoding="utf-8")
+        unexpected_report = module.audit_release_assets(
+            "local/dist",
+            TEST_TAG,
+            module.load_dist_metadata(TEST_TAG, dist),
+        )
+        assert_not_ready(unexpected_report, "unexpectedAssets")
+        rendered = json.dumps(unexpected_report.as_json())
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("local dist report leaked unexpected file contents")
+        unexpected.unlink()
+
+        empty_asset = dist / "conu.rb"
+        empty_asset.write_bytes(b"")
+        assert_not_ready(
+            module.audit_release_assets(
+                "local/dist",
+                TEST_TAG,
+                module.load_dist_metadata(TEST_TAG, dist),
+            ),
+            "size must be greater than zero",
+        )
+        empty_asset.write_bytes(b"asset\n")
+
+        package_asset = dist / "conu.json"
+        package_asset.unlink()
+        package_asset.mkdir()
+        assert_not_ready(
+            module.audit_release_assets(
+                "local/dist",
+                TEST_TAG,
+                module.load_dist_metadata(TEST_TAG, dist),
+            ),
+            "local asset must be a regular file",
+        )
+        package_asset.rmdir()
+        package_asset.write_bytes(b"asset\n")
+
+        symlink_asset = dist / "conu.spec"
+        symlink_asset.unlink()
+        try:
+            symlink_asset.symlink_to(dist / "conu.rb")
+        except OSError:
+            symlink_asset.write_bytes(b"asset\n")
+        else:
+            assert_not_ready(
+                module.audit_release_assets(
+                    "local/dist",
+                    TEST_TAG,
+                    module.load_dist_metadata(TEST_TAG, dist),
+                ),
+                "local asset must not be a symlink",
+            )
+
+
 def run_loader_tests(module) -> None:
     original_run_gh_json = module.run_gh_json
 
@@ -284,11 +352,37 @@ def run_main_tests(module) -> None:
     if SENSITIVE_SENTINEL in rendered:
         raise AssertionError("main() output leaked unrelated release metadata")
 
+    with tempfile.TemporaryDirectory(prefix="conu-release-dist-main-") as temp_dir:
+        dist = Path(temp_dir) / "dist"
+        dist.mkdir()
+        for name in module.expected_release_asset_names(TEST_VERSION):
+            (dist / name).write_bytes(b"asset\n")
+
+        original_argv = sys.argv
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        sys.argv = [
+            "check-github-release-assets-published.py",
+            "--tag",
+            TEST_TAG,
+            "--dist-dir",
+            str(dist),
+        ]
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                exit_code = module.main()
+        finally:
+            sys.argv = original_argv
+
+    if exit_code != 0:
+        raise AssertionError(f"expected dist main() to pass, got {exit_code}: {stderr.getvalue()}")
+
 
 def main() -> int:
     module = load_module()
     run_expected_name_tests(module)
     run_audit_tests(module)
+    run_dist_tests(module)
     run_loader_tests(module)
     run_main_tests(module)
     print("GitHub Release asset publication preflight regression checks passed")
