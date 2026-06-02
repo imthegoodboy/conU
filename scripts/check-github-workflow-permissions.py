@@ -496,6 +496,174 @@ PACKAGES_REQUIRED_STEPS: tuple[
         ),
     ),
 )
+BUILD_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("matrix job name", "name: Build ${{ matrix.name }}"),
+    ("matrix runner", "runs-on: ${{ matrix.os }}"),
+    ("matrix fail-fast", "fail-fast: false"),
+    ("Windows x64 target", "name: windows-x64"),
+    ("Windows runner", "os: windows-2025-vs2026"),
+    (
+        "Windows build command",
+        "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 "
+        "-PackageSuffix windows-x64",
+    ),
+    ("Linux x64 target", "name: linux-x64"),
+    ("Linux x64 runner", "os: ubuntu-latest"),
+    ("Linux x64 build command", "PACKAGE_SUFFIX=linux-x64 sh scripts/build-release.sh"),
+    ("Linux arm64 target", "name: linux-arm64"),
+    ("Linux arm64 runner", "os: ubuntu-24.04-arm"),
+    ("Linux arm64 build command", "PACKAGE_SUFFIX=linux-arm64 sh scripts/build-release.sh"),
+    ("macOS arm64 target", "name: macos-arm64"),
+    ("macOS arm64 runner", "os: macos-15"),
+    ("macOS arm64 build command", "PACKAGE_SUFFIX=macos-arm64 sh scripts/build-release.sh"),
+    ("macOS x64 target", "name: macos-x64"),
+    ("macOS x64 runner", "os: macos-15-intel"),
+    ("macOS x64 build command", "PACKAGE_SUFFIX=macos-x64 sh scripts/build-release.sh"),
+    ("zip artifact glob", "dist/*.zip"),
+    ("zip checksum glob", "dist/*.zip.sha256"),
+    ("tarball artifact glob", "dist/*.tar.gz"),
+    ("tarball checksum glob", "dist/*.tar.gz.sha256"),
+    (
+        "signing required env",
+        "CONU_SIGNING_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/v') && "
+        "'1' || '0' }}",
+    ),
+    ("checkout action", "uses: actions/checkout@v6"),
+    ("Rust toolchain action", "uses: dtolnay/rust-toolchain@stable"),
+)
+BUILD_REQUIRED_STEPS: tuple[
+    tuple[str, str, tuple[tuple[str, str], ...]],
+    ...,
+] = (
+    (
+        "Configure macOS signing keychain",
+        "configure macOS signing keychain",
+        (
+            ("macOS runner gate", "if: runner.os == 'macOS'"),
+            (
+                "macOS P12 secret env",
+                "MACOS_P12_BASE64: ${{ "
+                "secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}",
+            ),
+            (
+                "macOS P12 password secret env",
+                "MACOS_P12_PASSWORD: ${{ "
+                "secrets.CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD }}",
+            ),
+            (
+                "macOS codesign identity secret env",
+                "MACOS_CODESIGN_IDENTITY: ${{ secrets.CONU_MACOS_CODESIGN_IDENTITY }}",
+            ),
+            (
+                "macOS notary Apple ID secret env",
+                "MACOS_NOTARY_APPLE_ID: ${{ secrets.CONU_MACOS_NOTARY_APPLE_ID }}",
+            ),
+            (
+                "macOS notary team secret env",
+                "MACOS_NOTARY_TEAM_ID: ${{ secrets.CONU_MACOS_NOTARY_TEAM_ID }}",
+            ),
+            (
+                "macOS notary password secret env",
+                "MACOS_NOTARY_PASSWORD: ${{ secrets.CONU_MACOS_NOTARY_PASSWORD }}",
+            ),
+            (
+                "tagged signing required gate",
+                'if [ "${CONU_SIGNING_REQUIRED:-0}" = "1" ]; then',
+            ),
+            (
+                "notary credential storage",
+                "xcrun notarytool store-credentials conu-notary-profile",
+            ),
+            ("safe GitHub env writer", "append_github_env() {"),
+            (
+                "codesign identity export",
+                'append_github_env CONU_MACOS_CODESIGN_IDENTITY "$MACOS_CODESIGN_IDENTITY"',
+            ),
+            (
+                "keychain export",
+                'append_github_env CONU_MACOS_KEYCHAIN "$keychain_path"',
+            ),
+            (
+                "notary profile export",
+                'append_github_env CONU_MACOS_NOTARY_KEYCHAIN_PROFILE "conu-notary-profile"',
+            ),
+        ),
+    ),
+    (
+        "Build package",
+        "build release package",
+        (
+            (
+                "Windows signing cert env",
+                "CONU_WINDOWS_SIGN_CERT_PFX_BASE64: ${{ "
+                "secrets.CONU_WINDOWS_SIGN_CERT_PFX_BASE64 }}",
+            ),
+            (
+                "Windows signing password env",
+                "CONU_WINDOWS_SIGN_CERT_PASSWORD: ${{ "
+                "secrets.CONU_WINDOWS_SIGN_CERT_PASSWORD }}",
+            ),
+            (
+                "Windows timestamp URL env",
+                "CONU_WINDOWS_TIMESTAMP_URL: ${{ secrets.CONU_WINDOWS_TIMESTAMP_URL }}",
+            ),
+            ("matrix build command", "run: ${{ matrix.script }}"),
+        ),
+    ),
+    (
+        "Verify release artifact",
+        "verify release artifact",
+        (
+            (
+                "release artifact verifier command",
+                "python scripts/verify-release-artifacts.py dist",
+            ),
+        ),
+    ),
+    (
+        "Smoke release artifact install",
+        "smoke release artifact install",
+        (("release artifact smoke command", "python scripts/smoke-release-artifacts.py dist"),),
+    ),
+    (
+        "Smoke npm launcher local install",
+        "smoke npm launcher local install",
+        (
+            (
+                "npm launcher local smoke command",
+                "python scripts/smoke-npm-launcher-local.py dist",
+            ),
+        ),
+    ),
+    (
+        "Smoke npm launcher download install",
+        "smoke npm launcher download install",
+        (
+            (
+                "npm launcher download smoke command",
+                "python scripts/smoke-npm-launcher-download.py dist",
+            ),
+        ),
+    ),
+    (
+        "Attest release artifact provenance",
+        "attest release artifact provenance",
+        (
+            ("artifact attestation action", "uses: actions/attest@v4.1.0"),
+            ("attestation subject path", "subject-path: ${{ matrix.artifact }}"),
+        ),
+    ),
+    (
+        "Upload artifact",
+        "upload release artifact",
+        (
+            ("artifact upload action", "uses: actions/upload-artifact@v7.0.1"),
+            ("matrix artifact name", "name: conu-${{ matrix.name }}"),
+            ("matrix artifact path", "path: ${{ matrix.artifact }}"),
+            ("missing artifact failure", "if-no-files-found: error"),
+        ),
+    ),
+)
 NPM_PUBLISH_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
     ("Node setup", "uses: actions/setup-node@v6"),
@@ -1101,6 +1269,34 @@ def audit_required_package_checks_job(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def audit_required_build_job(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "build")
+    issues: list[str] = []
+    if not block:
+        return ("release.yml must define build job",)
+
+    for label, snippet in BUILD_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"release.yml:build is missing {label}")
+
+    for step_name, description, required_snippets in BUILD_REQUIRED_STEPS:
+        step = extract_named_step_block(block, step_name)
+        if not step:
+            issues.append(f"release.yml:build must {description}")
+            continue
+        for label, snippet in required_snippets:
+            if snippet not in step:
+                issues.append(f"release.yml:build {description} is missing {label}")
+    return tuple(issues)
+
+
 def audit_required_github_release_gate(path: Path) -> tuple[str, ...]:
     if path.name != "release.yml":
         return ()
@@ -1349,6 +1545,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         issues.extend(audit_required_release_preflight_steps(path))
         issues.extend(audit_required_package_checks_job(path))
         issues.extend(audit_required_production_readiness_job(path))
+        issues.extend(audit_required_build_job(path))
         issues.extend(audit_required_github_release_gate(path))
         issues.extend(audit_required_linux_repository_publication_jobs(path))
         issues.extend(audit_required_release_publication_gate(path))
