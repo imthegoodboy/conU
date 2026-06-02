@@ -284,6 +284,85 @@ GITHUB_RELEASE_REQUIRED_STEPS: tuple[
         ),
     ),
 )
+LINUX_REPOSITORY_PAGES_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    (
+        "default repository tag/base URL gate",
+        "if: startsWith(github.ref, 'refs/tags/v') && "
+        "vars.CONU_LINUX_REPOSITORY_BASE_URL == ''",
+    ),
+    ("Pages environment", "name: github-pages"),
+    ("Pages deployment output", "url: ${{ steps.deployment.outputs.page_url }}"),
+    ("hosted repository artifact download", "uses: actions/download-artifact@v8.0.1"),
+    ("hosted repository artifact name", "name: conu-hosted-linux-repository-pages"),
+    ("hosted repository artifact path", "path: linux-repository-site"),
+    ("configure Pages action", "uses: actions/configure-pages@v6"),
+    ("upload Pages artifact action", "uses: actions/upload-pages-artifact@v5"),
+    ("deploy Pages action", "uses: actions/deploy-pages@v5"),
+)
+CUSTOM_LINUX_REPOSITORY_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    (
+        "custom repository tag/base URL gate",
+        "if: startsWith(github.ref, 'refs/tags/v') && "
+        "vars.CONU_LINUX_REPOSITORY_BASE_URL != ''",
+    ),
+    ("checkout action", "uses: actions/checkout@v6"),
+    ("hosted repository artifact download", "uses: actions/download-artifact@v8.0.1"),
+    ("hosted repository artifact name", "name: conu-hosted-linux-repository-pages"),
+    ("hosted repository artifact path", "path: linux-repository-site"),
+    ("AWS CLI install", "python -m pip install --user awscli"),
+)
+CUSTOM_LINUX_REPOSITORY_PUBLISH_STEP = (
+    "Publish custom hosted Linux repository and verify endpoint"
+)
+CUSTOM_LINUX_REPOSITORY_PUBLISH_SNIPPETS: tuple[tuple[str, str], ...] = (
+    (
+        "AWS access key env",
+        "AWS_ACCESS_KEY_ID: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID }}",
+    ),
+    (
+        "AWS secret key env",
+        "AWS_SECRET_ACCESS_KEY: "
+        "${{ secrets.CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY }}",
+    ),
+    (
+        "AWS session token env",
+        "AWS_SESSION_TOKEN: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN }}",
+    ),
+    (
+        "AWS region env",
+        "CONU_LINUX_REPOSITORY_AWS_REGION: "
+        "${{ vars.CONU_LINUX_REPOSITORY_AWS_REGION }}",
+    ),
+    (
+        "custom base URL env",
+        "CONU_LINUX_REPOSITORY_BASE_URL: "
+        "${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}",
+    ),
+    (
+        "S3 bucket env",
+        "CONU_LINUX_REPOSITORY_S3_BUCKET: "
+        "${{ vars.CONU_LINUX_REPOSITORY_S3_BUCKET }}",
+    ),
+    (
+        "S3 prefix env",
+        "CONU_LINUX_REPOSITORY_S3_PREFIX: "
+        "${{ vars.CONU_LINUX_REPOSITORY_S3_PREFIX }}",
+    ),
+    (
+        "S3 endpoint env",
+        "CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL: "
+        "${{ vars.CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL }}",
+    ),
+    ("tag version derivation", 'VERSION="${GITHUB_REF_NAME#v}"'),
+    (
+        "S3 publication command",
+        "python scripts/publish-hosted-linux-repository-s3.py linux-repository-site",
+    ),
+    ("expected version flag", '--expected-version "$VERSION"'),
+    ("confirm flag", "--confirm"),
+    ("post-upload live endpoint check", "--post-upload-check"),
+    ("JSON report flag", "--json"),
+)
 EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "release-preflight"): {
         "actions": "read",
@@ -665,6 +744,56 @@ def audit_required_github_release_gate(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def audit_required_linux_repository_publication_jobs(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    issues: list[str] = []
+    pages_block = extract_job_block(text, "linux-repository-pages")
+    if not pages_block:
+        issues.append("release.yml must define linux-repository-pages job")
+    else:
+        for label, snippet in LINUX_REPOSITORY_PAGES_JOB_SNIPPETS:
+            if snippet not in pages_block:
+                issues.append(
+                    f"release.yml:linux-repository-pages is missing {label}"
+                )
+
+    custom_block = extract_job_block(text, "custom-linux-repository-publish")
+    if not custom_block:
+        issues.append("release.yml must define custom-linux-repository-publish job")
+        return tuple(issues)
+
+    for label, snippet in CUSTOM_LINUX_REPOSITORY_JOB_SNIPPETS:
+        if snippet not in custom_block:
+            issues.append(
+                f"release.yml:custom-linux-repository-publish is missing {label}"
+            )
+
+    publish_step = extract_named_step_block(
+        custom_block,
+        CUSTOM_LINUX_REPOSITORY_PUBLISH_STEP,
+    )
+    if not publish_step:
+        issues.append(
+            "release.yml:custom-linux-repository-publish must publish custom "
+            "hosted Linux repository and verify endpoint"
+        )
+        return tuple(issues)
+
+    for label, snippet in CUSTOM_LINUX_REPOSITORY_PUBLISH_SNIPPETS:
+        if snippet not in publish_step:
+            issues.append(
+                "release.yml:custom-linux-repository-publish publish custom "
+                f"hosted Linux repository and verify endpoint is missing {label}"
+            )
+    return tuple(issues)
+
+
 def is_secret_like_env_name(name: str) -> bool:
     return any(token in name for token in SECRET_LIKE_ENV_TOKENS)
 
@@ -800,6 +929,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
             issues.append(finding)
         issues.extend(audit_required_release_preflight_steps(path))
         issues.extend(audit_required_github_release_gate(path))
+        issues.extend(audit_required_linux_repository_publication_jobs(path))
         issues.extend(audit_required_release_publication_gate(path))
         issues.extend(audit_required_npm_publication_gate(path))
 
