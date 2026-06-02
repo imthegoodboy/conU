@@ -72,7 +72,19 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check
+  packages:
+    needs: release-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo packages
+  production-readiness:
+    needs:
+      - release-preflight
+    runs-on: windows-2025-vs2026
+    steps:
+      - run: echo smoke
   build:
+    needs: [packages, production-readiness]
     permissions:
       contents: read
       id-token: write
@@ -81,12 +93,14 @@ jobs:
     steps:
       - run: echo build
   github-release:
+    needs: build
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
       - run: echo release
   linux-repository-pages:
+    needs: github-release
     permissions:
       contents: read
       pages: write
@@ -95,12 +109,19 @@ jobs:
     steps:
       - run: echo pages
   custom-linux-repository-publish:
+    needs: github-release
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
       - run: echo custom
+  linux-repository-publication:
+    needs: [github-release, linux-repository-pages, custom-linux-repository-publish]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo repository
   npm-publish:
+    needs: [github-release, linux-repository-publication]
     permissions:
       contents: read
       id-token: write
@@ -256,6 +277,47 @@ def run_required_release_preflight_tests(module) -> None:
         raise AssertionError("missing early npm auth/registry preflight issue was not reported")
 
 
+def run_required_release_job_needs_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "    needs: [packages, production-readiness]\n",
+            "    needs: packages\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing production-readiness build gate should fail")
+    if "release.yml:build must depend on production-readiness" not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing build production-readiness dependency was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "    needs: [github-release, linux-repository-publication]\n",
+            "    needs: github-release\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing npm publish repository-publication gate should fail")
+    if "release.yml:npm-publish must depend on linux-repository-publication" not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing npm publish repository-publication dependency was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "  packages:\n    needs: release-preflight\n",
+            "  packages:\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing package preflight dependency should fail")
+    if "release.yml:packages must depend on release-preflight" not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing package preflight dependency was not reported")
+
+
 def run_unsafe_environment_file_write_tests(module) -> None:
     report = with_fixture(
         module,
@@ -286,6 +348,7 @@ def main() -> int:
     run_unexpected_job_write_tests(module)
     run_expected_job_permission_tests(module)
     run_required_release_preflight_tests(module)
+    run_required_release_job_needs_tests(module)
     run_unsafe_environment_file_write_tests(module)
     print("GitHub workflow permissions regression checks passed")
     return 0

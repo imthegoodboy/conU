@@ -75,6 +75,19 @@ EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
         "id-token": "write",
     },
 }
+EXPECTED_RELEASE_JOB_NEEDS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("release.yml", "packages"): ("release-preflight",),
+    ("release.yml", "production-readiness"): ("release-preflight",),
+    ("release.yml", "build"): ("packages", "production-readiness"),
+    ("release.yml", "github-release"): ("build",),
+    ("release.yml", "linux-repository-pages"): ("github-release",),
+    ("release.yml", "custom-linux-repository-publish"): ("github-release",),
+    (
+        "release.yml",
+        "linux-repository-publication",
+    ): ("github-release", "linux-repository-pages", "custom-linux-repository-publish"),
+    ("release.yml", "npm-publish"): ("github-release", "linux-repository-publication"),
+}
 
 
 @dataclass(frozen=True)
@@ -130,6 +143,16 @@ def scalar_value(value: str) -> str:
     return value.strip().strip("\"'")
 
 
+def parse_inline_sequence(value: str) -> list[str] | None:
+    text = scalar_value(value)
+    if not text.startswith("[") or not text.endswith("]"):
+        return None
+    inner = text[1:-1].strip()
+    if not inner:
+        return []
+    return [scalar_value(item.strip()) for item in inner.split(",")]
+
+
 def parse_mapping_at(items: list[tuple[int, str, str]], start: int, base_indent: int, value: str) -> dict[str, str] | str:
     if value:
         return scalar_value(value)
@@ -141,6 +164,26 @@ def parse_mapping_at(items: list[tuple[int, str, str]], start: int, base_indent:
             continue
         mapping[key] = scalar_value(child_value)
     return mapping
+
+
+def parse_sequence_at(
+    items: list[tuple[int, str, str]],
+    start: int,
+    base_indent: int,
+    value: str,
+) -> list[str] | str:
+    inline_sequence = parse_inline_sequence(value)
+    if inline_sequence is not None:
+        return inline_sequence
+    if value:
+        return scalar_value(value)
+    sequence: list[str] = []
+    for indent, key, child_value in items[start + 1 :]:
+        if indent <= base_indent:
+            break
+        if indent == base_indent + 2 and key == "-":
+            sequence.append(scalar_value(child_value))
+    return sequence
 
 
 def parse_events_at(items: list[tuple[int, str, str]], start: int, base_indent: int, value: str) -> str | dict[str, Any]:
@@ -174,6 +217,8 @@ def parse_jobs_at(items: list[tuple[int, str, str]], start: int, base_indent: in
                 break
             if indent == base_indent + 4 and key == "permissions":
                 jobs[job_name]["permissions"] = parse_mapping_at(items, index, indent, value)
+            elif indent == base_indent + 4 and key == "needs":
+                jobs[job_name]["needs"] = parse_sequence_at(items, index, indent, value)
     return jobs
 
 
@@ -345,6 +390,21 @@ def normalize_permissions(value: Any, *, scope: str) -> dict[str, str] | str | N
     return normalized
 
 
+def normalize_needs(value: Any, *, scope: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if not isinstance(value, list):
+        raise ValueError(f"{scope} needs must be a string or list of strings")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{scope} needs entries must be strings")
+        normalized.append(item)
+    return tuple(normalized)
+
+
 def format_job(workflow_name: str, job_name: str) -> str:
     return f"{workflow_name}:{job_name}"
 
@@ -379,6 +439,26 @@ def audit_mapping(
         if key not in expected:
             issues.append(f"{scope} has extra permission {key}={value}")
     return issues
+
+
+def audit_release_job_needs(workflow_name: str, jobs: dict[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    for (expected_workflow, job_name), expected_needs in EXPECTED_RELEASE_JOB_NEEDS.items():
+        if expected_workflow != workflow_name:
+            continue
+        scope = format_job(workflow_name, job_name)
+        job_payload = jobs.get(job_name)
+        if job_payload is None:
+            issues.append(f"{workflow_name} must define {job_name} job")
+            continue
+        if not isinstance(job_payload, dict):
+            continue
+        actual_needs = normalize_needs(job_payload.get("needs"), scope=scope)
+        actual_needs_set = set(actual_needs)
+        for expected_need in expected_needs:
+            if expected_need not in actual_needs_set:
+                issues.append(f"{scope} must depend on {expected_need}")
+    return tuple(issues)
 
 
 def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsReadiness:
@@ -430,6 +510,8 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         if not isinstance(jobs, dict):
             issues.append(f"{workflow_name} must define jobs as a mapping")
             continue
+
+        issues.extend(audit_release_job_needs(workflow_name, jobs))
 
         for job_name, job_payload in jobs.items():
             if not isinstance(job_name, str):
