@@ -25,6 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          persist-credentials: false
       - name: Validate tag target CI and release branch
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -126,6 +128,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -215,6 +219,8 @@ jobs:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Production readiness smoke gate
         shell: pwsh
@@ -266,6 +272,8 @@ jobs:
       CONU_SIGNING_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Configure macOS signing keychain
         if: runner.os == 'macOS'
@@ -368,6 +376,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v8.0.1
         with:
@@ -651,6 +661,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v8.0.1
         with:
           name: conu-hosted-linux-repository-pages
@@ -721,6 +733,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
