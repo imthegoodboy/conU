@@ -530,19 +530,13 @@ impl fmt::Display for SdkError {
             Self::Session(error) => write!(formatter, "{error}"),
             Self::Stream(error) => write!(formatter, "{error}"),
             Self::Trust(error) => write!(formatter, "{error}"),
-            Self::EnvelopeNotFound {
-                agent_id,
-                envelope_id,
-            } => write!(
+            Self::EnvelopeNotFound { .. } => write!(
                 formatter,
-                "message envelope {envelope_id} was not found in {agent_id}'s inbox"
+                "message envelope was not found in the addressed agent inbox; contentsDisplayed=false"
             ),
-            Self::UnauthorizedReceive {
-                agent_id,
-                envelope_id,
-            } => write!(
+            Self::UnauthorizedReceive { .. } => write!(
                 formatter,
-                "agent {agent_id} is not authorized to receive envelope {envelope_id}"
+                "agent is not authorized to receive the requested envelope; contentsDisplayed=false"
             ),
         }
     }
@@ -687,8 +681,31 @@ mod tests {
         let error = client
             .receive_message_bytes("agent.sender", &inbox[0].envelope_id)
             .expect_err("wrong local agent cannot receive");
+        let rendered = error.to_string();
 
         assert!(matches!(error, SdkError::EnvelopeNotFound { .. }));
+        assert!(!rendered.contains("agent.sender"));
+        assert!(!rendered.contains(&inbox[0].envelope_id));
+        assert!(rendered.contains("contentsDisplayed=false"));
+    }
+
+    #[test]
+    fn sdk_receive_error_display_redacts_identifiers() {
+        let missing = SdkError::EnvelopeNotFound {
+            agent_id: "agent.secret-token".to_string(),
+            envelope_id: "env.secret-token".to_string(),
+        };
+        let unauthorized = SdkError::UnauthorizedReceive {
+            agent_id: "agent.secret-token".to_string(),
+            envelope_id: "env.secret-token".to_string(),
+        };
+
+        for rendered in [missing.to_string(), unauthorized.to_string()] {
+            assert!(!rendered.contains("agent.secret-token"));
+            assert!(!rendered.contains("env.secret-token"));
+            assert!(!rendered.contains("secret-token"));
+            assert!(rendered.contains("contentsDisplayed=false"));
+        }
     }
 
     #[test]
