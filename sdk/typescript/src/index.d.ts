@@ -13,6 +13,9 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   code: number;
+  contentsDisplayed?: boolean;
+  argsRedacted?: boolean;
+  stdioRedacted?: boolean;
 }
 
 export interface RunnerInput {

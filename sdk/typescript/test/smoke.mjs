@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { ConuClient, ConuError } from "../src/index.js";
 import {
   BrowserUnsupportedError,
@@ -18,6 +19,14 @@ assert.deepEqual(browserSupport, {
 assert.throws(() => new BrowserConuClient(), BrowserUnsupportedError);
 assert.ok(!browserSupport.reason.includes("token"));
 assert.ok(!browserSupport.reason.includes("payload"));
+
+const nodeDeclarations = readFileSync(new URL("../src/index.d.ts", import.meta.url), "utf8");
+for (const field of ["contentsDisplayed", "argsRedacted", "stdioRedacted"]) {
+  assert.ok(
+    nodeDeclarations.includes(`${field}?: boolean;`),
+    `TypeScript declarations should expose CommandResult.${field}`,
+  );
+}
 
 const calls = [];
 const client = new ConuClient({
