@@ -271,6 +271,207 @@ def run_mcp_shape_redaction_tests(module) -> None:
             raise AssertionError("Python SDK MCP error should retain only safe command metadata")
 
 
+def run_command_surface_parity_test(module) -> None:
+    captured: list[dict] = []
+
+    class JsonCompleted:
+        stderr = b""
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.stdout = json.dumps(
+                {
+                    "ok": True,
+                    "contentsDisplayed": False,
+                }
+            ).encode("utf-8")
+
+    def fake_run(argv, input=None, **_kwargs):
+        captured.append({"argv": tuple(argv), "input": input})
+        return JsonCompleted()
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+
+    calls = (
+        (
+            lambda: client.rotate_identity(),
+            (
+                "C:/tools/conu-test.exe",
+                "security",
+                "rotate",
+                "identity",
+                "--confirm-peer-refresh",
+                "--json",
+            ),
+            None,
+        ),
+        (
+            lambda: client.retire_identity_archives(),
+            (
+                "C:/tools/conu-test.exe",
+                "security",
+                "retire",
+                "identity",
+                "--confirm-peer-refresh-complete",
+                "--json",
+            ),
+            None,
+        ),
+        (
+            lambda: client.rotate_storage(),
+            (
+                "C:/tools/conu-test.exe",
+                "security",
+                "rotate",
+                "storage",
+                "--confirm",
+                "--json",
+            ),
+            None,
+        ),
+        (
+            lambda: client.retire_storage(),
+            (
+                "C:/tools/conu-test.exe",
+                "security",
+                "retire",
+                "storage",
+                "--confirm",
+                "--json",
+            ),
+            None,
+        ),
+        (
+            lambda: client.relay_credential_status(),
+            (
+                "C:/tools/conu-test.exe",
+                "relay",
+                "credential",
+                "status",
+                "--json",
+            ),
+            None,
+        ),
+        (
+            lambda: client.set_relay_credential("relay-token-fixture"),
+            (
+                "C:/tools/conu-test.exe",
+                "relay",
+                "credential",
+                "set",
+                "--stdin",
+                "--json",
+            ),
+            b"relay-token-fixture",
+        ),
+        (
+            lambda: client.clear_relay_credential(),
+            (
+                "C:/tools/conu-test.exe",
+                "relay",
+                "credential",
+                "clear",
+                "--json",
+            ),
+            None,
+        ),
+        (
+            lambda: client.telemetry_snapshot(),
+            (
+                "C:/tools/conu-test.exe",
+                "telemetry",
+                "snapshot",
+                "--json",
+            ),
+            None,
+        ),
+        (
+            lambda: client.rotate_logs(max_bytes=4096, keep=3),
+            (
+                "C:/tools/conu-test.exe",
+                "logs",
+                "rotate",
+                "--json",
+                "--max-bytes",
+                "4096",
+                "--keep",
+                "3",
+            ),
+            None,
+        ),
+        (
+            lambda: client.send_message("agent.alpha", "agent.beta", "payload fixture"),
+            (
+                "C:/tools/conu-test.exe",
+                "messages",
+                "send",
+                "agent.alpha",
+                "agent.beta",
+                "--stdin",
+                "--json",
+            ),
+            b"payload fixture",
+        ),
+        (
+            lambda: client.write_stream("stream.local.1", bytearray(b"stream fixture")),
+            (
+                "C:/tools/conu-test.exe",
+                "streams",
+                "write",
+                "stream.local.1",
+                "--stdin",
+                "--json",
+            ),
+            b"stream fixture",
+        ),
+    )
+
+    for action, expected_argv, expected_input in calls:
+        result = action()
+        if result.get("contentsDisplayed") is not False:
+            raise AssertionError("Python SDK command helper should preserve display guard results")
+        recorded = captured[-1]
+        if recorded["argv"] != expected_argv:
+            raise AssertionError(f"unexpected argv: {recorded['argv']!r}")
+        if recorded["input"] != expected_input:
+            raise AssertionError(f"unexpected stdin bytes for {expected_argv!r}")
+        if expected_input is not None:
+            rendered_argv = " ".join(recorded["argv"])
+            if expected_input.decode("utf-8") in rendered_argv:
+                raise AssertionError("Python SDK placed stdin-only secret/payload in argv")
+
+
+def run_stdin_secret_failure_redaction_test(module) -> None:
+    captured: dict[str, bytes | None] = {}
+    secret = b"relay-token-fixture-secret"
+
+    class FailedCompleted:
+        stdout = b"stdout relay-token-fixture-secret"
+        stderr = b"stderr relay-token-fixture-secret"
+        returncode = 9
+
+    def fake_run(_argv, input=None, **_kwargs):
+        captured["input"] = input
+        return FailedCompleted()
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.set_relay_credential(secret)
+    except module.ConuError as exc:
+        rendered = str(exc)
+    else:
+        raise AssertionError("expected Python SDK relay credential failure")
+
+    if captured.get("input") != secret:
+        raise AssertionError("Python SDK relay credential token should pass through stdin")
+    if secret.decode("utf-8") in rendered:
+        raise AssertionError("Python SDK error leaked relay credential stdin")
+    if "conu-test.exe [arguments redacted]" not in rendered:
+        raise AssertionError("Python SDK stdin failure should retain only safe command metadata")
+
+
 def main() -> int:
     module = load_sdk()
     run_failed_command_redaction_test(module)
@@ -278,6 +479,8 @@ def main() -> int:
     run_invalid_json_redaction_test(module)
     run_receive_message_helper_test(module)
     run_mcp_shape_redaction_tests(module)
+    run_command_surface_parity_test(module)
+    run_stdin_secret_failure_redaction_test(module)
     print("Python SDK error redaction regression checks passed")
     return 0
 

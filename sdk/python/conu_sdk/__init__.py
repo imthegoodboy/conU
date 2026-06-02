@@ -56,6 +56,46 @@ class ConuClient:
     def security_audit(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "security", "audit", "--json")
 
+    def rotate_identity(self) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "security",
+            "rotate",
+            "identity",
+            "--confirm-peer-refresh",
+            "--json",
+        )
+
+    def retire_identity_archives(self) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "security",
+            "retire",
+            "identity",
+            "--confirm-peer-refresh-complete",
+            "--json",
+        )
+
+    def rotate_storage(self) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "security",
+            "rotate",
+            "storage",
+            "--confirm",
+            "--json",
+        )
+
+    def retire_storage(self) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "security",
+            "retire",
+            "storage",
+            "--confirm",
+            "--json",
+        )
+
     def status(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "status", "--json")
 
@@ -257,7 +297,7 @@ class ConuClient:
         self,
         from_agent_id: str,
         to_agent_id: str,
-        payload: bytes,
+        payload: bytes | bytearray | memoryview | str,
     ) -> dict[str, Any]:
         return self._run_json(
             self.conu_bin,
@@ -267,7 +307,7 @@ class ConuClient:
             to_agent_id,
             "--stdin",
             "--json",
-            input_bytes=payload,
+            input_bytes=_to_bytes(payload),
         )
 
     def send_remote_message(
@@ -275,7 +315,7 @@ class ConuClient:
         from_agent_id: str,
         to_agent_id: str,
         peer_node_id: str,
-        payload: bytes,
+        payload: bytes | bytearray | memoryview | str,
     ) -> dict[str, Any]:
         return self._run_json(
             self.conu_bin,
@@ -287,7 +327,7 @@ class ConuClient:
             peer_node_id,
             "--stdin",
             "--json",
-            input_bytes=payload,
+            input_bytes=_to_bytes(payload),
         )
 
     def create_room(
@@ -322,7 +362,7 @@ class ConuClient:
         room_id: str,
         from_agent_id: str,
         topic: str,
-        payload: bytes,
+        payload: bytes | bytearray | memoryview | str,
     ) -> dict[str, Any]:
         return self._run_json(
             self.conu_bin,
@@ -333,7 +373,7 @@ class ConuClient:
             topic,
             "--stdin",
             "--json",
-            input_bytes=payload,
+            input_bytes=_to_bytes(payload),
         )
 
     def room_topic_policies(self) -> dict[str, Any]:
@@ -391,6 +431,26 @@ class ConuClient:
             "--json",
         )
 
+    def relay_credential_status(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "relay", "credential", "status", "--json")
+
+    def set_relay_credential(
+        self,
+        token: bytes | bytearray | memoryview | str,
+    ) -> dict[str, Any]:
+        return self._run_json(
+            self.conu_bin,
+            "relay",
+            "credential",
+            "set",
+            "--stdin",
+            "--json",
+            input_bytes=_to_bytes(token),
+        )
+
+    def clear_relay_credential(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "relay", "credential", "clear", "--json")
+
     def open_stream(
         self,
         from_agent_id: str,
@@ -408,7 +468,11 @@ class ConuClient:
             "--json",
         )
 
-    def write_stream(self, stream_id: str, payload: bytes) -> dict[str, Any]:
+    def write_stream(
+        self,
+        stream_id: str,
+        payload: bytes | bytearray | memoryview | str,
+    ) -> dict[str, Any]:
         return self._run_json(
             self.conu_bin,
             "streams",
@@ -416,7 +480,7 @@ class ConuClient:
             stream_id,
             "--stdin",
             "--json",
-            input_bytes=payload,
+            input_bytes=_to_bytes(payload),
         )
 
     def close_stream(self, stream_id: str) -> dict[str, Any]:
@@ -427,6 +491,21 @@ class ConuClient:
             stream_id,
             "--json",
         )
+
+    def telemetry_snapshot(self) -> dict[str, Any]:
+        return self._run_json(self.conu_bin, "telemetry", "snapshot", "--json")
+
+    def rotate_logs(
+        self,
+        max_bytes: int | None = None,
+        keep: int | None = None,
+    ) -> dict[str, Any]:
+        args = ["logs", "rotate", "--json"]
+        if max_bytes is not None:
+            args.extend(["--max-bytes", str(max_bytes)])
+        if keep is not None:
+            args.extend(["--keep", str(keep)])
+        return self._run_json(self.conu_bin, *args)
 
     def process_queued(self) -> CommandResult:
         return self._run(self.conud_bin, "--process-ipc")
@@ -573,6 +652,14 @@ def _safe_mcp_error(error: Any) -> str:
     if isinstance(error, dict) and isinstance(error.get("code"), int):
         return f"code {error['code']}"
     return "unknown MCP error"
+
+
+def _to_bytes(value: bytes | bytearray | memoryview | str) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, (bytearray, memoryview)):
+        return bytes(value)
+    return str(value).encode("utf-8")
 
 
 def _hex_to_bytes(payload_hex: str, binary: str) -> bytes:
