@@ -972,10 +972,279 @@ NPM_PUBLISH_REQUIRED_STEPS: tuple[
         ),
     ),
 )
+GITHUB_RELEASE_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+    ("Ubuntu runner", "runs-on: ubuntu-latest"),
+    ("checkout action", "uses: actions/checkout@v6"),
+    ("Rust toolchain action", "uses: dtolnay/rust-toolchain@stable"),
+    ("artifact download action", "uses: actions/download-artifact@v8.0.1"),
+    ("merged artifact download path", "path: dist"),
+    ("merged artifact download flag", "merge-multiple: true"),
+)
+GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS: tuple[tuple[str, str], ...] = (
+    (
+        "Linux GPG private key env",
+        "CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ "
+        "secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}",
+    ),
+    (
+        "Linux GPG passphrase env",
+        "CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}",
+    ),
+    (
+        "Linux GPG key id env",
+        "CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}",
+    ),
+    (
+        "Linux GPG fingerprint env",
+        "CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ "
+        "secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}",
+    ),
+)
 GITHUB_RELEASE_REQUIRED_STEPS: tuple[
     tuple[str, str, tuple[tuple[str, str], ...]],
     ...,
 ] = (
+    (
+        "Install package tools",
+        "install package tools",
+        (
+            (
+                "package tool install command",
+                "sudo apt-get update && sudo apt-get install -y "
+                "--no-install-recommends rpm createrepo-c gnupg",
+            ),
+        ),
+    ),
+    (
+        "Verify downloaded release assets",
+        "verify downloaded release assets",
+        (("release artifact verifier command", "python scripts/verify-release-artifacts.py dist"),),
+    ),
+    (
+        "Generate package-manager manifests",
+        "generate package-manager manifests",
+        (
+            ("GitHub repository env", "GH_REPO: ${{ github.repository }}"),
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            ("tag version derivation", 'VERSION="${TAG_NAME#v}"'),
+            (
+                "manifest generation command",
+                "python scripts/generate-package-manager-manifests.py dist",
+            ),
+            ("manifest output dir", "--output-dir dist"),
+            ("manifest repo flag", '--repo "$GH_REPO"'),
+            ("manifest version flag", '--version "$VERSION"'),
+            ("manifest tag flag", '--tag "$TAG_NAME"'),
+            ("RPM package build flag", "--build-rpm-packages"),
+            ("APT repository metadata flag", "--build-apt-repository-metadata"),
+        ),
+    ),
+    (
+        "Sign RPM packages",
+        "sign RPM packages",
+        (
+            *GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS,
+            ("RPM signing command", "python scripts/sign-rpm-packages.py dist"),
+        ),
+    ),
+    (
+        "Generate RPM repository metadata",
+        "generate RPM repository metadata",
+        (
+            ("GitHub repository env", "GH_REPO: ${{ github.repository }}"),
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            ("tag version derivation", 'VERSION="${TAG_NAME#v}"'),
+            (
+                "manifest generation command",
+                "python scripts/generate-package-manager-manifests.py dist",
+            ),
+            ("RPM repository metadata flag", "--build-rpm-repository-metadata"),
+        ),
+    ),
+    (
+        "Export Linux GPG public key",
+        "export Linux GPG public key",
+        (
+            *GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS,
+            ("Linux public-key export command", "python scripts/export-linux-gpg-public-key.py dist"),
+        ),
+    ),
+    (
+        "Sign Linux repository metadata",
+        "sign Linux repository metadata",
+        (
+            *GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS,
+            (
+                "Linux repository metadata signing command",
+                "python scripts/sign-linux-repository-metadata.py dist",
+            ),
+        ),
+    ),
+    (
+        "Sign Linux release assets",
+        "sign Linux release assets",
+        (
+            *GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS,
+            ("Linux release asset signing command", "python scripts/sign-linux-release-assets.py dist"),
+        ),
+    ),
+    (
+        "Prepare package-manager submission bundle",
+        "prepare package-manager submission bundle",
+        (
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            ("tag version derivation", 'VERSION="${TAG_NAME#v}"'),
+            (
+                "package-manager submission command",
+                "python scripts/prepare-package-manager-submissions.py dist",
+            ),
+            ("submission output dir", "--output-dir dist"),
+            ("submission version flag", '--version "$VERSION"'),
+            ("RPM asset requirement", "--require-rpm-assets"),
+            ("repository metadata requirement", "--require-repository-metadata"),
+            ("Linux signature requirement", "--require-linux-signatures"),
+        ),
+    ),
+    (
+        "Sign package-manager submission bundle",
+        "sign package-manager submission bundle",
+        (
+            *GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS,
+            (
+                "package-manager submission signing command",
+                "python scripts/sign-linux-release-assets.py dist "
+                "--only-package-manager-submissions",
+            ),
+        ),
+    ),
+    (
+        "Generate hosted Linux repositories",
+        "generate hosted Linux repositories",
+        (
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            ("tag version derivation", 'VERSION="${TAG_NAME#v}"'),
+            (
+                "hosted repository generation command",
+                "python scripts/generate-hosted-linux-repositories.py dist "
+                '--output-dir dist --version "$VERSION"',
+            ),
+        ),
+    ),
+    (
+        "Sign hosted Linux repository bundle",
+        "sign hosted Linux repository bundle",
+        (
+            *GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS,
+            (
+                "hosted repository bundle signing command",
+                "python scripts/sign-linux-release-assets.py dist "
+                "--only-hosted-repository-bundles",
+            ),
+        ),
+    ),
+    (
+        "Generate hosted Linux repository site",
+        "generate hosted Linux repository site",
+        (
+            ("GitHub repository env", "GH_REPO: ${{ github.repository }}"),
+            (
+                "GitHub repository owner env",
+                "GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}",
+            ),
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            (
+                "custom base URL env",
+                "CONU_LINUX_REPOSITORY_BASE_URL: "
+                "${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}",
+            ),
+            ("tag version derivation", 'VERSION="${TAG_NAME#v}"'),
+            ("base URL derivation", 'BASE_URL="${CONU_LINUX_REPOSITORY_BASE_URL:-}"'),
+            ("default Pages base URL", 'BASE_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${REPO_NAME}"'),
+            (
+                "hosted repository site generation command",
+                "python scripts/generate-hosted-linux-repository-site.py dist",
+            ),
+            ("site output dir", "--output-dir dist"),
+            ("site version flag", '--version "$VERSION"'),
+            ("site base URL flag", '--base-url "$BASE_URL"'),
+        ),
+    ),
+    (
+        "Sign hosted Linux repository site",
+        "sign hosted Linux repository site",
+        (
+            *GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS,
+            (
+                "hosted repository site signing command",
+                "python scripts/sign-linux-release-assets.py dist "
+                "--only-hosted-repository-sites",
+            ),
+        ),
+    ),
+    (
+        "Generate release update policy",
+        "generate release update policy",
+        (
+            ("GitHub repository env", "GH_REPO: ${{ github.repository }}"),
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            ("tag version derivation", 'VERSION="${TAG_NAME#v}"'),
+            (
+                "release update policy generation command",
+                "python scripts/generate-release-update-policy.py dist",
+            ),
+            ("update policy output dir", "--output-dir dist"),
+            ("update policy version flag", '--version "$VERSION"'),
+            ("update policy tag flag", '--tag "$TAG_NAME"'),
+            ("update policy repo flag", '--repo "$GH_REPO"'),
+        ),
+    ),
+    (
+        "Sign release update policy",
+        "sign release update policy",
+        (
+            *GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS,
+            (
+                "release update policy signing command",
+                "python scripts/sign-linux-release-assets.py dist --only-update-policies",
+            ),
+        ),
+    ),
+    (
+        "Check release update policy with CLI",
+        "check release update policy with CLI",
+        (
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            ("tag version derivation", 'VERSION="${TAG_NAME#v}"'),
+            (
+                "local update policy check command",
+                'cargo run -p conu-cli -- update check --policy-file '
+                '"dist/conu-${VERSION}-update-policy.json" --json',
+            ),
+        ),
+    ),
+    (
+        "Prepare hosted Linux repository Pages artifact",
+        "prepare hosted Linux repository Pages artifact",
+        (
+            (
+                "Pages artifact preparation command",
+                "python scripts/prepare-hosted-linux-repository-pages.py dist "
+                "--output-dir linux-repository-site",
+            ),
+        ),
+    ),
+    (
+        "Upload hosted Linux repository Pages artifact",
+        "upload hosted Linux repository Pages artifact",
+        (
+            ("artifact upload action", "uses: actions/upload-artifact@v7.0.1"),
+            ("hosted repository artifact name", "name: conu-hosted-linux-repository-pages"),
+            ("hosted repository artifact path", "path: linux-repository-site"),
+            ("missing artifact failure", "if-no-files-found: error"),
+            ("retention period", "retention-days: 14"),
+        ),
+    ),
     (
         "Re-check GitHub Release tag is unpublished",
         "re-check GitHub Release tag is unpublished",
@@ -1551,6 +1820,10 @@ def audit_required_github_release_gate(path: Path) -> tuple[str, ...]:
     issues: list[str] = []
     if not block:
         return ("release.yml must define github-release job",)
+
+    for label, snippet in GITHUB_RELEASE_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"release.yml:github-release is missing {label}")
 
     for step_name, description, required_snippets in GITHUB_RELEASE_REQUIRED_STEPS:
         step = extract_named_step_block(block, step_name)
