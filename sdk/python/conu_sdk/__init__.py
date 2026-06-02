@@ -423,21 +423,46 @@ class ConuClient:
         input_bytes: bytes | None = None,
     ) -> CommandResult:
         argv = (binary, *args)
-        completed = subprocess.run(
-            argv,
-            input=input_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=self.cwd,
-            env=self.env,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                argv,
+                input=input_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=self.cwd,
+                env=self.env,
+                check=False,
+            )
+        except OSError:
+            raise ConuError(
+                f"conU command failed before execution: {_safe_command_for_error(binary)}"
+            ) from None
         stdout = completed.stdout.decode("utf-8", errors="replace")
         stderr = completed.stderr.decode("utf-8", errors="replace")
         result = CommandResult(argv, stdout, stderr, completed.returncode)
         if completed.returncode != 0:
-            raise ConuError(f"conU command failed ({completed.returncode}): {' '.join(argv)}")
+            raise ConuError(
+                f"conU command failed ({completed.returncode}): {_safe_command_for_error(binary)}"
+            )
         return result
+
+
+def _safe_command_for_error(binary: str) -> str:
+    return f"{_safe_binary_name(binary)} [arguments redacted]"
+
+
+def _safe_binary_name(binary: str) -> str:
+    value = str(binary).strip()
+    if not value:
+        return "conu"
+    if "://" in value or any(marker in value for marker in ("@", "?", "#")):
+        return "conu"
+    base = value.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or "conu"
+    sanitized = "".join(
+        character if character.isascii() and (character.isalnum() or character in "._-") else "_"
+        for character in base
+    )
+    return sanitized or "conu"
 
 
 def _bool_arg(value: bool) -> str:

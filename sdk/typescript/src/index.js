@@ -415,14 +415,23 @@ export class ConuClient {
     );
     const response = parseMcpResponse(result.stdout);
     if (response.error) {
-      throw new ConuError(`conU MCP tool failed: ${safeMcpError(response.error)}`, result);
+      throw new ConuError(
+        `conU MCP tool failed: ${safeMcpError(response.error)}`,
+        resultForError({ code: 1 }, this.mcpBin),
+      );
     }
     const toolResult = response.result;
     if (!isRecord(toolResult)) {
-      throw new ConuError("conU MCP response did not include a tool result", result);
+      throw new ConuError(
+        "conU MCP response did not include a tool result",
+        resultForError({ code: 1 }, this.mcpBin),
+      );
     }
     if (toolResult.isError === true) {
-      throw new ConuError(`conU MCP tool failed: ${toolText(toolResult)}`, result);
+      throw new ConuError(
+        "conU MCP tool failed: [details redacted]",
+        resultForError({ code: 1 }, this.mcpBin),
+      );
     }
     return JSON.parse(toolText(toolResult));
   }
@@ -436,7 +445,11 @@ export class ConuClient {
       env: this.env,
     });
     if (result.code !== 0) {
-      throw new ConuError(`conU command failed (${result.code}): ${binary} ${args.join(" ")}`, result);
+      const safeResult = resultForError(result, binary);
+      throw new ConuError(
+        `conU command failed (${safeResult.code}): ${safeCommandForError(binary)}`,
+        safeResult,
+      );
     }
     return result;
   }
@@ -451,13 +464,17 @@ function defaultRunner({ binary, args, input, cwd, env }) {
     windowsHide: true,
   });
   if (completed.error) {
-    const result = {
+    const result = resultForError({
       args: [binary, ...args],
       stdout: "",
-      stderr: completed.error.message,
+      stderr: "",
       code: typeof completed.status === "number" ? completed.status : 1,
-    };
-    throw new ConuError(`conU command failed: ${completed.error.message}`, result);
+    }, binary);
+    const reason = typeof completed.error.code === "string" ? completed.error.code : "spawn_error";
+    throw new ConuError(
+      `conU command failed before execution (${reason}): ${safeCommandForError(binary)}`,
+      result,
+    );
   }
   return {
     args: [binary, ...args],
@@ -524,10 +541,35 @@ function toolText(toolResult) {
 }
 
 function safeMcpError(error) {
-  if (isRecord(error) && typeof error.message === "string") {
-    return error.message;
+  if (isRecord(error) && typeof error.code === "number") {
+    return `code ${error.code}`;
   }
   return "unknown MCP error";
+}
+
+function resultForError(result, binary) {
+  return {
+    args: [safeBinaryName(binary), "[arguments redacted]"],
+    stdout: "",
+    stderr: "",
+    code: typeof result?.code === "number" ? result.code : 1,
+    contentsDisplayed: false,
+    argsRedacted: true,
+    stdioRedacted: true,
+  };
+}
+
+function safeCommandForError(binary) {
+  return `${safeBinaryName(binary)} [arguments redacted]`;
+}
+
+function safeBinaryName(binary) {
+  const value = String(binary ?? "conu").trim();
+  if (value.includes("://") || /[@?#]/.test(value)) {
+    return "conu";
+  }
+  const base = value.split(/[\\/]/).filter(Boolean).at(-1) ?? "conu";
+  return base.replace(/[^\w.-]/g, "_") || "conu";
 }
 
 function hexToBuffer(hex) {

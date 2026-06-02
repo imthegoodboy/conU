@@ -23,6 +23,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg openssl
       - name: Python script compile
         run: python scripts/check-python-script-compile.py
+      - name: Python SDK error redaction regression
+        run: python scripts/check-python-sdk-error-redaction.py
       - name: Production readiness toolchain regression
         run: python scripts/check-production-readiness-toolchain.py
       - name: Smoke output privacy regression
