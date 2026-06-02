@@ -373,6 +373,9 @@ RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
     ),
 )
 RELEASE_PUBLICATION_GATE_STEP = "Check Linux repository publication result"
+RELEASE_PUBLICATION_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("Ubuntu runner", "runs-on: ubuntu-latest"),
+)
 RELEASE_PUBLICATION_GATE_SNIPPETS: tuple[tuple[str, str], ...] = (
     (
         "base URL mode selector",
@@ -1728,6 +1731,9 @@ def audit_required_release_publication_gate(path: Path) -> tuple[str, ...]:
             "release.yml:linux-repository-publication must be tag-gated "
             "and always evaluate upstream results"
         )
+    for label, snippet in RELEASE_PUBLICATION_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"release.yml:linux-repository-publication is missing {label}")
 
     step = extract_named_step_block(block, RELEASE_PUBLICATION_GATE_STEP)
     if not step:
