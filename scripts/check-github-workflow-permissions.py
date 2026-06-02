@@ -43,6 +43,8 @@ SECRET_LIKE_ENV_TOKENS = (
 UNSAFE_GITHUB_ENV_ECHO_RE = re.compile(
     r"\becho\s+[\"']?([A-Z0-9_]+)=\$([A-Z0-9_]+)"
 )
+SHELL_VARIABLE_RE = re.compile(r"\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)(?:\})?")
+GITHUB_ENV_ASSIGNMENT_NAME_RE = re.compile(r"\b([A-Z][A-Z0-9_]*)\s*=")
 RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
     "python scripts/check-npm-publish-preflight.py "
     "--registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check"
@@ -1740,17 +1742,45 @@ def audit_environment_file_writes(path: Path) -> tuple[str, ...]:
 
     findings: list[str] = []
     for index, line in enumerate(lines):
-        match = UNSAFE_GITHUB_ENV_ECHO_RE.search(line.strip())
-        if match is None:
-            continue
-        output_name, source_name = match.groups()
-        if not is_secret_like_env_name(output_name) and not is_secret_like_env_name(source_name):
+        stripped = line.strip()
+        if stripped.startswith("append_github_env "):
             continue
         if not has_nearby_github_env_redirect(lines, index):
             continue
-        findings.append(
-            f"{path.name}:line {index + 1} echoes secret-derived {source_name} directly to GITHUB_ENV"
+
+        match = UNSAFE_GITHUB_ENV_ECHO_RE.search(stripped)
+        if match is not None:
+            output_name, source_name = match.groups()
+            if not is_secret_like_env_name(output_name) and not is_secret_like_env_name(
+                source_name
+            ):
+                continue
+            findings.append(
+                f"{path.name}:line {index + 1} echoes secret-derived {source_name} directly to GITHUB_ENV"
+            )
+            continue
+
+        source_names = tuple(
+            name
+            for name in SHELL_VARIABLE_RE.findall(stripped)
+            if name != "GITHUB_ENV" and is_secret_like_env_name(name)
         )
+        if source_names:
+            for source_name in source_names:
+                findings.append(
+                    f"{path.name}:line {index + 1} writes secret-derived {source_name} directly to GITHUB_ENV"
+                )
+            continue
+
+        output_names = tuple(
+            name
+            for name in GITHUB_ENV_ASSIGNMENT_NAME_RE.findall(stripped)
+            if is_secret_like_env_name(name)
+        )
+        for output_name in output_names:
+            findings.append(
+                f"{path.name}:line {index + 1} writes secret-like {output_name} directly to GITHUB_ENV"
+            )
     return tuple(findings)
 
 
