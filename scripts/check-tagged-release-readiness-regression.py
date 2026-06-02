@@ -115,6 +115,43 @@ class WorkflowPermissionsFixture:
         }
 
 
+class GovernanceFixture:
+    def __init__(self, *, schema: str, ready: bool, issues: tuple[str, ...] = ()) -> None:
+        self.schema = schema
+        self.ready = ready
+        self.issues = issues
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "schema": self.schema,
+            "ready": self.ready,
+            "issues": list(self.issues),
+            "payloadDisplayed": False,
+            "tokenDisplayed": False,
+            "tokenHashDisplayed": False,
+            "keyMaterialDisplayed": False,
+            "contentsDisplayed": False,
+            "alertBodiesDisplayed": False,
+        }
+
+
+def ready_governance_kwargs() -> dict[str, GovernanceFixture]:
+    return {
+        "main_branch_protection": GovernanceFixture(
+            schema="conu.githubMainBranchProtection.v1",
+            ready=True,
+        ),
+        "actions_permissions": GovernanceFixture(
+            schema="conu.githubActionsPermissions.v1",
+            ready=True,
+        ),
+        "repository_security": GovernanceFixture(
+            schema="conu.githubRepositorySecurity.v1",
+            ready=True,
+        ),
+    }
+
+
 def run_ready_pages_tests(module) -> None:
     report = module.audit_tagged_release_readiness(
         repo="owner/repo",
@@ -125,6 +162,7 @@ def run_ready_pages_tests(module) -> None:
         pages_payload=pages_payload(),
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if not report.ready:
         raise AssertionError(f"expected default Pages readiness to pass: {report.issues!r}")
@@ -139,6 +177,12 @@ def run_ready_pages_tests(module) -> None:
         raise AssertionError("release branch check should be skipped by default")
     if parsed["workflowPermissions"]["ready"] is not True:
         raise AssertionError("workflow permissions should be included in tagged release readiness")
+    if parsed["mainBranchProtection"]["ready"] is not True:
+        raise AssertionError("main branch protection should be included in tagged release readiness")
+    if parsed["actionsPermissions"]["ready"] is not True:
+        raise AssertionError("Actions permissions should be included in tagged release readiness")
+    if parsed["repositorySecurity"]["ready"] is not True:
+        raise AssertionError("repository security should be included in tagged release readiness")
 
 
 def run_workflow_permissions_tests(module) -> None:
@@ -155,6 +199,7 @@ def run_workflow_permissions_tests(module) -> None:
             ready=False,
             issues=("release.yml must define release-preflight job",),
         ),
+        **ready_governance_kwargs(),
     )
     if report.ready:
         raise AssertionError("workflow permissions failure should fail tagged release readiness")
@@ -163,6 +208,46 @@ def run_workflow_permissions_tests(module) -> None:
         raise AssertionError("workflow permissions readiness should be reported as failed")
     if "workflow readiness: release.yml must define release-preflight job" not in json.dumps(parsed):
         raise AssertionError("workflow permissions issue was not included in top-level issues")
+
+
+def run_repository_governance_tests(module) -> None:
+    report = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        workflow_permissions=WorkflowPermissionsFixture(ready=True),
+        main_branch_protection=GovernanceFixture(
+            schema="conu.githubMainBranchProtection.v1",
+            ready=False,
+            issues=("missing required status check: Packages",),
+        ),
+        actions_permissions=GovernanceFixture(
+            schema="conu.githubActionsPermissions.v1",
+            ready=False,
+            issues=("default workflow token permissions must be read-only",),
+        ),
+        repository_security=GovernanceFixture(
+            schema="conu.githubRepositorySecurity.v1",
+            ready=False,
+            issues=("secret scanning push protection must be enabled",),
+        ),
+    )
+    if report.ready:
+        raise AssertionError("repository governance failures should fail tagged release readiness")
+    parsed = assert_safe_report(report)
+    rendered = json.dumps(parsed)
+    for expected in (
+        "main branch protection readiness: missing required status check: Packages",
+        "GitHub Actions permissions readiness: default workflow token permissions must be read-only",
+        "GitHub repository security readiness: secret scanning push protection must be enabled",
+    ):
+        if expected not in rendered:
+            raise AssertionError(f"repository governance issue was not reported: {expected}")
 
 
 def run_ci_readiness_tests(module) -> None:
@@ -178,6 +263,7 @@ def run_ci_readiness_tests(module) -> None:
         ci_required=True,
         ci_head_sha="a" * 40,
         ci_runs_payload=ci_success_payload(module),
+        **ready_governance_kwargs(),
     )
     if not report.ready:
         raise AssertionError(f"expected CI readiness to pass: {report.issues!r}")
@@ -201,6 +287,7 @@ def run_ci_readiness_tests(module) -> None:
         ci_required=True,
         ci_head_sha="b" * 40,
         ci_runs_payload=ci_success_payload(module),
+        **ready_governance_kwargs(),
     )
     if missing.ready:
         raise AssertionError("missing CI run should fail readiness")
@@ -231,6 +318,7 @@ def run_ci_readiness_tests(module) -> None:
                 "url": f"https://example.invalid/{SENSITIVE_SENTINEL}",
             }
         ],
+        **ready_governance_kwargs(),
     )
     if failed.ready:
         raise AssertionError("failed CI run should fail readiness")
@@ -286,6 +374,7 @@ def run_release_branch_readiness_tests(module) -> None:
         release_branch="main",
         release_target_sha="a" * 40,
         release_branch_sha="a" * 40,
+        **ready_governance_kwargs(),
     )
     if not report.ready:
         raise AssertionError(f"expected release branch readiness to pass: {report.issues!r}")
@@ -310,6 +399,7 @@ def run_release_branch_readiness_tests(module) -> None:
         release_branch="main",
         release_target_sha="b" * 40,
         release_branch_sha="c" * 40,
+        **ready_governance_kwargs(),
     )
     if mismatch.ready:
         raise AssertionError("mismatched release target and branch head should fail")
@@ -352,6 +442,7 @@ def run_missing_secret_tests(module) -> None:
         pages_payload=pages_payload(),
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if report.ready:
         raise AssertionError("missing release secret should fail readiness")
@@ -376,6 +467,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if not report.ready:
         raise AssertionError(f"expected custom repository readiness to pass: {report.issues!r}")
@@ -394,6 +486,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if missing.ready:
         raise AssertionError("missing custom bucket/secrets should fail")
@@ -419,6 +512,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if invalid_optional.ready:
         raise AssertionError("invalid optional custom repository variables should fail")
@@ -447,6 +541,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if invalid_base_paths.ready:
         raise AssertionError("encoded custom repository base URL dot segment should fail")
@@ -472,6 +567,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if invalid_base_separator.ready:
         raise AssertionError("encoded custom repository base URL separator should fail")
@@ -497,6 +593,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if invalid_base_authority.ready:
         raise AssertionError("malformed custom repository base URL authority should fail")
@@ -522,6 +619,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if invalid_endpoint_paths.ready:
         raise AssertionError("encoded custom repository endpoint URL dot segment should fail")
@@ -547,6 +645,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if invalid_endpoint_separator.ready:
         raise AssertionError("encoded custom repository endpoint URL separator should fail")
@@ -572,6 +671,7 @@ def run_custom_repository_tests(module) -> None:
         pages_payload=None,
         release_payload=None,
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if invalid_endpoint_authority.ready:
         raise AssertionError("malformed custom repository endpoint URL authority should fail")
@@ -596,6 +696,7 @@ def run_safe_failure_tests(module) -> None:
         pages_payload=None,
         release_payload=release_payload(),
         npm_registry_check=False,
+        **ready_governance_kwargs(),
     )
     if invalid.ready:
         raise AssertionError("invalid custom repository plus existing release should fail")
@@ -647,6 +748,7 @@ def main() -> int:
     run_tag_validation_tests(module)
     run_ready_pages_tests(module)
     run_workflow_permissions_tests(module)
+    run_repository_governance_tests(module)
     run_ci_readiness_tests(module)
     run_release_branch_readiness_tests(module)
     run_missing_secret_tests(module)
