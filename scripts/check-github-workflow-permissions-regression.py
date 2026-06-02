@@ -66,6 +66,8 @@ jobs:
       security-events: read
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+        if: startsWith(github.ref, 'refs/tags/v')
       - run: echo preflight
       - name: Validate tag target CI and release branch
         if: startsWith(github.ref, 'refs/tags/v')
@@ -845,6 +847,44 @@ def run_expected_job_permission_tests(module) -> None:
 
 
 def run_required_release_preflight_tests(module) -> None:
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "release-preflight",
+            "    runs-on: ubuntu-latest\n",
+            "",
+        ),
+        "release.yml:release-preflight is missing Ubuntu runner",
+        "missing release-preflight Ubuntu runner should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "release-preflight",
+            "      - uses: actions/checkout@v6\n"
+            "        if: startsWith(github.ref, 'refs/tags/v')\n",
+            "",
+        ),
+        "release.yml:release-preflight is missing tag-gated checkout action",
+        "missing release-preflight checkout should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "release-preflight",
+            "      - uses: actions/checkout@v6\n"
+            "        if: startsWith(github.ref, 'refs/tags/v')\n",
+            "      - uses: actions/checkout@v6\n",
+        ),
+        "release.yml:release-preflight is missing tag-gated checkout action",
+        "untagged release-preflight checkout should fail",
+    )
+
     report = with_fixture(
         module,
         None,
