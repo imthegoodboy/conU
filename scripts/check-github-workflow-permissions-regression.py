@@ -121,7 +121,50 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - run: echo release
+      - name: Re-check GitHub Release tag is unpublished
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-release-clobber-preflight.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "::error::GitHub Release $TAG_NAME already exists; refusing to overwrite release assets."
+            exit 1
+          fi
+          gh release create "$TAG_NAME" dist/* --verify-tag --title "conU $TAG_NAME" --notes-file release-notes.md
+      - name: Verify published release update policy and artifact with CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          POLICY_URL="https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/conu-${VERSION}-update-policy.json"
+          KEY_DIR="$RUNNER_TEMP/conu-release-key"
+          GNUPG_HOME="$RUNNER_TEMP/conu-release-gnupg"
+          DOWNLOAD_DIR="$RUNNER_TEMP/conu-update-download"
+          APPLY_INSTALL_DIR="$RUNNER_TEMP/conu-update-apply-bin"
+          mkdir -p "$KEY_DIR" "$GNUPG_HOME"
+          chmod 700 "$GNUPG_HOME"
+          gh release download "$TAG_NAME" --repo "$GH_REPO" --pattern conu-linux-gpg-key.asc --dir "$KEY_DIR"
+          export GNUPGHOME="$GNUPG_HOME"
+          gpg --batch --yes --import "$KEY_DIR/conu-linux-gpg-key.asc"
+          EXPECTED_FINGERPRINT="$(printf '%s' "$CONU_LINUX_GPG_KEY_FINGERPRINT" | tr -d '[:space:]:' | sed 's/^0[xX]//' | tr '[:lower:]' '[:upper:]')"
+          ACTUAL_FINGERPRINT="$(gpg --batch --with-colons --fingerprint --list-keys | awk -F: '$1 == "fpr" { print toupper($10); exit }')"
+          if [ "$ACTUAL_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]; then
+            echo "::error::Published Linux GPG public key fingerprint mismatch"
+            exit 1
+          fi
+          cargo run -p conu-cli -- update check --policy-url "$POLICY_URL" --gpg-verify --json
+          cargo run -p conu-cli -- update download --policy-url "$POLICY_URL" --output-dir "$DOWNLOAD_DIR" --target linux-x64 --gpg-verify --json
+          cargo run -p conu-cli -- update apply --policy-url "$POLICY_URL" --artifact-file "$DOWNLOAD_DIR/conu-${VERSION}-linux-x64.tar.gz" --install-dir "$APPLY_INSTALL_DIR" --target linux-x64 --gpg-verify --dry-run --json
   linux-repository-pages:
     needs: github-release
     permissions:
@@ -471,6 +514,91 @@ def run_required_release_job_needs_tests(module) -> None:
         raise AssertionError("missing package preflight dependency was not reported")
 
 
+def run_required_github_release_gate_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Re-check GitHub Release tag is unpublished\n"
+            "        env:\n"
+            "          GH_TOKEN: ${{ github.token }}\n"
+            '        run: python scripts/check-github-release-clobber-preflight.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"\n',
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing late GitHub Release clobber preflight should fail")
+    if (
+        "release.yml:github-release must re-check GitHub Release tag is unpublished"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("missing late GitHub Release clobber preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '          gh release create "$TAG_NAME" dist/* --verify-tag --title "conU $TAG_NAME" --notes-file release-notes.md\n',
+            '          gh release create "$TAG_NAME" dist/* --title "conU $TAG_NAME" --notes-file release-notes.md\n',
+        ),
+    )
+    if report.ready:
+        raise AssertionError("GitHub Release creation without --verify-tag should fail")
+    if (
+        "release.yml:github-release publish release assets without clobber "
+        "is missing release create command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing GitHub Release --verify-tag issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '          gh release create "$TAG_NAME" dist/* --verify-tag --title "conU $TAG_NAME" --notes-file release-notes.md\n',
+            '          gh release create "$TAG_NAME" dist/* --verify-tag --title "conU $TAG_NAME" --notes-file release-notes.md --clobber\n',
+        ),
+    )
+    if report.ready:
+        raise AssertionError("GitHub Release clobber publication should fail")
+    if (
+        "release.yml:github-release publish release assets must not use "
+        "gh release upload/create clobber"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("GitHub Release clobber issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '          cargo run -p conu-cli -- update apply --policy-url "$POLICY_URL" --artifact-file "$DOWNLOAD_DIR/conu-${VERSION}-linux-x64.tar.gz" --install-dir "$APPLY_INSTALL_DIR" --target linux-x64 --gpg-verify --dry-run --json\n',
+            '          cargo run -p conu-cli -- update apply --policy-url "$POLICY_URL" --artifact-file "$DOWNLOAD_DIR/conu-${VERSION}-linux-x64.tar.gz" --install-dir "$APPLY_INSTALL_DIR" --target linux-x64 --gpg-verify --json\n',
+        ),
+    )
+    if report.ready:
+        raise AssertionError("published update apply without dry-run should fail")
+    if (
+        "release.yml:github-release verify published release update policy "
+        "and artifact with CLI is missing update apply dry-run command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing published update apply dry-run issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '          if [ "$ACTUAL_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]; then\n',
+            '          if [ "$ACTUAL_FINGERPRINT" = "$EXPECTED_FINGERPRINT" ]; then\n',
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing published GPG fingerprint mismatch gate should fail")
+    if (
+        "release.yml:github-release verify published release update policy "
+        "and artifact with CLI is missing fingerprint comparison"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing published GPG fingerprint comparison was not reported")
+
+
 def run_required_npm_publication_gate_tests(module) -> None:
     report = with_fixture(
         module,
@@ -621,6 +749,7 @@ def main() -> int:
     run_expected_job_permission_tests(module)
     run_required_release_preflight_tests(module)
     run_required_release_job_needs_tests(module)
+    run_required_github_release_gate_tests(module)
     run_required_npm_publication_gate_tests(module)
     run_required_release_publication_gate_tests(module)
     run_unsafe_environment_file_write_tests(module)

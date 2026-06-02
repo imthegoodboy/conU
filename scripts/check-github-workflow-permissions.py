@@ -214,6 +214,76 @@ NPM_PUBLISH_REQUIRED_STEPS: tuple[
         ),
     ),
 )
+GITHUB_RELEASE_REQUIRED_STEPS: tuple[
+    tuple[str, str, tuple[tuple[str, str], ...]],
+    ...,
+] = (
+    (
+        "Re-check GitHub Release tag is unpublished",
+        "re-check GitHub Release tag is unpublished",
+        (
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "clobber preflight command",
+                'python scripts/check-github-release-clobber-preflight.py --repo '
+                '"$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"',
+            ),
+        ),
+    ),
+    (
+        "Publish release assets",
+        "publish release assets without clobber",
+        (
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            ("release repository env", "GH_REPO: ${{ github.repository }}"),
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            ("existing release guard", 'gh release view "$TAG_NAME"'),
+            (
+                "release create command",
+                'gh release create "$TAG_NAME" dist/* --verify-tag --title '
+                '"conU $TAG_NAME" --notes-file release-notes.md',
+            ),
+        ),
+    ),
+    (
+        "Verify published release update policy and artifact with CLI",
+        "verify published release update policy and artifact with CLI",
+        (
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "Linux fingerprint env",
+                "CONU_LINUX_GPG_KEY_FINGERPRINT: "
+                "${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}",
+            ),
+            (
+                "public key download",
+                'gh release download "$TAG_NAME" --repo "$GH_REPO" --pattern '
+                'conu-linux-gpg-key.asc --dir "$KEY_DIR"',
+            ),
+            (
+                "fingerprint comparison",
+                'if [ "$ACTUAL_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]; then',
+            ),
+            (
+                "update check command",
+                'cargo run -p conu-cli -- update check --policy-url "$POLICY_URL" '
+                "--gpg-verify --json",
+            ),
+            (
+                "update download command",
+                'cargo run -p conu-cli -- update download --policy-url "$POLICY_URL" '
+                '--output-dir "$DOWNLOAD_DIR" --target linux-x64 --gpg-verify --json',
+            ),
+            (
+                "update apply dry-run command",
+                'cargo run -p conu-cli -- update apply --policy-url "$POLICY_URL" '
+                '--artifact-file "$DOWNLOAD_DIR/conu-${VERSION}-linux-x64.tar.gz" '
+                '--install-dir "$APPLY_INSTALL_DIR" --target linux-x64 --gpg-verify '
+                "--dry-run --json",
+            ),
+        ),
+    ),
+)
 EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "release-preflight"): {
         "actions": "read",
@@ -564,6 +634,37 @@ def audit_required_npm_publication_gate(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def audit_required_github_release_gate(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "github-release")
+    issues: list[str] = []
+    if not block:
+        return ("release.yml must define github-release job",)
+
+    for step_name, description, required_snippets in GITHUB_RELEASE_REQUIRED_STEPS:
+        step = extract_named_step_block(block, step_name)
+        if not step:
+            issues.append(f"release.yml:github-release must {description}")
+            continue
+        if step_name == "Publish release assets" and "--clobber" in step:
+            issues.append(
+                "release.yml:github-release publish release assets must not use "
+                "gh release upload/create clobber"
+            )
+        for label, snippet in required_snippets:
+            if snippet not in step:
+                issues.append(
+                    f"release.yml:github-release {description} is missing {label}"
+                )
+    return tuple(issues)
+
+
 def is_secret_like_env_name(name: str) -> bool:
     return any(token in name for token in SECRET_LIKE_ENV_TOKENS)
 
@@ -698,6 +799,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
             unsafe_env_writes.append(finding)
             issues.append(finding)
         issues.extend(audit_required_release_preflight_steps(path))
+        issues.extend(audit_required_github_release_gate(path))
         issues.extend(audit_required_release_publication_gate(path))
         issues.extend(audit_required_npm_publication_gate(path))
 
