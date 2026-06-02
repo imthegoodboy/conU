@@ -477,6 +477,37 @@ assert.throws(
   },
 );
 
+const commandJsonNonObject = new ConuClient({
+  conuBin: "C:/tools/conu-test.exe",
+  runner({ binary }) {
+    return {
+      args: [binary],
+      stdout: JSON.stringify([`array item with ${secretEndpoint}`]),
+      stderr: "stderr with private fixture",
+      code: 0,
+    };
+  },
+});
+
+assert.throws(
+  () => commandJsonNonObject.status(),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.ok(!rendered.includes("private fixture"));
+    assert.equal(error.message, "conU command returned invalid JSON");
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    return true;
+  },
+);
+
 const mcpJsonMalformed = new ConuClient({
   mcpBin: "conu-mcp-test",
   runner({ binary }) {
@@ -498,6 +529,49 @@ const mcpJsonMalformed = new ConuClient({
 
 assert.throws(
   () => mcpJsonMalformed.receiveMessage("agent.beta", "env.local.1"),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.ok(!rendered.includes("private fixture"));
+    assert.equal(error.message, "conU MCP tool returned invalid JSON");
+    assert.deepEqual(error.result.args, ["conu-mcp-test", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    return true;
+  },
+);
+
+const mcpJsonNonObject = new ConuClient({
+  mcpBin: "conu-mcp-test",
+  runner({ binary }) {
+    return {
+      args: [binary],
+      stdout: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify([`array item with ${secretEndpoint}`]),
+            },
+          ],
+          isError: false,
+        },
+      }),
+      stderr: "stderr with private fixture",
+      code: 0,
+    };
+  },
+});
+
+assert.throws(
+  () => mcpJsonNonObject.receiveMessage("agent.beta", "env.local.1"),
   (error) => {
     assert.ok(error instanceof ConuError);
     const rendered = JSON.stringify({
