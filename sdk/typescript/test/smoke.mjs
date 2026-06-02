@@ -316,6 +316,136 @@ assert.throws(
   },
 );
 
+const mcpMissingText = new ConuClient({
+  mcpBin: "conu-mcp-test",
+  runner({ binary }) {
+    return {
+      args: [binary],
+      stdout: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [{ type: "resource", text: `MCP content with ${secretEndpoint}` }],
+          isError: false,
+        },
+      }),
+      stderr: "stderr with private fixture",
+      code: 0,
+    };
+  },
+});
+
+assert.throws(
+  () => mcpMissingText.receiveMessage("agent.beta", "env.local.1"),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.ok(!rendered.includes("private fixture"));
+    assert.equal(error.message, "conU MCP tool response did not include text content");
+    assert.deepEqual(error.result.args, ["conu-mcp-test", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    return true;
+  },
+);
+
+const receiveMissingPayloadHex = new ConuClient({
+  mcpBin: "conu-mcp-test",
+  runner({ binary }) {
+    return {
+      args: [binary],
+      stdout: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                payloadReturned: true,
+                note: `private fixture with ${secretEndpoint}`,
+              }),
+            },
+          ],
+          isError: false,
+        },
+      }),
+      stderr: "stderr with private fixture",
+      code: 0,
+    };
+  },
+});
+
+assert.throws(
+  () => receiveMissingPayloadHex.receiveMessageBytes("agent.beta", "env.local.1"),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.ok(!rendered.includes("private fixture"));
+    assert.equal(error.message, "conU receive response did not include payloadHex");
+    assert.deepEqual(error.result.args, ["conu-mcp-test", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    return true;
+  },
+);
+
+const receiveInvalidPayloadHex = new ConuClient({
+  mcpBin: "conu-mcp-test",
+  runner({ binary }) {
+    return {
+      args: [binary],
+      stdout: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                payloadHex: secretEndpoint,
+                payloadReturned: true,
+              }),
+            },
+          ],
+          isError: false,
+        },
+      }),
+      stderr: "stderr with private fixture",
+      code: 0,
+    };
+  },
+});
+
+assert.throws(
+  () => receiveInvalidPayloadHex.receiveMessageBytes("agent.beta", "env.local.1"),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.ok(!rendered.includes("private fixture"));
+    assert.equal(error.message, "conU receive response included invalid payloadHex");
+    assert.deepEqual(error.result.args, ["conu-mcp-test", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    return true;
+  },
+);
+
 const commandJsonMalformed = new ConuClient({
   conuBin: "C:/tools/conu-test.exe",
   runner({ binary }) {
