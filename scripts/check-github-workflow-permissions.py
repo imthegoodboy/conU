@@ -429,6 +429,16 @@ PACKAGES_REQUIRED_STEPS: tuple[
         (("Python compile command", "python scripts/check-python-script-compile.py"),),
     ),
     (
+        "Production readiness toolchain regression",
+        "run production readiness toolchain regression",
+        (
+            (
+                "production readiness toolchain command",
+                "python scripts/check-production-readiness-toolchain.py",
+            ),
+        ),
+    ),
+    (
         "Smoke output privacy regression",
         "run smoke output privacy regression",
         (("smoke privacy command", "python scripts/check-smoke-output-privacy.py"),),

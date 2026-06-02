@@ -177,6 +177,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg openssl
       - name: Python script compile
         run: python scripts/check-python-script-compile.py
+      - name: Production readiness toolchain regression
+        run: python scripts/check-production-readiness-toolchain.py
       - name: Smoke output privacy regression
         run: python scripts/check-smoke-output-privacy.py
       - name: Release version consistency
@@ -1209,6 +1211,24 @@ def run_required_package_checks_job_tests(module) -> None:
         "package tool install command"
     ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("weakened package tool install was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: python scripts/check-production-readiness-toolchain.py\n",
+            "        run: echo skipped-production-readiness-toolchain\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing production readiness toolchain regression should fail")
+    if (
+        "release.yml:packages run production readiness toolchain regression is "
+        "missing production readiness toolchain command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError(
+            "missing production readiness toolchain regression was not reported"
+        )
 
     report = with_fixture(
         module,
