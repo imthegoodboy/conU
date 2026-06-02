@@ -1794,6 +1794,18 @@ def run_required_npm_publication_gate_tests(module) -> None:
 
 
 def run_required_release_publication_gate_tests(module) -> None:
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "linux-repository-publication",
+            "    runs-on: ubuntu-latest\n",
+            "",
+        ),
+        "release.yml:linux-repository-publication is missing Ubuntu runner",
+        "missing Linux repository publication Ubuntu runner should fail",
+    )
+
     report = with_fixture(
         module,
         None,
