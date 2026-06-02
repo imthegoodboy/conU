@@ -167,20 +167,60 @@ jobs:
           cargo run -p conu-cli -- update apply --policy-url "$POLICY_URL" --artifact-file "$DOWNLOAD_DIR/conu-${VERSION}-linux-x64.tar.gz" --install-dir "$APPLY_INSTALL_DIR" --target linux-x64 --gpg-verify --dry-run --json
   linux-repository-pages:
     needs: github-release
+    if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL == ''
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pages: write
       id-token: write
-    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - run: echo pages
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: conu-hosted-linux-repository-pages
+          path: linux-repository-site
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: linux-repository-site
+      - id: deployment
+        uses: actions/deploy-pages@v5
   custom-linux-repository-publish:
     needs: github-release
+    if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL != ''
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    runs-on: ubuntu-latest
     steps:
-      - run: echo custom
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: conu-hosted-linux-repository-pages
+          path: linux-repository-site
+      - name: Install AWS CLI
+        run: |
+          python -m pip install --user awscli
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Publish custom hosted Linux repository and verify endpoint
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN }}
+          CONU_LINUX_REPOSITORY_AWS_REGION: ${{ vars.CONU_LINUX_REPOSITORY_AWS_REGION }}
+          CONU_LINUX_REPOSITORY_BASE_URL: ${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}
+          CONU_LINUX_REPOSITORY_S3_BUCKET: ${{ vars.CONU_LINUX_REPOSITORY_S3_BUCKET }}
+          CONU_LINUX_REPOSITORY_S3_PREFIX: ${{ vars.CONU_LINUX_REPOSITORY_S3_PREFIX }}
+          CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL: ${{ vars.CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL }}
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          python scripts/publish-hosted-linux-repository-s3.py linux-repository-site \
+            --expected-version "$VERSION" \
+            --confirm \
+            --post-upload-check \
+            --json
   linux-repository-publication:
     needs: [github-release, linux-repository-pages, custom-linux-repository-publish]
     if: always() && startsWith(github.ref, 'refs/tags/v')
@@ -599,6 +639,90 @@ def run_required_github_release_gate_tests(module) -> None:
         raise AssertionError("missing published GPG fingerprint comparison was not reported")
 
 
+def run_required_linux_repository_publication_job_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "    if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL == ''\n",
+            "",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing default Pages repository gate should fail")
+    if (
+        "release.yml:linux-repository-pages is missing default repository "
+        "tag/base URL gate"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing default Pages repository gate was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - id: deployment\n"
+            "        uses: actions/deploy-pages@v5\n",
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing Pages deploy action should fail")
+    if (
+        "release.yml:linux-repository-pages is missing deploy Pages action"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("missing Pages deploy action was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "    if: startsWith(github.ref, 'refs/tags/v') && vars.CONU_LINUX_REPOSITORY_BASE_URL != ''\n",
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing custom repository gate should fail")
+    if (
+        "release.yml:custom-linux-repository-publish is missing custom "
+        "repository tag/base URL gate"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing custom repository gate was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Publish custom hosted Linux repository and verify endpoint\n",
+            "      - name: Publish custom hosted Linux repository\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("renamed custom publish/verify step should fail")
+    if (
+        "release.yml:custom-linux-repository-publish must publish custom "
+        "hosted Linux repository and verify endpoint"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing custom publish/verify step was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            " --post-upload-check ",
+            " ",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing custom repository post-upload check should fail")
+    if (
+        "release.yml:custom-linux-repository-publish publish custom hosted "
+        "Linux repository and verify endpoint is missing post-upload live endpoint check"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing custom repository post-upload check was not reported")
+
+
 def run_required_npm_publication_gate_tests(module) -> None:
     report = with_fixture(
         module,
@@ -750,6 +874,7 @@ def main() -> int:
     run_required_release_preflight_tests(module)
     run_required_release_job_needs_tests(module)
     run_required_github_release_gate_tests(module)
+    run_required_linux_repository_publication_job_tests(module)
     run_required_npm_publication_gate_tests(module)
     run_required_release_publication_gate_tests(module)
     run_unsafe_environment_file_write_tests(module)
