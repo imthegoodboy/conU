@@ -202,9 +202,12 @@ export class ConuClient {
   receiveMessageBytes(agentId, envelopeId) {
     const received = this.receiveMessage(agentId, envelopeId, { includePayload: true });
     if (typeof received.payloadHex !== "string") {
-      throw new Error("conU receive response did not include payloadHex");
+      throw new ConuError(
+        "conU receive response did not include payloadHex",
+        resultForError({ code: 1 }, this.mcpBin),
+      );
     }
-    return hexToBuffer(received.payloadHex);
+    return hexToBuffer(received.payloadHex, this.mcpBin);
   }
 
   receipts() {
@@ -434,7 +437,7 @@ export class ConuClient {
       );
     }
     return parseJsonForSdk(
-      toolText(toolResult),
+      toolText(toolResult, this.mcpBin),
       this.mcpBin,
       "conU MCP tool returned invalid JSON",
     );
@@ -538,11 +541,14 @@ function parseMcpResponse(stdout, binary) {
   return parseJsonForSdk(line, binary, "conU MCP response was invalid JSON");
 }
 
-function toolText(toolResult) {
+function toolText(toolResult, binary) {
   const content = Array.isArray(toolResult.content) ? toolResult.content : [];
   const text = content.find((item) => isRecord(item) && item.type === "text")?.text;
   if (typeof text !== "string") {
-    throw new Error("conU MCP tool response did not include text content");
+    throw new ConuError(
+      "conU MCP tool response did not include text content",
+      resultForError({ code: 1 }, binary),
+    );
   }
   return text;
 }
@@ -587,9 +593,12 @@ function safeBinaryName(binary) {
   return base.replace(/[^\w.-]/g, "_") || "conu";
 }
 
-function hexToBuffer(hex) {
+function hexToBuffer(hex, binary) {
   if (hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) {
-    throw new Error("conU receive response included invalid payloadHex");
+    throw new ConuError(
+      "conU receive response included invalid payloadHex",
+      resultForError({ code: 1 }, binary),
+    );
   }
   return Buffer.from(hex, "hex");
 }
