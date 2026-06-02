@@ -271,6 +271,9 @@ try {
         Invoke-ReadinessStep "python compile" {
             & python scripts/check-python-script-compile.py
         }
+        Invoke-ReadinessStep "smoke output privacy regression" {
+            & python scripts/check-smoke-output-privacy.py
+        }
         Invoke-ReadinessStep "release version consistency" {
             & python scripts/verify-release-versions.py
         }
