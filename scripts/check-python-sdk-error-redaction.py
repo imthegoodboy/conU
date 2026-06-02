@@ -44,6 +44,22 @@ def assert_redacted(rendered: str) -> None:
             raise AssertionError(f"Python SDK error leaked sensitive text: {forbidden}")
 
 
+def assert_safe_error_result(exc, expected_binary: str, expected_returncode: int) -> None:
+    result = getattr(exc, "result", None)
+    if result is None:
+        raise AssertionError("Python SDK error should include redacted result metadata")
+    rendered = repr((result.args, result.stdout, result.stderr, result.returncode))
+    assert_redacted(rendered)
+    if result.args != (expected_binary, "[arguments redacted]"):
+        raise AssertionError(f"Python SDK error result kept unsafe args: {result.args!r}")
+    if result.stdout != "" or result.stderr != "":
+        raise AssertionError("Python SDK error result should redact stdout and stderr")
+    if result.returncode != expected_returncode:
+        raise AssertionError(
+            f"Python SDK error result returncode mismatch: {result.returncode!r}"
+        )
+
+
 def run_failed_command_redaction_test(module) -> None:
     captured: dict[str, tuple[str, ...]] = {}
 
@@ -62,6 +78,7 @@ def run_failed_command_redaction_test(module) -> None:
         )
     except module.ConuError as exc:
         rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 2)
     else:
         raise AssertionError("expected Python SDK command failure")
 
@@ -82,6 +99,7 @@ def run_spawn_error_redaction_test(module) -> None:
         client.status()
     except module.ConuError as exc:
         rendered = str(exc)
+        assert_safe_error_result(exc, "conu", 1)
     else:
         raise AssertionError("expected Python SDK spawn failure")
 
@@ -105,6 +123,7 @@ def run_invalid_json_redaction_test(module) -> None:
         client.status()
     except module.ConuError as exc:
         rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 1)
     else:
         raise AssertionError("expected Python SDK JSON parse failure")
 
@@ -263,6 +282,7 @@ def run_mcp_shape_redaction_tests(module) -> None:
             action(client)
         except module.ConuError as exc:
             rendered = str(exc)
+            assert_safe_error_result(exc, "conu-mcp-test.exe", 1)
         else:
             raise AssertionError("expected Python SDK MCP shape failure")
 
@@ -461,6 +481,7 @@ def run_stdin_secret_failure_redaction_test(module) -> None:
         client.set_relay_credential(secret)
     except module.ConuError as exc:
         rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 9)
     else:
         raise AssertionError("expected Python SDK relay credential failure")
 
