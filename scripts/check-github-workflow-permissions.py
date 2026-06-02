@@ -762,6 +762,71 @@ PACKAGES_REQUIRED_STEPS: tuple[
         ),
     ),
 )
+CI_RUST_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("matrix job name", "name: Rust (${{ matrix.os }})"),
+    ("matrix runner", "runs-on: ${{ matrix.os }}"),
+    ("matrix fail-fast", "fail-fast: false"),
+    ("checkout action", "uses: actions/checkout@v6"),
+    ("Rust toolchain action", "uses: dtolnay/rust-toolchain@stable"),
+    ("rustfmt/clippy components", "components: rustfmt, clippy"),
+)
+CI_RUST_REQUIRED_OS: tuple[tuple[str, str], ...] = (
+    ("Ubuntu runner matrix", "ubuntu-latest"),
+    ("Windows runner matrix", "windows-2025-vs2026"),
+    ("macOS runner matrix", "macos-15"),
+)
+CI_RUST_REQUIRED_STEPS: tuple[
+    tuple[str, str, tuple[tuple[str, str], ...]],
+    ...,
+] = (
+    (
+        "Format",
+        "run Rust format check",
+        (("cargo fmt command", "cargo fmt --all -- --check"),),
+    ),
+    (
+        "Check",
+        "run Rust check",
+        (("cargo check command", "cargo check --workspace --all-targets"),),
+    ),
+    (
+        "Clippy",
+        "run Rust clippy",
+        (
+            (
+                "cargo clippy command",
+                "cargo clippy --workspace --all-targets -- -D warnings",
+            ),
+        ),
+    ),
+    (
+        "Test",
+        "run Rust tests",
+        (("cargo test command", "cargo test --workspace"),),
+    ),
+    (
+        "Python compile",
+        "compile Python scripts",
+        (("Python compile command", "python scripts/check-python-script-compile.py"),),
+    ),
+    (
+        "Doctor smoke",
+        "run doctor smoke",
+        (("doctor smoke command", "cargo run -p conu-cli -- doctor --json"),),
+    ),
+    (
+        "Production readiness smoke gate",
+        "run Windows production readiness smoke gate",
+        (
+            ("Windows matrix gate", "if: matrix.os == 'windows-2025-vs2026'"),
+            ("PowerShell shell", "shell: pwsh"),
+            (
+                "production readiness smoke command",
+                "run: ./scripts/verify-production-readiness.ps1 -SmokeOnly",
+            ),
+        ),
+    ),
+)
 BUILD_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("matrix job name", "name: Build ${{ matrix.name }}"),
     ("matrix runner", "runs-on: ${{ matrix.os }}"),
@@ -1880,6 +1945,66 @@ def audit_required_package_checks_job(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def extract_ci_rust_matrix_os(job_block: str) -> tuple[str, ...]:
+    lines = job_block.splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip().startswith("os:"):
+            continue
+        base_indent = len(line) - len(line.lstrip(" "))
+        _, value = line.split(":", 1)
+        inline_sequence = parse_inline_sequence(value)
+        if inline_sequence is not None:
+            return tuple(inline_sequence)
+        entries: list[str] = []
+        for next_line in lines[index + 1 :]:
+            if not next_line.strip():
+                continue
+            stripped = next_line.lstrip(" ")
+            next_indent = len(next_line) - len(stripped)
+            if next_indent <= base_indent:
+                break
+            if stripped.startswith("- "):
+                entries.append(scalar_value(stripped[2:]))
+        return tuple(entries)
+    return ()
+
+
+def audit_required_ci_rust_job(path: Path) -> tuple[str, ...]:
+    if path.name != "ci.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "rust")
+    issues: list[str] = []
+    if not block:
+        return ("ci.yml must define rust job",)
+    for label, snippet in CI_RUST_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"ci.yml:rust is missing {label}")
+    matrix_os = set(extract_ci_rust_matrix_os(block))
+    expected_os = {runner for _label, runner in CI_RUST_REQUIRED_OS}
+    if not matrix_os:
+        issues.append("ci.yml:rust must define OS runner matrix")
+    for label, runner in CI_RUST_REQUIRED_OS:
+        if runner not in matrix_os:
+            issues.append(f"ci.yml:rust is missing {label}")
+    for runner in sorted(matrix_os - expected_os):
+        issues.append(f"ci.yml:rust uses unexpected OS runner matrix entry: {runner}")
+
+    for step_name, description, required_snippets in CI_RUST_REQUIRED_STEPS:
+        step = extract_named_step_block(block, step_name)
+        if not step:
+            issues.append(f"ci.yml:rust must {description}")
+            continue
+        for label, snippet in required_snippets:
+            if snippet not in step:
+                issues.append(f"ci.yml:rust {description} is missing {label}")
+    return tuple(issues)
+
+
 def audit_required_build_job(path: Path) -> tuple[str, ...]:
     if path.name != "release.yml":
         return ()
@@ -2160,6 +2285,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         issues.extend(audit_checkout_credential_persistence(path))
         issues.extend(audit_required_release_preflight_steps(path))
         issues.extend(audit_required_package_checks_job(path))
+        issues.extend(audit_required_ci_rust_job(path))
         issues.extend(audit_required_production_readiness_job(path))
         issues.extend(audit_required_build_job(path))
         issues.extend(audit_required_github_release_gate(path))

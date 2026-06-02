@@ -31,7 +31,7 @@ def write(path: Path, text: str) -> None:
 
 
 def ready_ci() -> str:
-    return f"""
+    return """
 name: CI
 on:
   push:
@@ -130,6 +130,36 @@ jobs:
         run: python scripts/check-npm-publish-preflight.py
       - name: npm publish preflight regression
         run: python scripts/check-npm-publish-preflight-regression.py
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2025-vs2026, macos-15]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Check
+        run: cargo check --workspace --all-targets
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Python compile
+        run: python scripts/check-python-script-compile.py
+      - name: Doctor smoke
+        run: cargo run -p conu-cli -- doctor --json
+      - name: Production readiness smoke gate
+        if: matrix.os == 'windows-2025-vs2026'
+        shell: pwsh
+        run: ./scripts/verify-production-readiness.ps1 -SmokeOnly
 """
 
 
@@ -863,6 +893,19 @@ def assert_release_gate_issue(
         raise AssertionError(f"expected issue was not reported: {expected_issue}")
 
 
+def assert_ci_issue(
+    module,
+    ci_text: str,
+    expected_issue: str,
+    ready_message: str,
+) -> None:
+    report = with_fixture(module, ci_text, None)
+    if report.ready:
+        raise AssertionError(ready_message)
+    if expected_issue not in json.dumps(assert_safe_report(report)):
+        raise AssertionError(f"expected issue was not reported: {expected_issue}")
+
+
 def run_ready_tests(module) -> None:
     report = with_fixture(module, None, None)
     if not report.ready:
@@ -991,6 +1034,71 @@ def run_required_ci_package_checks_job_tests(module) -> None:
         raise AssertionError(
             "missing CI workflow permissions regression was not reported"
         )
+
+
+def run_required_ci_rust_job_tests(module) -> None:
+    assert_ci_issue(
+        module,
+        replace_job_text(
+            ready_ci(),
+            "rust",
+            "        os: [ubuntu-latest, windows-2025-vs2026, macos-15]\n",
+            "        os: [ubuntu-latest, windows-latest, macos-15]\n",
+        ),
+        "ci.yml:rust is missing Windows runner matrix",
+        "weakened CI Rust Windows matrix should fail",
+    )
+
+    assert_ci_issue(
+        module,
+        replace_job_text(
+            ready_ci(),
+            "rust",
+            "          components: rustfmt, clippy\n",
+            "          components: rustfmt\n",
+        ),
+        "ci.yml:rust is missing rustfmt/clippy components",
+        "weakened CI Rust toolchain components should fail",
+    )
+
+    assert_ci_issue(
+        module,
+        replace_job_text(
+            ready_ci(),
+            "rust",
+            "        run: cargo clippy --workspace --all-targets -- -D warnings\n",
+            "        run: cargo clippy --workspace --all-targets\n",
+        ),
+        "ci.yml:rust run Rust clippy is missing cargo clippy command",
+        "weakened CI Rust clippy command should fail",
+    )
+
+    assert_ci_issue(
+        module,
+        replace_job_text(
+            ready_ci(),
+            "rust",
+            "        run: cargo run -p conu-cli -- doctor --json\n",
+            "        run: cargo run -p conu-cli -- --help\n",
+        ),
+        "ci.yml:rust run doctor smoke is missing doctor smoke command",
+        "weakened CI Rust doctor smoke should fail",
+    )
+
+    assert_ci_issue(
+        module,
+        replace_job_text(
+            ready_ci(),
+            "rust",
+            "        if: matrix.os == 'windows-2025-vs2026'\n",
+            "        if: matrix.os == 'windows-latest'\n",
+        ),
+        (
+            "ci.yml:rust run Windows production readiness smoke gate "
+            "is missing Windows matrix gate"
+        ),
+        "weakened CI Rust production readiness smoke gate should fail",
+    )
 
 
 def run_expected_job_permission_tests(module) -> None:
@@ -2226,6 +2334,7 @@ def main() -> int:
     run_checkout_credential_persistence_tests(module)
     run_unexpected_job_write_tests(module)
     run_required_ci_package_checks_job_tests(module)
+    run_required_ci_rust_job_tests(module)
     run_expected_job_permission_tests(module)
     run_required_release_preflight_tests(module)
     run_required_release_job_needs_tests(module)
