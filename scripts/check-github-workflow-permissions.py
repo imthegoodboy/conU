@@ -994,6 +994,7 @@ GITHUB_RELEASE_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("Rust toolchain action", "uses: dtolnay/rust-toolchain@stable"),
     ("artifact download action", "uses: actions/download-artifact@v8.0.1"),
     ("merged artifact download path", "path: dist"),
+    ("release artifact download pattern", "pattern: conu-*"),
     ("merged artifact download flag", "merge-multiple: true"),
 )
 GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS: tuple[tuple[str, str], ...] = (
