@@ -596,19 +596,17 @@ class ConuClient:
                 env=self.env,
                 check=False,
             )
-        except OSError:
+        except Exception:
             safe_result = _result_for_error(1, binary)
             raise ConuError(
                 f"conU command failed before execution: {_safe_command_for_error(binary)}",
                 safe_result,
             ) from None
-        stdout = completed.stdout.decode("utf-8", errors="replace")
-        stderr = completed.stderr.decode("utf-8", errors="replace")
-        result = CommandResult(argv, stdout, stderr, completed.returncode)
-        if completed.returncode != 0:
-            safe_result = _result_for_error(completed.returncode, binary)
+        result = _completed_process_result(completed, argv, binary)
+        if result.returncode != 0:
+            safe_result = _result_for_error(result.returncode, binary)
             raise ConuError(
-                f"conU command failed ({completed.returncode}): "
+                f"conU command failed ({result.returncode}): "
                 f"{_safe_command_for_error(binary)}",
                 safe_result,
             )
@@ -629,6 +627,32 @@ def _result_for_error(returncode: int, binary: str) -> CommandResult:
         args_redacted=True,
         stdio_redacted=True,
     )
+
+
+def _completed_process_result(completed: Any, argv: tuple[str, ...], binary: str) -> CommandResult:
+    try:
+        stdout = _decode_completed_stdio(completed.stdout)
+        stderr = _decode_completed_stdio(completed.stderr)
+        returncode = completed.returncode
+    except Exception:
+        raise ConuError(
+            f"conU command returned malformed process result: {_safe_command_for_error(binary)}",
+            _result_for_error(1, binary),
+        ) from None
+    if not isinstance(returncode, int) or isinstance(returncode, bool):
+        raise ConuError(
+            f"conU command returned malformed process result: {_safe_command_for_error(binary)}",
+            _result_for_error(1, binary),
+        )
+    return CommandResult(argv, stdout, stderr, returncode)
+
+
+def _decode_completed_stdio(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", errors="replace")
+    raise TypeError("unsupported completed process stream type")
 
 
 def _safe_binary_name(binary: str) -> str:

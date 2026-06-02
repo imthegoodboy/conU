@@ -155,6 +155,112 @@ def run_spawn_error_redaction_test(module) -> None:
         raise AssertionError("Python SDK spawn error should use a generic safe binary label")
 
 
+def run_subprocess_exception_redaction_test(module) -> None:
+    def fake_run(_argv, **_kwargs):
+        raise RuntimeError(f"custom runner exposed {SENSITIVE_ENDPOINT}")
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.status()
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 1)
+    else:
+        raise AssertionError("expected Python SDK subprocess runner failure")
+
+    assert_redacted(rendered)
+    if "conU command failed before execution: conu-test.exe [arguments redacted]" not in rendered:
+        raise AssertionError("Python SDK subprocess error should retain safe metadata only")
+
+
+def run_malformed_completed_stdio_redaction_test(module) -> None:
+    class MalformedCompleted:
+        stderr = b"safe stderr"
+        returncode = 0
+
+        @property
+        def stdout(self):
+            raise RuntimeError(f"stdout getter exposed {SENSITIVE_ENDPOINT}")
+
+    def fake_run(_argv, **_kwargs):
+        return MalformedCompleted()
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.status()
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 1)
+    else:
+        raise AssertionError("expected Python SDK malformed stdio failure")
+
+    assert_redacted(rendered)
+    if (
+        "conU command returned malformed process result: "
+        "conu-test.exe [arguments redacted]"
+    ) not in rendered:
+        raise AssertionError("Python SDK malformed stdio error should retain safe metadata only")
+
+
+def run_malformed_completed_returncode_redaction_test(module) -> None:
+    class MalformedCompleted:
+        stdout = b"safe stdout"
+        stderr = b"safe stderr"
+
+        @property
+        def returncode(self):
+            raise RuntimeError(f"returncode getter exposed {SENSITIVE_ENDPOINT}")
+
+    def fake_run(_argv, **_kwargs):
+        return MalformedCompleted()
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.status()
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 1)
+    else:
+        raise AssertionError("expected Python SDK malformed returncode failure")
+
+    assert_redacted(rendered)
+    if (
+        "conU command returned malformed process result: "
+        "conu-test.exe [arguments redacted]"
+    ) not in rendered:
+        raise AssertionError("Python SDK malformed returncode error should retain safe metadata only")
+
+
+def run_malformed_completed_returncode_type_redaction_test(module) -> None:
+    class MalformedCompleted:
+        stdout = b"safe stdout"
+        stderr = b"safe stderr"
+        returncode = "0"
+
+    def fake_run(_argv, **_kwargs):
+        return MalformedCompleted()
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.status()
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 1)
+    else:
+        raise AssertionError("expected Python SDK malformed returncode type failure")
+
+    assert_redacted(rendered)
+    if (
+        "conU command returned malformed process result: "
+        "conu-test.exe [arguments redacted]"
+    ) not in rendered:
+        raise AssertionError("Python SDK malformed returncode type should retain safe metadata only")
+
+
 def run_invalid_json_redaction_test(module) -> None:
     class JsonCompleted:
         stdout = f"not json with {SENSITIVE_ENDPOINT}".encode("utf-8")
@@ -587,6 +693,10 @@ def main() -> int:
     run_success_result_metadata_test(module)
     run_failed_command_redaction_test(module)
     run_spawn_error_redaction_test(module)
+    run_subprocess_exception_redaction_test(module)
+    run_malformed_completed_stdio_redaction_test(module)
+    run_malformed_completed_returncode_redaction_test(module)
+    run_malformed_completed_returncode_type_redaction_test(module)
     run_invalid_json_redaction_test(module)
     run_non_object_json_redaction_test(module)
     run_receive_message_helper_test(module)
