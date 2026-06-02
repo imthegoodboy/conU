@@ -444,13 +444,21 @@ export class ConuClient {
   }
 
   run(binary, args = [], input) {
-    const result = this.runner({
-      binary,
-      args,
-      input,
-      cwd: this.cwd,
-      env: this.env,
-    });
+    let result;
+    try {
+      result = this.runner({
+        binary,
+        args,
+        input,
+        cwd: this.cwd,
+        env: this.env,
+      });
+    } catch (_error) {
+      throw new ConuError(
+        `conU command failed before execution: ${safeCommandForError(binary)}`,
+        resultForError({ code: 1 }, binary),
+      );
+    }
     if (result.code !== 0) {
       const safeResult = resultForError(result, binary);
       throw new ConuError(

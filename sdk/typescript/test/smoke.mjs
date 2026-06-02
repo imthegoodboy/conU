@@ -241,6 +241,39 @@ assert.throws(
   },
 );
 
+const throwingRunner = new ConuClient({
+  conuBin: "C:/tools/conu-test.exe",
+  runner({ binary, args, input }) {
+    throw new Error(
+      `runner leaked ${binary} ${args.join(" ")} ${input?.toString("utf8")} ${secretEndpoint}`,
+    );
+  },
+});
+
+assert.throws(
+  () => throwingRunner.sendMessage("agent.alpha", "agent.beta", "private bytes"),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.ok(!rendered.includes("private bytes"));
+    assert.equal(error.message, "conU command failed before execution: conu-test.exe [arguments redacted]");
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.stdout, "");
+    assert.equal(error.result.stderr, "");
+    assert.equal(error.result.code, 1);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+
 for (const mcpFailureMode of ["protocol", "tool"]) {
   const mcpFailing = new ConuClient({
     mcpBin: "conu-mcp-test",
