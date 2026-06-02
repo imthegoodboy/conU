@@ -155,6 +155,7 @@ class TaggedReleaseReadiness:
     npm_registry: NpmRegistryReadiness
     ci: CiReadiness
     release_branch: ReleaseBranchReadiness
+    workflow_permissions: Any
     issues: tuple[str, ...]
 
     def as_json(self) -> dict[str, Any]:
@@ -170,6 +171,7 @@ class TaggedReleaseReadiness:
             "npmRegistry": self.npm_registry.as_json(),
             "ci": self.ci.as_json(),
             "releaseBranch": self.release_branch.as_json(),
+            "workflowPermissions": self.workflow_permissions.as_json(),
             "issues": list(self.issues),
             "payloadDisplayed": False,
             "tokenDisplayed": False,
@@ -716,6 +718,15 @@ def audit_release_branch_readiness(
     )
 
 
+def audit_workflow_permissions(workflow_dir: Path | None = None) -> Any:
+    workflow_module = load_script_module(
+        "check-github-workflow-permissions.py",
+        "check_github_workflow_permissions_for_tagged_release",
+    )
+    target_dir = workflow_dir if workflow_dir is not None else ROOT / ".github" / "workflows"
+    return workflow_module.audit_workflows(workflow_module.find_workflow_paths(target_dir))
+
+
 def combine_issues(
     release_secrets: Any,
     linux_repository: LinuxRepositoryReadiness,
@@ -723,6 +734,7 @@ def combine_issues(
     npm_registry: NpmRegistryReadiness,
     ci: CiReadiness,
     release_branch: ReleaseBranchReadiness,
+    workflow_permissions: Any,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     for name in release_secrets.missing:
@@ -741,6 +753,8 @@ def combine_issues(
         issues.append(f"CI readiness: {issue}")
     for issue in release_branch.issues:
         issues.append(f"release branch readiness: {issue}")
+    for issue in workflow_permissions.issues:
+        issues.append(f"workflow readiness: {issue}")
     return tuple(issues)
 
 
@@ -763,6 +777,8 @@ def audit_tagged_release_readiness(
     release_branch: str = DEFAULT_RELEASE_BRANCH,
     release_target_sha: str = "",
     release_branch_sha: str = "",
+    workflow_permissions: Any | None = None,
+    workflow_dir: Path | None = None,
 ) -> TaggedReleaseReadiness:
     release_secrets = audit_secret_names(repo, secret_names)
     linux_repository = audit_linux_repository(repo, variable_values, secret_names, pages_payload)
@@ -784,6 +800,11 @@ def audit_tagged_release_readiness(
         target_sha=release_target_sha,
         branch_sha=release_branch_sha,
     )
+    workflow_readiness = (
+        workflow_permissions
+        if workflow_permissions is not None
+        else audit_workflow_permissions(workflow_dir)
+    )
     issues = combine_issues(
         release_secrets,
         linux_repository,
@@ -791,6 +812,7 @@ def audit_tagged_release_readiness(
         npm_registry,
         ci,
         branch_readiness,
+        workflow_readiness,
     )
     return TaggedReleaseReadiness(
         repo=repo,
@@ -803,6 +825,7 @@ def audit_tagged_release_readiness(
         npm_registry=npm_registry,
         ci=ci,
         release_branch=branch_readiness,
+        workflow_permissions=workflow_readiness,
         issues=issues,
     )
 
@@ -814,7 +837,7 @@ def print_text_report(report: TaggedReleaseReadiness) -> None:
         branch_note = " and release branch check" if report.release_branch.checked else ""
         print(
             "Tagged release readiness passed"
-            f"{npm_note}{ci_note}{branch_note}: "
+            f"{npm_note}{ci_note}{branch_note} and workflow permissions check: "
             f"{report.repo}@{report.tag} ({report.linux_repository.mode})"
         )
         return

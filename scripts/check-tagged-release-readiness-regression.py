@@ -91,6 +91,30 @@ def assert_safe_report(report) -> dict[str, object]:
     return parsed
 
 
+class WorkflowPermissionsFixture:
+    def __init__(self, *, ready: bool, issues: tuple[str, ...] = ()) -> None:
+        self.ready = ready
+        self.issues = issues
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "schema": "conu.githubWorkflowPermissions.v1",
+            "ready": self.ready,
+            "workflowCount": 2,
+            "checkedWorkflows": ["ci.yml", "release.yml"],
+            "workflowsWithExplicitTopLevelPermissions": ["ci.yml", "release.yml"],
+            "jobsWithWritePermissions": ["release.yml:github-release"],
+            "unsafeEnvironmentFileWrites": [],
+            "forbiddenEvents": [],
+            "issues": list(self.issues),
+            "payloadDisplayed": False,
+            "tokenDisplayed": False,
+            "tokenHashDisplayed": False,
+            "keyMaterialDisplayed": False,
+            "contentsDisplayed": False,
+        }
+
+
 def run_ready_pages_tests(module) -> None:
     report = module.audit_tagged_release_readiness(
         repo="owner/repo",
@@ -113,6 +137,32 @@ def run_ready_pages_tests(module) -> None:
         raise AssertionError("CI check should be skipped by default")
     if parsed["releaseBranch"]["checked"] is not False:
         raise AssertionError("release branch check should be skipped by default")
+    if parsed["workflowPermissions"]["ready"] is not True:
+        raise AssertionError("workflow permissions should be included in tagged release readiness")
+
+
+def run_workflow_permissions_tests(module) -> None:
+    report = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        workflow_permissions=WorkflowPermissionsFixture(
+            ready=False,
+            issues=("release.yml must define release-preflight job",),
+        ),
+    )
+    if report.ready:
+        raise AssertionError("workflow permissions failure should fail tagged release readiness")
+    parsed = assert_safe_report(report)
+    if parsed["workflowPermissions"]["ready"] is not False:
+        raise AssertionError("workflow permissions readiness should be reported as failed")
+    if "workflow readiness: release.yml must define release-preflight job" not in json.dumps(parsed):
+        raise AssertionError("workflow permissions issue was not included in top-level issues")
 
 
 def run_ci_readiness_tests(module) -> None:
@@ -596,6 +646,7 @@ def main() -> int:
     module = load_module()
     run_tag_validation_tests(module)
     run_ready_pages_tests(module)
+    run_workflow_permissions_tests(module)
     run_ci_readiness_tests(module)
     run_release_branch_readiness_tests(module)
     run_missing_secret_tests(module)
