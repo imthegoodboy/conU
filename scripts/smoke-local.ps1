@@ -55,7 +55,7 @@ try {
         throw "Smoke command failed: conu doctor did not report localInstallReady=true"
     }
 
-    Write-Host "conU smoke passed with CONU_HOME=$conuSmokeHome"
+    Write-Host "conU smoke passed; statePathDisplayed=false"
 }
 finally {
     Remove-Item Env:CONU_HOME -ErrorAction SilentlyContinue

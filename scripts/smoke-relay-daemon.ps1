@@ -59,7 +59,7 @@ function Invoke-Conu {
             $output = $InputText | & $script:ConuPath @Arguments
         }
         if ($LASTEXITCODE -ne 0) {
-            throw "conu $($Arguments -join ' ') failed with code $LASTEXITCODE`n$($output -join "`n")"
+            throw "conu smoke command failed with code $LASTEXITCODE; commandOutputDisplayed=false"
         }
         return ($output -join "`n")
     }
@@ -157,7 +157,7 @@ function Start-ConuRuntime {
         }
     }
 
-    throw "conUD did not publish a running heartbeat for $StateHome"
+    throw "conUD did not publish a running heartbeat for smoke state; statePathDisplayed=false"
 }
 
 function Wait-ForInbox {
@@ -207,7 +207,7 @@ try {
     if ($relayProcess.HasExited) {
         throw "conu-relay exited early with code $($relayProcess.ExitCode)"
     }
-    Write-Host "relay started at $relayEndpoint"
+    Write-Host "relay started on loopback smoke endpoint; endpointDisplayed=false"
 
     Invoke-Conu -StateHome $homeA -Arguments @("init") | Out-Null
     Invoke-Conu -StateHome $homeB -Arguments @("init") | Out-Null
@@ -258,10 +258,7 @@ try {
         throw "Smoke payload appeared in conU-owned state"
     }
 
-    Write-Host "conU relay daemon smoke passed"
-    Write-Host "relay=$relayEndpoint"
-    Write-Host "nodeA=$homeA"
-    Write-Host "nodeB=$homeB"
+    Write-Host "conU relay daemon smoke passed; statePathDisplayed=false; endpointDisplayed=false"
 }
 finally {
     Stop-ConuRuntime -StateHome $homeA -Process $conudProcessA
