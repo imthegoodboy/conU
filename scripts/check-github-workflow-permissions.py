@@ -43,6 +43,10 @@ SECRET_LIKE_ENV_TOKENS = (
 UNSAFE_GITHUB_ENV_ECHO_RE = re.compile(
     r"\becho\s+[\"']?([A-Z0-9_]+)=\$([A-Z0-9_]+)"
 )
+RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
+    "python scripts/check-npm-publish-preflight.py "
+    "--require-token-env NODE_AUTH_TOKEN --token-auth-check"
+)
 EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "release-preflight"): {
         "actions": "read",
@@ -228,6 +232,68 @@ def audit_environment_file_writes(path: Path) -> tuple[str, ...]:
     return tuple(findings)
 
 
+def extract_job_block(text: str, job_name: str) -> str:
+    lines = text.splitlines()
+    start_index = None
+    for index, line in enumerate(lines):
+        if line == f"  {job_name}:":
+            start_index = index
+            break
+    if start_index is None:
+        return ""
+
+    block = [lines[start_index]]
+    for line in lines[start_index + 1 :]:
+        if line.startswith("  ") and not line.startswith("    ") and line.strip().endswith(":"):
+            break
+        block.append(line)
+    return "\n".join(block)
+
+
+def extract_named_step_block(job_block: str, step_name: str) -> str:
+    lines = job_block.splitlines()
+    start_index = None
+    for index, line in enumerate(lines):
+        if line.strip() == f"- name: {step_name}":
+            start_index = index
+            break
+    if start_index is None:
+        return ""
+
+    block = [lines[start_index]]
+    for line in lines[start_index + 1 :]:
+        if line.startswith("      - "):
+            break
+        block.append(line)
+    return "\n".join(block)
+
+
+def audit_required_release_preflight_steps(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "release-preflight")
+    issues: list[str] = []
+    if not block:
+        return ("release.yml must define release-preflight job",)
+
+    step = extract_named_step_block(block, "Validate npm token authentication")
+    if not step:
+        issues.append("release.yml:release-preflight must validate npm token authentication")
+        return tuple(issues)
+    if "if: startsWith(github.ref, 'refs/tags/v')" not in step:
+        issues.append("release.yml:release-preflight npm auth check must be tag-gated")
+    if "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}" not in step:
+        issues.append("release.yml:release-preflight npm auth check must use NODE_AUTH_TOKEN from NPM_TOKEN")
+    if RELEASE_PREFLIGHT_NPM_AUTH_COMMAND not in step:
+        issues.append("release.yml:release-preflight npm auth command is missing")
+    return tuple(issues)
+
+
 def is_secret_like_env_name(name: str) -> bool:
     return any(token in name for token in SECRET_LIKE_ENV_TOKENS)
 
@@ -326,6 +392,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         for finding in audit_environment_file_writes(path):
             unsafe_env_writes.append(finding)
             issues.append(finding)
+        issues.extend(audit_required_release_preflight_steps(path))
 
         events = event_names(workflow_trigger(payload))
         for event in events:

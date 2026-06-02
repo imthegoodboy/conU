@@ -65,6 +65,11 @@ jobs:
           CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-release-secret-env-preflight.py
+      - name: Validate npm token authentication
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: python scripts/check-npm-publish-preflight.py --require-token-env NODE_AUTH_TOKEN --token-auth-check
       - name: Install signing preflight tools
         if: startsWith(github.ref, 'refs/tags/v')
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg openssl

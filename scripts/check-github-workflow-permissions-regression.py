@@ -67,6 +67,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo preflight
+      - name: Validate npm token authentication
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: python scripts/check-npm-publish-preflight.py --require-token-env NODE_AUTH_TOKEN --token-auth-check
   build:
     permissions:
       contents: read
@@ -236,6 +241,21 @@ def run_expected_job_permission_tests(module) -> None:
         raise AssertionError("extra expected permission issue was not reported")
 
 
+def run_required_release_preflight_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: python scripts/check-npm-publish-preflight.py --require-token-env NODE_AUTH_TOKEN --token-auth-check\n",
+            "        run: python scripts/check-npm-publish-preflight.py\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing early npm auth preflight should fail")
+    if "release.yml:release-preflight npm auth command is missing" not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing early npm auth preflight issue was not reported")
+
+
 def run_unsafe_environment_file_write_tests(module) -> None:
     report = with_fixture(
         module,
@@ -265,6 +285,7 @@ def main() -> int:
     run_forbidden_event_tests(module)
     run_unexpected_job_write_tests(module)
     run_expected_job_permission_tests(module)
+    run_required_release_preflight_tests(module)
     run_unsafe_environment_file_write_tests(module)
     print("GitHub workflow permissions regression checks passed")
     return 0
