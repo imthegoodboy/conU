@@ -168,12 +168,49 @@ jobs:
           fi
   npm-publish:
     needs: [github-release, linux-repository-publication]
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
     steps:
-      - run: echo npm
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Verify npm package contents
+        run: python scripts/verify-npm-package-contents.py
+      - name: npm package public metadata regression
+        run: python scripts/verify-npm-package-contents-regression.py
+      - name: GitHub Release asset publication preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-release-assets-published.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"
+      - name: npm publish conflict preflight
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check
+      - name: Publish @conu/cli
+        working-directory: packaging/npm/conu-cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN is required for tagged @conu/cli publication."
+            exit 1
+          fi
+          npm publish --access public --provenance
+      - name: Publish @conu/sdk
+        working-directory: sdk/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::NPM_TOKEN is required for tagged @conu/sdk publication."
+            exit 1
+          fi
+          npm publish --access public --provenance
 """
 
 
@@ -434,6 +471,75 @@ def run_required_release_job_needs_tests(module) -> None:
         raise AssertionError("missing package preflight dependency was not reported")
 
 
+def run_required_npm_publication_gate_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "  npm-publish:\n"
+            "    needs: [github-release, linux-repository-publication]\n"
+            "    if: startsWith(github.ref, 'refs/tags/v')\n",
+            "  npm-publish:\n"
+            "    needs: [github-release, linux-repository-publication]\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing npm-publish tag gate should fail")
+    if "release.yml:npm-publish is missing tag gate" not in json.dumps(
+        assert_safe_report(report)
+    ):
+        raise AssertionError("missing npm-publish tag gate issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '        run: python scripts/check-github-release-assets-published.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"\n',
+            "        run: echo skipped-release-asset-check\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("weakened npm release asset preflight should fail")
+    if (
+        "release.yml:npm-publish verify GitHub Release asset publication "
+        "before npm is missing GitHub Release asset preflight command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("weakened npm release asset preflight issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "          npm publish --access public --provenance\n",
+            "          npm publish --access public\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing @conu/cli npm provenance should fail")
+    if (
+        "release.yml:npm-publish publish @conu/cli with provenance "
+        "is missing provenance publish command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing @conu/cli provenance issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        working-directory: sdk/typescript\n",
+            "        working-directory: sdk\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("wrong @conu/sdk package directory should fail")
+    if (
+        "release.yml:npm-publish publish @conu/sdk with provenance "
+        "is missing SDK package directory"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("wrong @conu/sdk package directory issue was not reported")
+
+
 def run_required_release_publication_gate_tests(module) -> None:
     report = with_fixture(
         module,
@@ -515,6 +621,7 @@ def main() -> int:
     run_expected_job_permission_tests(module)
     run_required_release_preflight_tests(module)
     run_required_release_job_needs_tests(module)
+    run_required_npm_publication_gate_tests(module)
     run_required_release_publication_gate_tests(module)
     run_unsafe_environment_file_write_tests(module)
     print("GitHub workflow permissions regression checks passed")

@@ -148,6 +148,72 @@ RELEASE_PUBLICATION_GATE_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("Pages success check", 'if [ "$PAGES_RESULT" != "success" ]; then'),
     ("custom repository success check", 'if [ "$CUSTOM_RESULT" != "success" ]; then'),
 )
+NPM_PUBLISH_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+    ("Node setup", "uses: actions/setup-node@v6"),
+    ("Node version", "node-version: 24"),
+    ("npm registry URL", "registry-url: https://registry.npmjs.org"),
+)
+NPM_PUBLISH_REQUIRED_STEPS: tuple[
+    tuple[str, str, tuple[tuple[str, str], ...]],
+    ...,
+] = (
+    (
+        "Verify npm package contents",
+        "verify npm package contents",
+        (("package content verifier", "python scripts/verify-npm-package-contents.py"),),
+    ),
+    (
+        "npm package public metadata regression",
+        "run npm package public metadata regression",
+        (
+            (
+                "package metadata regression command",
+                "python scripts/verify-npm-package-contents-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub Release asset publication preflight",
+        "verify GitHub Release asset publication before npm",
+        (
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "GitHub Release asset preflight command",
+                'python scripts/check-github-release-assets-published.py --repo '
+                '"$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"',
+            ),
+        ),
+    ),
+    (
+        "npm publish conflict preflight",
+        "check npm publication conflicts and token authentication",
+        (
+            ("NPM token env", "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"),
+            ("npm auth/registry command", RELEASE_PREFLIGHT_NPM_AUTH_COMMAND),
+        ),
+    ),
+    (
+        "Publish @conu/cli",
+        "publish @conu/cli with provenance",
+        (
+            ("CLI package directory", "working-directory: packaging/npm/conu-cli"),
+            ("NPM token env", "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"),
+            ("NPM token guard", 'if [ -z "${NODE_AUTH_TOKEN:-}" ]; then'),
+            ("provenance publish command", "npm publish --access public --provenance"),
+        ),
+    ),
+    (
+        "Publish @conu/sdk",
+        "publish @conu/sdk with provenance",
+        (
+            ("SDK package directory", "working-directory: sdk/typescript"),
+            ("NPM token env", "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"),
+            ("NPM token guard", 'if [ -z "${NODE_AUTH_TOKEN:-}" ]; then'),
+            ("provenance publish command", "npm publish --access public --provenance"),
+        ),
+    ),
+)
 EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "release-preflight"): {
         "actions": "read",
@@ -471,6 +537,33 @@ def audit_required_release_publication_gate(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def audit_required_npm_publication_gate(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "npm-publish")
+    issues: list[str] = []
+    if not block:
+        return ("release.yml must define npm-publish job",)
+    for label, snippet in NPM_PUBLISH_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"release.yml:npm-publish is missing {label}")
+
+    for step_name, description, required_snippets in NPM_PUBLISH_REQUIRED_STEPS:
+        step = extract_named_step_block(block, step_name)
+        if not step:
+            issues.append(f"release.yml:npm-publish must {description}")
+            continue
+        for label, snippet in required_snippets:
+            if snippet not in step:
+                issues.append(f"release.yml:npm-publish {description} is missing {label}")
+    return tuple(issues)
+
+
 def is_secret_like_env_name(name: str) -> bool:
     return any(token in name for token in SECRET_LIKE_ENV_TOKENS)
 
@@ -606,6 +699,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
             issues.append(finding)
         issues.extend(audit_required_release_preflight_steps(path))
         issues.extend(audit_required_release_publication_gate(path))
+        issues.extend(audit_required_npm_publication_gate(path))
 
         events = event_names(workflow_trigger(payload))
         for event in events:
