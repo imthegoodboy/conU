@@ -148,6 +148,354 @@ RELEASE_PUBLICATION_GATE_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("Pages success check", 'if [ "$PAGES_RESULT" != "success" ]; then'),
     ("custom repository success check", 'if [ "$CUSTOM_RESULT" != "success" ]; then'),
 )
+PACKAGES_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("Ubuntu runner", "runs-on: ubuntu-latest"),
+    ("checkout action", "uses: actions/checkout@v6"),
+    ("Node setup", "uses: actions/setup-node@v6"),
+    ("Node version", "node-version: 24"),
+    ("npm registry URL", "registry-url: https://registry.npmjs.org"),
+)
+PACKAGES_REQUIRED_STEPS: tuple[
+    tuple[str, str, tuple[tuple[str, str], ...]],
+    ...,
+] = (
+    (
+        "Install package tools",
+        "install package tools",
+        (
+            (
+                "package tool install command",
+                "sudo apt-get update && sudo apt-get install -y "
+                "--no-install-recommends rpm createrepo-c gnupg openssl",
+            ),
+        ),
+    ),
+    (
+        "Python script compile",
+        "compile Python scripts",
+        (("Python compile command", "python scripts/check-python-script-compile.py"),),
+    ),
+    (
+        "Smoke output privacy regression",
+        "run smoke output privacy regression",
+        (("smoke privacy command", "python scripts/check-smoke-output-privacy.py"),),
+    ),
+    (
+        "Release version consistency",
+        "verify release version consistency",
+        (("release version command", "python scripts/verify-release-versions.py"),),
+    ),
+    (
+        "Release artifact verifier regression",
+        "run release artifact verifier regression",
+        (("artifact verifier command", "python scripts/check-release-artifact-verifier.py"),),
+    ),
+    (
+        "Release artifact smoke preflight regression",
+        "run release artifact smoke preflight regression",
+        (
+            (
+                "artifact smoke preflight command",
+                "python scripts/check-release-artifact-smoke-preflight.py",
+            ),
+        ),
+    ),
+    (
+        "Package-manager manifest regression",
+        "run package-manager manifest regression",
+        (
+            (
+                "package-manager manifest command",
+                "python scripts/check-package-manager-manifests.py",
+            ),
+        ),
+    ),
+    (
+        "Package-manager submission bundle regression",
+        "run package-manager submission bundle regression",
+        (
+            (
+                "package-manager submission command",
+                "python scripts/check-package-manager-submissions.py",
+            ),
+        ),
+    ),
+    (
+        "Linux signing secret preflight regression",
+        "run Linux signing secret preflight regression",
+        (
+            (
+                "Linux signing secret command",
+                "python scripts/check-linux-signing-secrets-preflight-regression.py",
+            ),
+        ),
+    ),
+    (
+        "Platform signing secret value preflight regression",
+        "run platform signing secret value preflight regression",
+        (
+            (
+                "platform signing secret command",
+                "python scripts/check-platform-signing-secrets-preflight-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub release secret readiness regression",
+        "run GitHub release secret readiness regression",
+        (
+            (
+                "release secret readiness command",
+                "python scripts/check-github-release-secret-readiness-regression.py",
+            ),
+        ),
+    ),
+    (
+        "Release secret env preflight regression",
+        "run release secret env preflight regression",
+        (
+            (
+                "release secret env command",
+                "python scripts/check-release-secret-env-preflight-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub release secret setup regression",
+        "run GitHub release secret setup regression",
+        (
+            (
+                "release secret setup command",
+                "python scripts/set-github-release-secrets-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub main branch protection regression",
+        "run GitHub main branch protection regression",
+        (
+            (
+                "main branch protection regression command",
+                "python scripts/check-github-main-protection-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub Actions permissions regression",
+        "run GitHub Actions permissions regression",
+        (
+            (
+                "Actions permissions regression command",
+                "python scripts/check-github-actions-permissions-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub workflow permissions regression",
+        "run GitHub workflow permissions regression",
+        (
+            (
+                "workflow permissions regression command",
+                "python scripts/check-github-workflow-permissions-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub repository security regression",
+        "run GitHub repository security regression",
+        (
+            (
+                "repository security regression command",
+                "python scripts/check-github-repository-security-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub Pages readiness regression",
+        "run GitHub Pages readiness regression",
+        (
+            (
+                "GitHub Pages readiness command",
+                "python scripts/check-github-pages-readiness-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub Release asset publication regression",
+        "run GitHub Release asset publication regression",
+        (
+            (
+                "Release asset publication command",
+                "python scripts/check-github-release-assets-published-regression.py",
+            ),
+        ),
+    ),
+    (
+        "GitHub Release clobber preflight regression",
+        "run GitHub Release clobber preflight regression",
+        (
+            (
+                "Release clobber preflight command",
+                "python scripts/check-github-release-clobber-preflight-regression.py",
+            ),
+        ),
+    ),
+    (
+        "Tagged release readiness regression",
+        "run tagged release readiness regression",
+        (
+            (
+                "tagged release readiness command",
+                "python scripts/check-tagged-release-readiness-regression.py",
+            ),
+        ),
+    ),
+    (
+        "RPM package signing regression",
+        "run RPM package signing regression",
+        (("RPM package signing command", "python scripts/check-rpm-package-signing.py"),),
+    ),
+    (
+        "Linux release signing regression",
+        "run Linux release signing regression",
+        (("Linux release signing command", "python scripts/check-linux-release-signing.py"),),
+    ),
+    (
+        "Linux repository signing regression",
+        "run Linux repository signing regression",
+        (
+            (
+                "Linux repository signing command",
+                "python scripts/check-linux-repository-signing.py",
+            ),
+        ),
+    ),
+    (
+        "Hosted Linux repository bundle regression",
+        "run hosted Linux repository bundle regression",
+        (
+            (
+                "hosted repository bundle command",
+                "python scripts/check-hosted-linux-repositories.py",
+            ),
+        ),
+    ),
+    (
+        "Hosted Linux repository site regression",
+        "run hosted Linux repository site regression",
+        (
+            (
+                "hosted repository site command",
+                "python scripts/check-hosted-linux-repository-site.py",
+            ),
+        ),
+    ),
+    (
+        "Hosted Linux repository Pages regression",
+        "run hosted Linux repository Pages regression",
+        (
+            (
+                "hosted repository Pages command",
+                "python scripts/check-hosted-linux-repository-pages.py",
+            ),
+        ),
+    ),
+    (
+        "Hosted Linux repository endpoint regression",
+        "run hosted Linux repository endpoint regression",
+        (
+            (
+                "hosted repository endpoint command",
+                "python scripts/check-hosted-linux-repository-endpoint-regression.py",
+            ),
+        ),
+    ),
+    (
+        "Hosted Linux repository S3 publication regression",
+        "run hosted Linux repository S3 publication regression",
+        (
+            (
+                "hosted repository S3 publication command",
+                "python scripts/check-hosted-linux-repository-s3-publication.py",
+            ),
+        ),
+    ),
+    (
+        "Release update policy regression",
+        "run release update policy regression",
+        (("release update policy command", "python scripts/check-release-update-policy.py"),),
+    ),
+    (
+        "Release update download/apply gate regression",
+        "run release update download/apply gate regression",
+        (
+            (
+                "release update download/apply command",
+                "python scripts/check-release-update-download-gate.py",
+            ),
+        ),
+    ),
+    (
+        "Linux GPG public-key export regression",
+        "run Linux GPG public-key export regression",
+        (
+            (
+                "Linux GPG public-key export command",
+                "python scripts/check-linux-gpg-public-key-export.py",
+            ),
+        ),
+    ),
+    (
+        "TypeScript SDK check",
+        "check TypeScript SDK",
+        (("TypeScript SDK command", "npm run check --prefix sdk/typescript"),),
+    ),
+    (
+        "npm launcher check",
+        "check npm launcher",
+        (("npm launcher command", "npm run check --prefix packaging/npm/conu-cli"),),
+    ),
+    (
+        "npm launcher local smoke preflight regression",
+        "run npm launcher local smoke preflight regression",
+        (
+            (
+                "npm launcher local smoke command",
+                "python scripts/check-npm-launcher-local-smoke-preflight.py",
+            ),
+        ),
+    ),
+    (
+        "Verify npm package contents",
+        "verify npm package contents",
+        (("npm package content command", "python scripts/verify-npm-package-contents.py"),),
+    ),
+    (
+        "npm package public metadata regression",
+        "run npm package public metadata regression",
+        (
+            (
+                "npm package metadata command",
+                "python scripts/verify-npm-package-contents-regression.py",
+            ),
+        ),
+    ),
+    (
+        "npm publish preflight",
+        "run npm publish preflight",
+        (("npm publish preflight command", "python scripts/check-npm-publish-preflight.py"),),
+    ),
+    (
+        "npm publish preflight regression",
+        "run npm publish preflight regression",
+        (
+            (
+                "npm publish preflight regression command",
+                "python scripts/check-npm-publish-preflight-regression.py",
+            ),
+        ),
+    ),
+)
 NPM_PUBLISH_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
     ("Node setup", "uses: actions/setup-node@v6"),
@@ -726,6 +1074,33 @@ def audit_required_npm_publication_gate(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def audit_required_package_checks_job(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "packages")
+    issues: list[str] = []
+    if not block:
+        return ("release.yml must define packages job",)
+    for label, snippet in PACKAGES_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"release.yml:packages is missing {label}")
+
+    for step_name, description, required_snippets in PACKAGES_REQUIRED_STEPS:
+        step = extract_named_step_block(block, step_name)
+        if not step:
+            issues.append(f"release.yml:packages must {description}")
+            continue
+        for label, snippet in required_snippets:
+            if snippet not in step:
+                issues.append(f"release.yml:packages {description} is missing {label}")
+    return tuple(issues)
+
+
 def audit_required_github_release_gate(path: Path) -> tuple[str, ...]:
     if path.name != "release.yml":
         return ()
@@ -972,6 +1347,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
             unsafe_env_writes.append(finding)
             issues.append(finding)
         issues.extend(audit_required_release_preflight_steps(path))
+        issues.extend(audit_required_package_checks_job(path))
         issues.extend(audit_required_production_readiness_job(path))
         issues.extend(audit_required_github_release_gate(path))
         issues.extend(audit_required_linux_repository_publication_jobs(path))
