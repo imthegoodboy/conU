@@ -1340,6 +1340,7 @@ LINUX_REPOSITORY_PAGES_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("hosted repository artifact download", "uses: actions/download-artifact@v8.0.1"),
     ("hosted repository artifact name", "name: conu-hosted-linux-repository-pages"),
     ("hosted repository artifact path", "path: linux-repository-site"),
+    ("hosted repository artifact digest mismatch policy", "digest-mismatch: error"),
     ("configure Pages action", "uses: actions/configure-pages@v6"),
     ("upload Pages artifact action", "uses: actions/upload-pages-artifact@v5"),
     ("deploy Pages action", "uses: actions/deploy-pages@v5"),
@@ -1355,6 +1356,7 @@ CUSTOM_LINUX_REPOSITORY_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("hosted repository artifact download", "uses: actions/download-artifact@v8.0.1"),
     ("hosted repository artifact name", "name: conu-hosted-linux-repository-pages"),
     ("hosted repository artifact path", "path: linux-repository-site"),
+    ("hosted repository artifact digest mismatch policy", "digest-mismatch: error"),
     ("AWS CLI install", "python -m pip install --user awscli"),
 )
 CUSTOM_LINUX_REPOSITORY_PUBLISH_STEP = (
