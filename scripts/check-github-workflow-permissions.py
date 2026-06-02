@@ -45,7 +45,7 @@ UNSAFE_GITHUB_ENV_ECHO_RE = re.compile(
 )
 RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
     "python scripts/check-npm-publish-preflight.py "
-    "--require-token-env NODE_AUTH_TOKEN --token-auth-check"
+    "--registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check"
 )
 EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "release-preflight"): {
@@ -281,16 +281,23 @@ def audit_required_release_preflight_steps(path: Path) -> tuple[str, ...]:
     if not block:
         return ("release.yml must define release-preflight job",)
 
-    step = extract_named_step_block(block, "Validate npm token authentication")
+    step = extract_named_step_block(
+        block,
+        "Validate npm token authentication and registry availability",
+    )
     if not step:
-        issues.append("release.yml:release-preflight must validate npm token authentication")
+        issues.append(
+            "release.yml:release-preflight must validate npm token authentication and registry availability"
+        )
         return tuple(issues)
     if "if: startsWith(github.ref, 'refs/tags/v')" not in step:
-        issues.append("release.yml:release-preflight npm auth check must be tag-gated")
+        issues.append("release.yml:release-preflight npm auth/registry check must be tag-gated")
     if "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}" not in step:
-        issues.append("release.yml:release-preflight npm auth check must use NODE_AUTH_TOKEN from NPM_TOKEN")
+        issues.append(
+            "release.yml:release-preflight npm auth/registry check must use NODE_AUTH_TOKEN from NPM_TOKEN"
+        )
     if RELEASE_PREFLIGHT_NPM_AUTH_COMMAND not in step:
-        issues.append("release.yml:release-preflight npm auth command is missing")
+        issues.append("release.yml:release-preflight npm auth/registry command is missing")
     return tuple(issues)
 
 
