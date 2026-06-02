@@ -47,6 +47,32 @@ RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
     "python scripts/check-npm-publish-preflight.py "
     "--registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check"
 )
+RELEASE_PUBLICATION_GATE_STEP = "Check Linux repository publication result"
+RELEASE_PUBLICATION_GATE_SNIPPETS: tuple[tuple[str, str], ...] = (
+    (
+        "base URL mode selector",
+        "CONU_LINUX_REPOSITORY_BASE_URL: ${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}",
+    ),
+    (
+        "GitHub Release result",
+        "GITHUB_RELEASE_RESULT: ${{ needs.github-release.result }}",
+    ),
+    ("Pages result", "PAGES_RESULT: ${{ needs.linux-repository-pages.result }}"),
+    (
+        "custom repository result",
+        "CUSTOM_RESULT: ${{ needs.custom-linux-repository-publish.result }}",
+    ),
+    (
+        "GitHub Release success check",
+        'if [ "$GITHUB_RELEASE_RESULT" != "success" ]; then',
+    ),
+    (
+        "default repository mode check",
+        'if [ -z "${CONU_LINUX_REPOSITORY_BASE_URL:-}" ]; then',
+    ),
+    ("Pages success check", 'if [ "$PAGES_RESULT" != "success" ]; then'),
+    ("custom repository success check", 'if [ "$CUSTOM_RESULT" != "success" ]; then'),
+)
 EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "release-preflight"): {
         "actions": "read",
@@ -346,6 +372,37 @@ def audit_required_release_preflight_steps(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def audit_required_release_publication_gate(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "linux-repository-publication")
+    issues: list[str] = []
+    if not block:
+        return ("release.yml must define linux-repository-publication job",)
+    if "if: always() && startsWith(github.ref, 'refs/tags/v')" not in block:
+        issues.append(
+            "release.yml:linux-repository-publication must be tag-gated "
+            "and always evaluate upstream results"
+        )
+
+    step = extract_named_step_block(block, RELEASE_PUBLICATION_GATE_STEP)
+    if not step:
+        issues.append(
+            "release.yml:linux-repository-publication must check "
+            "Linux repository publication results"
+        )
+        return tuple(issues)
+    for label, snippet in RELEASE_PUBLICATION_GATE_SNIPPETS:
+        if snippet not in step:
+            issues.append(f"release.yml:linux-repository-publication gate is missing {label}")
+    return tuple(issues)
+
+
 def is_secret_like_env_name(name: str) -> bool:
     return any(token in name for token in SECRET_LIKE_ENV_TOKENS)
 
@@ -480,6 +537,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
             unsafe_env_writes.append(finding)
             issues.append(finding)
         issues.extend(audit_required_release_preflight_steps(path))
+        issues.extend(audit_required_release_publication_gate(path))
 
         events = event_names(workflow_trigger(payload))
         for event in events:
