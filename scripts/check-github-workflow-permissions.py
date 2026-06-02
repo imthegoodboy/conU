@@ -401,11 +401,14 @@ RELEASE_PUBLICATION_GATE_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("Pages success check", 'if [ "$PAGES_RESULT" != "success" ]; then'),
     ("custom repository success check", 'if [ "$CUSTOM_RESULT" != "success" ]; then'),
 )
-PACKAGES_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+CI_PACKAGES_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("Ubuntu runner", "runs-on: ubuntu-latest"),
     ("checkout action", "uses: actions/checkout@v6"),
     ("Node setup", "uses: actions/setup-node@v6"),
     ("Node version", "node-version: 24"),
+)
+PACKAGES_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    *CI_PACKAGES_JOB_SNIPPETS,
     ("npm registry URL", "registry-url: https://registry.npmjs.org"),
 )
 PACKAGES_REQUIRED_STEPS: tuple[
@@ -1847,7 +1850,11 @@ def audit_required_npm_publication_gate(path: Path) -> tuple[str, ...]:
 
 
 def audit_required_package_checks_job(path: Path) -> tuple[str, ...]:
-    if path.name != "release.yml":
+    if path.name == "release.yml":
+        required_job_snippets = PACKAGES_JOB_SNIPPETS
+    elif path.name == "ci.yml":
+        required_job_snippets = CI_PACKAGES_JOB_SNIPPETS
+    else:
         return ()
     try:
         text = path.read_text(encoding="utf-8")
@@ -1857,19 +1864,19 @@ def audit_required_package_checks_job(path: Path) -> tuple[str, ...]:
     block = extract_job_block(text, "packages")
     issues: list[str] = []
     if not block:
-        return ("release.yml must define packages job",)
-    for label, snippet in PACKAGES_JOB_SNIPPETS:
+        return (f"{path.name} must define packages job",)
+    for label, snippet in required_job_snippets:
         if snippet not in block:
-            issues.append(f"release.yml:packages is missing {label}")
+            issues.append(f"{path.name}:packages is missing {label}")
 
     for step_name, description, required_snippets in PACKAGES_REQUIRED_STEPS:
         step = extract_named_step_block(block, step_name)
         if not step:
-            issues.append(f"release.yml:packages must {description}")
+            issues.append(f"{path.name}:packages must {description}")
             continue
         for label, snippet in required_snippets:
             if snippet not in step:
-                issues.append(f"release.yml:packages {description} is missing {label}")
+                issues.append(f"{path.name}:packages {description} is missing {label}")
     return tuple(issues)
 
 
