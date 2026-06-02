@@ -33,6 +33,26 @@ $ErrorActionPreference = "Stop"
 
 $repo = Resolve-Path (Join-Path $PSScriptRoot "..")
 $tempRoot = $null
+. (Join-Path $PSScriptRoot "production-readiness-toolchain.ps1")
+$EffectiveToolchain = ""
+if (-not $SkipRust) {
+    $EffectiveToolchain = Resolve-ConuReadinessRustToolchainForHost -ExplicitToolchain $Toolchain
+    if (
+        [string]::IsNullOrWhiteSpace($Toolchain) -and
+        -not [string]::IsNullOrWhiteSpace($EffectiveToolchain)
+    ) {
+        Write-Host "Using Rust toolchain $EffectiveToolchain for production readiness"
+    }
+}
+if (-not $SkipRust -and (Test-ConuWindowsHost)) {
+    $rustPrereqToolchain = $EffectiveToolchain
+    if ([string]::IsNullOrWhiteSpace($rustPrereqToolchain)) {
+        $rustPrereqToolchain = Get-ConuDefaultRustToolchain
+    }
+    if ($rustPrereqToolchain -like "*windows-gnu*") {
+        Assert-ConuGnuLinkerToolsAvailable
+    }
+}
 
 function Invoke-ReadinessStep {
     param(
@@ -54,8 +74,8 @@ function Invoke-CargoStep {
     )
 
     Invoke-ReadinessStep $Name {
-        if (-not [string]::IsNullOrWhiteSpace($Toolchain)) {
-            & cargo "+$Toolchain" @CargoArgs
+        if (-not [string]::IsNullOrWhiteSpace($EffectiveToolchain)) {
+            & cargo "+$EffectiveToolchain" @CargoArgs
         } else {
             & cargo @CargoArgs
         }
@@ -82,8 +102,8 @@ function Get-BinaryPath {
 }
 
 function Get-EffectiveSmokeToolchain {
-    if (-not [string]::IsNullOrWhiteSpace($Toolchain)) {
-        return $Toolchain
+    if (-not [string]::IsNullOrWhiteSpace($EffectiveToolchain)) {
+        return $EffectiveToolchain
     }
     return "stable"
 }
@@ -270,6 +290,9 @@ try {
     if (-not $SmokeOnly -and -not $SkipPackages) {
         Invoke-ReadinessStep "python compile" {
             & python scripts/check-python-script-compile.py
+        }
+        Invoke-ReadinessStep "production readiness toolchain regression" {
+            & python scripts/check-production-readiness-toolchain.py
         }
         Invoke-ReadinessStep "smoke output privacy regression" {
             & python scripts/check-smoke-output-privacy.py
