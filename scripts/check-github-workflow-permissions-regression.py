@@ -68,6 +68,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          persist-credentials: false
       - run: echo preflight
       - name: Validate tag target CI and release branch
         if: startsWith(github.ref, 'refs/tags/v')
@@ -165,6 +167,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -253,6 +257,8 @@ jobs:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Production readiness smoke gate
         shell: pwsh
@@ -303,6 +309,8 @@ jobs:
       CONU_SIGNING_REQUIRED: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Configure macOS signing keychain
         if: runner.os == 'macOS'
@@ -359,6 +367,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v8.0.1
         with:
@@ -570,6 +580,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v8.0.1
         with:
           name: conu-hosted-linux-repository-pages
@@ -634,6 +646,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -812,6 +826,27 @@ def run_forbidden_event_tests(module) -> None:
         raise AssertionError("forbidden event issue was not reported")
 
 
+def run_checkout_credential_persistence_tests(module) -> None:
+    report = with_fixture(
+        module,
+        ready_ci().replace(
+            "    steps:\n",
+            "    steps:\n"
+            "      - uses: actions/checkout@v6\n",
+            1,
+        ),
+        None,
+    )
+    if report.ready:
+        raise AssertionError("checkout without persisted credential guard should fail")
+    rendered = json.dumps(assert_safe_report(report))
+    if (
+        "ci.yml:checkout step at line" not in rendered
+        or "must set persist-credentials=false" not in rendered
+    ):
+        raise AssertionError("checkout persisted credential issue was not reported")
+
+
 def run_unexpected_job_write_tests(module) -> None:
     report = with_fixture(
         module,
@@ -863,13 +898,19 @@ def run_required_release_preflight_tests(module) -> None:
         "missing release-preflight Ubuntu runner should fail",
     )
 
+    release_preflight_checkout = (
+        "      - uses: actions/checkout@v6\n"
+        "        if: startsWith(github.ref, 'refs/tags/v')\n"
+        "        with:\n"
+        "          persist-credentials: false\n"
+    )
+
     assert_release_gate_issue(
         module,
         replace_job_text(
             ready_release(),
             "release-preflight",
-            "      - uses: actions/checkout@v6\n"
-            "        if: startsWith(github.ref, 'refs/tags/v')\n",
+            release_preflight_checkout,
             "",
         ),
         "release.yml:release-preflight is missing tag-gated checkout action",
@@ -881,9 +922,10 @@ def run_required_release_preflight_tests(module) -> None:
         replace_job_text(
             ready_release(),
             "release-preflight",
+            release_preflight_checkout,
             "      - uses: actions/checkout@v6\n"
-            "        if: startsWith(github.ref, 'refs/tags/v')\n",
-            "      - uses: actions/checkout@v6\n",
+            "        with:\n"
+            "          persist-credentials: false\n",
         ),
         "release.yml:release-preflight is missing tag-gated checkout action",
         "untagged release-preflight checkout should fail",
@@ -1204,6 +1246,8 @@ def run_required_production_readiness_job_tests(module) -> None:
             "    runs-on: windows-2025-vs2026\n"
             "    steps:\n"
             "      - uses: actions/checkout@v6\n"
+            "        with:\n"
+            "          persist-credentials: false\n"
             "      - uses: dtolnay/rust-toolchain@stable\n"
             "      - name: Production readiness smoke gate\n"
             "        shell: pwsh\n"
@@ -1808,7 +1852,9 @@ def run_required_npm_publication_gate_tests(module) -> None:
         replace_job_text(
             ready_release(),
             "npm-publish",
-            "      - uses: actions/checkout@v6\n",
+            "      - uses: actions/checkout@v6\n"
+            "        with:\n"
+            "          persist-credentials: false\n",
             "",
         ),
         "release.yml:npm-publish is missing checkout action",
@@ -1975,6 +2021,7 @@ def main() -> int:
     run_ready_tests(module)
     run_top_level_permission_tests(module)
     run_forbidden_event_tests(module)
+    run_checkout_credential_persistence_tests(module)
     run_unexpected_job_write_tests(module)
     run_expected_job_permission_tests(module)
     run_required_release_preflight_tests(module)

@@ -1690,6 +1690,40 @@ def extract_named_step_block(job_block: str, step_name: str) -> str:
     return "\n".join(block)
 
 
+def extract_uses_step_blocks(text: str, action: str) -> tuple[tuple[int, str], ...]:
+    lines = text.splitlines()
+    blocks: list[tuple[int, str]] = []
+    for index, line in enumerate(lines):
+        if line.strip() != f"- uses: {action}":
+            continue
+        base_indent = len(line) - len(line.lstrip(" "))
+        block = [line]
+        for next_line in lines[index + 1 :]:
+            stripped = next_line.lstrip(" ")
+            next_indent = len(next_line) - len(stripped)
+            if next_indent == base_indent and stripped.startswith("- "):
+                break
+            block.append(next_line)
+        blocks.append((index + 1, "\n".join(block)))
+    return tuple(blocks)
+
+
+def audit_checkout_credential_persistence(path: Path) -> tuple[str, ...]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    issues: list[str] = []
+    for line_number, block in extract_uses_step_blocks(text, "actions/checkout@v6"):
+        if "persist-credentials: false" not in block:
+            issues.append(
+                f"{path.name}:checkout step at line {line_number} must set "
+                "persist-credentials=false"
+            )
+    return tuple(issues)
+
+
 def audit_required_release_preflight_steps(path: Path) -> tuple[str, ...]:
     if path.name != "release.yml":
         return ()
@@ -2085,6 +2119,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         for finding in audit_environment_file_writes(path):
             unsafe_env_writes.append(finding)
             issues.append(finding)
+        issues.extend(audit_checkout_credential_persistence(path))
         issues.extend(audit_required_release_preflight_steps(path))
         issues.extend(audit_required_package_checks_job(path))
         issues.extend(audit_required_production_readiness_job(path))
