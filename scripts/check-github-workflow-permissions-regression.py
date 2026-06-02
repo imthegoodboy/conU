@@ -555,6 +555,7 @@ jobs:
         with:
           name: conu-hosted-linux-repository-pages
           path: linux-repository-site
+          digest-mismatch: error
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
@@ -573,6 +574,7 @@ jobs:
         with:
           name: conu-hosted-linux-repository-pages
           path: linux-repository-site
+          digest-mismatch: error
       - name: Install AWS CLI
         run: |
           python -m pip install --user awscli
@@ -1674,6 +1676,26 @@ def run_required_linux_repository_publication_job_tests(module) -> None:
     ):
         raise AssertionError("missing Pages deploy action was not reported")
 
+    report = with_fixture(
+        module,
+        None,
+        replace_job_text(
+            ready_release(),
+            "linux-repository-pages",
+            "          digest-mismatch: error\n",
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing Pages artifact digest mismatch policy should fail")
+    if (
+        "release.yml:linux-repository-pages is missing hosted repository "
+        "artifact digest mismatch policy"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError(
+            "missing Pages artifact digest mismatch policy was not reported"
+        )
+
     assert_release_gate_issue(
         module,
         replace_job_text(
@@ -1702,6 +1724,26 @@ def run_required_linux_repository_publication_job_tests(module) -> None:
         "repository tag/base URL gate"
     ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("missing custom repository gate was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        replace_job_text(
+            ready_release(),
+            "custom-linux-repository-publish",
+            "          digest-mismatch: error\n",
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing custom artifact digest mismatch policy should fail")
+    if (
+        "release.yml:custom-linux-repository-publish is missing hosted "
+        "repository artifact digest mismatch policy"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError(
+            "missing custom artifact digest mismatch policy was not reported"
+        )
 
     report = with_fixture(
         module,
