@@ -48,7 +48,17 @@ def assert_safe_error_result(exc, expected_binary: str, expected_returncode: int
     result = getattr(exc, "result", None)
     if result is None:
         raise AssertionError("Python SDK error should include redacted result metadata")
-    rendered = repr((result.args, result.stdout, result.stderr, result.returncode))
+    rendered = repr(
+        (
+            result.args,
+            result.stdout,
+            result.stderr,
+            result.returncode,
+            result.contents_displayed,
+            result.args_redacted,
+            result.stdio_redacted,
+        )
+    )
     assert_redacted(rendered)
     if result.args != (expected_binary, "[arguments redacted]"):
         raise AssertionError(f"Python SDK error result kept unsafe args: {result.args!r}")
@@ -58,6 +68,43 @@ def assert_safe_error_result(exc, expected_binary: str, expected_returncode: int
         raise AssertionError(
             f"Python SDK error result returncode mismatch: {result.returncode!r}"
         )
+    if result.contents_displayed is not False:
+        raise AssertionError("Python SDK error result should mark contents_displayed false")
+    if result.args_redacted is not True:
+        raise AssertionError("Python SDK error result should mark args_redacted true")
+    if result.stdio_redacted is not True:
+        raise AssertionError("Python SDK error result should mark stdio_redacted true")
+
+
+def assert_success_result_defaults(result) -> None:
+    if result.contents_displayed is not True:
+        raise AssertionError("Python SDK successful result should keep contents_displayed true")
+    if result.args_redacted is not False:
+        raise AssertionError("Python SDK successful result should not mark args redacted")
+    if result.stdio_redacted is not False:
+        raise AssertionError("Python SDK successful result should not mark stdio redacted")
+
+
+def run_success_result_metadata_test(module) -> None:
+    class SuccessCompleted:
+        stdout = b"safe stdout"
+        stderr = b"safe stderr"
+        returncode = 0
+
+    def fake_run(argv, **_kwargs):
+        return SuccessCompleted()
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    result = client.init()
+
+    if result.args != ("C:/tools/conu-test.exe", "init"):
+        raise AssertionError("Python SDK successful result should keep actual argv")
+    if result.stdout != "safe stdout" or result.stderr != "safe stderr":
+        raise AssertionError("Python SDK successful result should keep command output")
+    if result.returncode != 0:
+        raise AssertionError("Python SDK successful result should keep returncode")
+    assert_success_result_defaults(result)
 
 
 def run_failed_command_redaction_test(module) -> None:
@@ -495,6 +542,7 @@ def run_stdin_secret_failure_redaction_test(module) -> None:
 
 def main() -> int:
     module = load_sdk()
+    run_success_result_metadata_test(module)
     run_failed_command_redaction_test(module)
     run_spawn_error_redaction_test(module)
     run_invalid_json_redaction_test(module)

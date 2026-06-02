@@ -22,6 +22,9 @@ class CommandResult:
     stdout: str
     stderr: str
     returncode: int
+    contents_displayed: bool = True
+    args_redacted: bool = False
+    stdio_redacted: bool = False
 
 
 class ConuError(RuntimeError):
@@ -629,6 +632,9 @@ def _result_for_error(returncode: int, binary: str) -> CommandResult:
         "",
         "",
         returncode,
+        contents_displayed=False,
+        args_redacted=True,
+        stdio_redacted=True,
     )
 
 
