@@ -538,6 +538,8 @@ jobs:
           mkdir -p "$KEY_DIR" "$GNUPG_HOME"
           chmod 700 "$GNUPG_HOME"
           gh release download "$TAG_NAME" --repo "$GH_REPO" --pattern conu-linux-gpg-key.asc --dir "$KEY_DIR"
+          gh release download "$TAG_NAME" --repo "$GH_REPO" --pattern conu-linux-gpg-key.asc.sha256 --dir "$KEY_DIR"
+          (cd "$KEY_DIR" && sha256sum -c conu-linux-gpg-key.asc.sha256)
           export GNUPGHOME="$GNUPG_HOME"
           gpg --batch --yes --import "$KEY_DIR/conu-linux-gpg-key.asc"
           EXPECTED_FINGERPRINT="$(printf '%s' "$CONU_LINUX_GPG_KEY_FINGERPRINT" | tr -d '[:space:]:' | sed 's/^0[xX]//' | tr '[:lower:]' '[:upper:]')"
@@ -1671,6 +1673,24 @@ def run_required_github_release_gate_tests(module) -> None:
         "and artifact with CLI is missing fingerprint comparison"
     ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("missing published GPG fingerprint comparison was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '          (cd "$KEY_DIR" && sha256sum -c conu-linux-gpg-key.asc.sha256)\n',
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing published GPG public-key checksum verification should fail")
+    if (
+        "release.yml:github-release verify published release update policy "
+        "and artifact with CLI is missing public key checksum verification"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError(
+            "missing published GPG public-key checksum verification was not reported"
+        )
 
 
 def run_required_linux_repository_publication_job_tests(module) -> None:
