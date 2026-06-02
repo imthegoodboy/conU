@@ -117,9 +117,32 @@ jobs:
       - run: echo custom
   linux-repository-publication:
     needs: [github-release, linux-repository-pages, custom-linux-repository-publish]
+    if: always() && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - run: echo repository
+      - name: Check Linux repository publication result
+        env:
+          CONU_LINUX_REPOSITORY_BASE_URL: ${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}
+          GITHUB_RELEASE_RESULT: ${{ needs.github-release.result }}
+          PAGES_RESULT: ${{ needs.linux-repository-pages.result }}
+          CUSTOM_RESULT: ${{ needs.custom-linux-repository-publish.result }}
+        run: |
+          set -eu
+          if [ "$GITHUB_RELEASE_RESULT" != "success" ]; then
+            echo "::error::GitHub Release publication did not complete successfully: $GITHUB_RELEASE_RESULT"
+            exit 1
+          fi
+          if [ -z "${CONU_LINUX_REPOSITORY_BASE_URL:-}" ]; then
+            if [ "$PAGES_RESULT" != "success" ]; then
+              echo "::error::Default Linux repository Pages deployment did not complete successfully: $PAGES_RESULT"
+              exit 1
+            fi
+          else
+            if [ "$CUSTOM_RESULT" != "success" ]; then
+              echo "::error::Custom Linux repository S3 publication did not complete successfully: $CUSTOM_RESULT"
+              exit 1
+            fi
+          fi
   npm-publish:
     needs: [github-release, linux-repository-publication]
     permissions:
@@ -318,6 +341,56 @@ def run_required_release_job_needs_tests(module) -> None:
         raise AssertionError("missing package preflight dependency was not reported")
 
 
+def run_required_release_publication_gate_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "    if: always() && startsWith(github.ref, 'refs/tags/v')\n",
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing Linux repository publication always/tag gate should fail")
+    if (
+        "release.yml:linux-repository-publication must be tag-gated "
+        "and always evaluate upstream results"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing Linux repository always/tag gate issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "          PAGES_RESULT: ${{ needs.linux-repository-pages.result }}\n",
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing Pages result env should fail")
+    if (
+        "release.yml:linux-repository-publication gate is missing Pages result"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("missing Pages result issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '            if [ "$CUSTOM_RESULT" != "success" ]; then\n',
+            '            if [ "$CUSTOM_RESULT" != "failure" ]; then\n',
+        ),
+    )
+    if report.ready:
+        raise AssertionError("weakened custom repository result check should fail")
+    if (
+        "release.yml:linux-repository-publication gate is missing "
+        "custom repository success check"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("weakened custom repository result check issue was not reported")
+
+
 def run_unsafe_environment_file_write_tests(module) -> None:
     report = with_fixture(
         module,
@@ -349,6 +422,7 @@ def main() -> int:
     run_expected_job_permission_tests(module)
     run_required_release_preflight_tests(module)
     run_required_release_job_needs_tests(module)
+    run_required_release_publication_gate_tests(module)
     run_unsafe_environment_file_write_tests(module)
     print("GitHub workflow permissions regression checks passed")
     return 0
