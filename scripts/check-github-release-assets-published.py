@@ -202,6 +202,15 @@ def asset_state_issue(asset: dict[str, Any], name: str) -> str | None:
     return None
 
 
+def asset_local_issue(asset: dict[str, Any], name: str) -> str | None:
+    value = asset.get("localInvalidReason")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        return f"{name}: local invalid reason must be a non-empty string"
+    return f"{name}: {value.strip()}"
+
+
 def forbidden_asset_marker(name: str) -> str | None:
     lower = name.lower()
     if "/" in name or "\\" in name or name in {".", ".."} or ".." in name.split("."):
@@ -245,6 +254,9 @@ def audit_release_assets(
         state_issue = asset_state_issue(asset, name)
         if state_issue:
             invalid.append(state_issue)
+        local_issue = asset_local_issue(asset, name)
+        if local_issue:
+            invalid.append(local_issue)
 
         marker = forbidden_asset_marker(name)
         if marker:
@@ -356,6 +368,41 @@ def load_release_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def load_dist_metadata(tag: str, dist_dir: Path) -> dict[str, Any]:
+    tag, version = validate_tag(tag)
+    dist = dist_dir.expanduser()
+    if dist.is_symlink():
+        raise ValueError(f"release dist directory must not be a symlink: {dist}")
+    if not dist.exists() or not dist.is_dir():
+        raise ValueError(f"release dist directory does not exist: {dist}")
+
+    assets: list[dict[str, Any]] = []
+    for path in sorted(dist.iterdir(), key=lambda item: item.name):
+        name = path.name
+        asset: dict[str, Any] = {"name": name, "state": "uploaded"}
+        try:
+            stat_result = path.lstat()
+        except OSError as exc:
+            asset["size"] = 0
+            asset["localInvalidReason"] = f"local asset could not be statted: {exc}"
+            assets.append(asset)
+            continue
+
+        asset["size"] = stat_result.st_size
+        if path.is_symlink():
+            asset["localInvalidReason"] = "local asset must not be a symlink"
+        elif not path.is_file():
+            asset["localInvalidReason"] = "local asset must be a regular file"
+        assets.append(asset)
+
+    return {
+        "tag_name": tag,
+        "draft": False,
+        "prerelease": "-" in version,
+        "assets": assets,
+    }
+
+
 def print_text_report(report: ReleaseAssetReadiness) -> None:
     if report.ready:
         print(
@@ -409,6 +456,12 @@ def parse_args() -> argparse.Namespace:
         help="read GitHub Release metadata from a JSON fixture instead of gh api",
     )
     parser.add_argument(
+        "--dist-dir",
+        type=Path,
+        default=None,
+        help="read local release asset files from a dist directory instead of gh api",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="print a machine-readable readiness report",
@@ -430,15 +483,26 @@ def main() -> int:
         tag, _version = validate_tag(args.tag)
         gh = args.gh.strip()
         repo = args.repo.strip()
+        if args.release_json is not None and args.dist_dir is not None:
+            raise ValueError("--release-json and --dist-dir cannot be used together")
+
+        if args.dist_dir is not None:
+            repo = repo or "local/dist"
+            payload = load_dist_metadata(tag, args.dist_dir)
+        else:
+            if not repo:
+                gh = gh or find_gh()
+                repo = infer_repo(gh)
+
+            if args.release_json:
+                payload = load_release_json(args.release_json)
+            else:
+                gh = gh or find_gh()
+                payload = load_release_metadata(repo, tag, gh)
+
         if not repo:
             gh = gh or find_gh()
             repo = infer_repo(gh)
-
-        if args.release_json:
-            payload = load_release_json(args.release_json)
-        else:
-            gh = gh or find_gh()
-            payload = load_release_metadata(repo, tag, gh)
 
         report = audit_release_assets(repo, tag, payload)
     except (OSError, ValueError) as exc:

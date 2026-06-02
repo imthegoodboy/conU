@@ -1275,6 +1275,18 @@ GITHUB_RELEASE_REQUIRED_STEPS: tuple[
         ),
     ),
     (
+        "Verify local GitHub Release asset set",
+        "verify local GitHub Release asset set",
+        (
+            ("tag name env", "TAG_NAME: ${{ github.ref_name }}"),
+            (
+                "local release asset preflight command",
+                'python scripts/check-github-release-assets-published.py --tag "$TAG_NAME" '
+                "--dist-dir dist",
+            ),
+        ),
+    ),
+    (
         "Publish release assets",
         "publish release assets without clobber",
         (

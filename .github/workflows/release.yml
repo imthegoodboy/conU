@@ -523,6 +523,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/check-github-release-clobber-preflight.py --repo "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"
+      - name: Verify local GitHub Release asset set
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: python scripts/check-github-release-assets-published.py --tag "$TAG_NAME" --dist-dir dist
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
