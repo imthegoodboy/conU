@@ -35,12 +35,14 @@ class ConuClient:
         self,
         conu_bin: str | Path = "conu",
         conud_bin: str | Path = "conud",
+        mcp_bin: str | Path = "conu-mcp",
         home: str | Path | None = None,
         env: dict[str, str] | None = None,
         cwd: str | Path | None = None,
     ) -> None:
         self.conu_bin = str(conu_bin)
         self.conud_bin = str(conud_bin)
+        self.mcp_bin = str(mcp_bin)
         self.cwd = None if cwd is None else str(cwd)
         self.env = os.environ.copy()
         if env:
@@ -179,6 +181,31 @@ class ConuClient:
 
     def inbox(self, agent_id: str) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "messages", "inbox", agent_id, "--json")
+
+    def receive_message(
+        self,
+        agent_id: str,
+        envelope_id: str,
+        include_payload: bool = False,
+    ) -> dict[str, Any]:
+        return self._call_mcp_tool(
+            "conu_receive_message",
+            {
+                "agentId": str(agent_id),
+                "envelopeId": str(envelope_id),
+                "includePayload": bool(include_payload),
+            },
+        )
+
+    def receive_message_bytes(self, agent_id: str, envelope_id: str) -> bytes:
+        received = self.receive_message(agent_id, envelope_id, include_payload=True)
+        payload_hex = received.get("payloadHex")
+        if not isinstance(payload_hex, str):
+            raise ConuError(
+                f"conU receive response did not include payloadHex: "
+                f"{_safe_command_for_error(self.mcp_bin)}"
+            )
+        return _hex_to_bytes(payload_hex, self.mcp_bin)
 
     def receipts(self) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "messages", "receipts", "--json")
@@ -421,6 +448,48 @@ class ConuClient:
                 f"conU command returned invalid JSON: {_safe_command_for_error(binary)}"
             ) from None
 
+    def _call_mcp_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": arguments or {},
+            },
+        }
+        result = self._run(
+            self.mcp_bin,
+            input_bytes=(json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8"),
+        )
+        response = _parse_mcp_response(result.stdout, self.mcp_bin)
+        error = response.get("error")
+        if error is not None:
+            raise ConuError(
+                f"conU MCP tool failed: {_safe_mcp_error(error)}: "
+                f"{_safe_command_for_error(self.mcp_bin)}"
+            )
+        tool_result = response.get("result")
+        if not isinstance(tool_result, dict):
+            raise ConuError(
+                f"conU MCP response did not include a tool result: "
+                f"{_safe_command_for_error(self.mcp_bin)}"
+            )
+        if tool_result.get("isError") is True:
+            raise ConuError(
+                f"conU MCP tool failed: [details redacted]: "
+                f"{_safe_command_for_error(self.mcp_bin)}"
+            )
+        return _parse_json_for_sdk(
+            _tool_text(tool_result, self.mcp_bin),
+            self.mcp_bin,
+            "conU MCP tool returned invalid JSON",
+        )
+
     def _run(
         self,
         binary: str,
@@ -468,6 +537,53 @@ def _safe_binary_name(binary: str) -> str:
         for character in base
     )
     return sanitized or "conu"
+
+
+def _parse_mcp_response(stdout: str, binary: str) -> dict[str, Any]:
+    line = next((value.strip() for value in stdout.splitlines() if value.strip()), None)
+    if line is None:
+        raise ConuError(f"conU MCP response was empty: {_safe_command_for_error(binary)}")
+    return _parse_json_for_sdk(line, binary, "conU MCP response was invalid JSON")
+
+
+def _parse_json_for_sdk(text: str, binary: str, message: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        raise ConuError(f"{message}: {_safe_command_for_error(binary)}") from None
+    if not isinstance(value, dict):
+        raise ConuError(f"{message}: {_safe_command_for_error(binary)}")
+    return value
+
+
+def _tool_text(tool_result: dict[str, Any], binary: str) -> str:
+    content = tool_result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    return text
+    raise ConuError(
+        f"conU MCP tool response did not include text content: {_safe_command_for_error(binary)}"
+    )
+
+
+def _safe_mcp_error(error: Any) -> str:
+    if isinstance(error, dict) and isinstance(error.get("code"), int):
+        return f"code {error['code']}"
+    return "unknown MCP error"
+
+
+def _hex_to_bytes(payload_hex: str, binary: str) -> bytes:
+    if len(payload_hex) % 2 != 0 or any(
+        character not in "0123456789abcdefABCDEF" for character in payload_hex
+    ):
+        raise ConuError(
+            f"conU receive response included invalid payloadHex: "
+            f"{_safe_command_for_error(binary)}"
+        )
+    return bytes.fromhex(payload_hex)
 
 
 def _bool_arg(value: bool) -> str:
