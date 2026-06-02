@@ -715,6 +715,27 @@ def replace_named_step_text(text: str, step_name: str, old: str, new: str) -> st
     return text[:start] + step.replace(old, new, 1) + text[next_start:]
 
 
+def replace_job_text(text: str, job_name: str, old: str, new: str) -> str:
+    marker = f"  {job_name}:\n"
+    start = text.index(marker)
+    next_start = text.find("\n  ", start + len(marker))
+    while next_start != -1:
+        next_line_end = text.find("\n", next_start + 1)
+        if next_line_end == -1:
+            next_line_end = len(text)
+        if text[next_start + 1 : next_line_end].startswith("  ") and not text[
+            next_start + 1 : next_line_end
+        ].startswith("    "):
+            break
+        next_start = text.find("\n  ", next_line_end)
+    if next_start == -1:
+        next_start = len(text)
+    job = text[start:next_start]
+    if old not in job:
+        raise AssertionError(f"{job_name} fixture block did not contain expected text")
+    return text[:start] + job.replace(old, new, 1) + text[next_start:]
+
+
 def assert_release_gate_issue(
     module,
     release_text: str,
@@ -1628,6 +1649,42 @@ def run_required_linux_repository_publication_job_tests(module) -> None:
 
 
 def run_required_npm_publication_gate_tests(module) -> None:
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "npm-publish",
+            "    runs-on: ubuntu-latest\n",
+            "",
+        ),
+        "release.yml:npm-publish is missing Ubuntu runner",
+        "missing npm-publish Ubuntu runner should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "npm-publish",
+            "      contents: read\n      id-token: write\n",
+            "      contents: read\n",
+        ),
+        "release.yml:npm-publish is missing provenance id-token permission",
+        "missing npm-publish provenance id-token permission should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "npm-publish",
+            "      - uses: actions/checkout@v6\n",
+            "",
+        ),
+        "release.yml:npm-publish is missing checkout action",
+        "missing npm-publish checkout should fail",
+    )
+
     report = with_fixture(
         module,
         None,
