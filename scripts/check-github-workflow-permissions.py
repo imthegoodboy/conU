@@ -908,6 +908,10 @@ BUILD_REQUIRED_STEPS: tuple[
 )
 NPM_PUBLISH_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+    ("Ubuntu runner", "runs-on: ubuntu-latest"),
+    ("contents read permission", "contents: read"),
+    ("provenance id-token permission", "id-token: write"),
+    ("checkout action", "uses: actions/checkout@v6"),
     ("Node setup", "uses: actions/setup-node@v6"),
     ("Node version", "node-version: 24"),
     ("npm registry URL", "registry-url: https://registry.npmjs.org"),
