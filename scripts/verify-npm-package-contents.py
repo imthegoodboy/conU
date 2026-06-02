@@ -94,6 +94,7 @@ PACKAGES = (
                 "scripts/check-download-limits.js",
                 "scripts/check-download-policy.js",
                 "scripts/check-extract-selection.js",
+                "scripts/check-install-output-privacy.js",
                 "scripts/check-install-target.js",
                 "scripts/check-local-binary-dir.js",
                 "scripts/install.js",

@@ -51,7 +51,7 @@ async function main() {
   if (checkOnly) {
     console.log(`conU npm package ${version}`);
     console.log(`platform asset: ${asset}`);
-    console.log(`vendor dir: ${vendorDir()}`);
+    console.log("vendor dir: managed by package; pathDisplayed=false");
     return;
   }
 
@@ -107,7 +107,7 @@ function installFromLocalDir(sourceDir) {
   for (const name of BINARIES) {
     installBinary(binaries[name], name);
   }
-  console.log(`installed conU binaries from ${sourceDir}`);
+  console.log("installed conU binaries from local override; sourcePathDisplayed=false");
 }
 
 function installFromExtractedArchive(root) {
@@ -149,7 +149,7 @@ function extractArchive(archivePath, destination) {
     }
   }
 
-  throw new Error(`failed to extract ${archivePath}`);
+  throw new Error(`failed to extract ${asset}; pathDisplayed=false`);
 }
 
 function downloadOptionalText(url, maxBytes) {
