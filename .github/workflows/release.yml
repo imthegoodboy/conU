@@ -372,6 +372,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.1
         with:
           path: dist
+          pattern: conu-*
           merge-multiple: true
       - name: Install package tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg

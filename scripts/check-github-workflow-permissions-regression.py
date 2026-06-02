@@ -363,6 +363,7 @@ jobs:
       - uses: actions/download-artifact@v8.0.1
         with:
           path: dist
+          pattern: conu-*
           merge-multiple: true
       - name: Install package tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg
@@ -1374,6 +1375,17 @@ def run_required_github_release_gate_tests(module) -> None:
         ),
         "release.yml:github-release is missing artifact download action",
         "missing GitHub Release artifact download should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        ready_release().replace(
+            "          pattern: conu-*\n",
+            "",
+            1,
+        ),
+        "release.yml:github-release is missing release artifact download pattern",
+        "missing GitHub Release artifact download pattern should fail",
     )
 
     assert_release_gate_issue(
