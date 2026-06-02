@@ -363,6 +363,19 @@ CUSTOM_LINUX_REPOSITORY_PUBLISH_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("post-upload live endpoint check", "--post-upload-check"),
     ("JSON report flag", "--json"),
 )
+PRODUCTION_READINESS_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("Windows runner", "runs-on: windows-2025-vs2026"),
+    ("checkout action", "uses: actions/checkout@v6"),
+    ("Rust toolchain action", "uses: dtolnay/rust-toolchain@stable"),
+)
+PRODUCTION_READINESS_STEP = "Production readiness smoke gate"
+PRODUCTION_READINESS_STEP_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("PowerShell shell", "shell: pwsh"),
+    (
+        "production readiness smoke command",
+        "run: ./scripts/verify-production-readiness.ps1 -SmokeOnly",
+    ),
+)
 EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "release-preflight"): {
         "actions": "read",
@@ -794,6 +807,37 @@ def audit_required_linux_repository_publication_jobs(path: Path) -> tuple[str, .
     return tuple(issues)
 
 
+def audit_required_production_readiness_job(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "production-readiness")
+    issues: list[str] = []
+    if not block:
+        return ("release.yml must define production-readiness job",)
+
+    for label, snippet in PRODUCTION_READINESS_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"release.yml:production-readiness is missing {label}")
+
+    step = extract_named_step_block(block, PRODUCTION_READINESS_STEP)
+    if not step:
+        issues.append("release.yml:production-readiness must run production readiness smoke gate")
+        return tuple(issues)
+
+    for label, snippet in PRODUCTION_READINESS_STEP_SNIPPETS:
+        if snippet not in step:
+            issues.append(
+                "release.yml:production-readiness production readiness smoke gate "
+                f"is missing {label}"
+            )
+    return tuple(issues)
+
+
 def is_secret_like_env_name(name: str) -> bool:
     return any(token in name for token in SECRET_LIKE_ENV_TOKENS)
 
@@ -928,6 +972,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
             unsafe_env_writes.append(finding)
             issues.append(finding)
         issues.extend(audit_required_release_preflight_steps(path))
+        issues.extend(audit_required_production_readiness_job(path))
         issues.extend(audit_required_github_release_gate(path))
         issues.extend(audit_required_linux_repository_publication_jobs(path))
         issues.extend(audit_required_release_publication_gate(path))

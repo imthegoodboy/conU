@@ -105,7 +105,11 @@ jobs:
       - release-preflight
     runs-on: windows-2025-vs2026
     steps:
-      - run: echo smoke
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Production readiness smoke gate
+        shell: pwsh
+        run: ./scripts/verify-production-readiness.ps1 -SmokeOnly
   build:
     needs: [packages, production-readiness]
     permissions:
@@ -554,6 +558,65 @@ def run_required_release_job_needs_tests(module) -> None:
         raise AssertionError("missing package preflight dependency was not reported")
 
 
+def run_required_production_readiness_job_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "    runs-on: windows-2025-vs2026\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v6\n"
+            "      - uses: dtolnay/rust-toolchain@stable\n"
+            "      - name: Production readiness smoke gate\n"
+            "        shell: pwsh\n"
+            "        run: ./scripts/verify-production-readiness.ps1 -SmokeOnly\n",
+            "    runs-on: windows-2025-vs2026\n"
+            "    steps:\n"
+            "      - run: echo smoke\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing production readiness smoke gate should fail")
+    if (
+        "release.yml:production-readiness must run production readiness smoke gate"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("missing production readiness smoke gate was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        shell: pwsh\n",
+            "",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("production readiness smoke gate without pwsh should fail")
+    if (
+        "release.yml:production-readiness production readiness smoke gate "
+        "is missing PowerShell shell"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing production readiness PowerShell shell was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "    runs-on: windows-2025-vs2026\n",
+            "    runs-on: ubuntu-latest\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("production readiness smoke gate off Windows should fail")
+    if (
+        "release.yml:production-readiness is missing Windows runner"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("missing production readiness Windows runner was not reported")
+
+
 def run_required_github_release_gate_tests(module) -> None:
     report = with_fixture(
         module,
@@ -873,6 +936,7 @@ def main() -> int:
     run_expected_job_permission_tests(module)
     run_required_release_preflight_tests(module)
     run_required_release_job_needs_tests(module)
+    run_required_production_readiness_job_tests(module)
     run_required_github_release_gate_tests(module)
     run_required_linux_repository_publication_job_tests(module)
     run_required_npm_publication_gate_tests(module)
