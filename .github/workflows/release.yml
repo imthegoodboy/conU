@@ -727,7 +727,7 @@ jobs:
       - name: npm publish conflict preflight
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN
+        run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check
       - name: Publish @conu/cli
         working-directory: packaging/npm/conu-cli
         env:
