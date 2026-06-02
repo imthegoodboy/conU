@@ -995,6 +995,7 @@ GITHUB_RELEASE_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("artifact download action", "uses: actions/download-artifact@v8.0.1"),
     ("merged artifact download path", "path: dist"),
     ("release artifact download pattern", "pattern: conu-*"),
+    ("release artifact digest mismatch policy", "digest-mismatch: error"),
     ("merged artifact download flag", "merge-multiple: true"),
 )
 GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS: tuple[tuple[str, str], ...] = (

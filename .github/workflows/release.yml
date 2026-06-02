@@ -373,6 +373,7 @@ jobs:
         with:
           path: dist
           pattern: conu-*
+          digest-mismatch: error
           merge-multiple: true
       - name: Install package tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg
