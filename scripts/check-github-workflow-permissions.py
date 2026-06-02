@@ -1327,6 +1327,7 @@ GITHUB_RELEASE_REQUIRED_STEPS: tuple[
     ),
 )
 LINUX_REPOSITORY_PAGES_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("Ubuntu runner", "runs-on: ubuntu-latest"),
     (
         "default repository tag/base URL gate",
         "if: startsWith(github.ref, 'refs/tags/v') && "
@@ -1342,6 +1343,7 @@ LINUX_REPOSITORY_PAGES_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("deploy Pages action", "uses: actions/deploy-pages@v5"),
 )
 CUSTOM_LINUX_REPOSITORY_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("Ubuntu runner", "runs-on: ubuntu-latest"),
     (
         "custom repository tag/base URL gate",
         "if: startsWith(github.ref, 'refs/tags/v') && "

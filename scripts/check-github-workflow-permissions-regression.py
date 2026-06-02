@@ -1604,6 +1604,18 @@ def run_required_github_release_gate_tests(module) -> None:
 
 
 def run_required_linux_repository_publication_job_tests(module) -> None:
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "linux-repository-pages",
+            "    runs-on: ubuntu-latest\n",
+            "",
+        ),
+        "release.yml:linux-repository-pages is missing Ubuntu runner",
+        "missing Linux repository Pages Ubuntu runner should fail",
+    )
+
     report = with_fixture(
         module,
         None,
@@ -1637,6 +1649,18 @@ def run_required_linux_repository_publication_job_tests(module) -> None:
         not in json.dumps(assert_safe_report(report))
     ):
         raise AssertionError("missing Pages deploy action was not reported")
+
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "custom-linux-repository-publish",
+            "    runs-on: ubuntu-latest\n",
+            "",
+        ),
+        "release.yml:custom-linux-repository-publish is missing Ubuntu runner",
+        "missing custom Linux repository publication Ubuntu runner should fail",
+    )
 
     report = with_fixture(
         module,
