@@ -711,6 +711,63 @@ def run_stdin_payload_encoding_redaction_test(module) -> None:
         raise AssertionError("Python SDK payload encoding error should retain safe metadata only")
 
 
+def run_command_argument_encoding_redaction_test(module) -> None:
+    class SecretArgument:
+        def __str__(self) -> str:
+            raise RuntimeError(f"argument conversion exposed {SENSITIVE_ENDPOINT}")
+
+    def fake_run(_argv, **_kwargs):
+        raise AssertionError("Python SDK should not execute subprocess for invalid argument")
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.trust_peer(
+            "node.peer",
+            "Peer",
+            "aa",
+            relay_endpoint=SecretArgument(),
+        )
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu-test.exe", 1)
+    else:
+        raise AssertionError("expected Python SDK command argument encoding failure")
+
+    assert_redacted(rendered)
+    if (
+        "conU command argument could not be encoded: "
+        "conu-test.exe [arguments redacted]"
+    ) not in rendered:
+        raise AssertionError("Python SDK command argument error should retain safe metadata only")
+
+
+def run_mcp_argument_encoding_redaction_test(module) -> None:
+    class SecretArgument:
+        def __str__(self) -> str:
+            raise RuntimeError(f"MCP argument conversion exposed {SENSITIVE_ENDPOINT}")
+
+    def fake_run(_argv, **_kwargs):
+        raise AssertionError("Python SDK should not execute MCP subprocess for invalid argument")
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(mcp_bin="C:/tools/conu-mcp-test.exe")
+    try:
+        client.receive_message(SecretArgument(), "env.local.1")
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu-mcp-test.exe", 1)
+    else:
+        raise AssertionError("expected Python SDK MCP argument encoding failure")
+
+    assert_redacted(rendered)
+    if (
+        "conU command argument could not be encoded: "
+        "conu-mcp-test.exe [arguments redacted]"
+    ) not in rendered:
+        raise AssertionError("Python SDK MCP argument error should retain safe metadata only")
+
+
 def main() -> int:
     module = load_sdk()
     run_success_result_metadata_test(module)
@@ -727,6 +784,8 @@ def main() -> int:
     run_command_surface_parity_test(module)
     run_stdin_secret_failure_redaction_test(module)
     run_stdin_payload_encoding_redaction_test(module)
+    run_command_argument_encoding_redaction_test(module)
+    run_mcp_argument_encoding_redaction_test(module)
     print("Python SDK error redaction regression checks passed")
     return 0
 

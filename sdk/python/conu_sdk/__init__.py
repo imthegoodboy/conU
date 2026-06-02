@@ -117,20 +117,20 @@ class ConuClient:
         args = [
             "agents",
             "trust",
-            str(card["agentId"]),
-            str(card["displayName"]),
+            _command_arg(card["agentId"], self.conu_bin),
+            _command_arg(card["displayName"], self.conu_bin),
             "--node",
-            str(card["nodeId"]),
+            _command_arg(card["nodeId"], self.conu_bin),
             "--kind",
-            str(card.get("kind", "remote-agent")),
+            _command_arg(card.get("kind", "remote-agent"), self.conu_bin),
             "--signing-key",
-            str(card["signingPublicKeyHex"]),
+            _command_arg(card["signingPublicKeyHex"], self.conu_bin),
             "--signature",
-            str(card["signatureHex"]),
+            _command_arg(card["signatureHex"], self.conu_bin),
             "--signature-key-id",
-            str(card["signatureKeyId"]),
+            _command_arg(card["signatureKeyId"], self.conu_bin),
             "--signature-algorithm",
-            str(card.get("signatureAlgorithm", "Ed25519")),
+            _command_arg(card.get("signatureAlgorithm", "Ed25519"), self.conu_bin),
             "--messages",
             _bool_arg(_card_bool(capabilities, "messages", True)),
             "--streams",
@@ -238,8 +238,8 @@ class ConuClient:
         return self._call_mcp_tool(
             "conu_receive_message",
             {
-                "agentId": str(agent_id),
-                "envelopeId": str(envelope_id),
+                "agentId": _command_arg(agent_id, self.mcp_bin),
+                "envelopeId": _command_arg(envelope_id, self.mcp_bin),
                 "includePayload": bool(include_payload),
             },
         )
@@ -436,7 +436,7 @@ class ConuClient:
             "relay",
             "sync",
             "--wait-ms",
-            str(wait_ms),
+            _command_arg(wait_ms, self.conu_bin),
             "--json",
         )
 
@@ -511,9 +511,9 @@ class ConuClient:
     ) -> dict[str, Any]:
         args = ["logs", "rotate", "--json"]
         if max_bytes is not None:
-            args.extend(["--max-bytes", str(max_bytes)])
+            args.extend(["--max-bytes", _command_arg(max_bytes, self.conu_bin)])
         if keep is not None:
-            args.extend(["--keep", str(keep)])
+            args.extend(["--keep", _command_arg(keep, self.conu_bin)])
         return self._run_json(self.conu_bin, *args)
 
     def process_queued(self) -> CommandResult:
@@ -585,7 +585,8 @@ class ConuClient:
         *args: str,
         input_bytes: bytes | None = None,
     ) -> CommandResult:
-        argv = (binary, *args)
+        safe_binary = _command_arg(binary, binary)
+        argv = (safe_binary, *(_command_arg(arg, safe_binary) for arg in args))
         try:
             completed = subprocess.run(
                 argv,
@@ -656,7 +657,7 @@ def _decode_completed_stdio(value: Any) -> str:
 
 
 def _safe_binary_name(binary: str) -> str:
-    value = str(binary).strip()
+    value = binary.strip() if isinstance(binary, str) else ""
     if not value:
         return "conu"
     if "://" in value or any(marker in value for marker in ("@", "?", "#")):
@@ -714,6 +715,22 @@ def _safe_mcp_error(error: Any) -> str:
     if isinstance(error, dict) and isinstance(error.get("code"), int):
         return f"code {error['code']}"
     return "unknown MCP error"
+
+
+def _command_arg(value: Any, binary: Any) -> str:
+    try:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+    except Exception:
+        pass
+    raise ConuError(
+        f"conU command argument could not be encoded: {_safe_command_for_error(binary)}",
+        _result_for_error(1, binary),
+    ) from None
 
 
 def _to_bytes(value: Any, binary: str) -> bytes:
