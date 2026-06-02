@@ -459,6 +459,7 @@ export class ConuClient {
         resultForError({ code: 1 }, binary),
       );
     }
+    result = normalizeRunnerResult(result, binary);
     if (result.code !== 0) {
       const safeResult = resultForError(result, binary);
       throw new ConuError(
@@ -529,6 +530,28 @@ function pushOptionalBool(args, flag, value) {
 function cardBool(values, key, defaultValue) {
   const value = values[key];
   return typeof value === "boolean" ? value : defaultValue;
+}
+
+function normalizeRunnerResult(result, binary) {
+  if (!isRecord(result)) {
+    throw new ConuError(
+      `conU command returned invalid runner result: ${safeCommandForError(binary)}`,
+      resultForError({ code: 1 }, binary),
+    );
+  }
+  try {
+    return {
+      args: Array.isArray(result.args) ? result.args.map((value) => String(value)) : [],
+      stdout: typeof result.stdout === "string" ? result.stdout : decode(result.stdout),
+      stderr: typeof result.stderr === "string" ? result.stderr : decode(result.stderr),
+      code: typeof result.code === "number" ? result.code : 1,
+    };
+  } catch (_error) {
+    throw new ConuError(
+      `conU command returned invalid runner result: ${safeCommandForError(binary)}`,
+      resultForError({ code: 1 }, binary),
+    );
+  }
 }
 
 function isRecord(value) {
