@@ -274,6 +274,50 @@ assert.throws(
   },
 );
 
+for (const runner of [
+  () => null,
+  () => ({
+    args: ["conu-test", "status", secretEndpoint],
+    stdout: "stdout with private fixture",
+    stderr: "stderr with private fixture",
+    get code() {
+      throw new Error(`runner result leaked ${secretEndpoint}`);
+    },
+  }),
+]) {
+  const malformedRunner = new ConuClient({
+    conuBin: "C:/tools/conu-test.exe",
+    runner,
+  });
+
+  assert.throws(
+    () => malformedRunner.status(),
+    (error) => {
+      assert.ok(error instanceof ConuError);
+      const rendered = JSON.stringify({
+        message: error.message,
+        result: error.result,
+      });
+      assert.ok(!rendered.includes("secret"));
+      assert.ok(!rendered.includes("token=private"));
+      assert.ok(!rendered.includes("relay.example.com"));
+      assert.ok(!rendered.includes("private fixture"));
+      assert.equal(
+        error.message,
+        "conU command returned invalid runner result: conu-test.exe [arguments redacted]",
+      );
+      assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+      assert.equal(error.result.stdout, "");
+      assert.equal(error.result.stderr, "");
+      assert.equal(error.result.code, 1);
+      assert.equal(error.result.contentsDisplayed, false);
+      assert.equal(error.result.argsRedacted, true);
+      assert.equal(error.result.stdioRedacted, true);
+      return true;
+    },
+  );
+}
+
 for (const mcpFailureMode of ["protocol", "tool"]) {
   const mcpFailing = new ConuClient({
     mcpBin: "conu-mcp-test",
