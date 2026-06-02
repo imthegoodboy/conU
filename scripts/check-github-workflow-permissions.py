@@ -47,6 +47,14 @@ RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
     "python scripts/check-npm-publish-preflight.py "
     "--registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check"
 )
+RELEASE_PREFLIGHT_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    ("Ubuntu runner", "runs-on: ubuntu-latest"),
+    (
+        "tag-gated checkout action",
+        "      - uses: actions/checkout@v6\n"
+        "        if: startsWith(github.ref, 'refs/tags/v')",
+    ),
+)
 RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
     tuple[str, str, tuple[tuple[str, str], ...]],
     ...,
@@ -1685,6 +1693,10 @@ def audit_required_release_preflight_steps(path: Path) -> tuple[str, ...]:
     issues: list[str] = []
     if not block:
         return ("release.yml must define release-preflight job",)
+
+    for label, snippet in RELEASE_PREFLIGHT_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"release.yml:release-preflight is missing {label}")
 
     for step_name, description, required_snippets in RELEASE_PREFLIGHT_REQUIRED_STEPS:
         step = extract_named_step_block(block, step_name)
