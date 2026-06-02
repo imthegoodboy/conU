@@ -195,3 +195,123 @@ const failing = new ConuClient({
   },
 });
 assert.throws(() => failing.status(), ConuError);
+
+const secretEndpoint = "wss://user:secret@relay.example.com/conu?token=private#fragment";
+const endpointFailing = new ConuClient({
+  conuBin: "C:/tools/conu-test.exe",
+  runner({ binary, args }) {
+    return {
+      args: [binary, ...args],
+      stdout: "stdout with private fixture",
+      stderr: `stderr with ${secretEndpoint}`,
+      code: 2,
+    };
+  },
+});
+
+assert.throws(
+  () =>
+    endpointFailing.trustPeer("node.peer", "Peer", "aa", {
+      relayEndpoint: secretEndpoint,
+    }),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.ok(!rendered.includes("private fixture"));
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+
+for (const mcpFailureMode of ["protocol", "tool"]) {
+  const mcpFailing = new ConuClient({
+    mcpBin: "conu-mcp-test",
+    runner({ binary }) {
+      const body =
+        mcpFailureMode === "protocol"
+          ? {
+              jsonrpc: "2.0",
+              id: 1,
+              error: {
+                code: -32602,
+                message: `MCP protocol error with ${secretEndpoint}`,
+              },
+            }
+          : {
+              jsonrpc: "2.0",
+              id: 1,
+              result: {
+                content: [{ type: "text", text: `MCP tool error with ${secretEndpoint}` }],
+                isError: true,
+              },
+            };
+      return {
+        args: [binary],
+        stdout: JSON.stringify(body),
+        stderr: "stderr with private fixture",
+        code: 0,
+      };
+    },
+  });
+
+  assert.throws(
+    () => mcpFailing.receiveMessage("agent.beta", "env.local.1"),
+    (error) => {
+      assert.ok(error instanceof ConuError);
+      const rendered = JSON.stringify({
+        message: error.message,
+        result: error.result,
+      });
+      assert.ok(!rendered.includes("secret"));
+      assert.ok(!rendered.includes("token=private"));
+      assert.ok(!rendered.includes("relay.example.com"));
+      assert.ok(!rendered.includes("private fixture"));
+      assert.deepEqual(error.result.args, ["conu-mcp-test", "[arguments redacted]"]);
+      assert.equal(error.result.contentsDisplayed, false);
+      return true;
+    },
+  );
+}
+
+const mcpMalformed = new ConuClient({
+  mcpBin: "conu-mcp-test",
+  runner({ binary }) {
+    return {
+      args: [binary],
+      stdout: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: `malformed MCP result with ${secretEndpoint}`,
+      }),
+      stderr: "stderr with private fixture",
+      code: 0,
+    };
+  },
+});
+
+assert.throws(
+  () => mcpMalformed.receiveMessage("agent.beta", "env.local.1"),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.ok(!rendered.includes("private fixture"));
+    assert.deepEqual(error.result.args, ["conu-mcp-test", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    return true;
+  },
+);
