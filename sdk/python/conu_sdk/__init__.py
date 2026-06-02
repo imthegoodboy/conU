@@ -414,7 +414,12 @@ class ConuClient:
         input_bytes: bytes | None = None,
     ) -> dict[str, Any]:
         result = self._run(binary, *args, input_bytes=input_bytes)
-        return json.loads(result.stdout)
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise ConuError(
+                f"conU command returned invalid JSON: {_safe_command_for_error(binary)}"
+            ) from None
 
     def _run(
         self,

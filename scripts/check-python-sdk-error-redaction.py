@@ -89,10 +89,34 @@ def run_spawn_error_redaction_test(module) -> None:
         raise AssertionError("Python SDK spawn error should use a generic safe binary label")
 
 
+def run_invalid_json_redaction_test(module) -> None:
+    class JsonCompleted:
+        stdout = f"not json with {SENSITIVE_ENDPOINT}".encode("utf-8")
+        stderr = SENSITIVE_STDERR.encode("utf-8")
+        returncode = 0
+
+    def fake_run(argv, **_kwargs):
+        return JsonCompleted()
+
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="C:/tools/conu-test.exe")
+    try:
+        client.status()
+    except module.ConuError as exc:
+        rendered = str(exc)
+    else:
+        raise AssertionError("expected Python SDK JSON parse failure")
+
+    assert_redacted(rendered)
+    if "conU command returned invalid JSON: conu-test.exe [arguments redacted]" not in rendered:
+        raise AssertionError("Python SDK JSON parse error should retain only safe command metadata")
+
+
 def main() -> int:
     module = load_sdk()
     run_failed_command_redaction_test(module)
     run_spawn_error_redaction_test(module)
+    run_invalid_json_redaction_test(module)
     print("Python SDK error redaction regression checks passed")
     return 0
 

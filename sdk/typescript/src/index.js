@@ -395,7 +395,7 @@ export class ConuClient {
 
   runJson(binary, args, input) {
     const result = this.run(binary, args, input);
-    return JSON.parse(result.stdout);
+    return parseJsonForSdk(result.stdout, binary, "conU command returned invalid JSON");
   }
 
   callMcpTool(name, argumentsValue = {}) {
@@ -413,7 +413,7 @@ export class ConuClient {
       [],
       Buffer.from(`${JSON.stringify(request)}\n`, "utf8"),
     );
-    const response = parseMcpResponse(result.stdout);
+    const response = parseMcpResponse(result.stdout, this.mcpBin);
     if (response.error) {
       throw new ConuError(
         `conU MCP tool failed: ${safeMcpError(response.error)}`,
@@ -433,7 +433,11 @@ export class ConuClient {
         resultForError({ code: 1 }, this.mcpBin),
       );
     }
-    return JSON.parse(toolText(toolResult));
+    return parseJsonForSdk(
+      toolText(toolResult),
+      this.mcpBin,
+      "conU MCP tool returned invalid JSON",
+    );
   }
 
   run(binary, args = [], input) {
@@ -520,15 +524,18 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseMcpResponse(stdout) {
+function parseMcpResponse(stdout, binary) {
   const line = String(stdout)
     .split(/\r?\n/)
     .map((value) => value.trim())
     .find((value) => value.length > 0);
   if (line === undefined) {
-    throw new Error("conU MCP response was empty");
+    throw new ConuError(
+      "conU MCP response was empty",
+      resultForError({ code: 1 }, binary),
+    );
   }
-  return JSON.parse(line);
+  return parseJsonForSdk(line, binary, "conU MCP response was invalid JSON");
 }
 
 function toolText(toolResult) {
@@ -545,6 +552,14 @@ function safeMcpError(error) {
     return `code ${error.code}`;
   }
   return "unknown MCP error";
+}
+
+function parseJsonForSdk(text, binary, message) {
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    throw new ConuError(message, resultForError({ code: 1 }, binary));
+  }
 }
 
 function resultForError(result, binary) {
