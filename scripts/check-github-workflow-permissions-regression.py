@@ -351,10 +351,146 @@ jobs:
           if-no-files-found: error
   github-release:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Install package tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg
+      - name: Verify downloaded release assets
+        run: python scripts/verify-release-artifacts.py dist
+      - name: Generate package-manager manifests
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          python scripts/generate-package-manager-manifests.py dist --output-dir dist --repo "$GH_REPO" --version "$VERSION" --tag "$TAG_NAME" --build-rpm-packages --build-apt-repository-metadata
+      - name: Sign RPM packages
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/sign-rpm-packages.py dist
+      - name: Generate RPM repository metadata
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          python scripts/generate-package-manager-manifests.py dist --output-dir dist --repo "$GH_REPO" --version "$VERSION" --tag "$TAG_NAME" --build-rpm-repository-metadata
+      - name: Export Linux GPG public key
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/export-linux-gpg-public-key.py dist
+      - name: Sign Linux repository metadata
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/sign-linux-repository-metadata.py dist
+      - name: Sign Linux release assets
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/sign-linux-release-assets.py dist
+      - name: Prepare package-manager submission bundle
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          python scripts/prepare-package-manager-submissions.py dist --output-dir dist --version "$VERSION" --require-rpm-assets --require-repository-metadata --require-linux-signatures
+      - name: Sign package-manager submission bundle
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/sign-linux-release-assets.py dist --only-package-manager-submissions
+      - name: Generate hosted Linux repositories
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          python scripts/generate-hosted-linux-repositories.py dist --output-dir dist --version "$VERSION"
+      - name: Sign hosted Linux repository bundle
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/sign-linux-release-assets.py dist --only-hosted-repository-bundles
+      - name: Generate hosted Linux repository site
+        env:
+          GH_REPO: ${{ github.repository }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          TAG_NAME: ${{ github.ref_name }}
+          CONU_LINUX_REPOSITORY_BASE_URL: ${{ vars.CONU_LINUX_REPOSITORY_BASE_URL }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          BASE_URL="${CONU_LINUX_REPOSITORY_BASE_URL:-}"
+          if [ -z "$BASE_URL" ]; then
+            REPO_NAME="${GH_REPO#*/}"
+            BASE_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${REPO_NAME}"
+          fi
+          python scripts/generate-hosted-linux-repository-site.py dist --output-dir dist --version "$VERSION" --base-url "$BASE_URL"
+      - name: Sign hosted Linux repository site
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/sign-linux-release-assets.py dist --only-hosted-repository-sites
+      - name: Generate release update policy
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          python scripts/generate-release-update-policy.py dist --output-dir dist --version "$VERSION" --tag "$TAG_NAME" --repo "$GH_REPO"
+      - name: Sign release update policy
+        env:
+          CONU_LINUX_GPG_PRIVATE_KEY_BASE64: ${{ secrets.CONU_LINUX_GPG_PRIVATE_KEY_BASE64 }}
+          CONU_LINUX_GPG_PASSPHRASE: ${{ secrets.CONU_LINUX_GPG_PASSPHRASE }}
+          CONU_LINUX_GPG_KEY_ID: ${{ secrets.CONU_LINUX_GPG_KEY_ID }}
+          CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
+        run: python scripts/sign-linux-release-assets.py dist --only-update-policies
+      - name: Check release update policy with CLI
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          VERSION="${TAG_NAME#v}"
+          cargo run -p conu-cli -- update check --policy-file "dist/conu-${VERSION}-update-policy.json" --json
+      - name: Prepare hosted Linux repository Pages artifact
+        run: python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir linux-repository-site
+      - name: Upload hosted Linux repository Pages artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: conu-hosted-linux-repository-pages
+          path: linux-repository-site
+          if-no-files-found: error
+          retention-days: 14
       - name: Re-check GitHub Release tag is unpublished
         env:
           GH_TOKEN: ${{ github.token }}
@@ -565,6 +701,31 @@ def with_fixture(module, ci_text: str | None, release_text: str | None):
         return audit(module, root)
     finally:
         shutil.rmtree(root)
+
+
+def replace_named_step_text(text: str, step_name: str, old: str, new: str) -> str:
+    marker = f"      - name: {step_name}\n"
+    start = text.index(marker)
+    next_start = text.find("\n      - ", start + len(marker))
+    if next_start == -1:
+        next_start = len(text)
+    step = text[start:next_start]
+    if old not in step:
+        raise AssertionError(f"{step_name} fixture block did not contain expected text")
+    return text[:start] + step.replace(old, new, 1) + text[next_start:]
+
+
+def assert_release_gate_issue(
+    module,
+    release_text: str,
+    expected_issue: str,
+    ready_message: str,
+) -> None:
+    report = with_fixture(module, None, release_text)
+    if report.ready:
+        raise AssertionError(ready_message)
+    if expected_issue not in json.dumps(assert_safe_report(report)):
+        raise AssertionError(f"expected issue was not reported: {expected_issue}")
 
 
 def run_ready_tests(module) -> None:
@@ -1132,6 +1293,171 @@ def run_required_build_job_tests(module) -> None:
 
 
 def run_required_github_release_gate_tests(module) -> None:
+    assert_release_gate_issue(
+        module,
+        ready_release().replace(
+            "\n    if: startsWith(github.ref, 'refs/tags/v')\n",
+            "\n",
+            1,
+        ),
+        "release.yml:github-release is missing tag gate",
+        "missing GitHub Release tag gate should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        ready_release().replace(
+            "      - uses: actions/download-artifact@v8.0.1\n",
+            "      - uses: actions/upload-artifact@v7.0.1\n",
+            1,
+        ),
+        "release.yml:github-release is missing artifact download action",
+        "missing GitHub Release artifact download should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Verify downloaded release assets",
+            "        run: python scripts/verify-release-artifacts.py dist",
+            "        run: echo skipped-release-asset-verifier",
+        ),
+        "release.yml:github-release verify downloaded release assets "
+        "is missing release artifact verifier command",
+        "downloaded release asset verifier removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Generate package-manager manifests",
+            "--build-rpm-packages",
+            "--skip-rpm-packages",
+        ),
+        "release.yml:github-release generate package-manager manifests "
+        "is missing RPM package build flag",
+        "RPM package generation removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Sign RPM packages",
+            "        run: python scripts/sign-rpm-packages.py dist",
+            "        run: echo skipped-rpm-signing",
+        ),
+        "release.yml:github-release sign RPM packages is missing RPM signing command",
+        "RPM package signing removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Prepare package-manager submission bundle",
+            "--require-linux-signatures",
+            "--allow-unsigned-linux-assets",
+        ),
+        "release.yml:github-release prepare package-manager submission bundle "
+        "is missing Linux signature requirement",
+        "package-manager submission without Linux signatures should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Sign package-manager submission bundle",
+            "        run: python scripts/sign-linux-release-assets.py dist "
+            "--only-package-manager-submissions",
+            "        run: python scripts/sign-linux-release-assets.py dist",
+        ),
+        "release.yml:github-release sign package-manager submission bundle "
+        "is missing package-manager submission signing command",
+        "package-manager submission signing mode removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Generate hosted Linux repositories",
+            '          python scripts/generate-hosted-linux-repositories.py dist --output-dir dist --version "$VERSION"',
+            "          echo skipped-hosted-repository-generation",
+        ),
+        "release.yml:github-release generate hosted Linux repositories "
+        "is missing hosted repository generation command",
+        "hosted repository generation removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Generate hosted Linux repository site",
+            '            BASE_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${REPO_NAME}"',
+            '            BASE_URL="${CONU_LINUX_REPOSITORY_BASE_URL}"',
+        ),
+        "release.yml:github-release generate hosted Linux repository site "
+        "is missing default Pages base URL",
+        "default hosted repository site URL fallback removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Generate release update policy",
+            "python scripts/generate-release-update-policy.py dist",
+            "python scripts/generate-release-update-metadata.py dist",
+        ),
+        "release.yml:github-release generate release update policy "
+        "is missing release update policy generation command",
+        "release update policy generation removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Sign release update policy",
+            "        run: python scripts/sign-linux-release-assets.py dist --only-update-policies",
+            "        run: python scripts/sign-linux-release-assets.py dist",
+        ),
+        "release.yml:github-release sign release update policy "
+        "is missing release update policy signing command",
+        "release update policy signing mode removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Prepare hosted Linux repository Pages artifact",
+            "        run: python scripts/prepare-hosted-linux-repository-pages.py dist --output-dir linux-repository-site",
+            "        run: echo skipped-pages-artifact-prep",
+        ),
+        "release.yml:github-release prepare hosted Linux repository Pages artifact "
+        "is missing Pages artifact preparation command",
+        "hosted Linux repository Pages artifact preparation removal should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Upload hosted Linux repository Pages artifact",
+            "          retention-days: 14",
+            "          retention-days: 1",
+        ),
+        "release.yml:github-release upload hosted Linux repository Pages artifact "
+        "is missing retention period",
+        "hosted Linux repository Pages artifact retention weakening should fail",
+    )
+
     report = with_fixture(
         module,
         None,
