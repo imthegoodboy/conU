@@ -2344,6 +2344,48 @@ def run_unsafe_environment_file_write_tests(module) -> None:
     if not parsed["unsafeEnvironmentFileWrites"]:
         raise AssertionError("unsafe GITHUB_ENV write finding was not listed")
 
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Verify release artifact\n",
+            "      - name: Unsafe printf env write\n"
+            "        run: |\n"
+            "          printf 'CONU_MACOS_CODESIGN_IDENTITY=%s\\n' "
+            "\"$MACOS_CODESIGN_IDENTITY\" >> \"$GITHUB_ENV\"\n"
+            "      - name: Verify release artifact\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("unsafe GITHUB_ENV secret-derived printf should fail")
+    rendered = json.dumps(assert_safe_report(report))
+    if (
+        "writes secret-derived MACOS_CODESIGN_IDENTITY directly to GITHUB_ENV"
+        not in rendered
+    ):
+        raise AssertionError("unsafe GITHUB_ENV printf write issue was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Verify release artifact\n",
+            "      - name: Unsafe heredoc env write\n"
+            "        run: |\n"
+            "          cat <<EOF >> \"$GITHUB_ENV\"\n"
+            "          NODE_AUTH_TOKEN=$NODE_AUTH_TOKEN\n"
+            "          EOF\n"
+            "      - name: Verify release artifact\n",
+            1,
+        ),
+    )
+    if report.ready:
+        raise AssertionError("unsafe GITHUB_ENV secret-derived heredoc should fail")
+    rendered = json.dumps(assert_safe_report(report))
+    if "writes secret-derived NODE_AUTH_TOKEN directly to GITHUB_ENV" not in rendered:
+        raise AssertionError("unsafe GITHUB_ENV heredoc write issue was not reported")
+
 
 def main() -> int:
     module = load_module()
