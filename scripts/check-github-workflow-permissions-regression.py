@@ -364,6 +364,7 @@ jobs:
         with:
           path: dist
           pattern: conu-*
+          digest-mismatch: error
           merge-multiple: true
       - name: Install package tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rpm createrepo-c gnupg
@@ -1386,6 +1387,17 @@ def run_required_github_release_gate_tests(module) -> None:
         ),
         "release.yml:github-release is missing release artifact download pattern",
         "missing GitHub Release artifact download pattern should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        ready_release().replace(
+            "          digest-mismatch: error\n",
+            "",
+            1,
+        ),
+        "release.yml:github-release is missing release artifact digest mismatch policy",
+        "missing GitHub Release artifact digest mismatch policy should fail",
     )
 
     assert_release_gate_issue(
