@@ -22,9 +22,12 @@ from github_release_secrets import (
     find_gh,
     infer_repo,
     load_secret_names,
+    load_variable_values,
     normalize_repo,
-    run_gh_json,
 )
+
+
+REQUIRED_VARIABLE_VALUES = (NPM_TOKEN_ROTATION_MARKER_VAR,)
 
 
 @dataclass(frozen=True)
@@ -62,28 +65,6 @@ def load_script_module(filename: str, module_name: str):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def load_variable_values(repo: str, gh: str) -> dict[str, str]:
-    payload = run_gh_json(
-        gh,
-        ["variable", "list", "--repo", repo, "--json", "name,value"],
-        "gh variable list",
-    )
-    if not isinstance(payload, list):
-        raise ValueError("gh variable list returned an unexpected payload")
-    values: dict[str, str] = {}
-    for item in payload:
-        if not isinstance(item, dict):
-            raise ValueError("gh variable list returned a non-object variable entry")
-        name = item.get("name")
-        value = item.get("value", "")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("gh variable list returned a variable entry without a name")
-        if not isinstance(value, str):
-            raise ValueError(f"gh variable list returned a non-string value for {name}")
-        values[name.strip()] = value.strip()
-    return values
 
 
 def audit_release_secret_readiness(
@@ -163,7 +144,7 @@ def main() -> int:
         report = audit_release_secret_readiness(
             repo,
             load_secret_names(repo, gh),
-            load_variable_values(repo, gh),
+            load_variable_values(repo, gh, REQUIRED_VARIABLE_VALUES),
         )
     except (OSError, ValueError) as exc:
         print(f"GitHub release secret readiness failed: {exc}", file=sys.stderr)

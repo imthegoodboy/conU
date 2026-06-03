@@ -26,6 +26,7 @@ from github_release_secrets import (
     infer_repo,
     load_secret_metadata,
     load_secret_names,
+    load_variable_values,
     normalize_repo,
     run_gh_json,
 )
@@ -44,6 +45,14 @@ CUSTOM_REPOSITORY_REGION_VAR = "CONU_LINUX_REPOSITORY_AWS_REGION"
 CUSTOM_REPOSITORY_REQUIRED_SECRETS = (
     "CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID",
     "CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY",
+)
+REQUIRED_VARIABLE_VALUES = (
+    NPM_TOKEN_ROTATION_MARKER_VAR,
+    CUSTOM_REPOSITORY_BASE_URL_VAR,
+    CUSTOM_REPOSITORY_BUCKET_VAR,
+    CUSTOM_REPOSITORY_PREFIX_VAR,
+    CUSTOM_REPOSITORY_ENDPOINT_VAR,
+    CUSTOM_REPOSITORY_REGION_VAR,
 )
 CRATE_MANIFESTS = (
     Path("crates/conu-cli/Cargo.toml"),
@@ -477,28 +486,6 @@ def audit_secret_rotation_markers(
         markers=tuple(markers),
         issues=tuple(issues),
     )
-
-
-def load_variable_values(repo: str, gh: str) -> dict[str, str]:
-    payload = run_gh_json(
-        gh,
-        ["variable", "list", "--repo", repo, "--json", "name,value"],
-        "gh variable list",
-    )
-    if not isinstance(payload, list):
-        raise ValueError("gh variable list returned an unexpected payload")
-    values: dict[str, str] = {}
-    for item in payload:
-        if not isinstance(item, dict):
-            raise ValueError("gh variable list returned a non-object variable entry")
-        name = item.get("name")
-        value = item.get("value", "")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("gh variable list returned a variable entry without a name")
-        if not isinstance(value, str):
-            raise ValueError(f"gh variable list returned a non-string value for {name}")
-        values[name.strip()] = value.strip()
-    return values
 
 
 def normalize_custom_base_url(raw: str) -> str:
@@ -1376,7 +1363,7 @@ def main() -> int:
             }
         else:
             secret_names = load_secret_names(repo, gh)
-        variable_values = load_variable_values(repo, gh)
+        variable_values = load_variable_values(repo, gh, REQUIRED_VARIABLE_VALUES)
         ci_head_sha = args.ci_head.strip()
         release_target_sha = args.release_target_head.strip()
         if (
