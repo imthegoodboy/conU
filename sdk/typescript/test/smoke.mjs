@@ -421,6 +421,75 @@ assert.throws(
 );
 assert.equal(poisonedLowLevelArgumentRunnerCalled, false);
 
+let invalidLowLevelBinaryRunnerCalled = false;
+const invalidLowLevelBinaryClient = new ConuClient({
+  runner() {
+    invalidLowLevelBinaryRunnerCalled = true;
+    throw new Error("runner should not execute for invalid low-level command binary");
+  },
+});
+const invalidBinary = {
+  toString() {
+    throw new Error(`binary conversion leaked ${secretEndpoint}`);
+  },
+};
+
+assert.throws(
+  () => invalidLowLevelBinaryClient.run(invalidBinary, ["status"]),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU command binary could not be encoded: conu [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+assert.equal(invalidLowLevelBinaryRunnerCalled, false);
+
+let emptyLowLevelBinaryRunnerCalled = false;
+const emptyLowLevelBinaryClient = new ConuClient({
+  runner() {
+    emptyLowLevelBinaryRunnerCalled = true;
+    throw new Error("runner should not execute for empty low-level command binary");
+  },
+});
+
+assert.throws(
+  () => emptyLowLevelBinaryClient.run("", ["status"]),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU command binary could not be encoded: conu [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+assert.equal(emptyLowLevelBinaryRunnerCalled, false);
+
 let invalidPayloadRunnerCalled = false;
 const invalidPayloadClient = new ConuClient({
   conuBin: "C:/tools/conu-test.exe",
