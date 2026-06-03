@@ -13,10 +13,10 @@ export class ConuClient {
     this.conuBin = constructorBinary(options.conuBin, "conu");
     this.conudBin = constructorBinary(options.conudBin, "conud");
     this.mcpBin = constructorBinary(options.mcpBin, "conu-mcp");
-    this.cwd = options.cwd === undefined ? undefined : String(options.cwd);
-    this.env = { ...process.env, ...(options.env ?? {}) };
+    this.cwd = constructorStringOption(options.cwd, this.conuBin, "cwd", true);
+    this.env = constructorEnv(options.env, this.conuBin);
     if (options.home !== undefined && options.home !== null) {
-      this.env.CONU_HOME = String(options.home);
+      this.env.CONU_HOME = constructorStringOption(options.home, this.conuBin, "home", false);
     }
     this.runner = options.runner ?? defaultRunner;
   }
@@ -522,6 +522,57 @@ function constructorBinary(binary, fallback) {
     return fallback;
   }
   return normalizeCommandBinary(binary);
+}
+
+function constructorStringOption(value, binary, name, optional) {
+  if (value === undefined || value === null) {
+    if (optional) {
+      return undefined;
+    }
+    throw constructorOptionError(name, binary);
+  }
+  try {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  } catch (_error) {
+    // Fall through to the redacted constructor option error below.
+  }
+  throw constructorOptionError(name, binary);
+}
+
+function constructorEnv(env, binary) {
+  const safeEnv = { ...process.env };
+  if (env === undefined || env === null) {
+    return safeEnv;
+  }
+  try {
+    if (!isRecord(env)) {
+      throw new TypeError("environment overrides must be an object");
+    }
+    for (const [key, value] of Object.entries(env)) {
+      if (key.length === 0 || key.includes("=") || key.includes("\0")) {
+        throw new TypeError("environment variable name is invalid");
+      }
+      if (value === undefined) {
+        safeEnv[key] = undefined;
+      } else if (typeof value === "string") {
+        safeEnv[key] = value;
+      } else {
+        throw new TypeError("environment variable value must be a string or undefined");
+      }
+    }
+    return safeEnv;
+  } catch (_error) {
+    throw constructorOptionError("environment", binary);
+  }
+}
+
+function constructorOptionError(name, binary) {
+  return new ConuError(
+    `conU constructor ${name} could not be encoded: ${safeCommandForError(binary)}`,
+    resultForError({ code: 1 }, binary),
+  );
 }
 
 function normalizeCommandBinary(binary) {
