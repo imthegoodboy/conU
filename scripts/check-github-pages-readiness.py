@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
-from github_release_secrets import find_gh, infer_repo, run_gh_json
+from github_release_secrets import find_gh, infer_repo, normalize_repo, run_gh_json
 
 
 @dataclass(frozen=True)
@@ -38,10 +38,8 @@ class PagesReadiness:
 
 
 def split_repo(repo: str) -> tuple[str, str]:
-    parts = repo.strip().split("/", 1)
-    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
-        raise ValueError("repository must be in owner/name form")
-    return parts[0].strip(), parts[1].strip()
+    owner, name = normalize_repo(repo).split("/", 1)
+    return owner, name
 
 
 def normalize_https_url(value: str, field_name: str) -> str:
@@ -262,6 +260,7 @@ def main() -> int:
         if not repo:
             gh = gh or find_gh()
             repo = infer_repo(gh)
+        repo = normalize_repo(repo)
         pages_payload = None
         if not custom_base_url:
             if args.pages_json:

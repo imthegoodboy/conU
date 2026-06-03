@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from github_release_secrets import find_gh, infer_repo
+from github_release_secrets import find_gh, infer_repo, normalize_repo
 
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
@@ -275,6 +275,7 @@ def main() -> int:
         if not repo:
             gh = gh or find_gh()
             repo = infer_repo(gh)
+        repo = normalize_repo(repo)
 
         if args.release_json:
             payload = load_release_json(args.release_json)

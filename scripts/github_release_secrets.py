@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,8 @@ from typing import Any
 NPM_TOKEN_SECRET_NAME = "NPM_TOKEN"
 NPM_TOKEN_ROTATION_MARKER_VAR = "CONU_NPM_TOKEN_ROTATED_AFTER"
 NPM_TOKEN_ROTATION_REQUIRED_AFTER = "2026-06-03T00:00:00Z"
+REPO_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?$")
+REPO_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
 REQUIRED_RELEASE_SECRETS: tuple[str, ...] = (
@@ -69,6 +72,23 @@ def find_gh() -> str:
     raise ValueError("GitHub CLI executable was not found on PATH")
 
 
+def normalize_repo(repo: str) -> str:
+    value = repo.strip()
+    parts = value.split("/")
+    if len(parts) != 2:
+        raise ValueError("GitHub repository must be in owner/name form")
+    owner, name = (part.strip() for part in parts)
+    if not owner or not name:
+        raise ValueError("GitHub repository must be in owner/name form")
+    if name in {".", ".."}:
+        raise ValueError("GitHub repository name is invalid")
+    if not REPO_OWNER_RE.fullmatch(owner):
+        raise ValueError("GitHub repository owner contains unsupported characters")
+    if not REPO_NAME_RE.fullmatch(name):
+        raise ValueError("GitHub repository name contains unsupported characters")
+    return f"{owner}/{name}"
+
+
 def run_gh_json(gh: str, args: list[str], description: str) -> Any:
     result = subprocess.run(
         [gh, *args],
@@ -91,7 +111,7 @@ def run_gh_json(gh: str, args: list[str], description: str) -> Any:
 def infer_repo(gh: str) -> str:
     env_repo = os.environ.get("GH_REPO", "").strip()
     if env_repo:
-        return env_repo
+        return normalize_repo(env_repo)
 
     payload = run_gh_json(
         gh,
@@ -103,10 +123,11 @@ def infer_repo(gh: str) -> str:
     repo = payload.get("nameWithOwner")
     if not isinstance(repo, str) or not repo.strip():
         raise ValueError("gh repo view did not return nameWithOwner")
-    return repo.strip()
+    return normalize_repo(repo)
 
 
 def load_secret_metadata(repo: str, gh: str) -> dict[str, SecretMetadata]:
+    repo = normalize_repo(repo)
     payload = run_gh_json(
         gh,
         ["secret", "list", "--repo", repo, "--json", "name,updatedAt"],
@@ -138,6 +159,7 @@ def load_secret_names(repo: str, gh: str) -> set[str]:
 
 
 def audit_secret_names(repo: str, configured_names: set[str]) -> SecretReadiness:
+    repo = normalize_repo(repo)
     present = tuple(name for name in REQUIRED_RELEASE_SECRETS if name in configured_names)
     missing = tuple(name for name in REQUIRED_RELEASE_SECRETS if name not in configured_names)
     return SecretReadiness(

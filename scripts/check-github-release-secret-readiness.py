@@ -16,6 +16,7 @@ from github_release_secrets import (
     find_gh,
     infer_repo,
     load_secret_names,
+    normalize_repo,
 )
 
 
@@ -65,7 +66,7 @@ def main() -> int:
         os.chdir(repo_root)
 
         gh = args.gh or find_gh()
-        repo = args.repo.strip() or infer_repo(gh)
+        repo = normalize_repo(args.repo.strip() or infer_repo(gh))
         report = audit_secret_names(repo, load_secret_names(repo, gh))
     except (OSError, ValueError) as exc:
         print(f"GitHub release secret readiness failed: {exc}", file=sys.stderr)
