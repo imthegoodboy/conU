@@ -791,6 +791,20 @@ def main() -> int:
         raise AssertionError("package-manager generator rejected semver prerelease plus build metadata")
     if generator.validate_tag("v1.2.3-rc.1+build.5") != "v1.2.3-rc.1+build.5":
         raise AssertionError("package-manager generator rejected semver release tag")
+    for repo in ("owner/repo", "owner-name/repo.name", "owner/repo_name"):
+        if generator.validate_repo(repo) != repo:
+            raise AssertionError(f"valid package-manager repository changed during validation: {repo}")
+    for repo, expected in (
+        ("owner_name/repo", "owner contains unsupported characters"),
+        ("owner/..", "repository name is invalid"),
+        ("owner/repo/extra", "owner/name form"),
+        ("owner/repo?secret=value", "name contains unsupported characters"),
+    ):
+        expect_failure(
+            f"invalid package-manager repository {repo}",
+            lambda repo=repo: generator.validate_repo(repo),
+            expected,
+        )
     with tempfile.TemporaryDirectory(prefix="conu-package-manifest-") as temp_text:
         temp = Path(temp_text)
 
@@ -832,6 +846,15 @@ def main() -> int:
                 temp / "symlink-dist-out",
                 "release dist directory must not be a symlink",
             )
+
+        expect_cli_failure(
+            "invalid package-manager repository CLI",
+            rootless_dist,
+            temp / "invalid-repo-out",
+            "owner contains unsupported characters",
+            "--repo",
+            "owner_name/repo",
+        )
 
         symlink_asset = temp / "symlink-asset"
         shutil.copytree(rootless_dist, symlink_asset)
