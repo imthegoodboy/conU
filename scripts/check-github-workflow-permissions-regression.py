@@ -1218,6 +1218,37 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not dynamic_variable_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("dynamic Actions variable API delete finding was not listed")
 
+    curl_variable_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe curl Actions variable write\n"
+            "        run: |\n"
+            "          curl --fail-with-body -X PATCH \\\n"
+            "            https://api.github.com/repos/$GITHUB_REPOSITORY/"
+            "actions/variables/\"$CONU_RELEASE_VAR_NAME\" \\\n"
+            "            -d '{\"name\":\"CONU_LINUX_REPOSITORY_BASE_URL\","
+            "\"value\":\"https://example.invalid/conu\"}'\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if curl_variable_api_write_report.ready:
+        raise AssertionError("curl Actions variable API write should fail")
+    curl_variable_api_write_parsed = assert_safe_report(
+        curl_variable_api_write_report
+    )
+    curl_variable_api_write_rendered = json.dumps(
+        curl_variable_api_write_parsed
+    )
+    if (
+        "must not use direct HTTP GitHub Actions variable workflow write: "
+        "HTTP actions/variables write"
+    ) not in curl_variable_api_write_rendered:
+        raise AssertionError("curl Actions variable API write was not reported")
+    if not curl_variable_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("curl Actions variable API write finding was not listed")
+
     pwsh_variable_api_delete_report = with_fixture(
         module,
         None,
@@ -1397,6 +1428,38 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("dynamic Actions secret API delete was not reported")
     if not dynamic_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("dynamic Actions secret API delete finding was not listed")
+
+    pwsh_http_secret_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe PowerShell HTTP Actions secret delete\n"
+            "        shell: pwsh\n"
+            "        run: |\n"
+            "          Invoke-RestMethod -Method DELETE `\n"
+            "            \"https://api.github.com/repos/$env:GITHUB_REPOSITORY/"
+            "actions/secrets/$env:CONU_RELEASE_SECRET_NAME\"\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if pwsh_http_secret_api_delete_report.ready:
+        raise AssertionError("PowerShell HTTP Actions secret API delete should fail")
+    pwsh_http_secret_api_delete_parsed = assert_safe_report(
+        pwsh_http_secret_api_delete_report
+    )
+    pwsh_http_secret_api_delete_rendered = json.dumps(
+        pwsh_http_secret_api_delete_parsed
+    )
+    if (
+        "must not use direct HTTP GitHub Actions secret workflow write: "
+        "HTTP actions/secrets write"
+    ) not in pwsh_http_secret_api_delete_rendered:
+        raise AssertionError("PowerShell HTTP Actions secret API delete was not reported")
+    if not pwsh_http_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError(
+            "PowerShell HTTP Actions secret API delete finding was not listed"
+        )
 
     cmd_secret_api_delete_report = with_fixture(
         module,
