@@ -6318,7 +6318,7 @@ fn render_update_check(args: &[String]) -> CliOutput {
                 CliOutput::success(render_update_check_text(&report))
             }
         }
-        Err(error) => CliOutput::failure(1, format!("conU update check failed\n\n{error}")),
+        Err(error) => update_command_failure("check", &error),
     }
 }
 
@@ -11696,6 +11696,27 @@ mod tests {
         assert!(!text_output.stdout.contains("BEGIN PGP SIGNATURE"));
         assert!(!output.stdout.contains("private message contents"));
         assert!(!text_output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn update_check_failure_redacts_local_policy_path() {
+        let home = temp_home("update-check-error-secret-local-path");
+        let policy = home.join("conu-0.1.0-update-policy.json");
+        fs::create_dir_all(&policy).expect("policy marker dir creates");
+        let policy_path = policy.to_str().expect("policy path");
+        let local_path_text = home.display().to_string();
+
+        let output = run(["update", "check", "--policy-file", policy_path]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("path is not a regular file"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(output.stderr.contains("pathDisplayed=false"));
+        assert!(!output.stderr.contains(&local_path_text));
+        assert!(!output.stderr.contains("secret-local-path"));
+        assert!(!output.stderr.contains(policy_path));
+        assert!(!output.stderr.contains("BEGIN PGP SIGNATURE"));
+        assert!(!output.stderr.contains("private message contents"));
     }
 
     #[test]
