@@ -6336,7 +6336,7 @@ fn render_update_download(args: &[String]) -> CliOutput {
                 CliOutput::success(render_update_download_text(&report))
             }
         }
-        Err(error) => CliOutput::failure(1, format!("conU update download failed\n\n{error}")),
+        Err(error) => update_command_failure("download", &error),
     }
 }
 
@@ -6354,8 +6354,76 @@ fn render_update_apply(args: &[String]) -> CliOutput {
                 CliOutput::success(render_update_apply_text(&report))
             }
         }
-        Err(error) => CliOutput::failure(1, format!("conU update apply failed\n\n{error}")),
+        Err(error) => update_command_failure("apply", &error),
     }
+}
+
+fn update_command_failure(command: &str, error: &str) -> CliOutput {
+    CliOutput::failure(
+        1,
+        format!(
+            "conU update {command} failed\n\n{}\n\ncontentsDisplayed=false",
+            redact_update_failure_paths(error)
+        ),
+    )
+}
+
+fn redact_update_failure_paths(error: &str) -> String {
+    let mut output = String::with_capacity(error.len());
+    let mut token = String::new();
+
+    for ch in error.chars() {
+        if ch.is_whitespace() {
+            append_redacted_update_failure_token(&mut output, &token);
+            token.clear();
+            output.push(ch);
+        } else {
+            token.push(ch);
+        }
+    }
+    append_redacted_update_failure_token(&mut output, &token);
+
+    output
+}
+
+fn append_redacted_update_failure_token(output: &mut String, token: &str) {
+    if token.is_empty() {
+        return;
+    }
+
+    if is_update_local_path_token(token) {
+        output.push_str("local; pathDisplayed=false");
+    } else {
+        output.push_str(token);
+    }
+}
+
+fn is_update_local_path_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '"' | '\'' | '`' | ',' | ';' | ':' | '!' | '?' | '(' | ')' | '[' | ']' | '{' | '}'
+        )
+    });
+    let lower = trimmed.to_ascii_lowercase();
+
+    if lower.contains("http://") || lower.contains("https://") {
+        return false;
+    }
+    if trimmed.starts_with("~/") || trimmed.starts_with("~\\") {
+        return true;
+    }
+
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return true;
+    }
+
+    trimmed.contains('\\') || trimmed.contains('/')
 }
 
 fn parse_update_check_args(args: &[String]) -> Result<UpdateCheckArgs, CliOutput> {
@@ -12178,6 +12246,29 @@ mod tests {
     }
 
     #[test]
+    fn update_failure_redacts_local_paths_without_hiding_public_urls() {
+        let error = concat!(
+            r#"release update install-dir is not a directory: C:\secret-local-path\bin"#,
+            "\n",
+            "downloaded https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu.zip ",
+            "into /tmp/secret-local-path/conu.tar.gz",
+            "\n",
+            "relative dist/secret-local-path/conu.zip failed"
+        );
+        let redacted = redact_update_failure_paths(error);
+
+        assert!(
+            redacted
+                .contains("https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu.zip")
+        );
+        assert!(redacted.contains("local; pathDisplayed=false"));
+        assert!(!redacted.contains("secret-local-path"));
+        assert!(!redacted.contains(r#"C:\"#));
+        assert!(!redacted.contains("/tmp/"));
+        assert!(!redacted.contains("dist/"));
+    }
+
+    #[test]
     fn update_apply_dry_run_validates_archive_without_installing() {
         let target = update_apply_test_target();
         let filename = update_archive_fixture_name(&target);
@@ -12237,6 +12328,44 @@ mod tests {
         assert!(!output.stdout.contains("BEGIN PGP SIGNATURE"));
         assert!(!text_output.stdout.contains("BEGIN PGP SIGNATURE"));
         assert!(!install_dir.exists());
+    }
+
+    #[test]
+    fn update_apply_failure_redacts_install_dir_path() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let archive_bytes = update_archive_fixture_bytes(&target, false);
+        let archive_sha = sha256_hex(&archive_bytes);
+        let home = temp_home("update-apply-error-secret-local-path");
+        let policy =
+            write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
+        let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
+        let install_dir = home.join("install-bin");
+        fs::write(&install_dir, b"not a directory").expect("install marker writes");
+        let local_path_text = home.display().to_string();
+
+        let output = run(vec![
+            "update".to_string(),
+            "apply".to_string(),
+            "--policy-file".to_string(),
+            policy.to_str().expect("policy path").to_string(),
+            "--artifact-file".to_string(),
+            artifact.to_str().expect("artifact path").to_string(),
+            "--install-dir".to_string(),
+            install_dir.to_str().expect("install path").to_string(),
+            "--dry-run".to_string(),
+            "--target".to_string(),
+            target,
+        ]);
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("install-dir is not a directory"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(output.stderr.contains("pathDisplayed=false"));
+        assert!(!output.stderr.contains(&local_path_text));
+        assert!(!output.stderr.contains("secret-local-path"));
+        assert!(!output.stderr.contains("fixture binary bytes"));
+        assert!(!output.stderr.contains("BEGIN PGP SIGNATURE"));
     }
 
     #[cfg(unix)]
@@ -13398,11 +13527,12 @@ mod tests {
         let filename = update_archive_fixture_name(&target);
         let archive_bytes = update_archive_fixture_bytes(&target, false);
         let expected_sha = sha256_hex(&archive_bytes);
-        let home = temp_home("update-apply-drift");
+        let home = temp_home("update-apply-drift-secret-local-path");
         let policy =
             write_update_policy_fixture_for_asset(&home, false, &expected_sha, &target, &filename);
         let artifact = write_update_artifact_fixture(&home, &filename, b"tampered archive bytes");
         let install_dir = home.join("install-bin");
+        let local_path_text = home.display().to_string();
 
         let output = run([
             "update",
@@ -13419,6 +13549,11 @@ mod tests {
 
         assert_eq!(output.code, 1);
         assert!(output.stderr.contains("SHA-256 did not match policy"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(!output.stderr.contains(&local_path_text));
+        assert!(!output.stderr.contains("secret-local-path"));
+        assert!(!output.stderr.contains("tampered archive bytes"));
+        assert!(!output.stderr.contains("BEGIN PGP SIGNATURE"));
         assert!(!install_dir.exists());
     }
 
