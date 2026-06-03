@@ -1984,12 +1984,24 @@ fn readiness_contents_displayed(report: &HostedReadinessReport) -> bool {
 
 fn hash_token_from_stdin() -> Result<(), String> {
     let token = read_relay_token_from_reader(io::stdin())?;
-    let hash = relay_token_sha256_hex(&token).map_err(|error| error.to_string())?;
-
-    println!("token_sha256_hex = \"{hash}\"");
-    println!("token_length = {}", token.len());
-    println!("token_displayed = false");
+    print!("{}", render_hashed_relay_token(&token)?);
     Ok(())
+}
+
+fn render_hashed_relay_token(token: &str) -> Result<String, String> {
+    let hash = relay_token_sha256_hex(token).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "token_sha256_hex = \"{hash}\"\n\
+token_length = {}\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+token_hash_displayed = true\n\
+key_material_displayed = false\n\
+session_id_displayed = false\n\
+ciphertext_displayed = false\n\
+contents_displayed = false\n",
+        token.len()
+    ))
 }
 
 fn issue_credential_from_args(args: Vec<String>) -> Result<(), String> {
@@ -13708,6 +13720,24 @@ mod tests {
         assert!(admin_error.contains("relay admin token"));
         assert!(admin_error.contains("exceeds"));
         assert!(!admin_error.contains(secret));
+    }
+
+    #[test]
+    fn hash_token_output_marks_hash_display_without_printing_token() {
+        let token = "relay-token-1234567890abcdef";
+        let hash = relay_token_sha256_hex(token).expect("token hashes");
+        let output = render_hashed_relay_token(token).expect("hash token output renders");
+
+        assert!(output.contains(&format!("token_sha256_hex = \"{hash}\"")));
+        assert!(output.contains(&format!("token_length = {}", token.len())));
+        assert!(output.contains("payload_displayed = false"));
+        assert!(output.contains("token_displayed = false"));
+        assert!(output.contains("token_hash_displayed = true"));
+        assert!(output.contains("key_material_displayed = false"));
+        assert!(output.contains("session_id_displayed = false"));
+        assert!(output.contains("ciphertext_displayed = false"));
+        assert!(output.contains("contents_displayed = false"));
+        assert!(!output.contains(token));
     }
 
     #[test]
