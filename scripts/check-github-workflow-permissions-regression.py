@@ -76,6 +76,8 @@ jobs:
         run: python scripts/check-github-release-secret-readiness-regression.py
       - name: Release secret env preflight regression
         run: python scripts/check-release-secret-env-preflight-regression.py
+      - name: Release secret rotation gate regression
+        run: python scripts/check-release-secret-rotation-gate-regression.py
       - name: GitHub release secret setup regression
         run: python scripts/set-github-release-secrets-regression.py
       - name: GitHub main branch protection regression
@@ -227,6 +229,11 @@ jobs:
           CONU_LINUX_GPG_KEY_FINGERPRINT: ${{ secrets.CONU_LINUX_GPG_KEY_FINGERPRINT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-release-secret-env-preflight.py
+      - name: Validate NPM token rotation marker
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CONU_NPM_TOKEN_ROTATED_AFTER: ${{ vars.CONU_NPM_TOKEN_ROTATED_AFTER }}
+        run: python scripts/check-release-secret-rotation-gate.py --secret-name NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER --required-after 2026-06-03T00:00:00Z
       - name: Validate npm token authentication and registry availability
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -315,6 +322,8 @@ jobs:
         run: python scripts/check-github-release-secret-readiness-regression.py
       - name: Release secret env preflight regression
         run: python scripts/check-release-secret-env-preflight-regression.py
+      - name: Release secret rotation gate regression
+        run: python scripts/check-release-secret-rotation-gate-regression.py
       - name: GitHub release secret setup regression
         run: python scripts/set-github-release-secrets-regression.py
       - name: GitHub main branch protection regression
@@ -1286,6 +1295,22 @@ def run_required_release_preflight_tests(module) -> None:
         "is missing release secret env command"
     ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("missing tagged release secret preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "        run: python scripts/check-release-secret-rotation-gate.py --secret-name NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER --required-after 2026-06-03T00:00:00Z\n",
+            "        run: echo skipped-npm-token-rotation-marker\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing NPM token rotation marker preflight should fail")
+    if (
+        "release.yml:release-preflight validate NPM token rotation marker "
+        "is missing rotation marker command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing NPM token rotation marker preflight was not reported")
 
     report = with_fixture(
         module,
