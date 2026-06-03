@@ -64,7 +64,11 @@ API_MUTATION_METHOD_PATTERN = (
     r"\s(?:--method|-X)(?:\s+|=)(?:POST|PUT|PATCH|DELETE)\b"
 )
 HTTP_MUTATION_METHOD_PATTERN = (
-    r"\s(?:-X|--request|--method|-Method)(?:\s+|=)"
+    r"\s(?:(?:-X)(?:\s+|=)?|(?:--request|--method|-Method)(?:\s+|=))"
+    r"(?:POST|PUT|PATCH|DELETE)\b"
+)
+HTTPIE_MUTATION_METHOD_PATTERN = (
+    r"\b(?:http(?:\.exe)?|https(?:\.exe)?)\s+"
     r"(?:POST|PUT|PATCH|DELETE)\b"
 )
 HTTP_BODY_WRITE_PATTERN = (
@@ -105,9 +109,10 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
     (
         "HTTP actions/variables write",
         re.compile(
-            rf"{HTTP_CLIENT_PATTERN}"
-            rf"(?=[^\n;&|]*\bactions/variables\b)"
-            rf"(?=[^\n;&|]*{HTTP_MUTATION_SIGNAL_PATTERN})",
+            rf"(?:{HTTP_CLIENT_PATTERN}"
+            rf"(?=[^\n;&|]*{HTTP_MUTATION_SIGNAL_PATTERN})|"
+            rf"{HTTPIE_MUTATION_METHOD_PATTERN})"
+            rf"(?=[^\n;&|]*\bactions/variables\b)",
             re.IGNORECASE,
         ),
         "direct HTTP GitHub Actions variable workflow write",
@@ -131,9 +136,10 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
     (
         "HTTP actions/secrets write",
         re.compile(
-            rf"{HTTP_CLIENT_PATTERN}"
-            rf"(?=[^\n;&|]*\bactions/secrets\b)"
-            rf"(?=[^\n;&|]*{HTTP_MUTATION_SIGNAL_PATTERN})",
+            rf"(?:{HTTP_CLIENT_PATTERN}"
+            rf"(?=[^\n;&|]*{HTTP_MUTATION_SIGNAL_PATTERN})|"
+            rf"{HTTPIE_MUTATION_METHOD_PATTERN})"
+            rf"(?=[^\n;&|]*\bactions/secrets\b)",
             re.IGNORECASE,
         ),
         "direct HTTP GitHub Actions secret workflow write",
