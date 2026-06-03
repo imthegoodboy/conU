@@ -210,6 +210,18 @@ def main() -> int:
                 release_base_url=bad_url,
             )
 
+        for bad_url in (
+            "https://github.com%20.evil/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://github.com%40evil.test/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://github.com\\evil.test/imthegoodboy/conU/releases/download/v0.1.0",
+        ):
+            expect_failure(
+                "unsafe release base URL authority",
+                dist,
+                "authority",
+                release_base_url=bad_url,
+            )
+
         expect_failure(
             "release base URL with raw dot segment",
             dist,
@@ -229,6 +241,13 @@ def main() -> int:
             dist,
             "path must not contain encoded separators",
             release_base_url="https://github.com/imthegoodboy/conU/releases/download/v0.1.0%2fother",
+        )
+
+        expect_failure(
+            "release base URL with encoded control path",
+            dist,
+            "whitespace or control characters",
+            release_base_url="https://github.com/imthegoodboy/conU/releases/download/v0.1.0/%00",
         )
 
         expect_failure(

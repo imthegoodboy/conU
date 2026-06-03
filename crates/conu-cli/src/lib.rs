@@ -10273,6 +10273,15 @@ fn parse_https_update_url(
             "release update policy {label} must not include credentials"
         ));
     }
+    if authority
+        .as_bytes()
+        .iter()
+        .any(|byte| is_update_url_authority_control(*byte))
+    {
+        return Err(format!(
+            "release update policy {label} authority is invalid"
+        ));
+    }
     if authority.chars().any(char::is_whitespace)
         || path_and_query.chars().any(char::is_whitespace)
         || path_and_query.contains('\\')
@@ -10350,8 +10359,21 @@ fn validate_update_url_path(path_and_query: &str, label: &str) -> Result<(), Str
                 "release update policy {label} path must not contain encoded separators"
             ));
         }
+        if decoded.iter().any(|byte| is_update_url_path_control(*byte)) {
+            return Err(format!(
+                "release update policy {label} path must not contain whitespace or control characters"
+            ));
+        }
     }
     Ok(())
+}
+
+fn is_update_url_authority_control(value: u8) -> bool {
+    value <= b' ' || value == 0x7f || value == b'\\' || value == b'%'
+}
+
+fn is_update_url_path_control(value: u8) -> bool {
+    value <= b' ' || value == 0x7f
 }
 
 fn percent_decode_update_path_segment(segment: &str, label: &str) -> Result<Vec<u8>, String> {
@@ -11841,6 +11863,9 @@ mod tests {
             "https://github.com:bad/conu-0.1.0-update-policy.json",
             "https://github.com:443x/conu-0.1.0-update-policy.json",
             "https://:443/conu-0.1.0-update-policy.json",
+            "https://github.com%20.evil/conu-0.1.0-update-policy.json",
+            "https://github.com%40evil.test/conu-0.1.0-update-policy.json",
+            "https://github.com\\evil.test/conu-0.1.0-update-policy.json",
         ] {
             let output = run(["update", "check", "--policy-url", url]);
 
@@ -11861,6 +11886,9 @@ mod tests {
             "https://github.com:bad/releases/download/v0.1.0",
             "https://github.com:443x/releases/download/v0.1.0",
             "https://:443/releases/download/v0.1.0",
+            "https://github.com%20.evil/releases/download/v0.1.0",
+            "https://github.com%40evil.test/releases/download/v0.1.0",
+            "https://github.com\\evil.test/releases/download/v0.1.0",
         ] {
             let error =
                 validate_public_https_url(url, "releaseBaseUrl").expect_err("URL should fail");
@@ -11891,6 +11919,10 @@ mod tests {
                 "https://github.com/imthegoodboy/conU/releases/download/bad%zz/conu-0.1.0-update-policy.json",
                 "URL is invalid",
             ),
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/v0.1.0/%00/conu-0.1.0-update-policy.json",
+                "whitespace or control characters",
+            ),
         ] {
             let output = run(["update", "check", "--policy-url", url]);
 
@@ -11914,6 +11946,10 @@ mod tests {
             (
                 "https://github.com/imthegoodboy/conU/releases/download/v0.1.0%2fother",
                 "path must not contain encoded separators",
+            ),
+            (
+                "https://github.com/imthegoodboy/conU/releases/download/v0.1.0/%00",
+                "whitespace or control characters",
             ),
         ] {
             let error =
