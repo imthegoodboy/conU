@@ -71,6 +71,20 @@ def main() -> int:
             raise AssertionError("release update policy was not deterministic")
 
         generator = load_generator_module()
+        for repo in ("owner/repo", "owner-name/repo.name", "owner/repo_name"):
+            if generator.validate_repo(repo) != repo:
+                raise AssertionError(f"valid update-policy repository changed during validation: {repo}")
+        for repo, expected in (
+            ("owner_name/repo", "owner contains unsupported characters"),
+            ("owner/..", "repository name is invalid"),
+            ("owner/repo/extra", "owner/name form"),
+            ("owner/repo?secret=value", "name contains unsupported characters"),
+        ):
+            expect_module_failure(
+                f"invalid update-policy repository {repo}",
+                lambda repo=repo: generator.validate_repo(repo),
+                expected,
+            )
         expect_module_failure_with_limit(
             generator,
             "text asset size bound",
@@ -257,6 +271,13 @@ def main() -> int:
             tag="v0.2.0",
         )
 
+        expect_failure(
+            "invalid update-policy repository CLI",
+            dist,
+            "owner contains unsupported characters",
+            repo="owner_name/repo",
+        )
+
         forbidden_text = temp / "forbidden-text"
         shutil.copytree(dist, forbidden_text)
         (forbidden_text / "conu.rb").write_text(
@@ -356,6 +377,7 @@ def expect_failure(
     expected: str,
     *,
     release_base_url: str = BASE_URL,
+    repo: str = REPO,
     tag: str = TAG,
 ) -> None:
     failed = subprocess.run(
@@ -370,7 +392,7 @@ def expect_failure(
             "--tag",
             tag,
             "--repo",
-            REPO,
+            repo,
             "--release-base-url",
             release_base_url,
         ],

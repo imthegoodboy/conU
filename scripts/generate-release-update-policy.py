@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
+from github_release_secrets import normalize_repo
+
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 TAG_RE = re.compile(r"^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
-REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 HASH_CHUNK_BYTES = 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 MAX_SIGNATURE_BYTES = 1024 * 1024
@@ -198,9 +199,10 @@ def validate_tag(tag: str, version: str) -> str:
 
 
 def validate_repo(repo: str) -> str:
-    if not REPO_RE.fullmatch(repo):
-        raise SystemExit(f"invalid GitHub repository owner/name: {repo}")
-    return repo
+    try:
+        return normalize_repo(repo)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def infer_channel(version: str) -> str:
