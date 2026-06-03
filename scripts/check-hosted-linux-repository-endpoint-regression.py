@@ -79,6 +79,10 @@ def main() -> int:
                 (f"{base_url}:", "authority"),
                 ("http://:443/conu", "host"),
                 (f"{base_url}:443x", "authority"),
+                ("https://packages.example.com%20.evil/conu", "authority"),
+                ("https://packages.example.com%40evil.test/conu", "authority"),
+                ("https://packages.example.com\\evil.test/conu", "authority"),
+                (f"{base_url}/%00", "whitespace or control characters"),
             ):
                 run_checker_expect_failure(
                     bad_url,
@@ -200,6 +204,27 @@ def main() -> int:
             run_checker_expect_failure(
                 base_url,
                 "path must not contain dot segments",
+                "--expected-version",
+                VERSION,
+            )
+
+        control_download_url = temp / "control-download-url"
+        shutil.copytree(site_root, control_download_url)
+        with serve_site(control_download_url, mode="good") as base_url:
+            rewrite_base_url(control_download_url, PLACEHOLDER_BASE_URL, base_url)
+            repository_path = control_download_url / "repository.json"
+            repository = json.loads(repository_path.read_text(encoding="ascii"))
+            repository["downloads"]["hostedBundleUrl"] = repository["downloads"][
+                "hostedBundleUrl"
+            ].replace("/downloads/", "/downloads/%00/")
+            repository_path.write_text(
+                json.dumps(repository, indent=2, sort_keys=True) + "\n",
+                encoding="ascii",
+                newline="\n",
+            )
+            run_checker_expect_failure(
+                base_url,
+                "whitespace or control characters",
                 "--expected-version",
                 VERSION,
             )

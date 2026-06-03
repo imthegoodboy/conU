@@ -318,6 +318,20 @@ def main() -> int:
                 "authority",
             )
 
+        for index, bad_url in enumerate((
+            "https://packages.example.com%20.evil/conu",
+            "https://packages.example.com%40evil.test/conu",
+            "https://packages.example.com\\evil.test/conu",
+        )):
+            unsafe_url = temp / f"unsafe-authority-url-{index}"
+            shutil.copytree(dist, unsafe_url)
+            expect_failure(
+                "unsafe base URL authority",
+                unsafe_url,
+                bad_url,
+                "authority",
+            )
+
         encoded_base_url = temp / "encoded-base-url"
         shutil.copytree(dist, encoded_base_url)
         expect_failure(
@@ -325,6 +339,15 @@ def main() -> int:
             encoded_base_url,
             f"{BASE_URL}/%2e%2e%2fother",
             "path must not contain encoded separators",
+        )
+
+        control_base_url = temp / "control-base-url"
+        shutil.copytree(dist, control_base_url)
+        expect_failure(
+            "control base URL path",
+            control_base_url,
+            f"{BASE_URL}/%00",
+            "whitespace or control characters",
         )
 
     print("Hosted Linux repository site regression checks passed")

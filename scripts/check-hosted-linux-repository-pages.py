@@ -55,12 +55,20 @@ def main() -> int:
             "https://imthegoodboy.github.io:/conU",
             "https://:443/conU",
             "https://imthegoodboy.github.io:443x/conU",
+            "https://imthegoodboy.github.io%20.evil/conU",
+            "https://imthegoodboy.github.io%40evil.test/conU",
+            "https://imthegoodboy.github.io\\evil.test/conU",
         ):
             expect_action_failure(
                 lambda bad_url=bad_url: preparer.validate_repository_base_url(bad_url),
                 "authority",
                 "malformed repository base URL authority",
             )
+        expect_action_failure(
+            lambda: preparer.validate_repository_base_url(f"{BASE_URL}/%00"),
+            "whitespace or control characters",
+            "control repository base URL path",
+        )
         expect_zip_bound_failure(
             preparer,
             site,
@@ -306,6 +314,30 @@ def main() -> int:
             "baseUrl path must not contain encoded separators",
         )
 
+        control_base = temp / "control-base"
+        shutil.copytree(dist, control_base)
+        repository = read_site_json(control_base / SITE_BUNDLE)
+        cache_policy = read_site_json_member(control_base / SITE_BUNDLE, "cache-policy.json")
+        control_url = f"{BASE_URL}/%00"
+        rewrite_repository_base_url(repository, control_url)
+        cache_policy["baseUrl"] = control_url
+        rewrite_site_zip(
+            control_base / SITE_BUNDLE,
+            {
+                "repository.json": json.dumps(repository, indent=2, sort_keys=True).encode("ascii")
+                + b"\n",
+                "cache-policy.json": json.dumps(cache_policy, indent=2, sort_keys=True).encode("ascii")
+                + b"\n",
+            },
+        )
+        sign_site(control_base / SITE_BUNDLE)
+        expect_failure(
+            "control repository base URL",
+            control_base / SITE_BUNDLE,
+            temp / "control-base-pages",
+            "baseUrl path must not contain whitespace or control characters",
+        )
+
         off_origin_key = temp / "off-origin-key"
         shutil.copytree(dist, off_origin_key)
         repository = read_site_json(off_origin_key / SITE_BUNDLE)
@@ -354,6 +386,24 @@ def main() -> int:
             escaped_download / SITE_BUNDLE,
             temp / "escaped-download-pages",
             "repository.json downloads.hostedBundleUrl path must not contain dot segments",
+        )
+
+        control_download = temp / "control-download"
+        shutil.copytree(dist, control_download)
+        repository = read_site_json(control_download / SITE_BUNDLE)
+        repository["downloads"]["hostedBundleUrl"] = repository["downloads"][
+            "hostedBundleUrl"
+        ].replace("/downloads/", "/downloads/%00/")
+        rewrite_site_zip(
+            control_download / SITE_BUNDLE,
+            {"repository.json": json.dumps(repository, indent=2, sort_keys=True).encode("ascii") + b"\n"},
+        )
+        sign_site(control_download / SITE_BUNDLE)
+        expect_failure(
+            "control download URL",
+            control_download / SITE_BUNDLE,
+            temp / "control-download-pages",
+            "repository.json downloads.hostedBundleUrl path must not contain whitespace or control characters",
         )
 
         non_empty_output = temp / "non-empty"

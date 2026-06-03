@@ -33,6 +33,7 @@ MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CACHE_CONTROL_BYTES = 256
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,253}[A-Za-z0-9]$")
+SAFE_REGION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 FORBIDDEN_SEGMENTS = {
@@ -238,6 +239,7 @@ def build_publish_plan(args: argparse.Namespace) -> PublishPlan:
     bucket = validate_bucket(args.bucket)
     prefix = validate_prefix(args.prefix)
     validate_endpoint_url(args.endpoint_url)
+    validate_region(args.region)
     if args.post_upload_retries < 1:
         raise PublicationError("--post-upload-retries must be at least 1")
     if args.post_upload_retry_seconds < 0:
@@ -331,6 +333,8 @@ def validate_endpoint_url(raw: str, *, allow_loopback_http: bool = False) -> str
         raise PublicationError("S3 endpoint URL path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise PublicationError("S3 endpoint URL path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_parts):
+        raise PublicationError("S3 endpoint URL path must not contain whitespace or control characters")
     path = "/" + "/".join(parts) if parts else ""
     return urlunparse((scheme, netloc, path, "", "", ""))
 
@@ -357,6 +361,8 @@ def validate_base_url(raw: str) -> str:
         raise PublicationError("repository base URL path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise PublicationError("repository base URL path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_parts):
+        raise PublicationError("repository base URL path must not contain whitespace or control characters")
     normalized_path = "/" + "/".join(parts) if parts else ""
     return urlunparse(("https", netloc, normalized_path, "", "", ""))
 
@@ -371,12 +377,36 @@ def normalize_url_netloc(parsed, label: str) -> str:
         raise PublicationError(f"{label} authority must include a host")
     if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
         raise PublicationError(f"{label} authority is invalid")
+    raw_authority = parsed.netloc.rsplit("@", 1)[-1]
+    if has_url_authority_control(raw_authority) or has_url_authority_control(host):
+        raise PublicationError(f"{label} authority is invalid")
     host = host.lower()
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     if port is None:
         return host
     return f"{host}:{port}"
+
+
+def validate_region(raw: str) -> str:
+    region = raw.strip()
+    if not region:
+        return ""
+    if any(char.isspace() for char in region):
+        raise PublicationError("AWS region must not contain whitespace")
+    if "/" in region or "\\" in region or "?" in region or "#" in region:
+        raise PublicationError("AWS region must be a region name, not a URL or path")
+    if not SAFE_REGION_RE.fullmatch(region):
+        raise PublicationError("AWS region contains unsupported characters")
+    return region
+
+
+def has_url_authority_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 or char in {"\\", "%"} for char in value)
+
+
+def has_url_path_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 for char in value)
 
 
 def read_json_file(path: Path, label: str) -> dict[str, Any]:
@@ -464,6 +494,8 @@ def url_to_base_path(base_url: str, value: str, label: str) -> str:
         raise PublicationError(f"{label} path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_path_parts):
         raise PublicationError(f"{label} path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_path_parts):
+        raise PublicationError(f"{label} path must not contain whitespace or control characters")
     forbidden = sorted({part.lower() for part in decoded_path_parts} & FORBIDDEN_SEGMENTS)
     if forbidden:
         raise PublicationError(
@@ -540,6 +572,8 @@ def validate_cache_path(path: str, label: str) -> str:
     parts = path.split("/")
     if any(part in {"", ".", ".."} for part in parts[1:]):
         raise PublicationError(f"{label} must not contain empty or dot segments")
+    if any(has_url_path_control(part) for part in parts[1:]):
+        raise PublicationError(f"{label} must not contain whitespace or control characters")
     forbidden = sorted({part.lower() for part in parts[1:]} & FORBIDDEN_SEGMENTS)
     if forbidden:
         raise PublicationError(
@@ -773,8 +807,9 @@ def publish_plan(plan: PublishPlan, args: argparse.Namespace) -> None:
     endpoint_url = validate_endpoint_url(args.endpoint_url)
     if endpoint_url:
         global_args.extend(["--endpoint-url", endpoint_url])
-    if args.region.strip():
-        global_args.extend(["--region", args.region.strip()])
+    region = validate_region(args.region)
+    if region:
+        global_args.extend(["--region", region])
     for file in plan.files:
         label = f"site file {file.relative_path}"
         handle, size = open_regular_file(file.path, label, max_bytes=MAX_FILE_BYTES)
