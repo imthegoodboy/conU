@@ -2,25 +2,21 @@
 
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
-const { binaryPath } = require("./platform");
+const { BINARIES, binaryPath } = require("./platform");
 
-const binaryName = process.env.CONU_BIN_NAME;
-const executable = binaryPath(binaryName);
+const binaryName = readBinaryName(process.env.CONU_BIN_NAME);
+const executable = resolveExecutable(binaryName);
 
 if (!fs.existsSync(executable)) {
-  console.error(`conU binary is missing: ${executable}`);
+  console.error(`conU binary is missing for ${binaryName}; pathDisplayed=false contentsDisplayed=false`);
   console.error("Run npm install again, or set CONU_NPM_BINARY_DIR during install.");
   process.exit(127);
 }
 
-const child = spawn(executable, process.argv.slice(2), {
-  stdio: "inherit",
-  env: process.env
-});
+const child = launchExecutable(binaryName, executable);
 
 child.on("error", (error) => {
-  console.error(`failed to launch ${binaryName}: ${error.message}`);
-  process.exit(1);
+  reportLaunchError(binaryName, error);
 });
 
 child.on("exit", (code, signal) => {
@@ -34,3 +30,59 @@ child.on("exit", (code, signal) => {
   }
   process.exit(code === null ? 1 : code);
 });
+
+function readBinaryName(name) {
+  if (BINARIES.includes(name)) {
+    return name;
+  }
+  console.error("conU binary selection is invalid; pathDisplayed=false contentsDisplayed=false");
+  process.exit(127);
+}
+
+function resolveExecutable(name) {
+  try {
+    return binaryPath(name);
+  } catch (error) {
+    console.error(
+      `conU binary is unavailable for this platform: ${platformErrorMessage(error)}; pathDisplayed=false contentsDisplayed=false`
+    );
+    process.exit(127);
+  }
+}
+
+function launchExecutable(name, executable) {
+  try {
+    return spawn(executable, process.argv.slice(2), {
+      stdio: "inherit",
+      env: process.env
+    });
+  } catch (error) {
+    reportLaunchError(name, error);
+  }
+}
+
+function reportLaunchError(name, error) {
+  console.error(
+    `failed to launch ${name}; errorCode=${runtimeErrorCode(error)} pathDisplayed=false contentsDisplayed=false`
+  );
+  process.exit(1);
+}
+
+function platformErrorMessage(error) {
+  const message = error && typeof error.message === "string" ? error.message : "";
+  if (message.startsWith("unsupported conU platform: ")) {
+    return message;
+  }
+  if (message === "the npm package currently ships Windows x64 binaries only") {
+    return message;
+  }
+  return "runtime configuration error";
+}
+
+function runtimeErrorCode(error) {
+  const code = error && typeof error.code === "string" ? error.code : "";
+  if (/^[A-Z0-9_]+$/.test(code)) {
+    return code;
+  }
+  return "UNKNOWN";
+}
