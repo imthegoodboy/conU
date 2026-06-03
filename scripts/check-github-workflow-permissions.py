@@ -83,6 +83,20 @@ HTTP_CLIENT_PATTERN = (
     r"\b(?:curl(?:\.exe)?|wget(?:\.exe)?|Invoke-RestMethod|"
     r"Invoke-WebRequest|irm|iwr)\b"
 )
+SCRIPT_CLIENT_PATTERN = (
+    r"\b(?:python(?:3)?|py(?:\.exe)?|node(?:\.exe)?|deno(?:\.exe)?|"
+    r"bun(?:\.exe)?)\b"
+)
+SCRIPT_COMMAND_SPAN_PATTERN = r"[^\n]*"
+SCRIPT_MUTATION_SIGNAL_PATTERN = (
+    r"(?:"
+    r"\brequests\.(?:post|put|patch|delete)\s*\("
+    r"|(?:\bfetch\s*\(|\burllib\.request\.Request\s*\(|\bRequest\s*\()"
+    rf"{SCRIPT_COMMAND_SPAN_PATTERN}\bmethod\s*[:=]\s*['\"]?"
+    r"(?:POST|PUT|PATCH|DELETE)\b"
+    r"|\bmethod\s*[:=]\s*['\"]?(?:POST|PUT|PATCH|DELETE)\b"
+    r")"
+)
 FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     (
         "--allow-unverified-npm-token-rotation-marker",
@@ -118,6 +132,16 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         "direct HTTP GitHub Actions variable workflow write",
     ),
     (
+        "script actions/variables write",
+        re.compile(
+            rf"{SCRIPT_CLIENT_PATTERN}"
+            rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}\bactions/variables\b)"
+            rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}{SCRIPT_MUTATION_SIGNAL_PATTERN})",
+            re.IGNORECASE,
+        ),
+        "scripted GitHub Actions variable workflow write",
+    ),
+    (
         "gh secret set <any-actions-secret>",
         re.compile(r"\bgh\s+secret\s+set\b"),
         "direct GitHub Actions secret workflow write",
@@ -143,6 +167,16 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             re.IGNORECASE,
         ),
         "direct HTTP GitHub Actions secret workflow write",
+    ),
+    (
+        "script actions/secrets write",
+        re.compile(
+            rf"{SCRIPT_CLIENT_PATTERN}"
+            rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}\bactions/secrets\b)"
+            rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}{SCRIPT_MUTATION_SIGNAL_PATTERN})",
+            re.IGNORECASE,
+        ),
+        "scripted GitHub Actions secret workflow write",
     ),
     (
         f"gh variable set {NPM_TOKEN_ROTATION_MARKER_VAR}",
