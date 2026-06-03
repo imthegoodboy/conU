@@ -189,6 +189,65 @@ def run_constructor_binary_redaction_test(module) -> None:
         raise AssertionError("Python SDK empty constructor binary error should retain safe metadata")
 
 
+def run_constructor_option_redaction_test(module) -> None:
+    class SecretPath:
+        def __fspath__(self) -> str:
+            raise RuntimeError(f"path conversion exposed {SENSITIVE_ENDPOINT}")
+
+    class SecretEnv(dict):
+        def items(self):
+            raise RuntimeError(f"environment override exposed {SENSITIVE_ENDPOINT}")
+
+    class SecretEnvValue:
+        def __str__(self) -> str:
+            raise RuntimeError(f"environment value exposed {SENSITIVE_ENDPOINT}")
+
+    def fake_run(_argv, **_kwargs):
+        raise AssertionError("Python SDK should not execute subprocess for invalid constructor option")
+
+    module.subprocess.run = fake_run
+
+    cases = (
+        (
+            lambda: module.ConuClient(conu_bin="C:/tools/conu-test.exe", home=SecretPath()),
+            "conU constructor home could not be encoded: conu-test.exe [arguments redacted]",
+        ),
+        (
+            lambda: module.ConuClient(conu_bin="C:/tools/conu-test.exe", cwd=SecretPath()),
+            "conU constructor cwd could not be encoded: conu-test.exe [arguments redacted]",
+        ),
+        (
+            lambda: module.ConuClient(
+                conu_bin="C:/tools/conu-test.exe",
+                env=SecretEnv(CONU_SECRET_FIXTURE="safe"),
+            ),
+            "conU constructor environment could not be encoded: "
+            "conu-test.exe [arguments redacted]",
+        ),
+        (
+            lambda: module.ConuClient(
+                conu_bin="C:/tools/conu-test.exe",
+                env={"CONU_SECRET_FIXTURE": SecretEnvValue()},
+            ),
+            "conU constructor environment could not be encoded: "
+            "conu-test.exe [arguments redacted]",
+        ),
+    )
+
+    for action, expected in cases:
+        try:
+            action()
+        except module.ConuError as exc:
+            rendered = str(exc)
+            assert_safe_error_result(exc, "conu-test.exe", 1)
+        else:
+            raise AssertionError("expected Python SDK constructor option failure")
+
+        assert_redacted(rendered)
+        if expected not in rendered:
+            raise AssertionError("Python SDK constructor option error should retain safe metadata")
+
+
 def run_subprocess_exception_redaction_test(module) -> None:
     def fake_run(_argv, **_kwargs):
         raise RuntimeError(f"custom runner exposed {SENSITIVE_ENDPOINT}")
@@ -808,6 +867,7 @@ def main() -> int:
     run_failed_command_redaction_test(module)
     run_spawn_error_redaction_test(module)
     run_constructor_binary_redaction_test(module)
+    run_constructor_option_redaction_test(module)
     run_subprocess_exception_redaction_test(module)
     run_malformed_completed_stdio_redaction_test(module)
     run_malformed_completed_returncode_redaction_test(module)

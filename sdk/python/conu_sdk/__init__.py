@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -51,12 +52,15 @@ class ConuClient:
         self.conu_bin = _normalize_command_binary(conu_bin)
         self.conud_bin = _normalize_command_binary(conud_bin)
         self.mcp_bin = _normalize_command_binary(mcp_bin)
-        self.cwd = None if cwd is None else str(cwd)
-        self.env = os.environ.copy()
-        if env:
-            self.env.update(env)
+        self.cwd = _normalize_constructor_path(cwd, self.conu_bin, "cwd", optional=True)
+        self.env = _normalize_constructor_env(env, self.conu_bin)
         if home is not None:
-            self.env["CONU_HOME"] = str(home)
+            self.env["CONU_HOME"] = _normalize_constructor_path(
+                home,
+                self.conu_bin,
+                "home",
+                optional=False,
+            )
 
     def init(self) -> CommandResult:
         return self._run_conu("init")
@@ -629,6 +633,54 @@ def _normalize_command_binary(binary: Any) -> str:
         f"conU command binary could not be encoded: {_safe_command_for_error(binary)}",
         _result_for_error(1, binary),
     ) from None
+
+
+def _normalize_constructor_path(
+    value: Any,
+    binary: Any,
+    name: str,
+    *,
+    optional: bool,
+) -> str | None:
+    if value is None:
+        if optional:
+            return None
+        raise _constructor_option_error(name, binary)
+    try:
+        if isinstance(value, PathLike):
+            value = os.fspath(value)
+        if isinstance(value, bytes):
+            value = os.fsdecode(value)
+        if isinstance(value, str) and value.strip():
+            return value
+    except Exception:
+        pass
+    raise _constructor_option_error(name, binary)
+
+
+def _normalize_constructor_env(env: Any, binary: Any) -> dict[str, str]:
+    safe_env = os.environ.copy()
+    if env is None:
+        return safe_env
+    try:
+        if not isinstance(env, Mapping):
+            raise TypeError("environment overrides must be a mapping")
+        for key, value in env.items():
+            if not isinstance(key, str) or not key or "=" in key or "\0" in key:
+                raise TypeError("environment variable name is invalid")
+            if not isinstance(value, str):
+                raise TypeError("environment variable value must be a string")
+            safe_env[key] = value
+        return safe_env
+    except Exception:
+        raise _constructor_option_error("environment", binary) from None
+
+
+def _constructor_option_error(name: str, binary: Any) -> ConuError:
+    return ConuError(
+        f"conU constructor {name} could not be encoded: {_safe_command_for_error(binary)}",
+        _result_for_error(1, binary),
+    )
 
 
 def _safe_command_for_error(binary: Any) -> str:

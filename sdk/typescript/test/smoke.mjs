@@ -492,6 +492,119 @@ assert.throws(
   },
 );
 
+const invalidConstructorOption = {
+  toString() {
+    throw new Error(`constructor option conversion leaked ${secretEndpoint}`);
+  },
+};
+
+for (const [name, options, expectedMessage] of [
+  [
+    "home",
+    { conuBin: "C:/tools/conu-test.exe", home: invalidConstructorOption },
+    "conU constructor home could not be encoded: conu-test.exe [arguments redacted]",
+  ],
+  [
+    "cwd",
+    { conuBin: "C:/tools/conu-test.exe", cwd: invalidConstructorOption },
+    "conU constructor cwd could not be encoded: conu-test.exe [arguments redacted]",
+  ],
+]) {
+  assert.throws(
+    () =>
+      new ConuClient({
+        ...options,
+        runner() {
+          throw new Error(`runner should not execute for invalid constructor ${name}`);
+        },
+      }),
+    (error) => {
+      assert.ok(error instanceof ConuError);
+      const rendered = JSON.stringify({
+        message: error.message,
+        result: error.result,
+      });
+      assert.ok(!rendered.includes("secret"));
+      assert.ok(!rendered.includes("token=private"));
+      assert.ok(!rendered.includes("relay.example.com"));
+      assert.equal(error.message, expectedMessage);
+      assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+      assert.equal(error.result.contentsDisplayed, false);
+      assert.equal(error.result.argsRedacted, true);
+      assert.equal(error.result.stdioRedacted, true);
+      return true;
+    },
+  );
+}
+
+const poisonedConstructorEnv = {};
+Object.defineProperty(poisonedConstructorEnv, "CONU_SECRET_FIXTURE", {
+  enumerable: true,
+  get() {
+    throw new Error(`environment override getter leaked ${secretEndpoint}`);
+  },
+});
+
+assert.throws(
+  () =>
+    new ConuClient({
+      conuBin: "C:/tools/conu-test.exe",
+      env: poisonedConstructorEnv,
+      runner() {
+        throw new Error("runner should not execute for poisoned constructor environment");
+      },
+    }),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU constructor environment could not be encoded: conu-test.exe [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+
+assert.throws(
+  () =>
+    new ConuClient({
+      conuBin: "C:/tools/conu-test.exe",
+      env: { CONU_SECRET_FIXTURE: invalidConstructorOption },
+      runner() {
+        throw new Error("runner should not execute for invalid constructor environment");
+      },
+    }),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU constructor environment could not be encoded: conu-test.exe [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+
 assert.throws(
   () => invalidLowLevelBinaryClient.run(invalidBinary, ["status"]),
   (error) => {
