@@ -21,12 +21,16 @@ fn main() -> ExitCode {
             println!("conud {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Some(unknown) => {
-            eprintln!("unknown option: {unknown}");
+        Some(_unknown) => {
+            eprintln!("{}", unknown_option_message());
             print_help();
             ExitCode::from(2)
         }
     }
+}
+
+fn unknown_option_message() -> &'static str {
+    "unknown option; contentsDisplayed=false"
 }
 
 fn serve_runtime() -> ExitCode {
@@ -196,4 +200,19 @@ Usage:
   conud --help
   conud --version"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_option_message_redacts_argument_contents() {
+        let secret_marker = "--relay-secret-token";
+        let message = unknown_option_message();
+
+        assert!(message.contains("unknown option"));
+        assert!(message.contains("contentsDisplayed=false"));
+        assert!(!message.contains(secret_marker));
+    }
 }
