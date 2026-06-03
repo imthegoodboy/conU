@@ -2043,6 +2043,18 @@ def extract_uses_step_blocks(text: str, action: str) -> tuple[tuple[int, str], .
 FOLDED_RUN_DECLARATION_RE = re.compile(
     r"^(\s*)run:\s*>(?:[+-]?\d?|\d?[+-]?)?\s*(?:#.*)?$"
 )
+SHELL_CONTINUATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\\\r?\n\s*"),
+    re.compile(r"`\r?\n\s*"),
+    re.compile(r"\^\r?\n\s*"),
+)
+
+
+def normalize_shell_continuations(text: str) -> str:
+    normalized = text
+    for pattern in SHELL_CONTINUATION_PATTERNS:
+        normalized = pattern.sub("", normalized)
+    return normalized
 
 
 def extract_folded_run_blocks(text: str) -> tuple[tuple[int, str], ...]:
@@ -2117,7 +2129,7 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
                 )
                 seen_patterns.add(command)
                 issues.append(issue)
-    continuation_normalized = re.sub(r"\\\r?\n\s*", "", text)
+    continuation_normalized = normalize_shell_continuations(text)
     for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
         if fragment in seen_fragments or fragment not in continuation_normalized:
             continue

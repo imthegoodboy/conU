@@ -1218,6 +1218,32 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not dynamic_variable_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("dynamic Actions variable API delete finding was not listed")
 
+    pwsh_variable_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe pwsh Actions variable delete\n"
+            "        shell: pwsh\n"
+            "        run: |\n"
+            "          gh api repos/$GITHUB_REPOSITORY/actions/variables/"
+            "\"$CONU_RELEASE_VAR_NAME\" `\n"
+            "            --method=DELETE\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if pwsh_variable_api_delete_report.ready:
+        raise AssertionError("pwsh Actions variable API delete should fail")
+    pwsh_variable_api_delete_parsed = assert_safe_report(pwsh_variable_api_delete_report)
+    pwsh_variable_api_delete_rendered = json.dumps(pwsh_variable_api_delete_parsed)
+    if (
+        "must not use direct GitHub Actions variable workflow API write: "
+        "gh api actions/variables write"
+    ) not in pwsh_variable_api_delete_rendered:
+        raise AssertionError("pwsh Actions variable API delete was not reported")
+    if not pwsh_variable_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("pwsh Actions variable API delete finding was not listed")
+
     folded_variable_api_delete_report = with_fixture(
         module,
         None,
@@ -1371,6 +1397,32 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("dynamic Actions secret API delete was not reported")
     if not dynamic_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("dynamic Actions secret API delete finding was not listed")
+
+    cmd_secret_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe cmd Actions secret delete\n"
+            "        shell: cmd\n"
+            "        run: |\n"
+            "          gh api repos/%GITHUB_REPOSITORY%/actions/secrets/"
+            "%CONU_RELEASE_SECRET_NAME% ^\n"
+            "            -X DELETE\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if cmd_secret_api_delete_report.ready:
+        raise AssertionError("cmd Actions secret API delete should fail")
+    cmd_secret_api_delete_parsed = assert_safe_report(cmd_secret_api_delete_report)
+    cmd_secret_api_delete_rendered = json.dumps(cmd_secret_api_delete_parsed)
+    if (
+        "must not use direct GitHub Actions secret workflow API write: "
+        "gh api actions/secrets write"
+    ) not in cmd_secret_api_delete_rendered:
+        raise AssertionError("cmd Actions secret API delete was not reported")
+    if not cmd_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("cmd Actions secret API delete finding was not listed")
 
     folded_secret_api_delete_report = with_fixture(
         module,
