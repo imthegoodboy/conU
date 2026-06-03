@@ -1249,6 +1249,35 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not curl_variable_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("curl Actions variable API write finding was not listed")
 
+    wget_variable_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe wget Actions variable write\n"
+            "        run: |\n"
+            "          wget --method=PATCH --body-data=value=redacted \\\n"
+            "            https://api.github.com/repos/$GITHUB_REPOSITORY/"
+            "actions/variables/\"$CONU_RELEASE_VAR_NAME\"\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if wget_variable_api_write_report.ready:
+        raise AssertionError("wget Actions variable API write should fail")
+    wget_variable_api_write_parsed = assert_safe_report(
+        wget_variable_api_write_report
+    )
+    wget_variable_api_write_rendered = json.dumps(
+        wget_variable_api_write_parsed
+    )
+    if (
+        "must not use direct HTTP GitHub Actions variable workflow write: "
+        "HTTP actions/variables write"
+    ) not in wget_variable_api_write_rendered:
+        raise AssertionError("wget Actions variable API write was not reported")
+    if not wget_variable_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("wget Actions variable API write finding was not listed")
+
     pwsh_variable_api_delete_report = with_fixture(
         module,
         None,
@@ -1460,6 +1489,35 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError(
             "PowerShell HTTP Actions secret API delete finding was not listed"
         )
+
+    wget_secret_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe wget Actions secret delete\n"
+            "        run: |\n"
+            "          wget --method=DELETE \\\n"
+            "            https://api.github.com/repos/$GITHUB_REPOSITORY/"
+            "actions/secrets/\"$CONU_RELEASE_SECRET_NAME\"\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if wget_secret_api_delete_report.ready:
+        raise AssertionError("wget Actions secret API delete should fail")
+    wget_secret_api_delete_parsed = assert_safe_report(
+        wget_secret_api_delete_report
+    )
+    wget_secret_api_delete_rendered = json.dumps(
+        wget_secret_api_delete_parsed
+    )
+    if (
+        "must not use direct HTTP GitHub Actions secret workflow write: "
+        "HTTP actions/secrets write"
+    ) not in wget_secret_api_delete_rendered:
+        raise AssertionError("wget Actions secret API delete was not reported")
+    if not wget_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("wget Actions secret API delete finding was not listed")
 
     cmd_secret_api_delete_report = with_fixture(
         module,

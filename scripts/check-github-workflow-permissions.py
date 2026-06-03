@@ -69,13 +69,15 @@ HTTP_MUTATION_METHOD_PATTERN = (
 )
 HTTP_BODY_WRITE_PATTERN = (
     r"\s(?:-d|--data|--data-raw|--data-binary|--data-urlencode|"
-    r"--json|--form|-Body)(?:\s+|=)"
+    r"--json|--form|--body-data|--body-file|--post-data|--post-file|"
+    r"-Body)(?:\s+|=)"
 )
 HTTP_MUTATION_SIGNAL_PATTERN = (
     rf"(?:{HTTP_MUTATION_METHOD_PATTERN}|{HTTP_BODY_WRITE_PATTERN})"
 )
 HTTP_CLIENT_PATTERN = (
-    r"\b(?:curl(?:\.exe)?|Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b"
+    r"\b(?:curl(?:\.exe)?|wget(?:\.exe)?|Invoke-RestMethod|"
+    r"Invoke-WebRequest|irm|iwr)\b"
 )
 FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     (
