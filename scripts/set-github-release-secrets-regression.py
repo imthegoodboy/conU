@@ -753,8 +753,30 @@ def run_rotation_marker_main_tests(module) -> None:
                 "--dry-run",
             ],
         )
+        if exit_code == 0 or "--allow-unverified-npm-token-rotation-marker" not in rendered:
+            raise AssertionError(
+                f"expected manual marker dry-run without override to fail: {rendered}"
+            )
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("manual marker override error leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
+                "--set-npm-token-rotation-marker",
+                "2026-06-03T00:00:01+00:00",
+                "--allow-unverified-npm-token-rotation-marker",
+                "--confirm-npm-token-rotated",
+                "--dry-run",
+            ],
+        )
         if exit_code != 0:
-            raise AssertionError(f"expected marker-only dry-run to pass: {rendered}")
+            raise AssertionError(f"expected unverified manual marker dry-run to pass: {rendered}")
         if module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
             raise AssertionError("marker dry-run output omitted the marker variable name")
         if "2026-06-03T00:00:01Z" not in rendered:
@@ -805,6 +827,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "gh",
                 "--set-npm-token-rotation-marker",
                 "2026-06-03T00:00:01Z",
+                "--allow-unverified-npm-token-rotation-marker",
                 "--dry-run",
             ],
         )
@@ -840,6 +863,47 @@ def run_rotation_marker_main_tests(module) -> None:
                 "owner/repo",
                 "--gh",
                 "gh",
+                "--allow-unverified-npm-token-rotation-marker",
+                "--confirm-npm-token-rotated",
+                "--dry-run",
+            ],
+        )
+        if exit_code == 0 or "requires --set-npm-token-rotation-marker" not in rendered:
+            raise AssertionError(
+                f"expected unverified override without manual marker to fail: {rendered}"
+            )
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("unverified override argument error leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
+                "--set-npm-token-rotation-marker-from-secret-updated-at",
+                "--allow-unverified-npm-token-rotation-marker",
+                "--confirm-npm-token-rotated",
+                "--dry-run",
+            ],
+        )
+        if exit_code == 0 or "requires --set-npm-token-rotation-marker" not in rendered:
+            raise AssertionError(
+                f"expected unverified override with metadata marker to fail: {rendered}"
+            )
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("metadata override argument error leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
                 "--confirm-npm-token-rotated",
                 "--dry-run",
             ],
@@ -859,6 +923,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "gh",
                 "--set-npm-token-rotation-marker",
                 "2026-06-03T00:00:01Z",
+                "--allow-unverified-npm-token-rotation-marker",
                 "--set-npm-token-rotation-marker-from-secret-updated-at",
                 "--confirm-npm-token-rotated",
                 "--dry-run",
@@ -879,6 +944,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "gh",
                 "--set-npm-token-rotation-marker",
                 "2026-06-03T00:00:00Z",
+                "--allow-unverified-npm-token-rotation-marker",
                 "--confirm-npm-token-rotated",
                 "--dry-run",
             ],
@@ -898,6 +964,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "gh",
                 "--set-npm-token-rotation-marker",
                 SENSITIVE_SENTINEL,
+                "--allow-unverified-npm-token-rotation-marker",
                 "--confirm-npm-token-rotated",
                 "--dry-run",
             ],
@@ -948,6 +1015,7 @@ def run_rotation_marker_main_tests(module) -> None:
                     "--env-file-only",
                     "--set-npm-token-rotation-marker",
                     "2026-06-03T00:00:02Z",
+                    "--allow-unverified-npm-token-rotation-marker",
                     "--confirm-npm-token-rotated",
                     "--dry-run",
                 ],
