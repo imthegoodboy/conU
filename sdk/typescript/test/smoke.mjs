@@ -348,6 +348,79 @@ assert.throws(
 );
 assert.equal(invalidMcpArgumentRunnerCalled, false);
 
+let invalidLowLevelArgumentRunnerCalled = false;
+const invalidLowLevelArgumentClient = new ConuClient({
+  conuBin: "C:/tools/conu-test.exe",
+  runner() {
+    invalidLowLevelArgumentRunnerCalled = true;
+    throw new Error("runner should not execute for invalid low-level command argument");
+  },
+});
+
+assert.throws(
+  () => invalidLowLevelArgumentClient.run("C:/tools/conu-test.exe", ["status", invalidArgument]),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU command argument could not be encoded: conu-test.exe [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+assert.equal(invalidLowLevelArgumentRunnerCalled, false);
+
+let poisonedLowLevelArgumentRunnerCalled = false;
+const poisonedLowLevelArgumentClient = new ConuClient({
+  conuBin: "C:/tools/conu-test.exe",
+  runner() {
+    poisonedLowLevelArgumentRunnerCalled = true;
+    throw new Error("runner should not execute for poisoned low-level command arguments");
+  },
+});
+const poisonedLowLevelArgs = [];
+Object.defineProperty(poisonedLowLevelArgs, 0, {
+  get() {
+    throw new Error(`argument getter leaked ${secretEndpoint}`);
+  },
+});
+poisonedLowLevelArgs.length = 1;
+
+assert.throws(
+  () => poisonedLowLevelArgumentClient.run("C:/tools/conu-test.exe", poisonedLowLevelArgs),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU command argument could not be encoded: conu-test.exe [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu-test.exe", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+assert.equal(poisonedLowLevelArgumentRunnerCalled, false);
+
 let invalidPayloadRunnerCalled = false;
 const invalidPayloadClient = new ConuClient({
   conuBin: "C:/tools/conu-test.exe",
