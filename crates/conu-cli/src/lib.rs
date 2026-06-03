@@ -9018,15 +9018,12 @@ fn default_update_target() -> Option<&'static str> {
 
 fn render_update_check_json(report: &UpdateCheckReport) -> String {
     let location_fields = match report.source {
-        UpdateCheckSource::Local => format!(
-            r#"
-  "policyFile": "{}",
-  "sha256File": "{}",
-  "signatureFile": "{}","#,
-            json_escape(&report.policy_location),
-            json_escape(&report.sha256_location),
-            json_escape(&report.signature_location)
-        ),
+        UpdateCheckSource::Local => r#"
+  "policyFile": "local",
+  "sha256File": "local",
+  "signatureFile": "local",
+  "pathDisplayed": false,"#
+            .to_string(),
         UpdateCheckSource::Remote => format!(
             r#"
   "policyUrl": "{}",
@@ -9089,9 +9086,9 @@ fn render_update_check_json(report: &UpdateCheckReport) -> String {
 }
 
 fn render_update_check_text(report: &UpdateCheckReport) -> String {
-    let location_label = match report.source {
-        UpdateCheckSource::Local => "file",
-        UpdateCheckSource::Remote => "url",
+    let (location_label, location_value) = match report.source {
+        UpdateCheckSource::Local => ("file", "local; pathDisplayed=false".to_string()),
+        UpdateCheckSource::Remote => ("url", report.policy_location.clone()),
     };
     format!(
         r"conU update check
@@ -9131,7 +9128,7 @@ privacy
         report.channel,
         report.release_base_url,
         location_label,
-        report.policy_location,
+        location_value,
         report.sha256,
         yes_no(report.gpg_verified),
         yes_no(report.auto_apply),
@@ -11602,18 +11599,15 @@ mod tests {
 
     #[test]
     fn update_check_validates_signed_policy_metadata_without_payloads() {
-        let home = temp_home("update-check");
+        let home = temp_home("update-check-secret-local-path");
         let policy = write_update_policy_fixture(&home, false);
+        let policy_path = policy.to_str().expect("policy path");
 
-        let output = run([
-            "update",
-            "check",
-            "--policy-file",
-            policy.to_str().expect("policy path"),
-            "--json",
-        ]);
+        let output = run(["update", "check", "--policy-file", policy_path, "--json"]);
+        let text_output = run(["update", "check", "--policy-file", policy_path]);
 
         assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(text_output.code, 0, "{}", text_output.stderr);
         assert!(
             output
                 .stdout
@@ -11628,9 +11622,18 @@ mod tests {
                 .stdout
                 .contains("\"manualVerificationRequired\": true")
         );
+        assert!(output.stdout.contains("\"policyFile\": \"local\""));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(text_output.stdout.contains("local; pathDisplayed=false"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains(policy_path));
+        assert!(!text_output.stdout.contains(policy_path));
+        assert!(!output.stdout.contains("secret-local-path"));
+        assert!(!text_output.stdout.contains("secret-local-path"));
         assert!(!output.stdout.contains("BEGIN PGP SIGNATURE"));
+        assert!(!text_output.stdout.contains("BEGIN PGP SIGNATURE"));
         assert!(!output.stdout.contains("private message contents"));
+        assert!(!text_output.stdout.contains("private message contents"));
     }
 
     #[test]
