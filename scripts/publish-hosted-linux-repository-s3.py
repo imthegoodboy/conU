@@ -187,7 +187,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--endpoint-url",
         default=os.environ.get("CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL", ""),
-        help="optional S3-compatible endpoint URL; HTTPS required except loopback HTTP",
+        help="optional S3-compatible endpoint URL; HTTPS required",
     )
     parser.add_argument(
         "--region",
@@ -305,7 +305,7 @@ def validate_prefix(raw: str) -> str:
     return "/".join(parts)
 
 
-def validate_endpoint_url(raw: str) -> str:
+def validate_endpoint_url(raw: str, *, allow_loopback_http: bool = False) -> str:
     value = raw.strip()
     if not value:
         return ""
@@ -319,8 +319,10 @@ def validate_endpoint_url(raw: str) -> str:
     netloc = normalize_url_netloc(parsed, "S3 endpoint URL")
     host = (parsed.hostname or "").lower()
     scheme = parsed.scheme.lower()
-    if scheme != "https" and not (scheme == "http" and is_loopback_host(host)):
-        raise PublicationError("S3 endpoint URL must use HTTPS except loopback HTTP")
+    if scheme != "https" and not (
+        allow_loopback_http and scheme == "http" and is_loopback_host(host)
+    ):
+        raise PublicationError("S3 endpoint URL must use HTTPS")
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise PublicationError("S3 endpoint URL path must not contain dot segments")
