@@ -300,10 +300,19 @@ def validate_prefix(raw: str) -> str:
     if "?" in prefix or "#" in prefix:
         raise PublicationError("S3 prefix must not contain query or fragment markers")
     parts = [part for part in prefix.split("/") if part]
-    if any(part in {".", ".."} for part in parts):
-        raise PublicationError("S3 prefix must not contain dot segments")
     if len(parts) != len(prefix.split("/")):
         raise PublicationError("S3 prefix must not contain empty path segments")
+    if any(has_url_path_control(part) for part in parts):
+        raise PublicationError("S3 prefix must not contain whitespace or control characters")
+    if any(part in {".", ".."} for part in parts):
+        raise PublicationError("S3 prefix must not contain dot segments")
+    decoded_parts = [unquote(part) for part in parts]
+    if any(part in {".", ".."} for part in decoded_parts):
+        raise PublicationError("S3 prefix must not contain dot segments")
+    if any("/" in part or "\\" in part for part in decoded_parts):
+        raise PublicationError("S3 prefix must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_parts):
+        raise PublicationError("S3 prefix must not contain whitespace or control characters")
     return "/".join(parts)
 
 

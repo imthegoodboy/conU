@@ -646,6 +646,22 @@ def assert_preflight() -> None:
         if expected not in rendered:
             raise AssertionError(f"custom repository preflight missed {expected!r}")
 
+    for prefix, expected in (
+        ("bad prefix", "custom repository S3 prefix must not contain whitespace or control characters"),
+        ("bad/%00/prefix", "custom repository S3 prefix must not contain whitespace or control characters"),
+        ("bad/%2f/prefix", "custom repository S3 prefix must not contain encoded separators"),
+        ("bad/%2e%2e/prefix", "custom repository S3 prefix must not contain dot segments"),
+    ):
+        prefix_env = preflight_env()
+        prefix_env["CONU_LINUX_REPOSITORY_S3_PREFIX"] = prefix
+        prefix_result = run_preflight_raw(prefix_env)
+        if prefix_result.returncode == 0:
+            raise AssertionError(f"unsafe custom repository prefix unexpectedly passed: {prefix}")
+        prefix_report = json.loads(prefix_result.stdout)
+        assert_safe_preflight_report(prefix_report)
+        if expected not in json.dumps(prefix_report):
+            raise AssertionError(f"custom repository preflight missed prefix failure {expected!r}")
+
     unsafe_env = preflight_env()
     unsafe_env["CONU_LINUX_REPOSITORY_BASE_URL"] = (
         "https://packages.example.com%40evil.test/conu"

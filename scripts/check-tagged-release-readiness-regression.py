@@ -756,6 +756,35 @@ def run_custom_repository_tests(module) -> None:
         if expected not in rendered_invalid_optional:
             raise AssertionError(f"expected optional variable failure was missing: {expected}")
 
+    for prefix, expected in (
+        ("bad prefix", "custom repository S3 prefix must not contain whitespace or control characters"),
+        ("bad/%00/prefix", "custom repository S3 prefix must not contain whitespace or control characters"),
+        ("bad/%2f/prefix", "custom repository S3 prefix must not contain encoded separators"),
+        ("bad/%2e%2e/prefix", "custom repository S3 prefix must not contain dot segments"),
+    ):
+        invalid_prefix = module.audit_tagged_release_readiness(
+            repo="owner/repo",
+            tag=TAG,
+            version=VERSION,
+            secret_names=all_custom_secrets(module),
+            variable_values={
+                module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/",
+                module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+                module.CUSTOM_REPOSITORY_PREFIX_VAR: prefix,
+                module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com",
+                module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+            },
+            pages_payload=None,
+            release_payload=None,
+            npm_registry_check=False,
+            **ready_governance_kwargs(),
+        )
+        if invalid_prefix.ready:
+            raise AssertionError(f"unsafe custom repository S3 prefix unexpectedly passed: {prefix}")
+        parsed_invalid_prefix = assert_safe_report(invalid_prefix)
+        if expected not in json.dumps(parsed_invalid_prefix):
+            raise AssertionError(f"expected S3 prefix failure was missing: {expected}")
+
     invalid_base_paths = module.audit_tagged_release_readiness(
         repo="owner/repo",
         tag=TAG,
