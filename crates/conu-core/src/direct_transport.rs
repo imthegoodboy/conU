@@ -36,6 +36,7 @@ use crate::trust::{self, TrustStatus, TrustedPeer};
 
 const DIRECT_VERSION: &str = "1";
 pub(crate) const DEFAULT_DIRECT_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_DIRECT_DELIVERY_TIMEOUT_MS: u64 = 5_000;
 const MAX_DIRECT_FRAME_BYTES: usize = 80 * 1024;
 const MAX_DIRECT_PAYLOAD_BYTES: usize = 64 * 1024;
 
@@ -523,11 +524,8 @@ fn send_direct_envelope(
     validate_direct_peer_endpoint(endpoint)?;
     let envelope_id = frame.envelope_id.to_string();
     let request = render_direct_frame(frame);
-    let response = direct_client_round_trip(
-        endpoint,
-        request.as_bytes(),
-        Duration::from_millis(DEFAULT_DIRECT_TIMEOUT_MS),
-    )?;
+    let response =
+        direct_client_round_trip(endpoint, request.as_bytes(), direct_delivery_timeout())?;
     let values = parse_direct_response(&response)?;
     if value_or_empty(&values, "type") != "direct_ack" {
         return Err(DirectTransportError::InvalidRequest {
@@ -548,6 +546,10 @@ fn send_direct_envelope(
     }
     record_direct_log(paths, "ack_received", &envelope_id, &peer.peer_node_id, 0);
     Ok(values)
+}
+
+fn direct_delivery_timeout() -> Duration {
+    Duration::from_millis(DEFAULT_DIRECT_DELIVERY_TIMEOUT_MS)
 }
 
 async fn accept_direct_frames(
@@ -1591,6 +1593,12 @@ mod tests {
         assert!(validate_direct_peer_endpoint("quic://224.0.0.1:9443").is_err());
         assert!(validate_direct_peer_endpoint("quic://[ff02::1]:9443").is_err());
         assert!(validate_direct_peer_endpoint("quic://255.255.255.255:9443").is_err());
+    }
+
+    #[test]
+    fn direct_delivery_timeout_is_longer_than_route_probe_timeout() {
+        assert!(direct_delivery_timeout() > Duration::from_millis(DEFAULT_DIRECT_TIMEOUT_MS));
+        assert!(direct_delivery_timeout() >= direct_quic_test_timeout());
     }
 
     #[test]
