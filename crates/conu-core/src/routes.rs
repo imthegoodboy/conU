@@ -404,16 +404,17 @@ fn relay_route_candidate(
     nat_profile: NatProfile,
     now: u64,
 ) -> Result<RouteRecord, RouteError> {
+    let endpoint = metadata_route_endpoint(endpoint.to_string(), RouteTransport::RelayWebSocket)?;
     Ok(RouteRecord {
         route_id: route_id(
             &peer.peer_node_id,
             RouteTransport::RelayWebSocket,
-            Some(endpoint),
+            Some(endpoint.as_str()),
         ),
         peer_node_id: peer.peer_node_id.clone(),
         display_name: peer.display_name.clone(),
         transport: RouteTransport::RelayWebSocket,
-        endpoint: validate_endpoint(endpoint.to_string())?,
+        endpoint,
         state: RouteState::Candidate,
         score: 70,
         latency_ms: Some(RELAY_WEBSOCKET_LATENCY_MS),
@@ -648,6 +649,7 @@ fn write_routes(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteE
     let mut contents = format!("# conU route registry\nversion = \"{}\"\n", ROUTE_VERSION);
 
     for route in sorted {
+        let endpoint = metadata_route_endpoint(route.endpoint.clone(), route.transport)?;
         contents.push_str("\n[[route]]\n");
         contents.push_str(&format!(
             "route_id = \"{}\"\n",
@@ -664,7 +666,7 @@ fn write_routes(paths: &StatePaths, routes: &[RouteRecord]) -> Result<(), RouteE
         contents.push_str(&format!("transport = \"{}\"\n", route.transport.as_str()));
         contents.push_str(&format!(
             "endpoint = \"{}\"\n",
-            escape_file_value(&route.endpoint)
+            escape_file_value(&endpoint)
         ));
         contents.push_str(&format!("state = \"{}\"\n", route.state.as_str()));
         contents.push_str(&format!("score = {}\n", route.score));
@@ -720,13 +722,14 @@ fn append_probes(paths: &StatePaths, probes: &[RouteProbe]) -> Result<(), RouteE
     .unwrap_or_else(|| format!("# conU route probes\nversion = \"{}\"\n", ROUTE_VERSION));
 
     for probe in probes {
+        let endpoint = metadata_route_endpoint(probe.endpoint.clone(), probe.transport)?;
         contents.push_str(&format!(
             "\n[[probe]]\nprobe_id = \"{}\"\nroute_id = \"{}\"\npeer_node_id = \"{}\"\ntransport = \"{}\"\nendpoint = \"{}\"\noutcome = \"{}\"\nscore = {}\nlatency_ms = {}\ncandidate_source = \"{}\"\ncandidate_kind = \"{}\"\nrendezvous_state = \"{}\"\ncreated_at_unix = {}\npayload_displayed = false\n",
             escape_file_value(&probe.probe_id),
             escape_file_value(&probe.route_id),
             escape_file_value(&probe.peer_node_id),
             probe.transport.as_str(),
-            escape_file_value(&probe.endpoint),
+            escape_file_value(&endpoint),
             escape_file_value(&probe.outcome),
             probe.score,
             probe.latency_ms.unwrap_or(0),
@@ -862,7 +865,7 @@ fn route_from_values(values: &HashMap<String, String>) -> Result<RouteRecord, Ro
     let latency_ms = parse_u64(&required(values, "latency_ms")?)?;
     let failure_reason = optional_clean(values.get("failure_reason"));
     let transport = RouteTransport::from_str(&required(values, "transport")?);
-    let endpoint = validate_route_endpoint(required(values, "endpoint")?, transport)?;
+    let endpoint = metadata_route_endpoint(required(values, "endpoint")?, transport)?;
     Ok(RouteRecord {
         route_id: validate_identifier(required(values, "route_id")?, "route id")?,
         peer_node_id: validate_identifier(required(values, "peer_node_id")?, "peer node id")?,
@@ -896,7 +899,7 @@ fn route_from_values(values: &HashMap<String, String>) -> Result<RouteRecord, Ro
 fn probe_from_values(values: &HashMap<String, String>) -> Result<RouteProbe, RouteError> {
     let latency_ms = parse_u64(&required(values, "latency_ms")?)?;
     let transport = RouteTransport::from_str(&required(values, "transport")?);
-    let endpoint = validate_route_endpoint(required(values, "endpoint")?, transport)?;
+    let endpoint = metadata_route_endpoint(required(values, "endpoint")?, transport)?;
     Ok(RouteProbe {
         probe_id: validate_identifier(required(values, "probe_id")?, "probe id")?,
         route_id: validate_identifier(required(values, "route_id")?, "route id")?,
@@ -1039,6 +1042,24 @@ fn validate_route_endpoint(value: String, transport: RouteTransport) -> Result<S
             Ok(value)
         }
         RouteTransport::RelayWebSocket => validate_endpoint(value),
+    }
+}
+
+fn metadata_route_endpoint(value: String, transport: RouteTransport) -> Result<String, RouteError> {
+    match transport {
+        RouteTransport::DirectQuic => validate_route_endpoint(value, transport),
+        RouteTransport::RelayWebSocket => {
+            relay_endpoint::metadata_relay_endpoint(&value).map_err(|error| {
+                let reason = match error {
+                    RelayEndpointError::Empty => "endpoint cannot be empty",
+                    RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+                    RelayEndpointError::Invalid => "relay endpoint is invalid",
+                };
+                RouteError::InvalidRecord {
+                    reason: reason.to_string(),
+                }
+            })
+        }
     }
 }
 
@@ -1395,6 +1416,43 @@ mod tests {
         assert!(rendered.contains("endpoint is invalid"));
         assert!(!rendered.contains("secret"));
         assert!(!rendered.contains("token=private"));
+    }
+
+    #[test]
+    fn relay_route_metadata_hides_endpoint_path_segments() {
+        let home = test_home("relay-path-route-config");
+        let peer = trusted_peer(&home);
+        let relay_endpoint = "wss://relay.example.com/conu/private-token";
+        fs::write(
+            StatePaths::from_home(home.clone()).config,
+            format!("version = \"1\"\ndefault_relay = \"{relay_endpoint}\"\n"),
+        )
+        .expect("config writes");
+
+        let report = sync_routes(Some(home.clone())).expect("routes sync");
+        let routes = list_routes(Some(home.clone())).expect("routes read");
+        let selected =
+            selected_route_for_peer(Some(home.clone()), &peer.peer_node_id).expect("route lookup");
+        let paths = StatePaths::from_home(home);
+        let registry = fs::read_to_string(paths.route_registry).expect("routes read");
+        let probes = fs::read_to_string(paths.route_probes).expect("probes read");
+
+        assert_eq!(report.selected_relay, 1);
+        assert_eq!(
+            selected.expect("selected").endpoint,
+            "wss://relay.example.com"
+        );
+        assert!(
+            routes
+                .iter()
+                .any(|route| route.endpoint == "wss://relay.example.com")
+        );
+        for contents in [&registry, &probes] {
+            assert!(contents.contains("wss://relay.example.com"));
+            assert!(!contents.contains("private-token"));
+            assert!(!contents.contains("/conu"));
+            assert!(!contents.contains(relay_endpoint));
+        }
     }
 
     #[test]

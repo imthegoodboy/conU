@@ -35,6 +35,20 @@ pub(crate) fn validate_relay_endpoint(value: String) -> Result<String, RelayEndp
     Ok(value)
 }
 
+pub(crate) fn metadata_relay_endpoint(value: &str) -> Result<String, RelayEndpointError> {
+    let value = validate_relay_endpoint(value.to_string())?;
+    let (scheme, rest) = value
+        .strip_prefix("ws://")
+        .map(|rest| ("ws://", rest))
+        .or_else(|| value.strip_prefix("wss://").map(|rest| ("wss://", rest)))
+        .ok_or(RelayEndpointError::Scheme)?;
+    if let Some((authority, _path)) = rest.split_once('/') {
+        Ok(format!("{scheme}{authority}"))
+    } else {
+        Ok(value)
+    }
+}
+
 fn validate_authority(authority: &str) -> Result<(), RelayEndpointError> {
     if authority.is_empty() {
         return Err(RelayEndpointError::Invalid);
@@ -108,7 +122,7 @@ fn validate_path(path: &str) -> Result<(), RelayEndpointError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RelayEndpointError, validate_relay_endpoint};
+    use super::{RelayEndpointError, metadata_relay_endpoint, validate_relay_endpoint};
 
     #[test]
     fn relay_endpoint_validation_accepts_supported_shapes() {
@@ -151,6 +165,26 @@ mod tests {
         assert_eq!(
             validate_relay_endpoint("https://relay.example.com".to_string()),
             Err(RelayEndpointError::Scheme)
+        );
+    }
+
+    #[test]
+    fn relay_endpoint_metadata_hides_path_segments() {
+        assert_eq!(
+            metadata_relay_endpoint("wss://relay.example.com/conu/private-token").as_deref(),
+            Ok("wss://relay.example.com")
+        );
+        assert_eq!(
+            metadata_relay_endpoint("ws://[::1]:8787/relay").as_deref(),
+            Ok("ws://[::1]:8787")
+        );
+        assert_eq!(
+            metadata_relay_endpoint("wss://relay.example.com/").as_deref(),
+            Ok("wss://relay.example.com")
+        );
+        assert_eq!(
+            metadata_relay_endpoint("ws://127.0.0.1:8787").as_deref(),
+            Ok("ws://127.0.0.1:8787")
         );
     }
 }

@@ -179,7 +179,7 @@ pub fn sync_remote_sessions_from_paths(
         .map(|session| (session.peer_node_id.clone(), session))
         .collect::<HashMap<_, _>>();
     let previous_remote_agents = signed_remote_agents_by_peer(paths)?;
-    let relay_endpoint = relay_endpoint(paths)?;
+    let relay_endpoint = session_metadata_endpoint(&relay_endpoint(paths)?, "relay-websocket")?;
     let now = current_unix_seconds();
     let mut sessions = Vec::new();
     let mut remote_agents = Vec::new();
@@ -472,6 +472,7 @@ fn write_sessions(paths: &StatePaths, sessions: &[RemoteSession]) -> Result<(), 
     );
 
     for session in sorted {
+        let relay_endpoint = session_metadata_endpoint(&session.relay_endpoint, &session.route)?;
         contents.push_str("\n[[session]]\n");
         contents.push_str(&format!(
             "peer_node_id = \"{}\"\n",
@@ -488,7 +489,7 @@ fn write_sessions(paths: &StatePaths, sessions: &[RemoteSession]) -> Result<(), 
         ));
         contents.push_str(&format!(
             "relay_endpoint = \"{}\"\n",
-            escape_file_value(&session.relay_endpoint)
+            escape_file_value(&relay_endpoint)
         ));
         contents.push_str(&format!(
             "reconnect_attempts = {}\n",
@@ -659,7 +660,7 @@ fn parse_remote_agents(contents: &str) -> Result<Vec<RemoteAgentRecord>, Session
 
 fn session_from_values(values: &HashMap<String, String>) -> Result<RemoteSession, SessionError> {
     let route = validate_identifier(required(values, "route")?, "route")?;
-    let relay_endpoint = validate_endpoint(required(values, "relay_endpoint")?, &route)?;
+    let relay_endpoint = session_metadata_endpoint(&required(values, "relay_endpoint")?, &route)?;
     Ok(RemoteSession {
         peer_node_id: validate_identifier(required(values, "peer_node_id")?, "peer node id")?,
         display_name: validate_display_name(required(values, "display_name")?)?,
@@ -961,6 +962,23 @@ fn validate_endpoint(value: String, route: &str) -> Result<String, SessionError>
     }
 }
 
+fn session_metadata_endpoint(value: &str, route: &str) -> Result<String, SessionError> {
+    let value = value.trim().to_string();
+    if route == "direct-quic" {
+        return validate_endpoint(value, route);
+    }
+    relay_endpoint::metadata_relay_endpoint(&value).map_err(|error| {
+        let reason = match error {
+            RelayEndpointError::Empty => "relay endpoint cannot be empty",
+            RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+            RelayEndpointError::Invalid => "relay endpoint is invalid",
+        };
+        SessionError::InvalidRecord {
+            reason: reason.to_string(),
+        }
+    })
+}
+
 fn parse_u64(value: &str) -> Result<u64, SessionError> {
     value
         .parse::<u64>()
@@ -1095,6 +1113,32 @@ mod tests {
         assert!(rendered.contains("relay endpoint is invalid"));
         assert!(!rendered.contains("secret"));
         assert!(!rendered.contains("token=private"));
+    }
+
+    #[test]
+    fn session_metadata_hides_relay_endpoint_path_segments() {
+        let home = test_home("session-relay-path-config");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let invite = trust::create_pairing_invite(Some(home.clone())).expect("invite creates");
+        trust::join_pairing_code(Some(home.clone()), &invite.code).expect("joins");
+        let relay_endpoint = "wss://relay.example.com/conu/private-token";
+        fs::write(
+            &init.paths.config,
+            format!("version = \"1\"\ndefault_relay = \"{relay_endpoint}\"\n"),
+        )
+        .expect("config writes");
+
+        let report = sync_remote_sessions(Some(home.clone())).expect("sync succeeds");
+        let sessions = list_remote_sessions(Some(home.clone())).expect("sessions read");
+        let registry =
+            fs::read_to_string(init.paths.session_registry).expect("session registry reads");
+
+        assert_eq!(report.connected, 1);
+        assert_eq!(sessions[0].relay_endpoint, "wss://relay.example.com");
+        assert!(registry.contains("wss://relay.example.com"));
+        assert!(!registry.contains("private-token"));
+        assert!(!registry.contains("/conu"));
+        assert!(!registry.contains(relay_endpoint));
     }
 
     #[test]
