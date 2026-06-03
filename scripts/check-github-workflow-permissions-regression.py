@@ -1073,6 +1073,52 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct marker API write finding was not listed")
 
+    secret_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe direct release secret write\n"
+            "        run: gh secret set NPM_TOKEN --body \"$NODE_AUTH_TOKEN\"\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if secret_write_report.ready:
+        raise AssertionError("direct release secret workflow write should fail")
+    secret_write_parsed = assert_safe_report(secret_write_report)
+    secret_write_rendered = json.dumps(secret_write_parsed)
+    if (
+        "must not use direct release secret workflow write: "
+        "gh secret set <release-secret>"
+    ) not in secret_write_rendered:
+        raise AssertionError("direct release secret workflow write was not reported")
+    if not secret_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct release secret write finding was not listed")
+
+    secret_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe API release secret write\n"
+            "        run: gh api --method PUT repos/$GITHUB_REPOSITORY/"
+            "actions/secrets/NPM_TOKEN -f encrypted_value=redacted "
+            "-f key_id=redacted\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if secret_api_write_report.ready:
+        raise AssertionError("direct release secret API workflow write should fail")
+    secret_api_write_parsed = assert_safe_report(secret_api_write_report)
+    secret_api_write_rendered = json.dumps(secret_api_write_parsed)
+    if (
+        "must not use direct release secret workflow API write: "
+        "gh api actions/secrets <release-secret> write"
+    ) not in secret_api_write_rendered:
+        raise AssertionError("direct release secret API workflow write was not reported")
+    if not secret_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct release secret API write finding was not listed")
+
 
 def run_checkout_credential_persistence_tests(module) -> None:
     report = with_fixture(
