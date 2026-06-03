@@ -9151,9 +9151,10 @@ fn render_update_download_json(report: &UpdateArtifactDownloadReport) -> String 
   "target": "{}",
   "filename": "{}",
   "url": "{}",
-  "artifactFile": "{}",
-  "sha256File": "{}",
-  "signatureFile": "{}",
+  "artifactFile": "local",
+  "sha256File": "local",
+  "signatureFile": "local",
+  "pathDisplayed": false,
   "bytes": {},
   "sha256": "{}",
   "sha256SidecarMatched": true,
@@ -9174,9 +9175,6 @@ fn render_update_download_json(report: &UpdateArtifactDownloadReport) -> String 
         json_escape(&report.target),
         json_escape(&report.filename),
         json_escape(&report.url),
-        json_escape(&report.artifact_file.display().to_string()),
-        json_escape(&report.sha256_file.display().to_string()),
-        json_escape(&report.signature_file.display().to_string()),
         report.bytes,
         report.sha256,
         report.gpg_verified
@@ -9195,7 +9193,7 @@ target: {}
 
 artifact
   filename         {}
-  file             {}
+  file             local; pathDisplayed=false
   bytes            {}
   sha256           {}
   sidecar          matched
@@ -9212,7 +9210,6 @@ privacy
         report.policy.release_tag,
         report.target,
         report.filename,
-        report.artifact_file.display(),
         report.bytes,
         report.sha256,
         yes_no(report.gpg_verified)
@@ -9223,7 +9220,7 @@ fn render_update_apply_json(report: &UpdateApplyReport) -> String {
     let backup_dir = report
         .backup_dir
         .as_ref()
-        .map(|path| format!(r#""{}""#, json_escape(&path.display().to_string())))
+        .map(|_| r#""local""#.to_string())
         .unwrap_or_else(|| "null".to_string());
     let binaries = report
         .binaries
@@ -9232,17 +9229,17 @@ fn render_update_apply_json(report: &UpdateApplyReport) -> String {
             let backup_file = binary
                 .backup_file
                 .as_ref()
-                .map(|path| format!(r#""{}""#, json_escape(&path.display().to_string())))
+                .map(|_| r#""local""#.to_string())
                 .unwrap_or_else(|| "null".to_string());
             format!(
                 r#"    {{
       "name": "{}",
-      "targetFile": "{}",
+      "targetFile": "local",
       "backupFile": {},
+      "pathDisplayed": false,
       "bytes": {}
     }}"#,
                 json_escape(&binary.name),
-                json_escape(&binary.target_file.display().to_string()),
                 backup_file,
                 binary.bytes
             )
@@ -9257,9 +9254,10 @@ fn render_update_apply_json(report: &UpdateApplyReport) -> String {
   "releaseTag": "{}",
   "target": "{}",
   "filename": "{}",
-  "archiveFile": "{}",
-  "installDir": "{}",
+  "archiveFile": "local",
+  "installDir": "local",
   "backupDir": {},
+  "pathDisplayed": false,
   "entriesScanned": {},
   "unpackedBytes": {},
   "binaries": [
@@ -9289,8 +9287,6 @@ fn render_update_apply_json(report: &UpdateApplyReport) -> String {
         json_escape(&report.policy.release_tag),
         json_escape(&report.target),
         json_escape(&report.filename),
-        json_escape(&report.archive_file.display().to_string()),
-        json_escape(&report.install_dir.display().to_string()),
         backup_dir,
         report.entries_scanned,
         report.unpacked_bytes,
@@ -9306,12 +9302,12 @@ fn render_update_apply_text(report: &UpdateApplyReport) -> String {
     let backup_dir = report
         .backup_dir
         .as_ref()
-        .map(|path| path.display().to_string())
+        .map(|_| "local; pathDisplayed=false".to_string())
         .unwrap_or_else(|| "none".to_string());
     let binaries = report
         .binaries
         .iter()
-        .map(|binary| format!("  {:<15} {}", binary.name, binary.target_file.display()))
+        .map(|binary| format!("  {:<15} local; pathDisplayed=false", binary.name))
         .collect::<Vec<_>>()
         .join("\n");
     format!(
@@ -9325,7 +9321,7 @@ target: {}
 
 artifact
   filename         {}
-  file             {}
+  file             local; pathDisplayed=false
   bytes unpacked   {}
   entries scanned  {}
   sha256           {}
@@ -9334,7 +9330,7 @@ artifact
   gpg verified     {}
 
 install
-  install dir      {}
+  install dir      local; pathDisplayed=false
   backup dir       {}
   dry run          {}
   update applied   {}
@@ -9354,12 +9350,10 @@ privacy
         report.policy.release_tag,
         report.target,
         report.filename,
-        report.archive_file.display(),
         report.unpacked_bytes,
         report.entries_scanned,
         report.sha256,
         yes_no(report.gpg_verified),
-        report.install_dir.display(),
         backup_dir,
         yes_no(report.dry_run),
         yes_no(report.update_applied),
@@ -11958,7 +11952,8 @@ mod tests {
         .expect("policy validates");
         let asset =
             select_update_platform_archive(&validated.policy, "linux-x64").expect("asset selects");
-        let output_dir = temp_home("update-download-output");
+        let output_dir = temp_home("update-download-secret-local-path");
+        let output_dir_text = output_dir.display().to_string();
         let sha256_bytes = format!("{artifact_sha}  {}\n", asset.filename);
         let signature_bytes =
             b"-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n";
@@ -11984,6 +11979,7 @@ mod tests {
             gpg_verified: false,
         };
         let rendered = render_update_download_json(&report);
+        let rendered_text = render_update_download_text(&report);
 
         assert_eq!(
             fs::read(&files.artifact_file).expect("artifact reads"),
@@ -11991,13 +11987,25 @@ mod tests {
         );
         assert!(rendered.contains("\"status\": \"update_artifact_downloaded\""));
         assert!(rendered.contains("\"target\": \"linux-x64\""));
+        assert!(rendered.contains("\"artifactFile\": \"local\""));
+        assert!(rendered.contains("\"sha256File\": \"local\""));
+        assert!(rendered.contains("\"signatureFile\": \"local\""));
+        assert!(rendered.contains("\"pathDisplayed\": false"));
+        assert!(rendered_text.contains("local; pathDisplayed=false"));
         assert!(rendered.contains("\"sha256SidecarMatched\": true"));
         assert!(rendered.contains("\"signatureSidecarPresent\": true"));
         assert!(rendered.contains("\"updateApplied\": false"));
         assert!(rendered.contains("\"contentsDisplayed\": false"));
+        assert!(!rendered.contains(&output_dir_text));
+        assert!(!rendered_text.contains(&output_dir_text));
+        assert!(!rendered.contains("secret-local-path"));
+        assert!(!rendered_text.contains("secret-local-path"));
         assert!(!rendered.contains("BEGIN PGP SIGNATURE"));
+        assert!(!rendered_text.contains("BEGIN PGP SIGNATURE"));
         assert!(!rendered.contains("public conU release archive bytes"));
+        assert!(!rendered_text.contains("public conU release archive bytes"));
         assert!(!rendered.contains("private message contents"));
+        assert!(!rendered_text.contains("private message contents"));
     }
 
     #[test]
@@ -12175,11 +12183,12 @@ mod tests {
         let filename = update_archive_fixture_name(&target);
         let archive_bytes = update_archive_fixture_bytes(&target, false);
         let archive_sha = sha256_hex(&archive_bytes);
-        let home = temp_home("update-apply-dry-run");
+        let home = temp_home("update-apply-secret-local-path");
         let policy =
             write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
         let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
         let install_dir = home.join("install-bin");
+        let local_path_text = home.display().to_string();
 
         let output = run([
             "update",
@@ -12193,16 +12202,40 @@ mod tests {
             "--dry-run",
             "--json",
         ]);
+        let text_output = run([
+            "update",
+            "apply",
+            "--policy-file",
+            policy.to_str().expect("policy path"),
+            "--artifact-file",
+            artifact.to_str().expect("artifact path"),
+            "--install-dir",
+            install_dir.to_str().expect("install path"),
+            "--dry-run",
+        ]);
 
         assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(text_output.code, 0, "{}", text_output.stderr);
         assert!(output.stdout.contains("\"status\": \"update_apply_ready\""));
+        assert!(output.stdout.contains("\"archiveFile\": \"local\""));
+        assert!(output.stdout.contains("\"installDir\": \"local\""));
+        assert!(output.stdout.contains("\"backupDir\": null"));
+        assert!(output.stdout.contains("\"targetFile\": \"local\""));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(text_output.stdout.contains("local; pathDisplayed=false"));
         assert!(output.stdout.contains("\"dryRun\": true"));
         assert!(output.stdout.contains("\"updateApplied\": false"));
         assert!(output.stdout.contains("\"sha256SidecarMatched\": true"));
         assert!(output.stdout.contains("\"signatureSidecarPresent\": true"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains(&local_path_text));
+        assert!(!text_output.stdout.contains(&local_path_text));
+        assert!(!output.stdout.contains("secret-local-path"));
+        assert!(!text_output.stdout.contains("secret-local-path"));
         assert!(!output.stdout.contains("fixture binary bytes"));
+        assert!(!text_output.stdout.contains("fixture binary bytes"));
         assert!(!output.stdout.contains("BEGIN PGP SIGNATURE"));
+        assert!(!text_output.stdout.contains("BEGIN PGP SIGNATURE"));
         assert!(!install_dir.exists());
     }
 
@@ -12258,11 +12291,12 @@ mod tests {
         let filename = update_archive_fixture_name(&target);
         let archive_bytes = update_archive_fixture_bytes(&target, false);
         let archive_sha = sha256_hex(&archive_bytes);
-        let home = temp_home("update-apply-confirm");
+        let home = temp_home("update-apply-confirm-secret-local-path");
         let policy =
             write_update_policy_fixture_for_asset(&home, false, &archive_sha, &target, &filename);
         let artifact = write_update_artifact_fixture(&home, &filename, &archive_bytes);
         let install_dir = home.join("install-bin");
+        let local_path_text = home.display().to_string();
         fs::create_dir_all(&install_dir).expect("install dir creates");
         let existing_conu = install_dir.join(update_binary_filename("conu"));
         fs::write(&existing_conu, b"old conu binary").expect("existing binary writes");
@@ -12284,6 +12318,12 @@ mod tests {
         assert!(output.stdout.contains("\"status\": \"update_applied\""));
         assert!(output.stdout.contains("\"updateApplied\": true"));
         assert!(output.stdout.contains("\"dryRun\": false"));
+        assert!(output.stdout.contains("\"archiveFile\": \"local\""));
+        assert!(output.stdout.contains("\"installDir\": \"local\""));
+        assert!(output.stdout.contains("\"backupDir\": \"local\""));
+        assert!(output.stdout.contains("\"targetFile\": \"local\""));
+        assert!(output.stdout.contains("\"backupFile\": \"local\""));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
         for name in UPDATE_BINARY_NAMES {
             let installed = install_dir.join(update_binary_filename(name));
             assert_eq!(
@@ -12302,6 +12342,8 @@ mod tests {
             fs::read(backed_up_conu).expect("backup reads"),
             b"old conu binary"
         );
+        assert!(!output.stdout.contains(&local_path_text));
+        assert!(!output.stdout.contains("secret-local-path"));
         assert!(!output.stdout.contains("old conu binary"));
         assert!(!output.stdout.contains("fixture binary bytes"));
     }
