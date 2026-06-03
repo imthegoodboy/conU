@@ -488,11 +488,12 @@ export class ConuClient {
   }
 
   run(binary, args = [], input) {
-    const safeArgs = normalizeCommandArgs(args, binary);
+    const safeBinary = normalizeCommandBinary(binary);
+    const safeArgs = normalizeCommandArgs(args, safeBinary);
     let result;
     try {
       result = this.runner({
-        binary,
+        binary: safeBinary,
         args: safeArgs,
         input,
         cwd: this.cwd,
@@ -500,20 +501,30 @@ export class ConuClient {
       });
     } catch (_error) {
       throw new ConuError(
-        `conU command failed before execution: ${safeCommandForError(binary)}`,
-        resultForError({ code: 1 }, binary),
+        `conU command failed before execution: ${safeCommandForError(safeBinary)}`,
+        resultForError({ code: 1 }, safeBinary),
       );
     }
-    result = normalizeRunnerResult(result, binary);
+    result = normalizeRunnerResult(result, safeBinary);
     if (result.code !== 0) {
-      const safeResult = resultForError(result, binary);
+      const safeResult = resultForError(result, safeBinary);
       throw new ConuError(
-        `conU command failed (${safeResult.code}): ${safeCommandForError(binary)}`,
+        `conU command failed (${safeResult.code}): ${safeCommandForError(safeBinary)}`,
         safeResult,
       );
     }
     return result;
   }
+}
+
+function normalizeCommandBinary(binary) {
+  if (typeof binary === "string" && binary.trim().length > 0) {
+    return binary;
+  }
+  throw new ConuError(
+    `conU command binary could not be encoded: ${safeCommandForError(binary)}`,
+    resultForError({ code: 1 }, binary),
+  );
 }
 
 function normalizeCommandArgs(args, binary) {
