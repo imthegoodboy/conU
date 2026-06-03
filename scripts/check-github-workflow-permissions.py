@@ -88,11 +88,21 @@ SCRIPT_CLIENT_PATTERN = (
     r"bun(?:\.exe)?)\b"
 )
 SCRIPT_COMMAND_SPAN_PATTERN = r"[^\n]*"
+SCRIPT_BLOCK_SPAN_PATTERN = r"[\s\S]*"
 SCRIPT_MUTATION_SIGNAL_PATTERN = (
     r"(?:"
     r"\brequests\.(?:post|put|patch|delete)\s*\("
     r"|(?:\bfetch\s*\(|\burllib\.request\.Request\s*\(|\bRequest\s*\()"
     rf"{SCRIPT_COMMAND_SPAN_PATTERN}\bmethod\s*[:=]\s*['\"]?"
+    r"(?:POST|PUT|PATCH|DELETE)\b"
+    r"|\bmethod\s*[:=]\s*['\"]?(?:POST|PUT|PATCH|DELETE)\b"
+    r")"
+)
+SCRIPT_BLOCK_MUTATION_SIGNAL_PATTERN = (
+    r"(?:"
+    r"\brequests\.(?:post|put|patch|delete)\s*\("
+    r"|(?:\bfetch\s*\(|\burllib\.request\.Request\s*\(|\bRequest\s*\()"
+    rf"{SCRIPT_BLOCK_SPAN_PATTERN}\bmethod\s*[:=]\s*['\"]?"
     r"(?:POST|PUT|PATCH|DELETE)\b"
     r"|\bmethod\s*[:=]\s*['\"]?(?:POST|PUT|PATCH|DELETE)\b"
     r")"
@@ -239,6 +249,28 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             re.IGNORECASE,
         ),
         "direct release secret workflow API write",
+    ),
+)
+FORBIDDEN_WORKFLOW_BLOCK_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "script actions/variables write",
+        re.compile(
+            rf"{SCRIPT_CLIENT_PATTERN}"
+            rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}\bactions/variables\b)"
+            rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}{SCRIPT_BLOCK_MUTATION_SIGNAL_PATTERN})",
+            re.IGNORECASE,
+        ),
+        "scripted GitHub Actions variable workflow write",
+    ),
+    (
+        "script actions/secrets write",
+        re.compile(
+            rf"{SCRIPT_CLIENT_PATTERN}"
+            rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}\bactions/secrets\b)"
+            rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}{SCRIPT_BLOCK_MUTATION_SIGNAL_PATTERN})",
+            re.IGNORECASE,
+        ),
+        "scripted GitHub Actions secret workflow write",
     ),
 )
 ALLOWED_PERMISSION_KEYS = (
@@ -2119,6 +2151,9 @@ def extract_uses_step_blocks(text: str, action: str) -> tuple[tuple[int, str], .
 FOLDED_RUN_DECLARATION_RE = re.compile(
     r"^(\s*)run:\s*>(?:[+-]?\d?|\d?[+-]?)?\s*(?:#.*)?$"
 )
+LITERAL_RUN_DECLARATION_RE = re.compile(
+    r"^(\s*)run:\s*\|(?:[+-]?\d?|\d?[+-]?)?\s*(?:#.*)?$"
+)
 SHELL_CONTINUATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\\\r?\n\s*"),
     re.compile(r"`\r?\n\s*"),
@@ -2160,6 +2195,36 @@ def extract_folded_run_blocks(text: str) -> tuple[tuple[int, str], ...]:
             index += 1
         if folded_lines:
             blocks.append((line_number, " ".join(folded_lines)))
+    return tuple(blocks)
+
+
+def extract_literal_run_blocks(text: str) -> tuple[tuple[int, str], ...]:
+    lines = text.splitlines()
+    blocks: list[tuple[int, str]] = []
+    index = 0
+    while index < len(lines):
+        match = LITERAL_RUN_DECLARATION_RE.match(lines[index])
+        if match is None:
+            index += 1
+            continue
+
+        line_number = index + 1
+        base_indent = len(match.group(1))
+        literal_lines: list[str] = []
+        index += 1
+        while index < len(lines):
+            line = lines[index]
+            if not line.strip():
+                literal_lines.append("")
+                index += 1
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            if indent <= base_indent:
+                break
+            literal_lines.append(line.strip())
+            index += 1
+        if literal_lines:
+            blocks.append((line_number, "\n".join(literal_lines)))
     return tuple(blocks)
 
 
@@ -2229,6 +2294,23 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
             seen_patterns.add(command)
             issues.append(
                 f"{path.name}:folded run block at line {line_number} must not use "
+                f"{description}: {command}"
+            )
+        for command, pattern, description in FORBIDDEN_WORKFLOW_BLOCK_PATTERNS:
+            if command in seen_patterns or not pattern.search(block):
+                continue
+            seen_patterns.add(command)
+            issues.append(
+                f"{path.name}:folded run block at line {line_number} must not use "
+                f"{description}: {command}"
+            )
+    for line_number, block in extract_literal_run_blocks(text):
+        for command, pattern, description in FORBIDDEN_WORKFLOW_BLOCK_PATTERNS:
+            if command in seen_patterns or not pattern.search(block):
+                continue
+            seen_patterns.add(command)
+            issues.append(
+                f"{path.name}:literal run block at line {line_number} must not use "
                 f"{description}: {command}"
             )
     return tuple(issues)
