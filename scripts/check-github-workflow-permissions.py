@@ -60,6 +60,9 @@ API_SECRET_FIELD_WRITE_PATTERN = (
     r"\s(?:(?:-f|-F)(?:\s+|=)?|(?:--field|--raw-field)(?:\s+|=))"
     r"(?:encrypted_value|key_id|secret_name)="
 )
+API_MUTATION_METHOD_PATTERN = (
+    r"\s(?:--method|-X)(?:\s+|=)(?:POST|PUT|PATCH|DELETE)\b"
+)
 FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     (
         "--allow-unverified-npm-token-rotation-marker",
@@ -67,6 +70,38 @@ FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     ),
 )
 FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "gh variable set <any-actions-variable>",
+        re.compile(r"\bgh\s+variable\s+set\b"),
+        "direct GitHub Actions variable workflow write",
+    ),
+    (
+        "gh api actions/variables write",
+        re.compile(
+            rf"\bgh\s+api\b"
+            rf"(?=[^\n;&|]*\bactions/variables\b)"
+            rf"(?=[^\n;&|]*(?:{API_MUTATION_METHOD_PATTERN}|"
+            rf"{API_VARIABLE_FIELD_WRITE_PATTERN}))",
+            re.IGNORECASE,
+        ),
+        "direct GitHub Actions variable workflow API write",
+    ),
+    (
+        "gh secret set <any-actions-secret>",
+        re.compile(r"\bgh\s+secret\s+set\b"),
+        "direct GitHub Actions secret workflow write",
+    ),
+    (
+        "gh api actions/secrets write",
+        re.compile(
+            rf"\bgh\s+api\b"
+            rf"(?=[^\n;&|]*\bactions/secrets\b)"
+            rf"(?=[^\n;&|]*(?:{API_MUTATION_METHOD_PATTERN}|"
+            rf"{API_SECRET_FIELD_WRITE_PATTERN}))",
+            re.IGNORECASE,
+        ),
+        "direct GitHub Actions secret workflow API write",
+    ),
     (
         f"gh variable set {NPM_TOKEN_ROTATION_MARKER_VAR}",
         re.compile(

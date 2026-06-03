@@ -1049,6 +1049,29 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not marker_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct marker write finding was not listed")
 
+    dynamic_variable_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe dynamic Actions variable write\n"
+            "        run: gh variable set \"$CONU_RELEASE_VAR_NAME\" "
+            "--body \"$CONU_RELEASE_VAR_VALUE\"\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if dynamic_variable_write_report.ready:
+        raise AssertionError("dynamic Actions variable workflow write should fail")
+    dynamic_variable_write_parsed = assert_safe_report(dynamic_variable_write_report)
+    dynamic_variable_write_rendered = json.dumps(dynamic_variable_write_parsed)
+    if (
+        "must not use direct GitHub Actions variable workflow write: "
+        "gh variable set <any-actions-variable>"
+    ) not in dynamic_variable_write_rendered:
+        raise AssertionError("dynamic Actions variable write was not reported")
+    if not dynamic_variable_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("dynamic Actions variable write finding was not listed")
+
     api_write_report = with_fixture(
         module,
         None,
@@ -1168,6 +1191,33 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not variable_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release variable API write finding was not listed")
 
+    dynamic_variable_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe dynamic API Actions variable delete\n"
+            "        run: gh api repos/$GITHUB_REPOSITORY/actions/variables/"
+            "\"$CONU_RELEASE_VAR_NAME\" --method=DELETE\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if dynamic_variable_api_delete_report.ready:
+        raise AssertionError("dynamic Actions variable API delete should fail")
+    dynamic_variable_api_delete_parsed = assert_safe_report(
+        dynamic_variable_api_delete_report
+    )
+    dynamic_variable_api_delete_rendered = json.dumps(
+        dynamic_variable_api_delete_parsed
+    )
+    if (
+        "must not use direct GitHub Actions variable workflow API write: "
+        "gh api actions/variables write"
+    ) not in dynamic_variable_api_delete_rendered:
+        raise AssertionError("dynamic Actions variable API delete was not reported")
+    if not dynamic_variable_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("dynamic Actions variable API delete finding was not listed")
+
     variable_api_field_equals_write_report = with_fixture(
         module,
         None,
@@ -1218,6 +1268,29 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not secret_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release secret write finding was not listed")
 
+    dynamic_secret_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe dynamic Actions secret write\n"
+            "        run: gh secret set \"$CONU_RELEASE_SECRET_NAME\" "
+            "--body \"$CONU_RELEASE_SECRET_VALUE\"\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if dynamic_secret_write_report.ready:
+        raise AssertionError("dynamic Actions secret workflow write should fail")
+    dynamic_secret_write_parsed = assert_safe_report(dynamic_secret_write_report)
+    dynamic_secret_write_rendered = json.dumps(dynamic_secret_write_parsed)
+    if (
+        "must not use direct GitHub Actions secret workflow write: "
+        "gh secret set <any-actions-secret>"
+    ) not in dynamic_secret_write_rendered:
+        raise AssertionError("dynamic Actions secret write was not reported")
+    if not dynamic_secret_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("dynamic Actions secret write finding was not listed")
+
     secret_api_write_report = with_fixture(
         module,
         None,
@@ -1241,6 +1314,31 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("direct release secret API workflow write was not reported")
     if not secret_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release secret API write finding was not listed")
+
+    dynamic_secret_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe dynamic API Actions secret delete\n"
+            "        run: gh api repos/$GITHUB_REPOSITORY/actions/secrets/"
+            "\"$CONU_RELEASE_SECRET_NAME\" -X DELETE\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if dynamic_secret_api_delete_report.ready:
+        raise AssertionError("dynamic Actions secret API delete should fail")
+    dynamic_secret_api_delete_parsed = assert_safe_report(
+        dynamic_secret_api_delete_report
+    )
+    dynamic_secret_api_delete_rendered = json.dumps(dynamic_secret_api_delete_parsed)
+    if (
+        "must not use direct GitHub Actions secret workflow API write: "
+        "gh api actions/secrets write"
+    ) not in dynamic_secret_api_delete_rendered:
+        raise AssertionError("dynamic Actions secret API delete was not reported")
+    if not dynamic_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("dynamic Actions secret API delete finding was not listed")
 
     secret_api_field_equals_write_report = with_fixture(
         module,
