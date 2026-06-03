@@ -318,6 +318,15 @@ def main() -> int:
             "us-east-1;rm",
         )
         assert_failure("unsafe AWS region", unsafe_region, "AWS region contains unsupported characters")
+        for region, expected in (
+            ("US-EAST-1", "AWS region contains unsupported characters"),
+            ("us_east_1", "AWS region contains unsupported characters"),
+            ("us.east.1", "AWS region contains unsupported characters"),
+            ("us-east-", "AWS region contains unsupported characters"),
+            ("us--east-1", "AWS region must not contain consecutive hyphens"),
+        ):
+            invalid_region = run_publisher_raw(site_dir, "--dry-run", "--region", region)
+            assert_failure(f"invalid AWS region {region}", invalid_region, expected)
 
         oversized_metadata = temp / "oversized-metadata-site"
         shutil.copytree(site_dir, oversized_metadata)
@@ -690,6 +699,23 @@ def assert_preflight() -> None:
         assert_safe_preflight_report(bucket_report)
         if expected not in json.dumps(bucket_report):
             raise AssertionError(f"custom repository preflight missed bucket failure {expected!r}")
+
+    for region, expected in (
+        ("US-EAST-1", "custom repository AWS region contains unsupported characters"),
+        ("us_east_1", "custom repository AWS region contains unsupported characters"),
+        ("us.east.1", "custom repository AWS region contains unsupported characters"),
+        ("us-east-", "custom repository AWS region contains unsupported characters"),
+        ("us--east-1", "custom repository AWS region must not contain consecutive hyphens"),
+    ):
+        region_env = preflight_env()
+        region_env["CONU_LINUX_REPOSITORY_AWS_REGION"] = region
+        region_result = run_preflight_raw(region_env)
+        if region_result.returncode == 0:
+            raise AssertionError(f"unsafe custom repository AWS region unexpectedly passed: {region}")
+        region_report = json.loads(region_result.stdout)
+        assert_safe_preflight_report(region_report)
+        if expected not in json.dumps(region_report):
+            raise AssertionError(f"custom repository preflight missed region failure {expected!r}")
 
     unsafe_env = preflight_env()
     unsafe_env["CONU_LINUX_REPOSITORY_BASE_URL"] = (
