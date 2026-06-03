@@ -1335,6 +1335,43 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not node_variable_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("Node Actions variable API write finding was not listed")
 
+    python_block_variable_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe Python block Actions variable write\n"
+            "        run: |\n"
+            "          python - <<'PY'\n"
+            "          import requests\n"
+            "          requests.patch('https://api.github.com/repos/"
+            "owner/repo/actions/variables/CONU_NPM_TOKEN_ROTATED_AFTER', "
+            "json={'value':'2026-06-03T00:00:00Z'})\n"
+            "          PY\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if python_block_variable_api_write_report.ready:
+        raise AssertionError("Python block Actions variable API write should fail")
+    python_block_variable_api_write_parsed = assert_safe_report(
+        python_block_variable_api_write_report
+    )
+    python_block_variable_api_write_rendered = json.dumps(
+        python_block_variable_api_write_parsed
+    )
+    if (
+        "literal run block"
+        not in python_block_variable_api_write_rendered
+        or "must not use scripted GitHub Actions variable workflow write: "
+        "script actions/variables write"
+        not in python_block_variable_api_write_rendered
+    ):
+        raise AssertionError("Python block Actions variable API write was not reported")
+    if not python_block_variable_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError(
+            "Python block Actions variable API write finding was not listed"
+        )
+
     pwsh_variable_api_delete_report = with_fixture(
         module,
         None,
@@ -1660,6 +1697,41 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("Python Actions secret API delete was not reported")
     if not python_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("Python Actions secret API delete finding was not listed")
+
+    node_block_secret_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe Node block Actions secret delete\n"
+            "        run: |\n"
+            "          node <<'JS'\n"
+            "          fetch('https://api.github.com/repos/"
+            "owner/repo/actions/secrets/NPM_TOKEN', { method: 'DELETE' })\n"
+            "          JS\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if node_block_secret_api_delete_report.ready:
+        raise AssertionError("Node block Actions secret API delete should fail")
+    node_block_secret_api_delete_parsed = assert_safe_report(
+        node_block_secret_api_delete_report
+    )
+    node_block_secret_api_delete_rendered = json.dumps(
+        node_block_secret_api_delete_parsed
+    )
+    if (
+        "literal run block"
+        not in node_block_secret_api_delete_rendered
+        or "must not use scripted GitHub Actions secret workflow write: "
+        "script actions/secrets write"
+        not in node_block_secret_api_delete_rendered
+    ):
+        raise AssertionError("Node block Actions secret API delete was not reported")
+    if not node_block_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError(
+            "Node block Actions secret API delete finding was not listed"
+        )
 
     cmd_secret_api_delete_report = with_fixture(
         module,
