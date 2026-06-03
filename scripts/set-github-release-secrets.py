@@ -30,6 +30,9 @@ MAX_ENV_FILE_BYTES = 128 * 1024
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 POSIX_ENV_FILE_FORBIDDEN_MODE = stat.S_IRWXG | stat.S_IRWXO
+DRY_RUN_NPM_TOKEN_ROTATION_MARKER_FROM_UPDATED_AT = (
+    "from NPM_TOKEN updatedAt after upload"
+)
 
 
 def render_env_template(names: tuple[str, ...]) -> str:
@@ -361,6 +364,18 @@ def require_npm_rotation_marker_for_token_write(
     )
 
 
+def should_defer_npm_rotation_marker_updated_at(
+    *,
+    dry_run: bool,
+    derive_from_secret_updated_at: bool,
+    secret_setup_requested: bool,
+    values: Mapping[str, str],
+) -> bool:
+    if not (dry_run and derive_from_secret_updated_at and secret_setup_requested):
+        return False
+    return values.get(NPM_TOKEN_SECRET_NAME, "").strip() != ""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -608,17 +623,29 @@ def main() -> int:
             configured = configure_release_secrets(repo, gh, values, args.dry_run)
         if marker_requested:
             if args.set_npm_token_rotation_marker_from_secret_updated_at:
-                marker_timestamp = load_npm_rotation_marker_timestamp_from_secret_metadata(
+                if should_defer_npm_rotation_marker_updated_at(
+                    dry_run=args.dry_run,
+                    derive_from_secret_updated_at=True,
+                    secret_setup_requested=secret_setup_requested,
+                    values=values,
+                ):
+                    marker_timestamp = DRY_RUN_NPM_TOKEN_ROTATION_MARKER_FROM_UPDATED_AT
+                else:
+                    marker_timestamp = load_npm_rotation_marker_timestamp_from_secret_metadata(
+                        repo,
+                        gh,
+                    )
+            if marker_timestamp == DRY_RUN_NPM_TOKEN_ROTATION_MARKER_FROM_UPDATED_AT:
+                if not args.dry_run:
+                    raise ValueError("internal error: deferred npm rotation marker requires --dry-run")
+            else:
+                marker_timestamp = configure_npm_rotation_marker(
                     repo,
                     gh,
+                    marker_timestamp or args.set_npm_token_rotation_marker,
+                    args.confirm_npm_token_rotated,
+                    args.dry_run,
                 )
-            marker_timestamp = configure_npm_rotation_marker(
-                repo,
-                gh,
-                marker_timestamp or args.set_npm_token_rotation_marker,
-                args.confirm_npm_token_rotated,
-                args.dry_run,
-            )
     except (OSError, ValueError) as exc:
         action = (
             "GitHub release secret env file check failed"

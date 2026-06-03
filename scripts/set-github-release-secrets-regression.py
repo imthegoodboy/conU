@@ -1108,6 +1108,46 @@ def run_rotation_marker_main_tests(module) -> None:
                 raise AssertionError("combined dry-run omitted marker setup output")
             if SENSITIVE_SENTINEL in rendered:
                 raise AssertionError("combined marker dry-run leaked a secret value")
+
+            original_loader = module.load_secret_metadata
+            try:
+                module.load_secret_metadata = (
+                    lambda _repo, _gh: (_ for _ in ()).throw(
+                        AssertionError(
+                            "full dry-run should not read existing NPM_TOKEN metadata"
+                        )
+                    )
+                )
+                exit_code, rendered = call_main(
+                    module,
+                    [
+                        "set-github-release-secrets.py",
+                        "--repo",
+                        "owner/repo",
+                        "--gh",
+                        "gh",
+                        "--env-file",
+                        str(env_file),
+                        "--env-file-only",
+                        "--set-npm-token-rotation-marker-from-secret-updated-at",
+                        "--confirm-npm-token-rotated",
+                        "--dry-run",
+                    ],
+                )
+            finally:
+                module.load_secret_metadata = original_loader
+            if exit_code != 0:
+                raise AssertionError(
+                    f"expected env-file plus updatedAt marker dry-run to pass: {rendered}"
+                )
+            if "release secret setup" not in rendered:
+                raise AssertionError("updatedAt dry-run omitted release secret setup output")
+            if module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+                raise AssertionError("updatedAt dry-run omitted marker setup output")
+            if module.DRY_RUN_NPM_TOKEN_ROTATION_MARKER_FROM_UPDATED_AT not in rendered:
+                raise AssertionError("updatedAt dry-run omitted deferred marker text")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("updatedAt marker dry-run leaked a secret value")
     finally:
         restore_env(original)
 
