@@ -64,6 +64,24 @@ impl CliOutput {
     }
 }
 
+fn unknown_command_error() -> CliOutput {
+    CliOutput::failure(
+        2,
+        format!(
+            "unknown command; contentsDisplayed=false\n\n{}",
+            render_help()
+        ),
+    )
+}
+
+fn unknown_option_error() -> CliOutput {
+    CliOutput::failure(2, "unknown option; contentsDisplayed=false")
+}
+
+fn unexpected_argument_error() -> CliOutput {
+    CliOutput::failure(2, "unexpected argument; contentsDisplayed=false")
+}
+
 /// Dispatch a conU CLI invocation.
 pub fn run<I, S>(args: I) -> CliOutput
 where
@@ -142,10 +160,7 @@ where
         "stop" => render_stop(&args[1..], home_override),
         "--help" | "-h" | "help" => CliOutput::success(render_help()),
         "--version" | "-V" => CliOutput::success(format!("conu {}", env!("CARGO_PKG_VERSION"))),
-        unknown => CliOutput::failure(
-            2,
-            format!("unknown command: {unknown}\n\n{}", render_help()),
-        ),
+        _unknown => unknown_command_error(),
     }
 }
 
@@ -860,7 +875,7 @@ fn parse_agent_export_args(args: &[String]) -> Result<AgentExportArgs, CliOutput
         match arg.as_str() {
             "--json" => json = true,
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -963,7 +978,7 @@ fn parse_agent_trust_args(args: &[String]) -> Result<AgentTrustArgs, CliOutput> 
                 index += 2;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => {
                 positional.push(value.to_string());
@@ -1123,7 +1138,7 @@ fn parse_register_args(args: &[String]) -> Result<RegisterArgs, CliOutput> {
                 index += 2;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => {
                 positional.push(value.to_string());
@@ -1209,7 +1224,7 @@ fn parse_heartbeat_args(args: &[String]) -> Result<HeartbeatArgs, CliOutput> {
                 index += 2;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => {
                 if agent_id.is_some() {
@@ -1770,7 +1785,7 @@ fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput
                 index += 1;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -1798,7 +1813,7 @@ fn parse_message_inbox_args(args: &[String]) -> Result<MessageInboxArgs, CliOutp
         match arg.as_str() {
             "--json" => json = true,
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => {
                 if agent_id.is_some() {
@@ -2133,7 +2148,7 @@ fn parse_stream_open_args(args: &[String]) -> Result<StreamOpenArgs, CliOutput> 
                 kind = value.clone();
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -2162,7 +2177,7 @@ fn parse_stream_io_args(args: &[String], command: &'static str) -> Result<Stream
             "--json" => json = true,
             "--stdin" => stdin = true,
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => {
                 if stream_id.is_some() {
@@ -2856,7 +2871,7 @@ fn parse_room_create_args(args: &[String]) -> Result<RoomCreateArgs, CliOutput> 
                 index += 1;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -2886,7 +2901,7 @@ fn parse_room_join_args(args: &[String]) -> Result<RoomJoinArgs, CliOutput> {
         match arg.as_str() {
             "--json" => json = true,
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -2913,7 +2928,7 @@ fn parse_room_publish_args(args: &[String]) -> Result<RoomPublishArgs, CliOutput
             "--json" => json = true,
             "--stdin" => stdin = true,
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -2961,7 +2976,7 @@ fn parse_room_policy_args(args: &[String]) -> Result<RoomPolicyArgs, CliOutput> 
                 index += 2;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => {
                 positional.push(value.to_string());
@@ -3766,7 +3781,7 @@ fn parse_relay_sync_args(args: &[String]) -> Result<RelaySyncArgs, CliOutput> {
                 index += 1;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             _ => return Err(CliOutput::failure(2, render_relay_usage())),
         }
@@ -3785,7 +3800,7 @@ fn parse_relay_credential_set_args(args: &[String]) -> Result<RelayCredentialSet
             "--stdin" => stdin = true,
             "--json" => json = true,
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             _ => return Err(CliOutput::failure(2, render_relay_usage())),
         }
@@ -4936,7 +4951,7 @@ fn parse_peer_policy_args(args: &[String]) -> Result<PeerPolicyArgs, CliOutput> 
                 index += 2;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => {
                 positional.push(value.to_string());
@@ -5032,7 +5047,7 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
                 index += 1;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -5077,7 +5092,7 @@ fn parse_peer_revoke_args(args: &[String]) -> Result<(String, bool), CliOutput> 
         match arg.as_str() {
             "--json" => json = true,
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => {
                 if peer.is_some() {
@@ -5429,7 +5444,7 @@ fn parse_connect_local_args(args: &[String]) -> Result<ConnectLocalArgs, CliOutp
                 index += 1;
             }
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -5456,7 +5471,7 @@ fn parse_connect_room_args(args: &[String]) -> Result<ConnectRoomArgs, CliOutput
         match arg.as_str() {
             "--json" => json = true,
             value if value.starts_with("--") => {
-                return Err(CliOutput::failure(2, format!("unknown option: {value}")));
+                return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
@@ -11496,7 +11511,7 @@ fn json_flag(args: &[String]) -> Result<bool, CliOutput> {
         if arg == "--json" {
             json = true;
         } else {
-            return Err(CliOutput::failure(2, format!("unknown option: {arg}")));
+            return Err(unknown_option_error());
         }
     }
     Ok(json)
@@ -11521,8 +11536,7 @@ fn join_code(args: &[String]) -> Result<&str, CliOutput> {
 }
 
 fn reject_args(args: &[String]) -> Option<CliOutput> {
-    args.first()
-        .map(|arg| CliOutput::failure(2, format!("unexpected argument: {arg}")))
+    args.first().map(|_arg| unexpected_argument_error())
 }
 
 fn finish(mut output: String) -> String {
@@ -14817,6 +14831,25 @@ mod tests {
         assert_eq!(output.code, 2);
         assert!(output.stderr.contains("unknown command"));
         assert!(output.stderr.contains("Usage:"));
+    }
+
+    #[test]
+    fn unknown_cli_arguments_do_not_echo_secret_like_values() {
+        let secret_command = "secret-relay-token";
+        let secret_option = "--secret-relay-token";
+        let secret_argument = "secret-extra-argument";
+
+        let command = run([secret_command]);
+        let option = run(["agents", "export", secret_option]);
+        let argument = run(["dashboard", secret_argument]);
+
+        for output in [command, option, argument] {
+            assert_eq!(output.code, 2);
+            assert!(output.stderr.contains("contentsDisplayed=false"));
+            assert!(!output.stderr.contains(secret_command));
+            assert!(!output.stderr.contains(secret_option));
+            assert!(!output.stderr.contains(secret_argument));
+        }
     }
 
     fn temp_home(label: &str) -> PathBuf {

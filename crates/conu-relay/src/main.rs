@@ -477,8 +477,8 @@ fn main() -> ExitCode {
             println!("conu-relay {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Some(unknown) => {
-            eprintln!("unknown option: {unknown}");
+        Some(_unknown) => {
+            eprintln!("{}", unknown_option_error());
             print_help();
             ExitCode::from(2)
         }
@@ -488,6 +488,10 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+fn unknown_option_error() -> String {
+    "unknown option; contentsDisplayed=false".to_string()
 }
 
 fn print_help() {
@@ -693,7 +697,7 @@ fn parse_admin_token_audit_args(args: Vec<String>) -> Result<AdminTokenAuditArgs
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_token_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(admin_token_audit_usage()),
         }
         index += 1;
@@ -1097,7 +1101,7 @@ fn parse_hosted_readiness_args(args: Vec<String>) -> Result<HostedReadinessArgs,
                 };
                 parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
             }
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(hosted_readiness_usage()),
         }
         index += 1;
@@ -2070,7 +2074,7 @@ fn parse_issue_credential_args(args: Vec<String>) -> Result<IssueCredentialArgs,
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(issue_credential_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -2219,7 +2223,7 @@ fn parse_revoke_credential_args(args: Vec<String>) -> Result<RevokeCredentialArg
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(revoke_credential_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -2419,7 +2423,7 @@ fn parse_admin_credential_args(
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(mode.usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -2501,7 +2505,7 @@ fn parse_admin_revoke_args(args: Vec<String>) -> Result<AdminRevokeArgs, String>
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_revoke_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -2584,7 +2588,7 @@ fn parse_admin_audit_args(args: Vec<String>) -> Result<AdminAuditArgs, String> {
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(admin_audit_usage()),
         }
         index += 1;
@@ -2677,7 +2681,7 @@ fn parse_admin_dashboard_args(args: Vec<String>) -> Result<AdminDashboardArgs, S
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_dashboard_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(admin_dashboard_usage()),
         }
         index += 1;
@@ -2764,7 +2768,7 @@ fn parse_admin_session_audit_args(args: Vec<String>) -> Result<AdminSessionAudit
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_session_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(admin_session_audit_usage()),
         }
         index += 1;
@@ -2920,7 +2924,7 @@ fn parse_admin_abuse_threshold_report_args(
                 };
                 parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
             }
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(admin_abuse_threshold_report_usage()),
         }
         index += 1;
@@ -3054,7 +3058,7 @@ fn parse_admin_tenant_account_args(
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(mode.usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -3195,7 +3199,7 @@ fn parse_admin_tenant_node_upsert_args(
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_tenant_node_upsert_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -3281,7 +3285,7 @@ fn parse_admin_tenant_node_revoke_args(
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_tenant_node_revoke_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -3364,7 +3368,7 @@ fn parse_admin_tenant_audit_args(args: Vec<String>) -> Result<AdminTenantAuditAr
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_tenant_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(admin_tenant_audit_usage()),
         }
         index += 1;
@@ -3443,7 +3447,7 @@ fn parse_admin_account_suspend_args(args: Vec<String>) -> Result<AdminAccountSus
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_account_suspend_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -3558,7 +3562,7 @@ fn parse_admin_mailbox_audit_args(args: Vec<String>) -> Result<AdminMailboxAudit
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_mailbox_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(admin_mailbox_audit_usage()),
         }
         index += 1;
@@ -3681,7 +3685,7 @@ fn parse_admin_mailbox_purge_args(args: Vec<String>) -> Result<AdminMailboxPurge
             "--admin-token-stdin" => admin_token_stdin = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(admin_mailbox_purge_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(admin_mailbox_purge_usage()),
         }
         index += 1;
@@ -4494,7 +4498,7 @@ fn parse_tenant_account_args(
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(tenant_account_usage(command)),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -4617,7 +4621,7 @@ fn parse_tenant_node_upsert_args(args: Vec<String>) -> Result<TenantNodeUpsertAr
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(tenant_node_upsert_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -4682,7 +4686,7 @@ fn parse_tenant_node_revoke_args(args: Vec<String>) -> Result<TenantNodeRevokeAr
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(tenant_node_revoke_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -4750,7 +4754,7 @@ fn parse_tenant_audit_args(args: Vec<String>) -> Result<TenantAuditArgs, String>
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(tenant_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(tenant_audit_usage()),
         }
         index += 1;
@@ -4823,7 +4827,7 @@ fn parse_hosted_account_suspend_args(
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(hosted_account_suspend_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -5005,7 +5009,7 @@ fn parse_hosted_fleet_account_audit_args(
             "--json" => json = true,
             "--fail-on-warning" => fail_on_warning = true,
             "--help" | "-h" => return Err(hosted_fleet_account_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -5351,7 +5355,7 @@ fn parse_hosted_fleet_account_suspend_args(
             "--confirm" => confirm = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(hosted_fleet_account_suspend_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -5688,7 +5692,7 @@ fn parse_hosted_fleet_credential_revoke_args(
             "--confirm" => confirm = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(hosted_fleet_credential_revoke_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -6033,7 +6037,7 @@ fn parse_hosted_fleet_tenant_account_lifecycle_args(
             "--confirm" => confirm = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(mode.usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -6412,7 +6416,7 @@ fn parse_hosted_fleet_tenant_node_lifecycle_args(
             "--confirm" => confirm = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(mode.usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             value => positional.push(value.to_string()),
         }
         index += 1;
@@ -6667,7 +6671,7 @@ fn parse_session_audit_args(args: Vec<String>) -> Result<SessionAuditArgs, Strin
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(session_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(session_audit_usage()),
         }
         index += 1;
@@ -6733,7 +6737,7 @@ fn parse_abuse_audit_args(args: Vec<String>) -> Result<AbuseAuditArgs, String> {
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(abuse_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(abuse_audit_usage()),
         }
         index += 1;
@@ -6931,7 +6935,7 @@ fn parse_abuse_threshold_report_args(
                 };
                 parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
             }
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(abuse_threshold_report_usage()),
         }
         index += 1;
@@ -7397,7 +7401,7 @@ fn parse_mailbox_audit_args(args: Vec<String>) -> Result<MailboxAuditArgs, Strin
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(mailbox_audit_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(mailbox_audit_usage()),
         }
         index += 1;
@@ -7661,7 +7665,7 @@ fn parse_mailbox_purge_args(args: Vec<String>) -> Result<MailboxPurgeArgs, Strin
             "--confirm" => confirm = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(mailbox_purge_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(mailbox_purge_usage()),
         }
         index += 1;
@@ -7838,7 +7842,7 @@ fn parse_hosted_fleet_mailbox_purge_args(
             "--confirm" => confirm = true,
             "--json" => json = true,
             "--help" | "-h" => return Err(hosted_fleet_mailbox_purge_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(hosted_fleet_mailbox_purge_usage()),
         }
         index += 1;
@@ -8123,7 +8127,7 @@ fn parse_hosted_fleet_abuse_response_plan_args(
                 };
                 parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
             }
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(hosted_fleet_abuse_response_plan_usage()),
         }
         index += 1;
@@ -8880,7 +8884,7 @@ fn parse_hosted_fleet_dashboard_args(
                 };
                 parse_abuse_threshold_option(&mut cli_thresholds, value, limit)?;
             }
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(hosted_fleet_dashboard_usage()),
         }
         index += 1;
@@ -9277,7 +9281,7 @@ fn parse_hosted_dashboard_args(args: Vec<String>) -> Result<HostedDashboardArgs,
             }
             "--json" => json = true,
             "--help" | "-h" => return Err(hosted_dashboard_usage()),
-            value if value.starts_with("--") => return Err(format!("unknown option: {value}")),
+            value if value.starts_with("--") => return Err(unknown_option_error()),
             _ => return Err(hosted_dashboard_usage()),
         }
         index += 1;
@@ -13342,6 +13346,16 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn unknown_option_error_redacts_argument_contents() {
+        let secret_marker = "--relay-secret-token";
+        let error = unknown_option_error();
+
+        assert!(error.contains("unknown option"));
+        assert!(error.contains("contentsDisplayed=false"));
+        assert!(!error.contains(secret_marker));
+    }
 
     fn abuse_threshold_policy_contents(thresholds: &str) -> String {
         format!(
