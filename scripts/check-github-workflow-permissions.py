@@ -1923,13 +1923,21 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
         raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
 
     issues: list[str] = []
+    seen: set[str] = set()
     for line_number, line in enumerate(text.splitlines(), start=1):
         for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
             if fragment in line:
-                issues.append(
+                issue = (
                     f"{path.name}:line {line_number} must not use {description}: "
                     f"{fragment}"
                 )
+                seen.add(fragment)
+                issues.append(issue)
+    continuation_normalized = re.sub(r"\\\r?\n\s*", "", text)
+    for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
+        if fragment in seen or fragment not in continuation_normalized:
+            continue
+        issues.append(f"{path.name} must not use {description}: {fragment}")
     return tuple(issues)
 
 

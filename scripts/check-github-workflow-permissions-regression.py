@@ -998,6 +998,34 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("forbidden workflow command finding was not listed")
 
+    split_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe split unverified NPM marker setup\n"
+            "        run: |\n"
+            "          python scripts/set-github-release-secrets.py "
+            "--set-npm-token-rotation-marker 2026-06-03T01:00:00Z "
+            "--allow-unverified-npm-token-\\\n"
+            "            rotation-marker --confirm-npm-token-rotated --dry-run\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if split_report.ready:
+        raise AssertionError("split unverified NPM marker workflow override should fail")
+    split_parsed = assert_safe_report(split_report)
+    split_rendered = json.dumps(split_parsed)
+    if (
+        "must not use unverified NPM token rotation marker override: "
+        "--allow-unverified-npm-token-rotation-marker"
+    ) not in split_rendered:
+        raise AssertionError(
+            "split unverified NPM marker workflow override was not reported"
+        )
+    if not split_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("split forbidden workflow command finding was not listed")
+
 
 def run_checkout_credential_persistence_tests(module) -> None:
     report = with_fixture(
