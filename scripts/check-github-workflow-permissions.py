@@ -1419,6 +1419,10 @@ GITHUB_RELEASE_REQUIRED_STEPS: tuple[
                 'if [ "$ACTUAL_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]; then',
             ),
             (
+                "redacted fingerprint mismatch error",
+                'echo "::error::Published Linux GPG public key fingerprint mismatch"',
+            ),
+            (
                 "update check command",
                 'cargo run -p conu-cli -- update check --policy-url "$POLICY_URL" '
                 "--gpg-verify --json",

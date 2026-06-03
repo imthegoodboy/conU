@@ -1987,6 +1987,25 @@ def run_required_github_release_gate_tests(module) -> None:
         module,
         None,
         ready_release().replace(
+            '            echo "::error::Published Linux GPG public key fingerprint mismatch"\n',
+            (
+                '            echo "::error::Published Linux GPG public key fingerprint '
+                'mismatch: expected $EXPECTED_FINGERPRINT, found $ACTUAL_FINGERPRINT"\n'
+            ),
+        ),
+    )
+    if report.ready:
+        raise AssertionError("value-bearing published GPG fingerprint mismatch output should fail")
+    if (
+        "release.yml:github-release verify published release update policy "
+        "and artifact with CLI is missing redacted fingerprint mismatch error"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("value-bearing published GPG fingerprint output was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
             '          (cd "$KEY_DIR" && sha256sum -c conu-linux-gpg-key.asc.sha256)\n',
             "",
         ),

@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = ROOT / "scripts"
 PREFLIGHT = ROOT / "scripts" / "check-linux-signing-secrets-preflight.py"
 PASSPHRASE = "conu-linux-signing-preflight-regression-passphrase"
 USER_ID = "conU Linux Signing Preflight Regression <noreply@github.com>"
@@ -20,9 +21,14 @@ WRONG_FINGERPRINT = "F" * 40
 
 
 def main() -> int:
+    run_common_output_redaction_tests()
+
     gpg = shutil.which("gpg")
     if gpg is None:
-        print("Linux signing-secret preflight regression skipped: gpg is unavailable")
+        print(
+            "Linux signing-secret common redaction checks passed; "
+            "GPG integration regression skipped: gpg is unavailable"
+        )
         return 0
 
     with tempfile.TemporaryDirectory(prefix="conu-linux-signing-preflight-check-") as temp_text:
@@ -69,7 +75,11 @@ def main() -> int:
 
         mismatch_env = env.copy()
         mismatch_env["CONU_LINUX_GPG_KEY_FINGERPRINT"] = WRONG_FINGERPRINT
-        assert_failed(mismatch_env, "fingerprint mismatch")
+        assert_failed(
+            mismatch_env,
+            "fingerprint mismatch",
+            forbidden=(WRONG_FINGERPRINT, key_id),
+        )
 
         wrong_passphrase_env = env.copy()
         wrong_passphrase_env["CONU_LINUX_GPG_PASSPHRASE"] = "wrong-passphrase"
@@ -79,7 +89,78 @@ def main() -> int:
     return 0
 
 
-def assert_failed(env: dict[str, str], expected: str) -> None:
+def run_common_output_redaction_tests() -> None:
+    sys.path.insert(0, str(SCRIPT_DIR))
+    try:
+        import linux_gpg_common
+    finally:
+        try:
+            sys.path.remove(str(SCRIPT_DIR))
+        except ValueError:
+            pass
+
+    original_run_gpg_text = linux_gpg_common.run_gpg_text
+    actual = "A" * 40
+    other = "B" * 40
+    expected = WRONG_FINGERPRINT
+    try:
+        linux_gpg_common.run_gpg_text = (
+            lambda *_args, **_kwargs: f"sec:::::::::\nfpr:::::::::{actual}:\n"
+        )
+        assert_common_failed(
+            linux_gpg_common,
+            expected,
+            "fingerprint mismatch",
+            forbidden=(expected, actual),
+        )
+
+        linux_gpg_common.run_gpg_text = (
+            lambda *_args, **_kwargs: (
+                f"sec:::::::::\nfpr:::::::::{actual}:\n"
+                f"sec:::::::::\nfpr:::::::::{other}:\n"
+            )
+        )
+        assert_common_failed(
+            linux_gpg_common,
+            actual,
+            "found 2 primary secret key(s)",
+            forbidden=(actual, other),
+        )
+    finally:
+        linux_gpg_common.run_gpg_text = original_run_gpg_text
+
+
+def assert_common_failed(
+    linux_gpg_common,
+    expected_fingerprint: str,
+    expected_error: str,
+    *,
+    forbidden: tuple[str, ...],
+) -> None:
+    try:
+        linux_gpg_common.verify_imported_secret_key_fingerprint(
+            "gpg",
+            {},
+            "test-key",
+            expected_fingerprint,
+        )
+    except SystemExit as exc:
+        rendered = str(exc)
+    else:
+        raise AssertionError("Linux GPG common fingerprint check unexpectedly passed")
+    if expected_error not in rendered:
+        raise AssertionError(f"expected {expected_error!r} in failure output:\n{rendered}")
+    for value in forbidden:
+        if value and value in rendered:
+            raise AssertionError("Linux GPG common failure output leaked a fingerprint value")
+
+
+def assert_failed(
+    env: dict[str, str],
+    expected: str,
+    *,
+    forbidden: tuple[str, ...] = (),
+) -> None:
     failed = subprocess.run(
         [sys.executable, str(PREFLIGHT)],
         stdout=subprocess.PIPE,
@@ -91,6 +172,9 @@ def assert_failed(env: dict[str, str], expected: str) -> None:
         raise AssertionError("preflight unexpectedly succeeded")
     if expected not in failed.stdout:
         raise AssertionError(f"expected {expected!r} in failure output:\n{failed.stdout}")
+    for value in forbidden:
+        if value and value in failed.stdout:
+            raise AssertionError("failure output leaked a fingerprint value")
 
 
 def create_test_key(gpg: str, home: Path) -> str:

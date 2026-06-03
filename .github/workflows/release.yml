@@ -618,7 +618,7 @@ jobs:
           EXPECTED_FINGERPRINT="$(printf '%s' "$CONU_LINUX_GPG_KEY_FINGERPRINT" | tr -d '[:space:]:' | sed 's/^0[xX]//' | tr '[:lower:]' '[:upper:]')"
           ACTUAL_FINGERPRINT="$(gpg --batch --with-colons --fingerprint --list-keys | awk -F: '$1 == "fpr" { print toupper($10); exit }')"
           if [ "$ACTUAL_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]; then
-            echo "::error::Published Linux GPG public key fingerprint mismatch: expected $EXPECTED_FINGERPRINT, found $ACTUAL_FINGERPRINT"
+            echo "::error::Published Linux GPG public key fingerprint mismatch"
             exit 1
           fi
           for attempt in 1 2 3 4 5 6; do
