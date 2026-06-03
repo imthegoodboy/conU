@@ -42,6 +42,16 @@ RELEASE_SECRET_WRITE_GUARD_NAMES: tuple[str, ...] = (
 RELEASE_SECRET_WRITE_GUARD_PATTERN = "|".join(
     re.escape(name) for name in RELEASE_SECRET_WRITE_GUARD_NAMES
 )
+RELEASE_VARIABLE_WRITE_GUARD_NAMES: tuple[str, ...] = (
+    "CONU_LINUX_REPOSITORY_BASE_URL",
+    "CONU_LINUX_REPOSITORY_S3_BUCKET",
+    "CONU_LINUX_REPOSITORY_S3_PREFIX",
+    "CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL",
+    "CONU_LINUX_REPOSITORY_AWS_REGION",
+)
+RELEASE_VARIABLE_WRITE_GUARD_PATTERN = "|".join(
+    re.escape(name) for name in RELEASE_VARIABLE_WRITE_GUARD_NAMES
+)
 FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     (
         "--allow-unverified-npm-token-rotation-marker",
@@ -67,6 +77,27 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             re.IGNORECASE,
         ),
         "direct NPM token rotation marker variable API write",
+    ),
+    (
+        "gh variable set <release-variable>",
+        re.compile(
+            rf"\bgh\s+variable\s+set\b[^\n;&|]*\b"
+            rf"(?:{RELEASE_VARIABLE_WRITE_GUARD_PATTERN})\b"
+        ),
+        "direct release variable workflow write",
+    ),
+    (
+        "gh api actions/variables <release-variable> write",
+        re.compile(
+            rf"\bgh\s+api\b"
+            rf"(?=[^\n;&|]*\bactions/variables\b)"
+            rf"(?=[^\n;&|]*\b(?:{RELEASE_VARIABLE_WRITE_GUARD_PATTERN})\b)"
+            rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
+            rf"(?:POST|PUT|PATCH)\b|"
+            rf"\s(?:-f|-F|--field|--raw-field)\s+(?:name|value)=))",
+            re.IGNORECASE,
+        ),
+        "direct release variable workflow API write",
     ),
     (
         "gh secret set <release-secret>",

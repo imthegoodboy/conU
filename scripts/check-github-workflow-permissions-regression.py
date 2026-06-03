@@ -1073,6 +1073,53 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct marker API write finding was not listed")
 
+    variable_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe direct release variable write\n"
+            "        run: gh variable set CONU_LINUX_REPOSITORY_BASE_URL "
+            "--body https://example.invalid/conu\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if variable_write_report.ready:
+        raise AssertionError("direct release variable workflow write should fail")
+    variable_write_parsed = assert_safe_report(variable_write_report)
+    variable_write_rendered = json.dumps(variable_write_parsed)
+    if (
+        "must not use direct release variable workflow write: "
+        "gh variable set <release-variable>"
+    ) not in variable_write_rendered:
+        raise AssertionError("direct release variable workflow write was not reported")
+    if not variable_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct release variable write finding was not listed")
+
+    variable_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe API release variable write\n"
+            "        run: gh api --method PATCH repos/$GITHUB_REPOSITORY/"
+            "actions/variables/CONU_LINUX_REPOSITORY_BASE_URL "
+            "-f value=https://example.invalid/conu\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if variable_api_write_report.ready:
+        raise AssertionError("direct release variable API workflow write should fail")
+    variable_api_write_parsed = assert_safe_report(variable_api_write_report)
+    variable_api_write_rendered = json.dumps(variable_api_write_parsed)
+    if (
+        "must not use direct release variable workflow API write: "
+        "gh api actions/variables <release-variable> write"
+    ) not in variable_api_write_rendered:
+        raise AssertionError("direct release variable API workflow write was not reported")
+    if not variable_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct release variable API write finding was not listed")
+
     secret_write_report = with_fixture(
         module,
         None,
