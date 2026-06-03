@@ -32,10 +32,30 @@ def assert_raises(func, pattern: str) -> None:
     try:
         func()
     except ValueError as exc:
+        if SENSITIVE_SENTINEL in str(exc):
+            raise AssertionError("error message leaked a secret or variable value") from exc
         if pattern not in str(exc):
             raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
         return
     raise AssertionError(f"expected ValueError containing {pattern!r}")
+
+
+def assert_safe_report(report) -> dict[str, object]:
+    rendered = json.dumps(report.as_json(), sort_keys=True)
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("release secret readiness report leaked a sensitive value")
+    parsed = json.loads(rendered)
+    for field in (
+        "payloadDisplayed",
+        "tokenDisplayed",
+        "tokenHashDisplayed",
+        "keyMaterialDisplayed",
+        "contentsDisplayed",
+        "secretValuesDisplayed",
+    ):
+        if parsed.get(field) is not False:
+            raise AssertionError(f"expected {field}=false")
+    return parsed
 
 
 def run_audit_tests(module) -> None:
@@ -51,6 +71,51 @@ def run_audit_tests(module) -> None:
     not_ready = module.audit_secret_names("owner/repo", configured)
     if not not_ready.missing == (missing_name,):
         raise AssertionError(f"expected only {missing_name} missing, got {not_ready.missing}")
+
+
+def run_rotation_marker_tests(module) -> None:
+    configured = set(module.REQUIRED_RELEASE_SECRETS)
+    ready = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-03T00:00:01Z"},
+    )
+    if not ready.ready:
+        raise AssertionError(f"expected ready marker report: {ready.npm_rotation_marker.issues!r}")
+    parsed_ready = assert_safe_report(ready)
+    if parsed_ready["npmTokenRotationMarker"]["rotatedAfter"] != "2026-06-03T00:00:01Z":
+        raise AssertionError("valid marker timestamp was not included in normalized form")
+
+    missing = module.audit_release_secret_readiness("owner/repo", configured, {})
+    if missing.ready:
+        raise AssertionError("missing npm rotation marker should fail readiness")
+    parsed_missing = assert_safe_report(missing)
+    if module.NPM_TOKEN_ROTATION_MARKER_VAR not in json.dumps(parsed_missing):
+        raise AssertionError("missing marker report omitted marker variable name")
+
+    stale = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-03T00:00:00Z"},
+    )
+    if stale.ready:
+        raise AssertionError("stale npm rotation marker should fail readiness")
+    parsed_stale = assert_safe_report(stale)
+    if "not after required timestamp" not in json.dumps(parsed_stale):
+        raise AssertionError("stale marker issue was not reported")
+
+    invalid = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: SENSITIVE_SENTINEL},
+    )
+    if invalid.ready:
+        raise AssertionError("invalid npm rotation marker should fail readiness")
+    parsed_invalid = assert_safe_report(invalid)
+    if parsed_invalid["npmTokenRotationMarker"]["rotatedAfter"] != "":
+        raise AssertionError("invalid marker value should not be echoed")
+    if "timestamp is invalid" not in json.dumps(parsed_invalid):
+        raise AssertionError("invalid marker issue was not reported")
 
 
 def run_repo_normalization_tests(module) -> None:
@@ -86,20 +151,30 @@ def run_repo_normalization_tests(module) -> None:
 def run_gh_payload_tests(module) -> None:
     helper = sys.modules["github_release_secrets"]
 
-    def fake_secret_list(args, **_kwargs):
-        if args[1:4] != ["secret", "list", "--repo"]:
-            raise AssertionError(f"unexpected gh args: {args!r}")
-        payload = [
-            {"name": name, "value": SENSITIVE_SENTINEL}
-            for name in module.REQUIRED_RELEASE_SECRETS
-        ]
-        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+    def fake_gh_list(args, **_kwargs):
+        if args[1:4] == ["secret", "list", "--repo"]:
+            payload = [
+                {"name": name, "value": SENSITIVE_SENTINEL}
+                for name in module.REQUIRED_RELEASE_SECRETS
+            ]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:4] == ["variable", "list", "--repo"]:
+            payload = [
+                {
+                    "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
+                    "value": "2026-06-03T00:00:01Z",
+                },
+                {"name": "UNRELATED_VARIABLE", "value": SENSITIVE_SENTINEL},
+            ]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        raise AssertionError(f"unexpected gh args: {args!r}")
 
     original_run = subprocess.run
-    helper.subprocess.run = fake_secret_list
+    helper.subprocess.run = fake_gh_list
     try:
         names = module.load_secret_names("owner/repo", "gh")
         metadata = helper.load_secret_metadata("owner/repo", "gh")
+        variables = module.load_variable_values("owner/repo", "gh")
     finally:
         helper.subprocess.run = original_run
 
@@ -110,10 +185,10 @@ def run_gh_payload_tests(module) -> None:
     for record in metadata.values():
         if record.updated_at != "":
             raise AssertionError("unexpected updatedAt value in fake metadata payload")
-    report = module.audit_secret_names("owner/repo", names)
-    rendered = json.dumps(report.as_json())
-    if SENSITIVE_SENTINEL in rendered:
-        raise AssertionError("secret readiness report included a secret value")
+    if variables[module.NPM_TOKEN_ROTATION_MARKER_VAR] != "2026-06-03T00:00:01Z":
+        raise AssertionError("loaded variable values did not include the rotation marker")
+    report = module.audit_release_secret_readiness("owner/repo", names, variables)
+    assert_safe_report(report)
 
 
 def run_error_tests(module) -> None:
@@ -129,6 +204,10 @@ def run_error_tests(module) -> None:
             lambda: module.load_secret_names("owner/repo", "gh"),
             "invalid JSON",
         )
+        assert_raises(
+            lambda: module.load_variable_values("owner/repo", "gh"),
+            "invalid JSON",
+        )
     finally:
         helper.subprocess.run = original_run
 
@@ -141,6 +220,10 @@ def run_error_tests(module) -> None:
             lambda: module.load_secret_names("owner/repo", "gh"),
             "gh secret list failed",
         )
+        assert_raises(
+            lambda: module.load_variable_values("owner/repo", "gh"),
+            "gh variable list failed",
+        )
     finally:
         helper.subprocess.run = original_run
 
@@ -148,17 +231,26 @@ def run_error_tests(module) -> None:
 def run_main_tests(module) -> None:
     helper = sys.modules["github_release_secrets"]
 
-    def fake_secret_list(args, **_kwargs):
-        if args[1:4] != ["secret", "list", "--repo"]:
-            raise AssertionError(f"unexpected gh args: {args!r}")
-        payload = [{"name": name} for name in module.REQUIRED_RELEASE_SECRETS]
-        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+    def fake_gh_list(args, **_kwargs):
+        if args[1:4] == ["secret", "list", "--repo"]:
+            payload = [{"name": name} for name in module.REQUIRED_RELEASE_SECRETS]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:4] == ["variable", "list", "--repo"]:
+            payload = [
+                {
+                    "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
+                    "value": "2026-06-03T00:00:01Z",
+                },
+                {"name": "UNRELATED_VARIABLE", "value": SENSITIVE_SENTINEL},
+            ]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        raise AssertionError(f"unexpected gh args: {args!r}")
 
     original_run = subprocess.run
     original_argv = sys.argv
     stdout = io.StringIO()
     stderr = io.StringIO()
-    helper.subprocess.run = fake_secret_list
+    helper.subprocess.run = fake_gh_list
     sys.argv = [
         "check-github-release-secret-readiness.py",
         "--repo",
@@ -176,8 +268,10 @@ def run_main_tests(module) -> None:
     if exit_code != 0:
         raise AssertionError(f"expected main() to pass, got {exit_code}: {stderr.getvalue()}")
     rendered = stdout.getvalue() + stderr.getvalue()
+    if module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+        raise AssertionError("main() output omitted the rotation marker variable")
     if SENSITIVE_SENTINEL in rendered:
-        raise AssertionError("main() output leaked a secret value")
+        raise AssertionError("main() output leaked a secret or variable value")
 
     sys.argv = [
         "check-github-release-secret-readiness.py",
@@ -210,6 +304,7 @@ def run_main_tests(module) -> None:
 def main() -> int:
     module = load_module()
     run_audit_tests(module)
+    run_rotation_marker_tests(module)
     run_repo_normalization_tests(module)
     run_gh_payload_tests(module)
     run_error_tests(module)
