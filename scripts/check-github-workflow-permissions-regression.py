@@ -1306,6 +1306,35 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not httpie_variable_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("HTTPie Actions variable API write finding was not listed")
 
+    node_variable_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe Node Actions variable write\n"
+            "        run: |\n"
+            "          node -e \"fetch('https://api.github.com/repos/"
+            "owner/repo/actions/variables/CONU_NPM_TOKEN_ROTATED_AFTER', "
+            "{method:'PATCH',body:'{}'})\"\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if node_variable_api_write_report.ready:
+        raise AssertionError("Node Actions variable API write should fail")
+    node_variable_api_write_parsed = assert_safe_report(
+        node_variable_api_write_report
+    )
+    node_variable_api_write_rendered = json.dumps(
+        node_variable_api_write_parsed
+    )
+    if (
+        "must not use scripted GitHub Actions variable workflow write: "
+        "script actions/variables write"
+    ) not in node_variable_api_write_rendered:
+        raise AssertionError("Node Actions variable API write was not reported")
+    if not node_variable_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("Node Actions variable API write finding was not listed")
+
     pwsh_variable_api_delete_report = with_fixture(
         module,
         None,
@@ -1602,6 +1631,35 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("HTTPie Actions secret API delete was not reported")
     if not httpie_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("HTTPie Actions secret API delete finding was not listed")
+
+    python_secret_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe Python Actions secret delete\n"
+            "        run: |\n"
+            "          python -c \"import urllib.request; "
+            "urllib.request.Request('https://api.github.com/repos/"
+            "owner/repo/actions/secrets/NPM_TOKEN', method='DELETE')\"\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if python_secret_api_delete_report.ready:
+        raise AssertionError("Python Actions secret API delete should fail")
+    python_secret_api_delete_parsed = assert_safe_report(
+        python_secret_api_delete_report
+    )
+    python_secret_api_delete_rendered = json.dumps(
+        python_secret_api_delete_parsed
+    )
+    if (
+        "must not use scripted GitHub Actions secret workflow write: "
+        "script actions/secrets write"
+    ) not in python_secret_api_delete_rendered:
+        raise AssertionError("Python Actions secret API delete was not reported")
+    if not python_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("Python Actions secret API delete finding was not listed")
 
     cmd_secret_api_delete_report = with_fixture(
         module,
