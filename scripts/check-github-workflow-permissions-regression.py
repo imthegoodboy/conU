@@ -1072,6 +1072,28 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not dynamic_variable_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("dynamic Actions variable write finding was not listed")
 
+    dynamic_variable_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe dynamic Actions variable delete\n"
+            "        run: gh variable delete \"$CONU_RELEASE_VAR_NAME\" --yes\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if dynamic_variable_delete_report.ready:
+        raise AssertionError("dynamic Actions variable workflow delete should fail")
+    dynamic_variable_delete_parsed = assert_safe_report(dynamic_variable_delete_report)
+    dynamic_variable_delete_rendered = json.dumps(dynamic_variable_delete_parsed)
+    if (
+        "must not use direct GitHub Actions variable workflow delete: "
+        "gh variable delete <any-actions-variable>"
+    ) not in dynamic_variable_delete_rendered:
+        raise AssertionError("dynamic Actions variable delete was not reported")
+    if not dynamic_variable_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("dynamic Actions variable delete finding was not listed")
+
     api_write_report = with_fixture(
         module,
         None,
@@ -1167,6 +1189,28 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not variable_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release variable write finding was not listed")
 
+    variable_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe direct release variable delete\n"
+            "        run: gh variable delete CONU_LINUX_REPOSITORY_BASE_URL --yes\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if variable_delete_report.ready:
+        raise AssertionError("direct release variable workflow delete should fail")
+    variable_delete_parsed = assert_safe_report(variable_delete_report)
+    variable_delete_rendered = json.dumps(variable_delete_parsed)
+    if (
+        "must not use direct release variable workflow delete: "
+        "gh variable delete <release-variable>"
+    ) not in variable_delete_rendered:
+        raise AssertionError("direct release variable workflow delete was not reported")
+    if not variable_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct release variable delete finding was not listed")
+
     variable_api_write_report = with_fixture(
         module,
         None,
@@ -1190,6 +1234,40 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("direct release variable API workflow write was not reported")
     if not variable_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release variable API write finding was not listed")
+
+    environment_variable_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe environment API release variable write\n"
+            "        run: gh api --method PATCH repos/$GITHUB_REPOSITORY/"
+            "environments/prod/variables/CONU_LINUX_REPOSITORY_BASE_URL "
+            "-f value=https://example.invalid/conu\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if environment_variable_api_write_report.ready:
+        raise AssertionError(
+            "environment release variable API workflow write should fail"
+        )
+    environment_variable_api_write_parsed = assert_safe_report(
+        environment_variable_api_write_report
+    )
+    environment_variable_api_write_rendered = json.dumps(
+        environment_variable_api_write_parsed
+    )
+    if (
+        "must not use direct release variable workflow API write: "
+        "gh api actions/variables <release-variable> write"
+    ) not in environment_variable_api_write_rendered:
+        raise AssertionError(
+            "environment release variable API workflow write was not reported"
+        )
+    if not environment_variable_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError(
+            "environment release variable API write finding was not listed"
+        )
 
     dynamic_variable_api_delete_report = with_fixture(
         module,
@@ -1248,6 +1326,40 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("curl Actions variable API write was not reported")
     if not curl_variable_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("curl Actions variable API write finding was not listed")
+
+    curl_environment_variable_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe curl environment Actions variable write\n"
+            "        run: |\n"
+            "          curl --fail-with-body -X PATCH \\\n"
+            "            https://api.github.com/repos/$GITHUB_REPOSITORY/"
+            "environments/prod/variables/\"$CONU_RELEASE_VAR_NAME\" \\\n"
+            "            -d '{\"value\":\"https://example.invalid/conu\"}'\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if curl_environment_variable_api_write_report.ready:
+        raise AssertionError("curl environment Actions variable API write should fail")
+    curl_environment_variable_api_write_parsed = assert_safe_report(
+        curl_environment_variable_api_write_report
+    )
+    curl_environment_variable_api_write_rendered = json.dumps(
+        curl_environment_variable_api_write_parsed
+    )
+    if (
+        "must not use direct HTTP GitHub Actions variable workflow write: "
+        "HTTP actions/variables write"
+    ) not in curl_environment_variable_api_write_rendered:
+        raise AssertionError(
+            "curl environment Actions variable API write was not reported"
+        )
+    if not curl_environment_variable_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError(
+            "curl environment Actions variable API write finding was not listed"
+        )
 
     wget_variable_api_write_report = with_fixture(
         module,
@@ -1480,6 +1592,28 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not secret_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release secret write finding was not listed")
 
+    secret_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe direct release secret delete\n"
+            "        run: gh secret delete NPM_TOKEN --yes\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if secret_delete_report.ready:
+        raise AssertionError("direct release secret workflow delete should fail")
+    secret_delete_parsed = assert_safe_report(secret_delete_report)
+    secret_delete_rendered = json.dumps(secret_delete_parsed)
+    if (
+        "must not use direct release secret workflow delete: "
+        "gh secret delete <release-secret>"
+    ) not in secret_delete_rendered:
+        raise AssertionError("direct release secret workflow delete was not reported")
+    if not secret_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct release secret delete finding was not listed")
+
     dynamic_secret_write_report = with_fixture(
         module,
         None,
@@ -1502,6 +1636,28 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("dynamic Actions secret write was not reported")
     if not dynamic_secret_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("dynamic Actions secret write finding was not listed")
+
+    dynamic_secret_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe dynamic Actions secret delete\n"
+            "        run: gh secret delete \"$CONU_RELEASE_SECRET_NAME\" --yes\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if dynamic_secret_delete_report.ready:
+        raise AssertionError("dynamic Actions secret workflow delete should fail")
+    dynamic_secret_delete_parsed = assert_safe_report(dynamic_secret_delete_report)
+    dynamic_secret_delete_rendered = json.dumps(dynamic_secret_delete_parsed)
+    if (
+        "must not use direct GitHub Actions secret workflow delete: "
+        "gh secret delete <any-actions-secret>"
+    ) not in dynamic_secret_delete_rendered:
+        raise AssertionError("dynamic Actions secret delete was not reported")
+    if not dynamic_secret_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("dynamic Actions secret delete finding was not listed")
 
     secret_api_write_report = with_fixture(
         module,
@@ -1526,6 +1682,38 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("direct release secret API workflow write was not reported")
     if not secret_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release secret API write finding was not listed")
+
+    environment_secret_api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe environment API release secret write\n"
+            "        run: gh api --method PUT repos/$GITHUB_REPOSITORY/"
+            "environments/prod/secrets/NPM_TOKEN -f encrypted_value=redacted "
+            "-f key_id=redacted\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if environment_secret_api_write_report.ready:
+        raise AssertionError("environment release secret API workflow write should fail")
+    environment_secret_api_write_parsed = assert_safe_report(
+        environment_secret_api_write_report
+    )
+    environment_secret_api_write_rendered = json.dumps(
+        environment_secret_api_write_parsed
+    )
+    if (
+        "must not use direct release secret workflow API write: "
+        "gh api actions/secrets <release-secret> write"
+    ) not in environment_secret_api_write_rendered:
+        raise AssertionError(
+            "environment release secret API workflow write was not reported"
+        )
+    if not environment_secret_api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError(
+            "environment release secret API write finding was not listed"
+        )
 
     dynamic_secret_api_delete_report = with_fixture(
         module,
@@ -1731,6 +1919,48 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not node_block_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError(
             "Node block Actions secret API delete finding was not listed"
+        )
+
+    node_block_environment_secret_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe Node block environment Actions secret delete\n"
+            "        run: |\n"
+            "          node <<'JS'\n"
+            "          fetch('https://api.github.com/repos/"
+            "owner/repo/environments/prod/secrets/NPM_TOKEN', "
+            "{ method: 'DELETE' })\n"
+            "          JS\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if node_block_environment_secret_api_delete_report.ready:
+        raise AssertionError(
+            "Node block environment Actions secret API delete should fail"
+        )
+    node_block_environment_secret_api_delete_parsed = assert_safe_report(
+        node_block_environment_secret_api_delete_report
+    )
+    node_block_environment_secret_api_delete_rendered = json.dumps(
+        node_block_environment_secret_api_delete_parsed
+    )
+    if (
+        "literal run block"
+        not in node_block_environment_secret_api_delete_rendered
+        or "must not use scripted GitHub Actions secret workflow write: "
+        "script actions/secrets write"
+        not in node_block_environment_secret_api_delete_rendered
+    ):
+        raise AssertionError(
+            "Node block environment Actions secret API delete was not reported"
+        )
+    if not node_block_environment_secret_api_delete_parsed[
+        "forbiddenWorkflowCommands"
+    ]:
+        raise AssertionError(
+            "Node block environment Actions secret API delete finding was not listed"
         )
 
     cmd_secret_api_delete_report = with_fixture(
