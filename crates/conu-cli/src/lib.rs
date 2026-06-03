@@ -3053,6 +3053,44 @@ fn render_sessions_list(args: &[String], home_override: Option<PathBuf>) -> CliO
     }
 }
 
+fn display_network_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim();
+    let (scheme, rest) = if let Some(rest) = trimmed.strip_prefix("ws://") {
+        ("ws://", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("wss://") {
+        ("wss://", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("quic://") {
+        ("quic://", rest)
+    } else {
+        return "endpointDisplayed=false".to_string();
+    };
+    let rest = rest
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let authority = authority.rsplit('@').next().unwrap_or(authority).trim();
+    if authority.is_empty() || authority.chars().any(char::is_whitespace) {
+        return "endpointDisplayed=false".to_string();
+    }
+    if path.is_empty() {
+        format!("{scheme}{authority}")
+    } else {
+        format!("{scheme}{authority}; endpointPathDisplayed=false")
+    }
+}
+
+fn display_optional_network_endpoint(endpoint: Option<&str>, fallback: &str) -> String {
+    endpoint
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(display_network_endpoint)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 fn render_sessions_json(
     remote_sessions: &[RemoteSession],
     remote_agents: &[RemoteAgentRecord],
@@ -3074,7 +3112,7 @@ fn render_sessions_json(
                 json_escape(&session.display_name),
                 session.state.as_str(),
                 json_escape(&session.route),
-                json_escape(&session.relay_endpoint),
+                json_escape(&display_network_endpoint(&session.relay_endpoint)),
                 session.reconnect_attempts,
                 session.remote_agent_count
             )
@@ -3268,7 +3306,7 @@ fn render_routes_json(route_records: &[RouteRecord]) -> String {
                 json_escape(&route.peer_node_id),
                 json_escape(&route.display_name),
                 route.transport.as_str(),
-                json_escape(&route.endpoint),
+                json_escape(&display_network_endpoint(&route.endpoint)),
                 route.state.as_str(),
                 route.score,
                 json_u64(route.latency_ms),
@@ -3384,7 +3422,7 @@ fn render_route_line(route: &RouteRecord) -> String {
         route.candidate_source,
         route.candidate_kind,
         route.rendezvous_state,
-        route.endpoint,
+        display_network_endpoint(&route.endpoint),
         reason
     )
 }
@@ -3412,7 +3450,7 @@ fn render_route_probes_json(probes: &[RouteProbe]) -> String {
                 json_escape(&probe.route_id),
                 json_escape(&probe.peer_node_id),
                 probe.transport.as_str(),
-                json_escape(&probe.endpoint),
+                json_escape(&display_network_endpoint(&probe.endpoint)),
                 json_escape(&probe.outcome),
                 probe.score,
                 json_u64(probe.latency_ms),
@@ -3712,7 +3750,7 @@ fn render_relay_sync(args: &[String], home_override: Option<PathBuf>) -> CliOutp
   "rejected": {},
   "contentsDisplayed": false
 }}"#,
-            json_escape(&report.endpoint),
+            json_escape(&display_network_endpoint(&report.endpoint)),
             report.connected,
             report.queued,
             report.sent,
@@ -3742,7 +3780,7 @@ privacy
 
 note
   conUD runs this relay pump automatically when a relay or trusted relay peer is configured",
-        report.endpoint,
+        display_network_endpoint(&report.endpoint),
         yes_no(report.connected),
         report.queued,
         report.sent,
@@ -4562,8 +4600,14 @@ fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutp
             json_escape(&peer.display_name),
             peer.exchange_public_key_hex.is_some(),
             peer.signature_hex.is_some(),
-            json_escape(peer.relay_endpoint.as_deref().unwrap_or("")),
-            json_escape(peer.direct_quic_endpoint.as_deref().unwrap_or(""))
+            json_escape(&display_optional_network_endpoint(
+                peer.relay_endpoint.as_deref(),
+                ""
+            )),
+            json_escape(&display_optional_network_endpoint(
+                peer.direct_quic_endpoint.as_deref(),
+                ""
+            ))
         ));
     }
 
@@ -4592,10 +4636,8 @@ privacy
         } else {
             "not provided"
         },
-        peer.relay_endpoint.as_deref().unwrap_or("not configured"),
-        peer.direct_quic_endpoint
-            .as_deref()
-            .unwrap_or("not configured")
+        display_optional_network_endpoint(peer.relay_endpoint.as_deref(), "not configured"),
+        display_optional_network_endpoint(peer.direct_quic_endpoint.as_deref(), "not configured")
     ))
 }
 
@@ -4708,8 +4750,14 @@ fn render_peers_json(peers: &[TrustedPeer]) -> String {
                 json_escape(&peer.source),
                 peer.exchange_public_key_hex.is_some(),
                 peer.signature_hex.is_some(),
-                json_escape(peer.relay_endpoint.as_deref().unwrap_or("")),
-                json_escape(peer.direct_quic_endpoint.as_deref().unwrap_or("")),
+                json_escape(&display_optional_network_endpoint(
+                    peer.relay_endpoint.as_deref(),
+                    ""
+                )),
+                json_escape(&display_optional_network_endpoint(
+                    peer.direct_quic_endpoint.as_deref(),
+                    ""
+                )),
                 peer.updated_at_unix
             )
         })
@@ -4753,8 +4801,8 @@ fn render_peers_text(peers: &[TrustedPeer]) -> String {
                     } else {
                         "no"
                     },
-                    peer.relay_endpoint.as_deref().unwrap_or("-"),
-                    peer.direct_quic_endpoint.as_deref().unwrap_or("-")
+                    display_optional_network_endpoint(peer.relay_endpoint.as_deref(), "-"),
+                    display_optional_network_endpoint(peer.direct_quic_endpoint.as_deref(), "-")
                 )
             })
             .collect::<Vec<_>>()
@@ -13956,6 +14004,112 @@ mod tests {
         );
         assert!(!routes.stdout.contains("private message contents"));
         assert!(!probes.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn cli_display_renderers_redact_sensitive_endpoint_parts() {
+        let relay_endpoint = "wss://user:relay-secret@relay.example.com/conu/private-token?token=query-secret#frag-secret";
+        let direct_endpoint = "quic://user:direct-secret@direct.example.com:9443/direct/private?token=direct-query#direct-frag";
+        assert_eq!(
+            display_network_endpoint(relay_endpoint),
+            "wss://relay.example.com; endpointPathDisplayed=false"
+        );
+        assert_eq!(
+            display_network_endpoint(direct_endpoint),
+            "quic://direct.example.com:9443; endpointPathDisplayed=false"
+        );
+        assert_eq!(
+            display_network_endpoint("not-an-endpoint"),
+            "endpointDisplayed=false"
+        );
+
+        let session = RemoteSession {
+            peer_node_id: "peer.node".to_string(),
+            display_name: "Peer".to_string(),
+            state: conu_core::sessions::RemoteSessionState::Connected,
+            route: "relay-websocket".to_string(),
+            relay_endpoint: relay_endpoint.to_string(),
+            reconnect_attempts: 0,
+            remote_agent_count: 1,
+            last_seen_unix: 1,
+            updated_at_unix: 1,
+        };
+        let route = RouteRecord {
+            route_id: "route.peer".to_string(),
+            peer_node_id: "peer.node".to_string(),
+            display_name: "Peer".to_string(),
+            transport: RouteTransport::RelayWebSocket,
+            endpoint: relay_endpoint.to_string(),
+            state: conu_core::routes::RouteState::Selected,
+            score: 80,
+            latency_ms: Some(80),
+            direct_attempted: false,
+            relay_fallback: false,
+            nat_profile: conu_core::routes::NatProfile::Public,
+            candidate_source: "none".to_string(),
+            candidate_kind: "none".to_string(),
+            rendezvous_state: "not_configured".to_string(),
+            failure_reason: None,
+            updated_at_unix: 1,
+        };
+        let probe = RouteProbe {
+            probe_id: "probe.peer".to_string(),
+            route_id: "route.peer".to_string(),
+            peer_node_id: "peer.node".to_string(),
+            transport: RouteTransport::RelayWebSocket,
+            endpoint: relay_endpoint.to_string(),
+            outcome: "selected".to_string(),
+            score: 80,
+            latency_ms: Some(80),
+            candidate_source: "none".to_string(),
+            candidate_kind: "none".to_string(),
+            rendezvous_state: "not_configured".to_string(),
+            created_at_unix: 1,
+        };
+        let peer = TrustedPeer {
+            peer_node_id: "peer.node".to_string(),
+            display_name: "Peer".to_string(),
+            status: conu_core::trust::TrustStatus::Trusted,
+            source: "test".to_string(),
+            pairing_code_hash: "pair.hash".to_string(),
+            exchange_public_key_hex: Some("exchange".to_string()),
+            relay_endpoint: Some(relay_endpoint.to_string()),
+            direct_quic_endpoint: Some(direct_endpoint.to_string()),
+            signing_public_key_hex: None,
+            signature_algorithm: None,
+            signature_key_id: None,
+            signature_hex: None,
+            created_at_unix: 1,
+            updated_at_unix: 1,
+        };
+
+        let outputs = [
+            render_sessions_json(&[session], &[]),
+            render_routes_json(std::slice::from_ref(&route)),
+            render_routes_text(std::slice::from_ref(&route)),
+            render_route_line(&route),
+            render_route_probes_json(&[probe]),
+            render_peers_json(std::slice::from_ref(&peer)),
+            render_peers_text(&[peer]),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("wss://relay.example.com"));
+            assert!(output.contains("endpointPathDisplayed=false"));
+            assert!(!output.contains("user:relay-secret"));
+            assert!(!output.contains("relay-secret"));
+            assert!(!output.contains("private-token"));
+            assert!(!output.contains("token=query-secret"));
+            assert!(!output.contains("query-secret"));
+            assert!(!output.contains("frag-secret"));
+            assert!(!output.contains("/conu"));
+            assert!(!output.contains("user:direct-secret"));
+            assert!(!output.contains("direct-secret"));
+            assert!(!output.contains("token=direct-query"));
+            assert!(!output.contains("direct-query"));
+            assert!(!output.contains("direct-frag"));
+            assert!(!output.contains("/direct/private"));
+        }
     }
 
     #[test]
