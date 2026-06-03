@@ -68,11 +68,17 @@ def run_gh_payload_tests(module) -> None:
     helper.subprocess.run = fake_secret_list
     try:
         names = module.load_secret_names("owner/repo", "gh")
+        metadata = helper.load_secret_metadata("owner/repo", "gh")
     finally:
         helper.subprocess.run = original_run
 
     if names != set(module.REQUIRED_RELEASE_SECRETS):
         raise AssertionError("loaded secret names did not match required names")
+    if set(metadata) != names:
+        raise AssertionError("loaded secret metadata did not match required names")
+    for record in metadata.values():
+        if record.updated_at != "":
+            raise AssertionError("unexpected updatedAt value in fake metadata payload")
     report = module.audit_secret_names("owner/repo", names)
     rendered = json.dumps(report.as_json())
     if SENSITIVE_SENTINEL in rendered:

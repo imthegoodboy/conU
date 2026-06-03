@@ -49,6 +49,12 @@ class SecretReadiness:
         }
 
 
+@dataclass(frozen=True)
+class SecretMetadata:
+    name: str
+    updated_at: str
+
+
 def find_gh() -> str:
     candidates = ("gh.exe", "gh") if sys.platform == "win32" else ("gh",)
     for candidate in candidates:
@@ -95,24 +101,35 @@ def infer_repo(gh: str) -> str:
     return repo.strip()
 
 
-def load_secret_names(repo: str, gh: str) -> set[str]:
+def load_secret_metadata(repo: str, gh: str) -> dict[str, SecretMetadata]:
     payload = run_gh_json(
         gh,
-        ["secret", "list", "--repo", repo, "--json", "name"],
+        ["secret", "list", "--repo", repo, "--json", "name,updatedAt"],
         "gh secret list",
     )
     if not isinstance(payload, list):
         raise ValueError("gh secret list returned an unexpected payload")
 
-    names: set[str] = set()
+    records: dict[str, SecretMetadata] = {}
     for item in payload:
         if not isinstance(item, dict):
             raise ValueError("gh secret list returned a non-object secret entry")
         name = item.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("gh secret list returned a secret entry without a name")
-        names.add(name.strip())
-    return names
+        updated_at = item.get("updatedAt", "")
+        if updated_at is not None and not isinstance(updated_at, str):
+            raise ValueError("gh secret list returned a non-string updatedAt field")
+        normalized_name = name.strip()
+        records[normalized_name] = SecretMetadata(
+            name=normalized_name,
+            updated_at=(updated_at or "").strip(),
+        )
+    return records
+
+
+def load_secret_names(repo: str, gh: str) -> set[str]:
+    return set(load_secret_metadata(repo, gh))
 
 
 def audit_secret_names(repo: str, configured_names: set[str]) -> SecretReadiness:

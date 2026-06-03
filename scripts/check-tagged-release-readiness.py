@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlparse, urlunparse
@@ -20,6 +21,7 @@ from github_release_secrets import (
     audit_secret_names,
     find_gh,
     infer_repo,
+    load_secret_metadata,
     load_secret_names,
     run_gh_json,
 )
@@ -122,6 +124,34 @@ class CiReadiness:
 
 
 @dataclass(frozen=True)
+class SecretRotationRequirement:
+    name: str
+    updated_after: str
+
+
+@dataclass(frozen=True)
+class SecretRotationReadiness:
+    checked: bool
+    ready: bool
+    requirements: tuple[dict[str, Any], ...]
+    issues: tuple[str, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "checked": self.checked,
+            "ready": self.ready,
+            "requirements": list(self.requirements),
+            "issues": list(self.issues),
+            "payloadDisplayed": False,
+            "tokenDisplayed": False,
+            "tokenHashDisplayed": False,
+            "keyMaterialDisplayed": False,
+            "contentsDisplayed": False,
+            "secretValuesDisplayed": False,
+        }
+
+
+@dataclass(frozen=True)
 class ReleaseBranchReadiness:
     checked: bool
     required: bool
@@ -150,6 +180,7 @@ class TaggedReleaseReadiness:
     version: str
     ready: bool
     release_secrets: Any
+    secret_rotation: SecretRotationReadiness
     linux_repository: LinuxRepositoryReadiness
     release_clobber: Any
     npm_registry: NpmRegistryReadiness
@@ -169,6 +200,7 @@ class TaggedReleaseReadiness:
             "version": self.version,
             "ready": self.ready,
             "releaseSecrets": self.release_secrets.as_json(),
+            "secretRotation": self.secret_rotation.as_json(),
             "linuxRepository": self.linux_repository.as_json(),
             "releaseClobber": self.release_clobber.as_json(),
             "npmRegistry": self.npm_registry.as_json(),
@@ -253,6 +285,107 @@ def validate_tag_for_version(tag: str, version: str) -> str:
     if tag_version != version:
         raise ValueError(f"release tag {raw} does not match package version {version}")
     return raw
+
+
+def parse_utc_timestamp(value: str, label: str) -> datetime:
+    raw = value.strip()
+    if not raw:
+        raise ValueError(f"{label} timestamp must not be empty")
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"{label} timestamp must be ISO-8601 with a timezone") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label} timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def render_utc_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_secret_rotation_requirement(raw: str) -> SecretRotationRequirement:
+    if "=" not in raw:
+        raise ValueError(
+            "--require-secret-updated-after must use NAME=ISO-8601_TIMESTAMP"
+        )
+    name, timestamp = raw.split("=", 1)
+    normalized_name = name.strip()
+    if normalized_name not in REQUIRED_RELEASE_SECRETS:
+        raise ValueError(
+            f"release secret rotation requirement uses an unknown required secret: {normalized_name}"
+        )
+    updated_after = render_utc_timestamp(
+        parse_utc_timestamp(timestamp, f"{normalized_name} rotation requirement")
+    )
+    return SecretRotationRequirement(name=normalized_name, updated_after=updated_after)
+
+
+def parse_secret_rotation_requirements(values: list[str]) -> tuple[SecretRotationRequirement, ...]:
+    requirements: list[SecretRotationRequirement] = []
+    seen: set[str] = set()
+    for value in values:
+        requirement = parse_secret_rotation_requirement(value)
+        if requirement.name in seen:
+            raise ValueError(
+                f"duplicate release secret rotation requirement: {requirement.name}"
+            )
+        seen.add(requirement.name)
+        requirements.append(requirement)
+    return tuple(requirements)
+
+
+def audit_secret_rotation(
+    secret_updated_at: dict[str, str],
+    requirements: tuple[SecretRotationRequirement, ...],
+) -> SecretRotationReadiness:
+    if not requirements:
+        return SecretRotationReadiness(
+            checked=False,
+            ready=True,
+            requirements=(),
+            issues=(),
+        )
+
+    rendered_requirements: list[dict[str, Any]] = []
+    issues: list[str] = []
+    for requirement in requirements:
+        updated_at = secret_updated_at.get(requirement.name, "")
+        entry: dict[str, Any] = {
+            "name": requirement.name,
+            "updatedAfter": requirement.updated_after,
+            "updatedAt": updated_at,
+            "ready": False,
+        }
+        if not updated_at:
+            issues.append(f"{requirement.name} update timestamp is missing")
+            rendered_requirements.append(entry)
+            continue
+        try:
+            observed = parse_utc_timestamp(updated_at, f"{requirement.name} updatedAt")
+            required = parse_utc_timestamp(
+                requirement.updated_after,
+                f"{requirement.name} rotation requirement",
+            )
+        except ValueError:
+            issues.append(f"{requirement.name} update timestamp is invalid")
+            rendered_requirements.append(entry)
+            continue
+        entry["updatedAt"] = render_utc_timestamp(observed)
+        if observed <= required:
+            issues.append(f"{requirement.name} was not rotated after required timestamp")
+        else:
+            entry["ready"] = True
+        rendered_requirements.append(entry)
+
+    return SecretRotationReadiness(
+        checked=True,
+        ready=not issues,
+        requirements=tuple(rendered_requirements),
+        issues=tuple(issues),
+    )
 
 
 def load_variable_values(repo: str, gh: str) -> dict[str, str]:
@@ -798,6 +931,7 @@ def audit_repository_security(repo: str, gh: str) -> Any:
 
 def combine_issues(
     release_secrets: Any,
+    secret_rotation: SecretRotationReadiness,
     linux_repository: LinuxRepositoryReadiness,
     release_clobber: Any,
     npm_registry: NpmRegistryReadiness,
@@ -811,6 +945,8 @@ def combine_issues(
     issues: list[str] = []
     for name in release_secrets.missing:
         issues.append(f"missing release secret: {name}")
+    for issue in secret_rotation.issues:
+        issues.append(f"release secret rotation readiness: {issue}")
     for name in linux_repository.missing_variables:
         issues.append(f"missing repository variable: {name}")
     for name in linux_repository.missing_secrets:
@@ -846,6 +982,8 @@ def audit_tagged_release_readiness(
     pages_payload: dict[str, Any] | None,
     release_payload: dict[str, Any] | None,
     npm_registry_check: bool,
+    secret_updated_at: dict[str, str] | None = None,
+    secret_rotation_requirements: tuple[SecretRotationRequirement, ...] = (),
     npm: str = "",
     ci_required: bool = False,
     ci_workflow: str = DEFAULT_CI_WORKFLOW,
@@ -862,6 +1000,10 @@ def audit_tagged_release_readiness(
     repository_security: Any | None = None,
 ) -> TaggedReleaseReadiness:
     release_secrets = audit_secret_names(repo, secret_names)
+    secret_rotation = audit_secret_rotation(
+        secret_updated_at or {},
+        secret_rotation_requirements,
+    )
     linux_repository = audit_linux_repository(repo, variable_values, secret_names, pages_payload)
     clobber_module = load_script_module(
         "check-github-release-clobber-preflight.py",
@@ -894,6 +1036,7 @@ def audit_tagged_release_readiness(
         raise ValueError("GitHub repository security readiness report is required")
     issues = combine_issues(
         release_secrets,
+        secret_rotation,
         linux_repository,
         release_clobber,
         npm_registry,
@@ -910,6 +1053,7 @@ def audit_tagged_release_readiness(
         version=version,
         ready=not issues,
         release_secrets=release_secrets,
+        secret_rotation=secret_rotation,
         linux_repository=linux_repository,
         release_clobber=release_clobber,
         npm_registry=npm_registry,
@@ -986,6 +1130,16 @@ def parse_args() -> argparse.Namespace:
         help="fail unless the release target commit matches the repository default branch head",
     )
     parser.add_argument(
+        "--require-secret-updated-after",
+        action="append",
+        default=[],
+        metavar="NAME=TIMESTAMP",
+        help=(
+            "fail unless a required release secret was updated after the given ISO-8601 "
+            "timestamp; may be repeated and reports only secret names plus update metadata"
+        ),
+    )
+    parser.add_argument(
         "--release-branch",
         default="",
         help="release branch name to compare against; defaults to the repository default branch",
@@ -1009,6 +1163,11 @@ def main() -> int:
         tag = validate_tag_for_version(args.tag or default_tag(version), version)
         gh = args.gh or find_gh()
         repo = args.repo.strip() or infer_repo(gh)
+        secret_rotation_requirements = parse_secret_rotation_requirements(
+            args.require_secret_updated_after
+        )
+        if args.ci_only and secret_rotation_requirements:
+            raise ValueError("--require-secret-updated-after cannot be used with --ci-only")
         if args.ci_only:
             release_target_sha = args.release_target_head.strip()
             ci_head_sha = args.ci_head.strip() or release_target_sha or resolve_git_head()
@@ -1068,7 +1227,16 @@ def main() -> int:
                     print(f"issue: {issue}", file=sys.stderr)
             return 0 if ready else 1
 
-        secret_names = load_secret_names(repo, gh)
+        secret_updated_at: dict[str, str] = {}
+        if secret_rotation_requirements:
+            secret_records = load_secret_metadata(repo, gh)
+            secret_names = set(secret_records)
+            secret_updated_at = {
+                name: record.updated_at
+                for name, record in secret_records.items()
+            }
+        else:
+            secret_names = load_secret_names(repo, gh)
         variable_values = load_variable_values(repo, gh)
         ci_head_sha = args.ci_head.strip()
         release_target_sha = args.release_target_head.strip()
@@ -1118,6 +1286,8 @@ def main() -> int:
             pages_payload=pages_payload,
             release_payload=release_payload,
             npm_registry_check=args.npm_registry_check,
+            secret_updated_at=secret_updated_at,
+            secret_rotation_requirements=secret_rotation_requirements,
             npm=args.npm,
             ci_required=args.require_ci,
             ci_workflow=args.ci_workflow,

@@ -74,6 +74,10 @@ def all_custom_secrets(module) -> set[str]:
     return set(module.REQUIRED_RELEASE_SECRETS) | set(module.CUSTOM_REPOSITORY_REQUIRED_SECRETS)
 
 
+def all_secret_update_times(module, updated_at: str = "2026-06-03T02:00:00Z") -> dict[str, str]:
+    return {name: updated_at for name in module.REQUIRED_RELEASE_SECRETS}
+
+
 def assert_safe_report(report) -> dict[str, object]:
     rendered = json.dumps(report.as_json(), sort_keys=True)
     if SENSITIVE_SENTINEL in rendered:
@@ -183,6 +187,8 @@ def run_ready_pages_tests(module) -> None:
         raise AssertionError("Actions permissions should be included in tagged release readiness")
     if parsed["repositorySecurity"]["ready"] is not True:
         raise AssertionError("repository security should be included in tagged release readiness")
+    if parsed["secretRotation"]["checked"] is not False:
+        raise AssertionError("secret rotation readiness should be skipped by default")
 
 
 def run_workflow_permissions_tests(module) -> None:
@@ -488,6 +494,101 @@ def run_missing_secret_tests(module) -> None:
         raise AssertionError("missing release secret name was not reported")
 
 
+def run_secret_rotation_tests(module) -> None:
+    requirement = module.SecretRotationRequirement(
+        name="NPM_TOKEN",
+        updated_after="2026-06-03T00:00:00Z",
+    )
+    ready = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        secret_updated_at=all_secret_update_times(module, "2026-06-03T00:00:01Z"),
+        secret_rotation_requirements=(requirement,),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        **ready_governance_kwargs(),
+    )
+    if not ready.ready:
+        raise AssertionError(f"expected fresh secret rotation readiness to pass: {ready.issues!r}")
+    parsed_ready = assert_safe_report(ready)
+    if parsed_ready["secretRotation"]["checked"] is not True:
+        raise AssertionError("secret rotation readiness should be checked")
+    if parsed_ready["secretRotation"]["requirements"][0]["name"] != "NPM_TOKEN":
+        raise AssertionError("secret rotation report should identify the checked secret name")
+
+    stale = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        secret_updated_at=all_secret_update_times(module, "2026-06-02T23:59:59Z"),
+        secret_rotation_requirements=(requirement,),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        **ready_governance_kwargs(),
+    )
+    if stale.ready:
+        raise AssertionError("stale secret rotation should fail readiness")
+    parsed_stale = assert_safe_report(stale)
+    if (
+        "release secret rotation readiness: NPM_TOKEN was not rotated after required timestamp"
+        not in json.dumps(parsed_stale)
+    ):
+        raise AssertionError("stale secret rotation issue was not reported")
+
+    missing = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        secret_updated_at={},
+        secret_rotation_requirements=(requirement,),
+        variable_values={},
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        **ready_governance_kwargs(),
+    )
+    if missing.ready:
+        raise AssertionError("missing secret update timestamp should fail readiness")
+    parsed_missing = assert_safe_report(missing)
+    if "NPM_TOKEN update timestamp is missing" not in json.dumps(parsed_missing):
+        raise AssertionError("missing secret update timestamp issue was not reported")
+
+    invalid = module.audit_secret_rotation(
+        {"NPM_TOKEN": "not-a-timestamp"},
+        (requirement,),
+    )
+    if invalid.ready:
+        raise AssertionError("invalid secret update timestamp should fail readiness")
+    if "NPM_TOKEN update timestamp is invalid" not in json.dumps(invalid.as_json()):
+        raise AssertionError("invalid secret update timestamp issue was not reported")
+
+    parsed = module.parse_secret_rotation_requirement(
+        "NPM_TOKEN=2026-06-03T00:00:00+00:00"
+    )
+    if parsed.updated_after != "2026-06-03T00:00:00Z":
+        raise AssertionError("secret rotation requirement timestamp was not normalized")
+    for raw, expected in (
+        ("NPM_TOKEN", "NAME=ISO-8601_TIMESTAMP"),
+        ("UNKNOWN=2026-06-03T00:00:00Z", "unknown required secret"),
+        ("NPM_TOKEN=2026-06-03T00:00:00", "must include a timezone"),
+    ):
+        try:
+            module.parse_secret_rotation_requirement(raw)
+        except ValueError as exc:
+            if expected not in str(exc):
+                raise AssertionError(f"unexpected parse error for {raw!r}: {exc}") from exc
+        else:
+            raise AssertionError(f"expected secret rotation parse failure for {raw!r}")
+
+
 def run_custom_repository_tests(module) -> None:
     report = module.audit_tagged_release_readiness(
         repo="owner/repo",
@@ -790,6 +891,7 @@ def main() -> int:
     run_ci_readiness_tests(module)
     run_release_branch_readiness_tests(module)
     run_missing_secret_tests(module)
+    run_secret_rotation_tests(module)
     run_custom_repository_tests(module)
     run_safe_failure_tests(module)
     print("Tagged release readiness regression checks passed")
