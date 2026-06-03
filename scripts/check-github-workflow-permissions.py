@@ -63,6 +63,20 @@ API_SECRET_FIELD_WRITE_PATTERN = (
 API_MUTATION_METHOD_PATTERN = (
     r"\s(?:--method|-X)(?:\s+|=)(?:POST|PUT|PATCH|DELETE)\b"
 )
+HTTP_MUTATION_METHOD_PATTERN = (
+    r"\s(?:-X|--request|--method|-Method)(?:\s+|=)"
+    r"(?:POST|PUT|PATCH|DELETE)\b"
+)
+HTTP_BODY_WRITE_PATTERN = (
+    r"\s(?:-d|--data|--data-raw|--data-binary|--data-urlencode|"
+    r"--json|--form|-Body)(?:\s+|=)"
+)
+HTTP_MUTATION_SIGNAL_PATTERN = (
+    rf"(?:{HTTP_MUTATION_METHOD_PATTERN}|{HTTP_BODY_WRITE_PATTERN})"
+)
+HTTP_CLIENT_PATTERN = (
+    r"\b(?:curl(?:\.exe)?|Invoke-RestMethod|Invoke-WebRequest|irm|iwr)\b"
+)
 FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     (
         "--allow-unverified-npm-token-rotation-marker",
@@ -87,6 +101,16 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         "direct GitHub Actions variable workflow API write",
     ),
     (
+        "HTTP actions/variables write",
+        re.compile(
+            rf"{HTTP_CLIENT_PATTERN}"
+            rf"(?=[^\n;&|]*\bactions/variables\b)"
+            rf"(?=[^\n;&|]*{HTTP_MUTATION_SIGNAL_PATTERN})",
+            re.IGNORECASE,
+        ),
+        "direct HTTP GitHub Actions variable workflow write",
+    ),
+    (
         "gh secret set <any-actions-secret>",
         re.compile(r"\bgh\s+secret\s+set\b"),
         "direct GitHub Actions secret workflow write",
@@ -101,6 +125,16 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             re.IGNORECASE,
         ),
         "direct GitHub Actions secret workflow API write",
+    ),
+    (
+        "HTTP actions/secrets write",
+        re.compile(
+            rf"{HTTP_CLIENT_PATTERN}"
+            rf"(?=[^\n;&|]*\bactions/secrets\b)"
+            rf"(?=[^\n;&|]*{HTTP_MUTATION_SIGNAL_PATTERN})",
+            re.IGNORECASE,
+        ),
+        "direct HTTP GitHub Actions secret workflow write",
     ),
     (
         f"gh variable set {NPM_TOKEN_ROTATION_MARKER_VAR}",
