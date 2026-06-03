@@ -2040,6 +2040,41 @@ def extract_uses_step_blocks(text: str, action: str) -> tuple[tuple[int, str], .
     return tuple(blocks)
 
 
+FOLDED_RUN_DECLARATION_RE = re.compile(
+    r"^(\s*)run:\s*>(?:[+-]?\d?|\d?[+-]?)?\s*(?:#.*)?$"
+)
+
+
+def extract_folded_run_blocks(text: str) -> tuple[tuple[int, str], ...]:
+    lines = text.splitlines()
+    blocks: list[tuple[int, str]] = []
+    index = 0
+    while index < len(lines):
+        match = FOLDED_RUN_DECLARATION_RE.match(lines[index])
+        if match is None:
+            index += 1
+            continue
+
+        line_number = index + 1
+        base_indent = len(match.group(1))
+        folded_lines: list[str] = []
+        index += 1
+        while index < len(lines):
+            line = lines[index]
+            if not line.strip():
+                folded_lines.append("")
+                index += 1
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            if indent <= base_indent:
+                break
+            folded_lines.append(line.strip())
+            index += 1
+        if folded_lines:
+            blocks.append((line_number, " ".join(folded_lines)))
+    return tuple(blocks)
+
+
 def audit_checkout_credential_persistence(path: Path) -> tuple[str, ...]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -2091,6 +2126,23 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
         if command in seen_patterns or not pattern.search(continuation_normalized):
             continue
         issues.append(f"{path.name} must not use {description}: {command}")
+    for line_number, block in extract_folded_run_blocks(text):
+        for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
+            if fragment in seen_fragments or fragment not in block:
+                continue
+            seen_fragments.add(fragment)
+            issues.append(
+                f"{path.name}:folded run block at line {line_number} must not use "
+                f"{description}: {fragment}"
+            )
+        for command, pattern, description in FORBIDDEN_WORKFLOW_COMMAND_PATTERNS:
+            if command in seen_patterns or not pattern.search(block):
+                continue
+            seen_patterns.add(command)
+            issues.append(
+                f"{path.name}:folded run block at line {line_number} must not use "
+                f"{description}: {command}"
+            )
     return tuple(issues)
 
 

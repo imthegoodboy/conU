@@ -1218,6 +1218,38 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not dynamic_variable_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("dynamic Actions variable API delete finding was not listed")
 
+    folded_variable_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe folded Actions variable delete\n"
+            "        run: >\n"
+            "          gh api repos/$GITHUB_REPOSITORY/actions/variables/"
+            "\"$CONU_RELEASE_VAR_NAME\"\n"
+            "          --method=DELETE\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if folded_variable_api_delete_report.ready:
+        raise AssertionError("folded Actions variable API delete should fail")
+    folded_variable_api_delete_parsed = assert_safe_report(
+        folded_variable_api_delete_report
+    )
+    folded_variable_api_delete_rendered = json.dumps(
+        folded_variable_api_delete_parsed
+    )
+    if (
+        "folded run block"
+        not in folded_variable_api_delete_rendered
+        or "must not use direct GitHub Actions variable workflow API write: "
+        "gh api actions/variables write"
+        not in folded_variable_api_delete_rendered
+    ):
+        raise AssertionError("folded Actions variable API delete was not reported")
+    if not folded_variable_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("folded Actions variable API delete finding was not listed")
+
     variable_api_field_equals_write_report = with_fixture(
         module,
         None,
@@ -1339,6 +1371,34 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("dynamic Actions secret API delete was not reported")
     if not dynamic_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("dynamic Actions secret API delete finding was not listed")
+
+    folded_secret_api_delete_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe folded Actions secret delete\n"
+            "        run: >-\n"
+            "          gh api repos/$GITHUB_REPOSITORY/actions/secrets/"
+            "\"$CONU_RELEASE_SECRET_NAME\"\n"
+            "          -X DELETE\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if folded_secret_api_delete_report.ready:
+        raise AssertionError("folded Actions secret API delete should fail")
+    folded_secret_api_delete_parsed = assert_safe_report(folded_secret_api_delete_report)
+    folded_secret_api_delete_rendered = json.dumps(folded_secret_api_delete_parsed)
+    if (
+        "folded run block"
+        not in folded_secret_api_delete_rendered
+        or "must not use direct GitHub Actions secret workflow API write: "
+        "gh api actions/secrets write"
+        not in folded_secret_api_delete_rendered
+    ):
+        raise AssertionError("folded Actions secret API delete was not reported")
+    if not folded_secret_api_delete_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("folded Actions secret API delete finding was not listed")
 
     secret_api_field_equals_write_report = with_fixture(
         module,
