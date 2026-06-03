@@ -492,6 +492,60 @@ assert.throws(
   },
 );
 
+const poisonedConstructorOptions = {};
+Object.defineProperty(poisonedConstructorOptions, "home", {
+  enumerable: true,
+  get() {
+    throw new Error(`constructor options getter leaked ${secretEndpoint}`);
+  },
+});
+
+assert.throws(
+  () => new ConuClient(poisonedConstructorOptions),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU constructor options could not be encoded: conu [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+
+assert.throws(
+  () => new ConuClient(null),
+  (error) => {
+    assert.ok(error instanceof ConuError);
+    const rendered = JSON.stringify({
+      message: error.message,
+      result: error.result,
+    });
+    assert.ok(!rendered.includes("secret"));
+    assert.ok(!rendered.includes("token=private"));
+    assert.ok(!rendered.includes("relay.example.com"));
+    assert.equal(
+      error.message,
+      "conU constructor options could not be encoded: conu [arguments redacted]",
+    );
+    assert.deepEqual(error.result.args, ["conu", "[arguments redacted]"]);
+    assert.equal(error.result.contentsDisplayed, false);
+    assert.equal(error.result.argsRedacted, true);
+    assert.equal(error.result.stdioRedacted, true);
+    return true;
+  },
+);
+
 const invalidConstructorOption = {
   toString() {
     throw new Error(`constructor option conversion leaked ${secretEndpoint}`);

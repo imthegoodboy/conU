@@ -10,15 +10,16 @@ export class ConuError extends Error {
 
 export class ConuClient {
   constructor(options = {}) {
-    this.conuBin = constructorBinary(options.conuBin, "conu");
-    this.conudBin = constructorBinary(options.conudBin, "conud");
-    this.mcpBin = constructorBinary(options.mcpBin, "conu-mcp");
-    this.cwd = constructorStringOption(options.cwd, this.conuBin, "cwd", true);
-    this.env = constructorEnv(options.env, this.conuBin);
-    if (options.home !== undefined && options.home !== null) {
-      this.env.CONU_HOME = constructorStringOption(options.home, this.conuBin, "home", false);
+    const safeOptions = constructorOptions(options);
+    this.conuBin = constructorBinary(safeOptions.conuBin, "conu");
+    this.conudBin = constructorBinary(safeOptions.conudBin, "conud");
+    this.mcpBin = constructorBinary(safeOptions.mcpBin, "conu-mcp");
+    this.cwd = constructorStringOption(safeOptions.cwd, this.conuBin, "cwd", true);
+    this.env = constructorEnv(safeOptions.env, this.conuBin);
+    if (safeOptions.home !== undefined && safeOptions.home !== null) {
+      this.env.CONU_HOME = constructorStringOption(safeOptions.home, this.conuBin, "home", false);
     }
-    this.runner = options.runner ?? defaultRunner;
+    this.runner = safeOptions.runner ?? defaultRunner;
   }
 
   init() {
@@ -514,6 +515,28 @@ export class ConuClient {
       );
     }
     return result;
+  }
+}
+
+function constructorOptions(options) {
+  if (options === undefined) {
+    return {};
+  }
+  if (!isRecord(options)) {
+    throw constructorOptionError("options", "conu");
+  }
+  try {
+    return {
+      conuBin: options.conuBin,
+      conudBin: options.conudBin,
+      mcpBin: options.mcpBin,
+      cwd: options.cwd,
+      env: options.env,
+      home: options.home,
+      runner: options.runner,
+    };
+  } catch (_error) {
+    throw constructorOptionError("options", "conu");
   }
 }
 
