@@ -19,10 +19,32 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by dependency-free r
 
 DEFAULT_WORKFLOW_DIR = Path(".github/workflows")
 FORBIDDEN_EVENTS = ("pull_request_target", "workflow_run")
+NPM_TOKEN_ROTATION_MARKER_VAR = "CONU_NPM_TOKEN_ROTATED_AFTER"
 FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     (
         "--allow-unverified-npm-token-rotation-marker",
         "unverified NPM token rotation marker override",
+    ),
+)
+FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        f"gh variable set {NPM_TOKEN_ROTATION_MARKER_VAR}",
+        re.compile(
+            rf"\bgh\s+variable\s+set\b[^\n;&|]*\b{NPM_TOKEN_ROTATION_MARKER_VAR}\b"
+        ),
+        "direct NPM token rotation marker variable write",
+    ),
+    (
+        f"gh api actions/variables {NPM_TOKEN_ROTATION_MARKER_VAR} write",
+        re.compile(
+            rf"\bgh\s+api\b"
+            rf"(?=[^\n;&|]*\bactions/variables\b)"
+            rf"(?=[^\n;&|]*\b{NPM_TOKEN_ROTATION_MARKER_VAR}\b)"
+            rf"(?=[^\n;&|]*(?:\b(?:--method|-X)\s+(?:POST|PUT|PATCH)\b|"
+            rf"\s(?:-f|--field|--raw-field)\s+(?:name|value)=))",
+            re.IGNORECASE,
+        ),
+        "direct NPM token rotation marker variable API write",
     ),
 )
 ALLOWED_PERMISSION_KEYS = (
@@ -1923,7 +1945,8 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
         raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
 
     issues: list[str] = []
-    seen: set[str] = set()
+    seen_fragments: set[str] = set()
+    seen_patterns: set[str] = set()
     for line_number, line in enumerate(text.splitlines(), start=1):
         for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
             if fragment in line:
@@ -1931,13 +1954,25 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
                     f"{path.name}:line {line_number} must not use {description}: "
                     f"{fragment}"
                 )
-                seen.add(fragment)
+                seen_fragments.add(fragment)
+                issues.append(issue)
+        for command, pattern, description in FORBIDDEN_WORKFLOW_COMMAND_PATTERNS:
+            if pattern.search(line):
+                issue = (
+                    f"{path.name}:line {line_number} must not use {description}: "
+                    f"{command}"
+                )
+                seen_patterns.add(command)
                 issues.append(issue)
     continuation_normalized = re.sub(r"\\\r?\n\s*", "", text)
     for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
-        if fragment in seen or fragment not in continuation_normalized:
+        if fragment in seen_fragments or fragment not in continuation_normalized:
             continue
         issues.append(f"{path.name} must not use {description}: {fragment}")
+    for command, pattern, description in FORBIDDEN_WORKFLOW_COMMAND_PATTERNS:
+        if command in seen_patterns or not pattern.search(continuation_normalized):
+            continue
+        issues.append(f"{path.name} must not use {description}: {command}")
     return tuple(issues)
 
 
