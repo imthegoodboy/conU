@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 SCRIPT = Path(__file__).with_name("check-tagged-release-readiness.py")
@@ -1086,6 +1087,82 @@ def run_custom_repository_tests(module) -> None:
         raise AssertionError("explicit loopback endpoint allowance should normalize URL")
 
 
+def run_variable_loader_tests(module) -> None:
+    helper = sys.modules["github_release_secrets"]
+
+    def fake_gh(args, **_kwargs):
+        if args[1:] == [
+            "variable",
+            "list",
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name",
+        ]:
+            payload = [
+                {"name": module.NPM_TOKEN_ROTATION_MARKER_VAR},
+                {"name": module.CUSTOM_REPOSITORY_BASE_URL_VAR},
+                {"name": "UNRELATED_VARIABLE"},
+            ]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:] == [
+            "variable",
+            "get",
+            module.NPM_TOKEN_ROTATION_MARKER_VAR,
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name,value",
+        ]:
+            payload = {
+                "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
+                "value": "2026-06-03T00:00:01Z",
+            }
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:] == [
+            "variable",
+            "get",
+            module.CUSTOM_REPOSITORY_BASE_URL_VAR,
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name,value",
+        ]:
+            payload = {
+                "name": module.CUSTOM_REPOSITORY_BASE_URL_VAR,
+                "value": "https://packages.example.com/conu/",
+            }
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:3] == ["variable", "get"]:
+            raise AssertionError(f"unexpected variable value request: {args!r}")
+        raise AssertionError(f"unexpected gh args: {args!r}")
+
+    original_run = helper.subprocess.run
+    helper.subprocess.run = fake_gh
+    try:
+        values = module.load_variable_values(
+            "owner/repo",
+            "gh",
+            module.REQUIRED_VARIABLE_VALUES,
+        )
+    finally:
+        helper.subprocess.run = original_run
+
+    if values[module.NPM_TOKEN_ROTATION_MARKER_VAR] != "2026-06-03T00:00:01Z":
+        raise AssertionError("variable loader omitted the npm rotation marker")
+    if (
+        values[module.CUSTOM_REPOSITORY_BASE_URL_VAR]
+        != "https://packages.example.com/conu/"
+    ):
+        raise AssertionError("variable loader omitted the custom repository base URL")
+    if module.CUSTOM_REPOSITORY_BUCKET_VAR in values:
+        raise AssertionError("variable loader should omit absent allowlisted variables")
+    if "UNRELATED_VARIABLE" in values:
+        raise AssertionError("variable loader included an unrelated variable")
+    if SENSITIVE_SENTINEL in json.dumps(values):
+        raise AssertionError("variable loader leaked unrelated sensitive text")
+
+
 def run_safe_failure_tests(module) -> None:
     invalid = module.audit_tagged_release_readiness(
         repo="owner/repo",
@@ -1159,6 +1236,7 @@ def main() -> int:
     run_secret_rotation_tests(module)
     run_secret_rotation_marker_tests(module)
     run_custom_repository_tests(module)
+    run_variable_loader_tests(module)
     run_safe_failure_tests(module)
     print("Tagged release readiness regression checks passed")
     return 0

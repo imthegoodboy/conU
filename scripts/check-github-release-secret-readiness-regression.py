@@ -158,15 +158,35 @@ def run_gh_payload_tests(module) -> None:
                 for name in module.REQUIRED_RELEASE_SECRETS
             ]
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
-        if args[1:4] == ["variable", "list", "--repo"]:
+        if args[1:] == [
+            "variable",
+            "list",
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name",
+        ]:
             payload = [
-                {
-                    "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
-                    "value": "2026-06-03T00:00:01Z",
-                },
-                {"name": "UNRELATED_VARIABLE", "value": SENSITIVE_SENTINEL},
+                {"name": module.NPM_TOKEN_ROTATION_MARKER_VAR},
+                {"name": "UNRELATED_VARIABLE"},
             ]
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:] == [
+            "variable",
+            "get",
+            module.NPM_TOKEN_ROTATION_MARKER_VAR,
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name,value",
+        ]:
+            payload = {
+                "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
+                "value": "2026-06-03T00:00:01Z",
+            }
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:3] == ["variable", "get"]:
+            raise AssertionError(f"unexpected variable value request: {args!r}")
         raise AssertionError(f"unexpected gh args: {args!r}")
 
     original_run = subprocess.run
@@ -174,7 +194,11 @@ def run_gh_payload_tests(module) -> None:
     try:
         names = module.load_secret_names("owner/repo", "gh")
         metadata = helper.load_secret_metadata("owner/repo", "gh")
-        variables = module.load_variable_values("owner/repo", "gh")
+        variables = module.load_variable_values(
+            "owner/repo",
+            "gh",
+            module.REQUIRED_VARIABLE_VALUES,
+        )
     finally:
         helper.subprocess.run = original_run
 
@@ -187,6 +211,8 @@ def run_gh_payload_tests(module) -> None:
             raise AssertionError("unexpected updatedAt value in fake metadata payload")
     if variables[module.NPM_TOKEN_ROTATION_MARKER_VAR] != "2026-06-03T00:00:01Z":
         raise AssertionError("loaded variable values did not include the rotation marker")
+    if "UNRELATED_VARIABLE" in variables:
+        raise AssertionError("loaded variable values included an unrelated variable")
     report = module.audit_release_secret_readiness("owner/repo", names, variables)
     assert_safe_report(report)
 
@@ -205,7 +231,11 @@ def run_error_tests(module) -> None:
             "invalid JSON",
         )
         assert_raises(
-            lambda: module.load_variable_values("owner/repo", "gh"),
+            lambda: module.load_variable_values(
+                "owner/repo",
+                "gh",
+                module.REQUIRED_VARIABLE_VALUES,
+            ),
             "invalid JSON",
         )
     finally:
@@ -221,7 +251,11 @@ def run_error_tests(module) -> None:
             "gh secret list failed",
         )
         assert_raises(
-            lambda: module.load_variable_values("owner/repo", "gh"),
+            lambda: module.load_variable_values(
+                "owner/repo",
+                "gh",
+                module.REQUIRED_VARIABLE_VALUES,
+            ),
             "gh variable list failed",
         )
     finally:
@@ -235,15 +269,35 @@ def run_main_tests(module) -> None:
         if args[1:4] == ["secret", "list", "--repo"]:
             payload = [{"name": name} for name in module.REQUIRED_RELEASE_SECRETS]
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
-        if args[1:4] == ["variable", "list", "--repo"]:
+        if args[1:] == [
+            "variable",
+            "list",
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name",
+        ]:
             payload = [
-                {
-                    "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
-                    "value": "2026-06-03T00:00:01Z",
-                },
-                {"name": "UNRELATED_VARIABLE", "value": SENSITIVE_SENTINEL},
+                {"name": module.NPM_TOKEN_ROTATION_MARKER_VAR},
+                {"name": "UNRELATED_VARIABLE"},
             ]
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:] == [
+            "variable",
+            "get",
+            module.NPM_TOKEN_ROTATION_MARKER_VAR,
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name,value",
+        ]:
+            payload = {
+                "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
+                "value": "2026-06-03T00:00:01Z",
+            }
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+        if args[1:3] == ["variable", "get"]:
+            raise AssertionError(f"unexpected variable value request: {args!r}")
         raise AssertionError(f"unexpected gh args: {args!r}")
 
     original_run = subprocess.run

@@ -158,6 +158,54 @@ def load_secret_names(repo: str, gh: str) -> set[str]:
     return set(load_secret_metadata(repo, gh))
 
 
+def load_variable_names(repo: str, gh: str) -> set[str]:
+    repo = normalize_repo(repo)
+    payload = run_gh_json(
+        gh,
+        ["variable", "list", "--repo", repo, "--json", "name"],
+        "gh variable list",
+    )
+    if not isinstance(payload, list):
+        raise ValueError("gh variable list returned an unexpected payload")
+
+    names: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("gh variable list returned a non-object variable entry")
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("gh variable list returned a variable entry without a name")
+        names.add(name.strip())
+    return names
+
+
+def load_variable_values(repo: str, gh: str, names: tuple[str, ...]) -> dict[str, str]:
+    repo = normalize_repo(repo)
+    requested = tuple(dict.fromkeys(name.strip() for name in names if name.strip()))
+    available = load_variable_names(repo, gh)
+    values: dict[str, str] = {}
+    for name in requested:
+        if name not in available:
+            continue
+        payload = run_gh_json(
+            gh,
+            ["variable", "get", name, "--repo", repo, "--json", "name,value"],
+            f"gh variable get {name}",
+        )
+        if not isinstance(payload, dict):
+            raise ValueError(f"gh variable get {name} returned an unexpected payload")
+        returned_name = payload.get("name")
+        value = payload.get("value", "")
+        if not isinstance(returned_name, str) or not returned_name.strip():
+            raise ValueError(f"gh variable get {name} returned a variable without a name")
+        if returned_name.strip() != name:
+            raise ValueError(f"gh variable get {name} returned a different variable name")
+        if not isinstance(value, str):
+            raise ValueError(f"gh variable get {name} returned a non-string value")
+        values[name] = value.strip()
+    return values
+
+
 def audit_secret_names(repo: str, configured_names: set[str]) -> SecretReadiness:
     repo = normalize_repo(repo)
     present = tuple(name for name in REQUIRED_RELEASE_SECRETS if name in configured_names)
