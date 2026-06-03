@@ -3820,11 +3820,40 @@ fn send_admin_request(relay: &str, request: RelayAdminRequest) -> Result<RelayAd
     }
 }
 
+fn display_relay_endpoint(relay: &str) -> String {
+    let trimmed = relay.trim();
+    let (scheme, rest) = if let Some(rest) = trimmed.strip_prefix("ws://") {
+        ("ws://", rest)
+    } else if let Some(rest) = trimmed.strip_prefix("wss://") {
+        ("wss://", rest)
+    } else {
+        return "relay; endpointDisplayed=false".to_string();
+    };
+    let rest = rest
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let authority = authority.rsplit('@').next().unwrap_or(authority).trim();
+    if authority.is_empty() || authority.chars().any(char::is_whitespace) {
+        return "relay; endpointDisplayed=false".to_string();
+    }
+    if path.is_empty() {
+        format!("{scheme}{authority}")
+    } else {
+        format!("{scheme}{authority}; endpointPathDisplayed=false")
+    }
+}
+
 fn render_admin_credential_text(
     result: &RelayAdminResult,
     relay: &str,
     token_out: &Path,
 ) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r"conU hosted relay credential {}
 
@@ -3865,6 +3894,7 @@ fn render_admin_credential_json(
     relay: &str,
     token_out: &Path,
 ) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r#"{{
   "status": "{}",
@@ -3886,7 +3916,7 @@ fn render_admin_credential_json(
         json_escape(&result.status),
         optional_string_json(result.account_id.as_deref()),
         optional_string_json(result.node_id.as_deref()),
-        json_escape(relay),
+        json_escape(&relay),
         json_escape(&token_out.display().to_string()),
         optional_usize_json(result.token_length),
         optional_u64_json(result.expires_at_unix),
@@ -3899,6 +3929,7 @@ fn render_admin_credential_json(
 }
 
 fn render_admin_result_text(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r"conU hosted relay admin {}
 
@@ -3928,6 +3959,7 @@ contents displayed: no",
 }
 
 fn render_admin_result_json(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r#"{{
   "status": "{}",
@@ -3948,7 +3980,7 @@ fn render_admin_result_json(result: &RelayAdminResult, relay: &str) -> String {
         result.action.as_str(),
         optional_string_json(result.account_id.as_deref()),
         optional_string_json(result.node_id.as_deref()),
-        json_escape(relay),
+        json_escape(&relay),
         result.credentials,
         result.active,
         result.revoked,
@@ -3958,6 +3990,7 @@ fn render_admin_result_json(result: &RelayAdminResult, relay: &str) -> String {
 }
 
 fn render_admin_dashboard_text(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r"conU hosted relay admin dashboard snapshot
 
@@ -4055,6 +4088,7 @@ contents displayed: {}",
 }
 
 fn render_admin_dashboard_json(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r#"{{
   "status": "{}",
@@ -4117,7 +4151,7 @@ fn render_admin_dashboard_json(result: &RelayAdminResult, relay: &str) -> String
         result.action.as_str(),
         optional_string_json(result.account_id.as_deref()),
         optional_string_json(result.node_id.as_deref()),
-        json_escape(relay),
+        json_escape(&relay),
         result.credentials,
         result.active,
         result.revoked,
@@ -4164,6 +4198,7 @@ fn render_admin_dashboard_json(result: &RelayAdminResult, relay: &str) -> String
 }
 
 fn render_admin_tenant_text(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r"conU hosted relay tenant admin {}
 
@@ -4208,6 +4243,7 @@ contents displayed: {}",
 }
 
 fn render_admin_tenant_json(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r#"{{
   "status": "{}",
@@ -4234,7 +4270,7 @@ fn render_admin_tenant_json(result: &RelayAdminResult, relay: &str) -> String {
         result.action.as_str(),
         optional_string_json(result.account_id.as_deref()),
         optional_string_json(result.node_id.as_deref()),
-        json_escape(relay),
+        json_escape(&relay),
         result.tenants,
         result.active_tenants,
         result.revoked_tenants,
@@ -4253,6 +4289,7 @@ fn render_admin_tenant_json(result: &RelayAdminResult, relay: &str) -> String {
 }
 
 fn render_admin_mailbox_audit_text(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r"conU hosted relay admin mailbox audit
 
@@ -4296,6 +4333,7 @@ contents displayed: {}",
 }
 
 fn render_admin_mailbox_audit_json(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r#"{{
   "status": "{}",
@@ -4322,7 +4360,7 @@ fn render_admin_mailbox_audit_json(result: &RelayAdminResult, relay: &str) -> St
         json_escape(&result.status),
         result.action.as_str(),
         optional_string_json(result.node_id.as_deref()),
-        json_escape(relay),
+        json_escape(&relay),
         optional_u64_json(result.retention_ttl_seconds),
         result.mailbox_nodes,
         result.mailbox_records,
@@ -4343,6 +4381,7 @@ fn render_admin_mailbox_audit_json(result: &RelayAdminResult, relay: &str) -> St
 }
 
 fn render_admin_mailbox_purge_text(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     let dry_run = result.mailbox_dry_run.unwrap_or(false);
     let confirmed = result.mailbox_confirmed.unwrap_or(!dry_run);
     format!(
@@ -4394,6 +4433,7 @@ contents displayed: {}",
 }
 
 fn render_admin_mailbox_purge_json(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     let dry_run = result.mailbox_dry_run.unwrap_or(false);
     let confirmed = result.mailbox_confirmed.unwrap_or(!dry_run);
     format!(
@@ -4426,7 +4466,7 @@ fn render_admin_mailbox_purge_json(result: &RelayAdminResult, relay: &str) -> St
         result.action.as_str(),
         if dry_run { "dry-run" } else { "confirmed" },
         optional_string_json(result.node_id.as_deref()),
-        json_escape(relay),
+        json_escape(&relay),
         optional_u64_json(result.retention_ttl_seconds),
         bool_json(dry_run),
         bool_json(confirmed),
@@ -7224,7 +7264,7 @@ fn abuse_threshold_report_from_admin_result(
 ) -> AbuseThresholdReport {
     build_abuse_threshold_report(
         "admin",
-        Some(relay),
+        Some(display_relay_endpoint(&relay)),
         None,
         result.account_id.clone(),
         result.node_id.clone(),
@@ -11604,6 +11644,7 @@ fn render_hosted_tenant_permissions_json(
 }
 
 fn render_admin_account_suspend_text(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r"conU hosted relay admin account suspension
 
@@ -11651,6 +11692,7 @@ contents displayed: {}",
 }
 
 fn render_admin_account_suspend_json(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r#"{{
   "relay": "{}",
@@ -11674,7 +11716,7 @@ fn render_admin_account_suspend_json(result: &RelayAdminResult, relay: &str) -> 
   "keyMaterialDisplayed": {},
   "contentsDisplayed": {}
 }}"#,
-        json_escape(relay),
+        json_escape(&relay),
         json_escape(&result.status),
         optional_string_json(result.account_id.as_deref()),
         result.credentials,
@@ -11776,6 +11818,7 @@ fn render_session_audit_json(audit: &RelaySessionAudit, session_state_dir: &Path
 }
 
 fn render_admin_session_audit_text(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r"conU hosted relay admin session-state audit
 
@@ -11815,6 +11858,7 @@ contents displayed: {}",
 }
 
 fn render_admin_session_audit_json(result: &RelayAdminResult, relay: &str) -> String {
+    let relay = display_relay_endpoint(relay);
     format!(
         r#"{{
   "status": "{}",
@@ -11839,7 +11883,7 @@ fn render_admin_session_audit_json(result: &RelayAdminResult, relay: &str) -> St
         json_escape(&result.status),
         result.action.as_str(),
         optional_string_json(result.node_id.as_deref()),
-        json_escape(relay),
+        json_escape(&relay),
         result.session_state_records,
         result.session_state_active_records,
         result.session_state_expired_records,
@@ -16224,6 +16268,85 @@ token_displayed = false\n",
             assert!(!output.contains("BEGIN PRIVATE KEY"));
             assert!(!output.contains("payload-body"));
             assert!(!output.contains("ciphertext_body"));
+        }
+    }
+
+    #[test]
+    fn admin_relay_endpoint_display_hides_sensitive_parts() {
+        assert_eq!(
+            display_relay_endpoint("ws://127.0.0.1:8787"),
+            "ws://127.0.0.1:8787"
+        );
+        assert_eq!(
+            display_relay_endpoint(
+                "wss://user:relay-secret@relay.example.com/conu/private-token?adminToken=query-secret#frag-secret"
+            ),
+            "wss://relay.example.com; endpointPathDisplayed=false"
+        );
+        assert_eq!(
+            display_relay_endpoint("not-a-relay-endpoint"),
+            "relay; endpointDisplayed=false"
+        );
+    }
+
+    #[test]
+    fn admin_renderers_redact_sensitive_relay_endpoint_parts() {
+        let sensitive_relay = "wss://user:relay-secret@relay.example.com/conu/private-token?adminToken=query-secret#frag-secret";
+        let result =
+            RelayAdminResult::new(conu_core::relay::RelayAdminAction::Dashboard, "snapshotted");
+        let tenant_result = RelayAdminResult::new(
+            conu_core::relay::RelayAdminAction::TenantNodeUpsert,
+            "upserted",
+        );
+        let account_suspend_result = RelayAdminResult::new(
+            conu_core::relay::RelayAdminAction::AccountSuspend,
+            "suspended",
+        );
+        let mailbox_audit_result =
+            RelayAdminResult::new(conu_core::relay::RelayAdminAction::MailboxAudit, "audited");
+        let mailbox_purge_result =
+            RelayAdminResult::new(conu_core::relay::RelayAdminAction::MailboxPurge, "purged");
+        let abuse_report = abuse_threshold_report_from_admin_result(
+            &result,
+            AbuseThresholds::default(),
+            sensitive_relay.to_string(),
+        );
+        assert_eq!(
+            abuse_report.relay.as_deref(),
+            Some("wss://relay.example.com; endpointPathDisplayed=false")
+        );
+
+        let outputs = [
+            render_admin_credential_text(&result, sensitive_relay, Path::new("relay-token.txt")),
+            render_admin_credential_json(&result, sensitive_relay, Path::new("relay-token.txt")),
+            render_admin_result_text(&result, sensitive_relay),
+            render_admin_result_json(&result, sensitive_relay),
+            render_admin_dashboard_text(&result, sensitive_relay),
+            render_admin_dashboard_json(&result, sensitive_relay),
+            render_admin_tenant_text(&tenant_result, sensitive_relay),
+            render_admin_tenant_json(&tenant_result, sensitive_relay),
+            render_admin_account_suspend_text(&account_suspend_result, sensitive_relay),
+            render_admin_account_suspend_json(&account_suspend_result, sensitive_relay),
+            render_admin_session_audit_text(&result, sensitive_relay),
+            render_admin_session_audit_json(&result, sensitive_relay),
+            render_admin_mailbox_audit_text(&mailbox_audit_result, sensitive_relay),
+            render_admin_mailbox_audit_json(&mailbox_audit_result, sensitive_relay),
+            render_admin_mailbox_purge_text(&mailbox_purge_result, sensitive_relay),
+            render_admin_mailbox_purge_json(&mailbox_purge_result, sensitive_relay),
+            render_abuse_threshold_report_text(&abuse_report),
+            render_abuse_threshold_report_json(&abuse_report),
+        ];
+
+        for output in outputs {
+            assert!(output.contains("wss://relay.example.com"));
+            assert!(output.contains("endpointPathDisplayed=false"));
+            assert!(!output.contains("user:relay-secret"));
+            assert!(!output.contains("relay-secret"));
+            assert!(!output.contains("private-token"));
+            assert!(!output.contains("adminToken=query-secret"));
+            assert!(!output.contains("query-secret"));
+            assert!(!output.contains("frag-secret"));
+            assert!(!output.contains("/conu"));
         }
     }
 
