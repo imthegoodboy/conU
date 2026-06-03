@@ -247,12 +247,15 @@ impl fmt::Debug for RelayRuntimePump {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RelayRuntimePump")
-            .field("endpoint", &self.endpoint)
+            .field("endpoint", &debug_relay_endpoint(&self.endpoint))
             .field(
                 "session_id",
                 &self.session_id.as_ref().map(|_| "<redacted>"),
             )
-            .field("resume_endpoint", &self.resume_endpoint)
+            .field(
+                "resume_endpoint",
+                &debug_relay_endpoint(&self.resume_endpoint),
+            )
             .field(
                 "resume_session_id",
                 &self.resume_session_id.as_ref().map(|_| "<redacted>"),
@@ -260,6 +263,13 @@ impl fmt::Debug for RelayRuntimePump {
             .field("client", &self.client.as_ref().map(|_| "<connected>"))
             .finish()
     }
+}
+
+fn debug_relay_endpoint(endpoint: &Option<String>) -> Option<String> {
+    endpoint.as_ref().map(|endpoint| {
+        relay_endpoint::metadata_relay_endpoint(endpoint)
+            .unwrap_or_else(|_| "endpointDisplayed=false".to_string())
+    })
 }
 
 impl RelayRuntimePump {
@@ -2067,6 +2077,33 @@ fn current_unix_nanos() -> u128 {
 mod tests {
     use super::*;
     use crate::agents::AgentRegistration;
+
+    #[test]
+    fn relay_runtime_pump_debug_hides_endpoint_paths_and_session_ids() {
+        let pump = RelayRuntimePump {
+            endpoint: Some("wss://relay.example.com/conu/private-token".to_string()),
+            session_id: Some("session-secret".to_string()),
+            resume_endpoint: Some("wss://resume.example.com/relay/resume-token".to_string()),
+            resume_session_id: Some("resume-session-secret".to_string()),
+            client: None,
+        };
+
+        let rendered = format!("{pump:?}");
+
+        assert!(rendered.contains("wss://relay.example.com"));
+        assert!(rendered.contains("wss://resume.example.com"));
+        assert!(rendered.contains("<redacted>"));
+        for hidden in [
+            "private-token",
+            "/conu",
+            "resume-token",
+            "resume.example.com/relay",
+            "session-secret",
+            "resume-session-secret",
+        ] {
+            assert!(!rendered.contains(hidden));
+        }
+    }
 
     #[test]
     fn remote_message_request_hides_literal_payload() {
