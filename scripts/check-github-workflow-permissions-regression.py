@@ -1073,6 +1073,30 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct marker API write finding was not listed")
 
+    api_equals_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe equals-form API NPM marker variable write\n"
+            "        run: gh api repos/$GITHUB_REPOSITORY/actions/variables/"
+            "CONU_NPM_TOKEN_ROTATED_AFTER --method=PATCH "
+            "-F value=2026-06-03T01:00:00Z\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if api_equals_write_report.ready:
+        raise AssertionError("equals-form direct NPM marker API write should fail")
+    api_equals_write_parsed = assert_safe_report(api_equals_write_report)
+    api_equals_write_rendered = json.dumps(api_equals_write_parsed)
+    if (
+        "must not use direct NPM token rotation marker variable API write: "
+        "gh api actions/variables CONU_NPM_TOKEN_ROTATED_AFTER write"
+    ) not in api_equals_write_rendered:
+        raise AssertionError("equals-form marker API write was not reported")
+    if not api_equals_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("equals-form marker API write finding was not listed")
+
     variable_write_report = with_fixture(
         module,
         None,

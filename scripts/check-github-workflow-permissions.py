@@ -72,8 +72,9 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             rf"\bgh\s+api\b"
             rf"(?=[^\n;&|]*\bactions/variables\b)"
             rf"(?=[^\n;&|]*\b{NPM_TOKEN_ROTATION_MARKER_VAR}\b)"
-            rf"(?=[^\n;&|]*(?:\b(?:--method|-X)\s+(?:POST|PUT|PATCH)\b|"
-            rf"\s(?:-f|--field|--raw-field)\s+(?:name|value)=))",
+            rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
+            rf"(?:POST|PUT|PATCH)\b|"
+            rf"\s(?:-f|-F|--field|--raw-field)\s+(?:name|value)=))",
             re.IGNORECASE,
         ),
         "direct NPM token rotation marker variable API write",
