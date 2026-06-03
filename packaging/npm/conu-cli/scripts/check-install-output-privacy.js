@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const { BINARIES, binarySuffix, vendorDir } = require("../lib/platform");
+const { BINARIES, binarySuffix, platformKey, vendorDir } = require("../lib/platform");
 
 const packageRoot = path.resolve(__dirname, "..");
 
@@ -37,16 +37,15 @@ function main() {
     expectIncludes(output, "sourcePathDisplayed=false", "local install source path guard");
   });
 
-  console.log("install output privacy check passed");
+  expectLauncherMissingBinaryIsRedacted();
+  expectLauncherInvalidBinaryIsRedacted();
+  expectLauncherSpawnFailureIsRedacted();
+
+  console.log("install and launcher output privacy check passed");
 }
 
 function runNode(args, envOverrides = {}) {
-  const env = { ...process.env, ...envOverrides };
-  for (const [name, value] of Object.entries(envOverrides)) {
-    if (value === "") {
-      delete env[name];
-    }
-  }
+  const env = buildEnv(envOverrides);
   const result = spawnSync(process.execPath, args, {
     cwd: packageRoot,
     env,
@@ -60,6 +59,78 @@ function runNode(args, envOverrides = {}) {
     throw new Error(`node command failed with ${result.status}: ${output}`);
   }
   return output;
+}
+
+function runNodeFailure(args, envOverrides = {}, cwd = packageRoot) {
+  const result = spawnSync(process.execPath, args, {
+    cwd,
+    env: buildEnv(envOverrides),
+    encoding: "utf8",
+    errors: "replace",
+    stdout: "pipe",
+    stderr: "pipe"
+  });
+  const output = `${result.stdout || ""}${result.stderr || ""}`;
+  if (result.status === 0) {
+    throw new Error(`expected node command to fail, but it passed: ${output}`);
+  }
+  return output;
+}
+
+function buildEnv(envOverrides = {}) {
+  const env = { ...process.env, ...envOverrides };
+  for (const [name, value] of Object.entries(envOverrides)) {
+    if (value === "") {
+      delete env[name];
+    }
+  }
+  return env;
+}
+
+function expectLauncherMissingBinaryIsRedacted() {
+  withFixture((root) => {
+    const packageCopy = path.join(root, "package");
+    copyPackage(packageRoot, packageCopy);
+
+    const output = runNodeFailure([path.join(packageCopy, "bin", "conu.js")], {}, packageCopy);
+
+    expectNoLocalPath(output, root, "launcher missing temp root");
+    expectNoLocalPath(output, path.join(packageCopy, "vendor"), "launcher missing vendor dir");
+    expectIncludes(output, "pathDisplayed=false", "launcher missing path display guard");
+    expectIncludes(output, "contentsDisplayed=false", "launcher missing content display guard");
+  });
+}
+
+function expectLauncherInvalidBinaryIsRedacted() {
+  withFixture((root) => {
+    const packageCopy = path.join(root, "package");
+    const poisonedBinaryName = path.join(root, "env-secret-binary");
+    copyPackage(packageRoot, packageCopy);
+
+    const output = runNodeFailure([path.join(packageCopy, "lib", "run.js")], {
+      CONU_BIN_NAME: poisonedBinaryName
+    }, packageCopy);
+
+    expectNoLocalPath(output, root, "launcher invalid env temp root");
+    expectNotIncludes(output, poisonedBinaryName, "launcher invalid env value guard");
+    expectIncludes(output, "contentsDisplayed=false", "launcher invalid env content display guard");
+  });
+}
+
+function expectLauncherSpawnFailureIsRedacted() {
+  withFixture((root) => {
+    const packageCopy = path.join(root, "package");
+    copyPackage(packageRoot, packageCopy);
+
+    const executable = path.join(packageCopy, "vendor", platformKey(), `conu${binarySuffix()}`);
+    fs.mkdirSync(executable, { recursive: true });
+
+    const output = runNodeFailure([path.join(packageCopy, "bin", "conu.js")], {}, packageCopy);
+
+    expectNoLocalPath(output, root, "launcher spawn error temp root");
+    expectIncludes(output, "pathDisplayed=false", "launcher spawn path display guard");
+    expectIncludes(output, "contentsDisplayed=false", "launcher spawn content display guard");
+  });
 }
 
 function withFixture(callback) {
