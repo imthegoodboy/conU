@@ -912,6 +912,39 @@ def run_custom_repository_tests(module) -> None:
     ):
         raise AssertionError("malformed custom repository endpoint URL authority failure was missing")
 
+    loopback_endpoint = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_custom_secrets(module),
+        variable_values={
+            module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/",
+            module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+            module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+            module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "http://127.0.0.1:9000",
+            module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+        },
+        pages_payload=None,
+        release_payload=None,
+        npm_registry_check=False,
+        **ready_governance_kwargs(),
+    )
+    if loopback_endpoint.ready:
+        raise AssertionError("loopback custom repository endpoint URL should fail")
+    parsed_loopback_endpoint = assert_safe_report(loopback_endpoint)
+    if (
+        "custom repository S3 endpoint URL must use HTTPS"
+        not in json.dumps(parsed_loopback_endpoint)
+    ):
+        raise AssertionError("loopback custom repository endpoint URL failure was missing")
+
+    normalized_loopback_endpoint = module.validate_endpoint_url(
+        "http://127.0.0.1:9000",
+        allow_loopback_http=True,
+    )
+    if normalized_loopback_endpoint != "http://127.0.0.1:9000":
+        raise AssertionError("explicit loopback endpoint allowance should normalize URL")
+
 
 def run_safe_failure_tests(module) -> None:
     invalid = module.audit_tagged_release_readiness(

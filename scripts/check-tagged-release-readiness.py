@@ -549,7 +549,7 @@ def is_loopback_host(host: str) -> bool:
     return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
 
 
-def validate_endpoint_url(raw: str) -> str:
+def validate_endpoint_url(raw: str, *, allow_loopback_http: bool = False) -> str:
     value = raw.strip()
     if not value:
         return ""
@@ -563,8 +563,10 @@ def validate_endpoint_url(raw: str) -> str:
     netloc = normalize_url_netloc(parsed, "custom repository S3 endpoint URL")
     host = (parsed.hostname or "").lower()
     scheme = parsed.scheme.lower()
-    if scheme != "https" and not (scheme == "http" and is_loopback_host(host)):
-        raise ValueError("custom repository S3 endpoint URL must use HTTPS except loopback HTTP")
+    if scheme != "https" and not (
+        allow_loopback_http and scheme == "http" and is_loopback_host(host)
+    ):
+        raise ValueError("custom repository S3 endpoint URL must use HTTPS")
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise ValueError("custom repository S3 endpoint URL path must not contain dot segments")
