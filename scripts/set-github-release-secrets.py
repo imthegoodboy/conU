@@ -16,9 +16,11 @@ from typing import BinaryIO, Mapping
 from github_release_secrets import (
     NPM_TOKEN_ROTATION_MARKER_VAR,
     NPM_TOKEN_ROTATION_REQUIRED_AFTER,
+    NPM_TOKEN_SECRET_NAME,
     REQUIRED_RELEASE_SECRETS,
     find_gh,
     infer_repo,
+    load_secret_metadata,
 )
 
 
@@ -233,6 +235,18 @@ def normalize_npm_rotation_marker_timestamp(value: str) -> str:
     return render_utc_timestamp(observed)
 
 
+def load_npm_rotation_marker_timestamp_from_secret_metadata(repo: str, gh: str) -> str:
+    records = load_secret_metadata(repo, gh)
+    record = records.get(NPM_TOKEN_SECRET_NAME)
+    if record is None or not record.updated_at:
+        raise ValueError(
+            f"{NPM_TOKEN_SECRET_NAME} secret metadata is missing; "
+            f"rotate and upload {NPM_TOKEN_SECRET_NAME} before setting "
+            f"{NPM_TOKEN_ROTATION_MARKER_VAR}"
+        )
+    return normalize_npm_rotation_marker_timestamp(record.updated_at)
+
+
 def configure_npm_rotation_marker(
     repo: str,
     gh: str,
@@ -399,6 +413,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--set-npm-token-rotation-marker-from-secret-updated-at",
+        action="store_true",
+        help=(
+            "set non-secret GitHub variable "
+            f"{NPM_TOKEN_ROTATION_MARKER_VAR} from GitHub's "
+            f"{NPM_TOKEN_SECRET_NAME} updatedAt metadata after confirmed rotation"
+        ),
+    )
+    parser.add_argument(
         "--gh",
         default="",
         help=argparse.SUPPRESS,
@@ -422,6 +445,7 @@ def main() -> int:
             or args.require_openssl
             or args.set_npm_token_rotation_marker
             or args.confirm_npm_token_rotated
+            or args.set_npm_token_rotation_marker_from_secret_updated_at
         ):
             raise ValueError("env template generation cannot be combined with setup options")
         if args.check_env_file:
@@ -434,19 +458,32 @@ def main() -> int:
                 or args.require_openssl
                 or args.set_npm_token_rotation_marker
                 or args.confirm_npm_token_rotated
+                or args.set_npm_token_rotation_marker_from_secret_updated_at
             ):
                 raise ValueError("--check-env-file cannot be combined with setup options")
         if args.require_openssl and not args.preflight_values:
             raise ValueError("--require-openssl requires --preflight-values")
         if args.env_file_only and not args.env_file:
             raise ValueError("--env-file-only requires --env-file")
-        if args.confirm_npm_token_rotated and not args.set_npm_token_rotation_marker:
+        if (
+            args.set_npm_token_rotation_marker
+            and args.set_npm_token_rotation_marker_from_secret_updated_at
+        ):
             raise ValueError(
-                "--confirm-npm-token-rotated requires --set-npm-token-rotation-marker"
+                "--set-npm-token-rotation-marker and "
+                "--set-npm-token-rotation-marker-from-secret-updated-at are mutually exclusive"
             )
-        if args.set_npm_token_rotation_marker and not args.confirm_npm_token_rotated:
+        marker_option_requested = bool(
+            args.set_npm_token_rotation_marker
+            or args.set_npm_token_rotation_marker_from_secret_updated_at
+        )
+        if args.confirm_npm_token_rotated and not marker_option_requested:
             raise ValueError(
-                "--set-npm-token-rotation-marker requires --confirm-npm-token-rotated"
+                "--confirm-npm-token-rotated requires a NPM token rotation marker setup option"
+            )
+        if marker_option_requested and not args.confirm_npm_token_rotated:
+            raise ValueError(
+                "NPM token rotation marker setup requires --confirm-npm-token-rotated"
             )
         if args.print_env_template:
             print(render_env_template(REQUIRED_RELEASE_SECRETS), end="")
@@ -475,7 +512,7 @@ def main() -> int:
                 print(f"present: {name}")
             return 0
 
-        marker_requested = bool(args.set_npm_token_rotation_marker)
+        marker_requested = marker_option_requested
         secret_setup_requested = (
             not marker_requested
             or bool(args.env_file)
@@ -483,7 +520,7 @@ def main() -> int:
             or args.preflight_values
         )
         marker_timestamp = ""
-        if marker_requested:
+        if args.set_npm_token_rotation_marker:
             marker_timestamp = normalize_npm_rotation_marker_timestamp(
                 args.set_npm_token_rotation_marker
             )
@@ -517,10 +554,15 @@ def main() -> int:
         if secret_setup_requested:
             configured = configure_release_secrets(repo, gh, values, args.dry_run)
         if marker_requested:
+            if args.set_npm_token_rotation_marker_from_secret_updated_at:
+                marker_timestamp = load_npm_rotation_marker_timestamp_from_secret_metadata(
+                    repo,
+                    gh,
+                )
             marker_timestamp = configure_npm_rotation_marker(
                 repo,
                 gh,
-                args.set_npm_token_rotation_marker,
+                marker_timestamp or args.set_npm_token_rotation_marker,
                 args.confirm_npm_token_rotated,
                 args.dry_run,
             )

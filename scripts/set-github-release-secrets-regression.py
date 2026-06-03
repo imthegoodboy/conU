@@ -306,6 +306,55 @@ def run_rotation_marker_setup_tests(module) -> None:
         "--confirm-npm-token-rotated",
     )
 
+    original_loader = module.load_secret_metadata
+    try:
+        module.load_secret_metadata = lambda _repo, _gh: {
+            module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(
+                updated_at="2026-06-03T00:00:04+00:00"
+            )
+        }
+        metadata_timestamp = module.load_npm_rotation_marker_timestamp_from_secret_metadata(
+            "owner/repo",
+            "gh",
+        )
+        if metadata_timestamp != "2026-06-03T00:00:04Z":
+            raise AssertionError("metadata-derived marker timestamp was not normalized")
+
+        module.load_secret_metadata = lambda _repo, _gh: {}
+        assert_raises(
+            lambda: module.load_npm_rotation_marker_timestamp_from_secret_metadata(
+                "owner/repo",
+                "gh",
+            ),
+            "secret metadata is missing",
+        )
+
+        module.load_secret_metadata = lambda _repo, _gh: {
+            module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(
+                updated_at="2026-06-03T00:00:00Z"
+            )
+        }
+        assert_raises(
+            lambda: module.load_npm_rotation_marker_timestamp_from_secret_metadata(
+                "owner/repo",
+                "gh",
+            ),
+            "timestamp must be after",
+        )
+
+        module.load_secret_metadata = lambda _repo, _gh: {
+            module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(updated_at=SENSITIVE_SENTINEL)
+        }
+        assert_raises(
+            lambda: module.load_npm_rotation_marker_timestamp_from_secret_metadata(
+                "owner/repo",
+                "gh",
+            ),
+            "ISO-8601",
+        )
+    finally:
+        module.load_secret_metadata = original_loader
+
     calls = []
 
     def fake_run(args, **kwargs):
@@ -715,6 +764,37 @@ def run_rotation_marker_main_tests(module) -> None:
         if SENSITIVE_SENTINEL in rendered:
             raise AssertionError("marker-only dry-run leaked a secret-like value")
 
+        original_loader = module.load_secret_metadata
+        try:
+            module.load_secret_metadata = lambda _repo, _gh: {
+                module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(
+                    updated_at="2026-06-03T00:00:03+00:00"
+                )
+            }
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--repo",
+                    "owner/repo",
+                    "--gh",
+                    "gh",
+                    "--set-npm-token-rotation-marker-from-secret-updated-at",
+                    "--confirm-npm-token-rotated",
+                    "--dry-run",
+                ],
+            )
+        finally:
+            module.load_secret_metadata = original_loader
+        if exit_code != 0:
+            raise AssertionError(f"expected metadata marker dry-run to pass: {rendered}")
+        if "2026-06-03T00:00:03Z" not in rendered:
+            raise AssertionError("metadata marker dry-run omitted normalized updatedAt")
+        if "missing local release secret values" in rendered:
+            raise AssertionError("metadata marker dry-run should not require signing secrets")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("metadata marker dry-run leaked a secret-like value")
+
         exit_code, rendered = call_main(
             module,
             [
@@ -741,14 +821,53 @@ def run_rotation_marker_main_tests(module) -> None:
                 "owner/repo",
                 "--gh",
                 "gh",
+                "--set-npm-token-rotation-marker-from-secret-updated-at",
+                "--dry-run",
+            ],
+        )
+        if exit_code == 0 or "--confirm-npm-token-rotated" not in rendered:
+            raise AssertionError(
+                f"expected metadata marker setup without confirmation to fail: {rendered}"
+            )
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("metadata missing-confirm marker error leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
                 "--confirm-npm-token-rotated",
                 "--dry-run",
             ],
         )
-        if exit_code == 0 or "requires --set-npm-token-rotation-marker" not in rendered:
+        if exit_code == 0 or "requires a NPM token rotation marker setup option" not in rendered:
             raise AssertionError(f"expected confirmation without marker to fail: {rendered}")
         if SENSITIVE_SENTINEL in rendered:
             raise AssertionError("confirmation-only marker error leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
+                "--set-npm-token-rotation-marker",
+                "2026-06-03T00:00:01Z",
+                "--set-npm-token-rotation-marker-from-secret-updated-at",
+                "--confirm-npm-token-rotated",
+                "--dry-run",
+            ],
+        )
+        if exit_code == 0 or "mutually exclusive" not in rendered:
+            raise AssertionError(f"expected marker setup options to be mutually exclusive: {rendered}")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("mutual-exclusion marker error leaked a secret-like value")
 
         exit_code, rendered = call_main(
             module,
@@ -787,6 +906,31 @@ def run_rotation_marker_main_tests(module) -> None:
             raise AssertionError(f"expected invalid marker setup to fail: {rendered}")
         if SENSITIVE_SENTINEL in rendered:
             raise AssertionError("invalid marker error leaked the provided marker value")
+
+        original_loader = module.load_secret_metadata
+        try:
+            module.load_secret_metadata = lambda _repo, _gh: {
+                module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(updated_at=SENSITIVE_SENTINEL)
+            }
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--repo",
+                    "owner/repo",
+                    "--gh",
+                    "gh",
+                    "--set-npm-token-rotation-marker-from-secret-updated-at",
+                    "--confirm-npm-token-rotated",
+                    "--dry-run",
+                ],
+            )
+        finally:
+            module.load_secret_metadata = original_loader
+        if exit_code == 0 or "ISO-8601" not in rendered:
+            raise AssertionError(f"expected invalid metadata marker setup to fail: {rendered}")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("invalid metadata marker error leaked the updatedAt value")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             env_file = Path(temp_dir) / ".env.release"
