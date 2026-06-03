@@ -488,11 +488,12 @@ export class ConuClient {
   }
 
   run(binary, args = [], input) {
+    const safeArgs = normalizeCommandArgs(args, binary);
     let result;
     try {
       result = this.runner({
         binary,
-        args,
+        args: safeArgs,
         input,
         cwd: this.cwd,
         env: this.env,
@@ -513,6 +514,27 @@ export class ConuClient {
     }
     return result;
   }
+}
+
+function normalizeCommandArgs(args, binary) {
+  const safeArgs = [];
+  try {
+    if (!Array.isArray(args)) {
+      throw new TypeError("command arguments must be an array");
+    }
+    for (let index = 0; index < args.length; index += 1) {
+      safeArgs.push(commandArg(args[index], binary));
+    }
+  } catch (error) {
+    if (error instanceof ConuError) {
+      throw error;
+    }
+    throw new ConuError(
+      `conU command argument could not be encoded: ${safeCommandForError(binary)}`,
+      resultForError({ code: 1 }, binary),
+    );
+  }
+  return safeArgs;
 }
 
 function defaultRunner({ binary, args, input, cwd, env }) {
