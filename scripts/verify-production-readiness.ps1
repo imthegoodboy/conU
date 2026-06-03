@@ -300,6 +300,9 @@ try {
         Invoke-ReadinessStep "release version consistency" {
             & python scripts/verify-release-versions.py
         }
+        Invoke-ReadinessStep "release version regression" {
+            & python scripts/check-release-version-regression.py
+        }
         Invoke-ReadinessStep "release artifact verifier regression" {
             & python scripts/check-release-artifact-verifier.py
         }
