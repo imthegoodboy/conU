@@ -19,6 +19,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by dependency-free r
 
 DEFAULT_WORKFLOW_DIR = Path(".github/workflows")
 FORBIDDEN_EVENTS = ("pull_request_target", "workflow_run")
+FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
+    (
+        "--allow-unverified-npm-token-rotation-marker",
+        "unverified NPM token rotation marker override",
+    ),
+)
 ALLOWED_PERMISSION_KEYS = (
     "actions",
     "attestations",
@@ -1617,6 +1623,7 @@ class WorkflowPermissionsReadiness:
     jobs_with_write_permissions: tuple[str, ...]
     unsafe_environment_file_writes: tuple[str, ...]
     forbidden_events: tuple[str, ...]
+    forbidden_workflow_commands: tuple[str, ...]
     issues: tuple[str, ...]
 
     def as_json(self) -> dict[str, Any]:
@@ -1631,6 +1638,7 @@ class WorkflowPermissionsReadiness:
             "jobsWithWritePermissions": list(self.jobs_with_write_permissions),
             "unsafeEnvironmentFileWrites": list(self.unsafe_environment_file_writes),
             "forbiddenEvents": list(self.forbidden_events),
+            "forbiddenWorkflowCommands": list(self.forbidden_workflow_commands),
             "issues": list(self.issues),
             "payloadDisplayed": False,
             "tokenDisplayed": False,
@@ -1905,6 +1913,23 @@ def audit_checkout_credential_persistence(path: Path) -> tuple[str, ...]:
                 f"{path.name}:checkout step at line {line_number} must set "
                 "persist-credentials=false"
             )
+    return tuple(issues)
+
+
+def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    issues: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
+            if fragment in line:
+                issues.append(
+                    f"{path.name}:line {line_number} must not use {description}: "
+                    f"{fragment}"
+                )
     return tuple(issues)
 
 
@@ -2356,6 +2381,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
     write_jobs: list[str] = []
     unsafe_env_writes: list[str] = []
     forbidden_events_seen: set[str] = set()
+    forbidden_workflow_commands: list[str] = []
 
     if not workflow_paths:
         issues.append("no workflow files found")
@@ -2366,6 +2392,9 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         payload = load_workflow(path)
         for finding in audit_environment_file_writes(path):
             unsafe_env_writes.append(finding)
+            issues.append(finding)
+        for finding in audit_forbidden_workflow_commands(path):
+            forbidden_workflow_commands.append(finding)
             issues.append(finding)
         issues.extend(audit_checkout_credential_persistence(path))
         issues.extend(audit_required_release_preflight_steps(path))
@@ -2458,6 +2487,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         jobs_with_write_permissions=tuple(sorted(write_jobs)),
         unsafe_environment_file_writes=tuple(sorted(unsafe_env_writes)),
         forbidden_events=tuple(sorted(forbidden_events_seen)),
+        forbidden_workflow_commands=tuple(sorted(forbidden_workflow_commands)),
         issues=tuple(issues),
     )
 

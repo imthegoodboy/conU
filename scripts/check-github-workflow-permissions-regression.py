@@ -972,6 +972,33 @@ def run_forbidden_event_tests(module) -> None:
         raise AssertionError("forbidden event issue was not reported")
 
 
+def run_forbidden_workflow_command_tests(module) -> None:
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe unverified NPM marker setup\n"
+            "        run: python scripts/set-github-release-secrets.py "
+            "--set-npm-token-rotation-marker 2026-06-03T01:00:00Z "
+            "--allow-unverified-npm-token-rotation-marker "
+            "--confirm-npm-token-rotated --dry-run\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("unverified NPM marker workflow override should fail")
+    parsed = assert_safe_report(report)
+    rendered = json.dumps(parsed)
+    if (
+        "must not use unverified NPM token rotation marker override: "
+        "--allow-unverified-npm-token-rotation-marker"
+    ) not in rendered:
+        raise AssertionError("unverified NPM marker workflow override was not reported")
+    if not parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("forbidden workflow command finding was not listed")
+
+
 def run_checkout_credential_persistence_tests(module) -> None:
     report = with_fixture(
         module,
@@ -2455,6 +2482,7 @@ def main() -> int:
     run_ready_tests(module)
     run_top_level_permission_tests(module)
     run_forbidden_event_tests(module)
+    run_forbidden_workflow_command_tests(module)
     run_checkout_credential_persistence_tests(module)
     run_unexpected_job_write_tests(module)
     run_required_ci_package_checks_job_tests(module)
