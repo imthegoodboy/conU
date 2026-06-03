@@ -169,6 +169,25 @@ def main() -> int:
         )
         assert_failure("bad endpoint URL", bad_endpoint, "S3 endpoint URL must use HTTPS")
 
+        loopback_endpoint = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--endpoint-url",
+            "http://127.0.0.1:9000",
+        )
+        assert_failure(
+            "loopback endpoint URL",
+            loopback_endpoint,
+            "S3 endpoint URL must use HTTPS",
+        )
+        publisher = load_publisher()
+        normalized_loopback_endpoint = publisher.validate_endpoint_url(
+            "http://127.0.0.1:9000",
+            allow_loopback_http=True,
+        )
+        if normalized_loopback_endpoint != "http://127.0.0.1:9000":
+            raise AssertionError("explicit loopback endpoint allowance should normalize URL")
+
         raw_dot_endpoint = run_publisher_raw(
             site_dir,
             "--dry-run",
@@ -326,6 +345,18 @@ def load_site_checker():
     spec = importlib.util.spec_from_file_location("check_hosted_linux_repository_site", SITE_CHECKER)
     if spec is None or spec.loader is None:
         raise RuntimeError("could not load hosted Linux repository site checker")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_publisher():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("publish_hosted_linux_repository_s3", PUBLISHER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load hosted Linux repository S3 publisher")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
