@@ -198,6 +198,23 @@ RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
         ),
     ),
     (
+        "Validate NPM token rotation marker",
+        "validate NPM token rotation marker",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            (
+                "rotation marker env",
+                "CONU_NPM_TOKEN_ROTATED_AFTER: ${{ vars.CONU_NPM_TOKEN_ROTATED_AFTER }}",
+            ),
+            (
+                "rotation marker command",
+                "python scripts/check-release-secret-rotation-gate.py --secret-name "
+                "NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER "
+                "--required-after 2026-06-03T00:00:00Z",
+            ),
+        ),
+    ),
+    (
         "Validate npm token authentication and registry availability",
         "validate npm token authentication and registry availability",
         (
@@ -534,6 +551,16 @@ PACKAGES_REQUIRED_STEPS: tuple[
             (
                 "release secret env command",
                 "python scripts/check-release-secret-env-preflight-regression.py",
+            ),
+        ),
+    ),
+    (
+        "Release secret rotation gate regression",
+        "run release secret rotation gate regression",
+        (
+            (
+                "release secret rotation gate command",
+                "python scripts/check-release-secret-rotation-gate-regression.py",
             ),
         ),
     ),
