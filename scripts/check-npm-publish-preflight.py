@@ -74,7 +74,7 @@ def validate_manifest(repo: Path, rule: PackageRule) -> PackageInfo:
         raise ValueError(f"{manifest_path} name must be {rule.name}")
 
     version = require_string(manifest, "version", manifest_path)
-    if not SEMVER_RE.match(version):
+    if not SEMVER_RE.fullmatch(version):
         raise ValueError(f"{manifest_path} version is not semver-like: {version}")
 
     if manifest.get("private") is True:

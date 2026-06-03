@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -81,6 +83,29 @@ def run_version_consistency_tests(module) -> None:
         lambda: module.validate_package_version_consistency(mismatched),
         "versions must match",
     )
+
+
+def run_manifest_version_tests(module) -> None:
+    with tempfile.TemporaryDirectory(prefix="conu-npm-publish-preflight-") as temp_text:
+        repo = Path(temp_text)
+        package_dir = repo / "packaging" / "npm" / "conu-cli"
+        package_dir.mkdir(parents=True)
+        manifest = {
+            "name": "@conu/cli",
+            "version": "0.1.0\n",
+        }
+        (package_dir / "package.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+            newline="\n",
+        )
+        assert_raises(
+            lambda: module.validate_manifest(
+                repo,
+                module.PackageRule("@conu/cli", Path("packaging/npm/conu-cli")),
+            ),
+            "version is not semver-like",
+        )
 
 
 def run_token_tests(module) -> None:
@@ -202,6 +227,7 @@ def main() -> int:
     try:
         run_registry_tests(module)
         run_version_consistency_tests(module)
+        run_manifest_version_tests(module)
         run_token_tests(module)
         run_token_auth_tests(module)
     finally:

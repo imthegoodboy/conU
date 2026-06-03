@@ -76,6 +76,10 @@ def expected_tag_version() -> str | None:
     return version
 
 
+def is_semver_like(version: str) -> bool:
+    return SEMVER_RE.fullmatch(version) is not None
+
+
 def main() -> int:
     try:
         repo = Path(__file__).resolve().parents[1]
@@ -95,7 +99,7 @@ def main() -> int:
             return 1
 
         release_version = unique_versions[0]
-        if not SEMVER_RE.match(release_version):
+        if not is_semver_like(release_version):
             print(f"release version is not semver-like: {release_version}", file=sys.stderr)
             return 1
 
