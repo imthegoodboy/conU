@@ -48,17 +48,13 @@ def verify_imported_secret_key_fingerprint(
     )
     fingerprints = primary_secret_fingerprints(output)
     if len(fingerprints) != 1:
-        joined = ", ".join(fingerprints) if fingerprints else "none"
         raise SystemExit(
             "Linux GPG key id must resolve to exactly one primary secret key "
-            f"(found: {joined})"
+            f"(found {len(fingerprints)} primary secret key(s))"
         )
     actual = fingerprints[0]
     if actual != expected_fingerprint:
-        raise SystemExit(
-            "Linux GPG signing key fingerprint mismatch: "
-            f"expected {expected_fingerprint}, found {actual}"
-        )
+        raise SystemExit("Linux GPG signing key fingerprint mismatch")
 
 
 def primary_secret_fingerprints(colon_listing: str) -> list[str]:
