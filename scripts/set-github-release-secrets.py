@@ -405,6 +405,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--allow-unverified-npm-token-rotation-marker",
+        action="store_true",
+        help=(
+            "allow manual NPM rotation marker timestamps without checking GitHub "
+            f"{NPM_TOKEN_SECRET_NAME} updatedAt metadata; prefer "
+            "--set-npm-token-rotation-marker-from-secret-updated-at"
+        ),
+    )
+    parser.add_argument(
         "--confirm-npm-token-rotated",
         action="store_true",
         help=(
@@ -444,6 +453,7 @@ def main() -> int:
             or args.preflight_values
             or args.require_openssl
             or args.set_npm_token_rotation_marker
+            or args.allow_unverified_npm_token_rotation_marker
             or args.confirm_npm_token_rotated
             or args.set_npm_token_rotation_marker_from_secret_updated_at
         ):
@@ -457,6 +467,7 @@ def main() -> int:
                 or args.preflight_values
                 or args.require_openssl
                 or args.set_npm_token_rotation_marker
+                or args.allow_unverified_npm_token_rotation_marker
                 or args.confirm_npm_token_rotated
                 or args.set_npm_token_rotation_marker_from_secret_updated_at
             ):
@@ -472,6 +483,23 @@ def main() -> int:
             raise ValueError(
                 "--set-npm-token-rotation-marker and "
                 "--set-npm-token-rotation-marker-from-secret-updated-at are mutually exclusive"
+            )
+        if (
+            args.allow_unverified_npm_token_rotation_marker
+            and not args.set_npm_token_rotation_marker
+        ):
+            raise ValueError(
+                "--allow-unverified-npm-token-rotation-marker requires "
+                "--set-npm-token-rotation-marker"
+            )
+        if (
+            args.set_npm_token_rotation_marker
+            and not args.allow_unverified_npm_token_rotation_marker
+        ):
+            raise ValueError(
+                "--set-npm-token-rotation-marker requires "
+                "--allow-unverified-npm-token-rotation-marker; prefer "
+                "--set-npm-token-rotation-marker-from-secret-updated-at"
             )
         marker_option_requested = bool(
             args.set_npm_token_rotation_marker
