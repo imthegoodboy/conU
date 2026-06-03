@@ -1022,6 +1022,36 @@ def run_custom_repository_tests(module) -> None:
     else:
         raise AssertionError("custom AWS region with unsafe punctuation unexpectedly passed")
 
+    for region, expected in (
+        ("US-EAST-1", "custom repository AWS region contains unsupported characters"),
+        ("us_east_1", "custom repository AWS region contains unsupported characters"),
+        ("us.east.1", "custom repository AWS region contains unsupported characters"),
+        ("us-east-", "custom repository AWS region contains unsupported characters"),
+        ("us--east-1", "custom repository AWS region must not contain consecutive hyphens"),
+    ):
+        invalid_region = module.audit_tagged_release_readiness(
+            repo="owner/repo",
+            tag=TAG,
+            version=VERSION,
+            secret_names=all_custom_secrets(module),
+            variable_values={
+                module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/",
+                module.CUSTOM_REPOSITORY_BUCKET_VAR: "conu-packages",
+                module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+                module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com",
+                module.CUSTOM_REPOSITORY_REGION_VAR: region,
+            },
+            pages_payload=None,
+            release_payload=None,
+            npm_registry_check=False,
+            **ready_governance_kwargs(),
+        )
+        if invalid_region.ready:
+            raise AssertionError(f"unsafe custom repository AWS region unexpectedly passed: {region}")
+        parsed_invalid_region = assert_safe_report(invalid_region)
+        if expected not in json.dumps(parsed_invalid_region):
+            raise AssertionError(f"expected custom AWS region failure was missing: {expected}")
+
     loopback_endpoint = module.audit_tagged_release_readiness(
         repo="owner/repo",
         tag=TAG,

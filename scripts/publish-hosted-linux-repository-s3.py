@@ -34,7 +34,7 @@ MAX_CACHE_CONTROL_BYTES = 256
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 IPV4_BUCKET_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
-SAFE_REGION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+SAFE_REGION_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$")
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 FORBIDDEN_SEGMENTS = {
@@ -414,6 +414,8 @@ def validate_region(raw: str) -> str:
         raise PublicationError("AWS region must be a region name, not a URL or path")
     if not SAFE_REGION_RE.fullmatch(region):
         raise PublicationError("AWS region contains unsupported characters")
+    if "--" in region:
+        raise PublicationError("AWS region must not contain consecutive hyphens")
     return region
 
 

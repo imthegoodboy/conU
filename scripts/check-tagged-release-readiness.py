@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 IPV4_BUCKET_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
-SAFE_REGION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+SAFE_REGION_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$")
 CUSTOM_REPOSITORY_BASE_URL_VAR = "CONU_LINUX_REPOSITORY_BASE_URL"
 CUSTOM_REPOSITORY_BUCKET_VAR = "CONU_LINUX_REPOSITORY_S3_BUCKET"
 CUSTOM_REPOSITORY_PREFIX_VAR = "CONU_LINUX_REPOSITORY_S3_PREFIX"
@@ -633,6 +633,8 @@ def validate_region(raw: str) -> str:
         raise ValueError("custom repository AWS region must be a region name, not a URL or path")
     if not SAFE_REGION_RE.fullmatch(region):
         raise ValueError("custom repository AWS region contains unsupported characters")
+    if "--" in region:
+        raise ValueError("custom repository AWS region must not contain consecutive hyphens")
     return region
 
 
