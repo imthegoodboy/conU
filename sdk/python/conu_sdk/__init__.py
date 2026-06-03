@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
+from os import PathLike
 from pathlib import Path
 from typing import Any
 
@@ -47,9 +48,9 @@ class ConuClient:
         env: dict[str, str] | None = None,
         cwd: str | Path | None = None,
     ) -> None:
-        self.conu_bin = str(conu_bin)
-        self.conud_bin = str(conud_bin)
-        self.mcp_bin = str(mcp_bin)
+        self.conu_bin = _normalize_command_binary(conu_bin)
+        self.conud_bin = _normalize_command_binary(conud_bin)
+        self.mcp_bin = _normalize_command_binary(mcp_bin)
         self.cwd = None if cwd is None else str(cwd)
         self.env = os.environ.copy()
         if env:
@@ -614,11 +615,27 @@ class ConuClient:
         return result
 
 
-def _safe_command_for_error(binary: str) -> str:
+def _normalize_command_binary(binary: Any) -> str:
+    try:
+        if isinstance(binary, PathLike):
+            binary = os.fspath(binary)
+        if isinstance(binary, bytes):
+            binary = os.fsdecode(binary)
+        if isinstance(binary, str) and binary.strip():
+            return binary
+    except Exception:
+        pass
+    raise ConuError(
+        f"conU command binary could not be encoded: {_safe_command_for_error(binary)}",
+        _result_for_error(1, binary),
+    ) from None
+
+
+def _safe_command_for_error(binary: Any) -> str:
     return f"{_safe_binary_name(binary)} [arguments redacted]"
 
 
-def _result_for_error(returncode: int, binary: str) -> CommandResult:
+def _result_for_error(returncode: int, binary: Any) -> CommandResult:
     return CommandResult(
         (_safe_binary_name(binary), "[arguments redacted]"),
         "",
@@ -630,7 +647,7 @@ def _result_for_error(returncode: int, binary: str) -> CommandResult:
     )
 
 
-def _completed_process_result(completed: Any, argv: tuple[str, ...], binary: str) -> CommandResult:
+def _completed_process_result(completed: Any, argv: tuple[str, ...], binary: Any) -> CommandResult:
     try:
         stdout = _decode_completed_stdio(completed.stdout)
         stderr = _decode_completed_stdio(completed.stderr)
@@ -656,7 +673,7 @@ def _decode_completed_stdio(value: Any) -> str:
     raise TypeError("unsupported completed process stream type")
 
 
-def _safe_binary_name(binary: str) -> str:
+def _safe_binary_name(binary: Any) -> str:
     value = binary.strip() if isinstance(binary, str) else ""
     if not value:
         return "conu"

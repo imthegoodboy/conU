@@ -10,9 +10,9 @@ export class ConuError extends Error {
 
 export class ConuClient {
   constructor(options = {}) {
-    this.conuBin = String(options.conuBin ?? "conu");
-    this.conudBin = String(options.conudBin ?? "conud");
-    this.mcpBin = String(options.mcpBin ?? "conu-mcp");
+    this.conuBin = constructorBinary(options.conuBin, "conu");
+    this.conudBin = constructorBinary(options.conudBin, "conud");
+    this.mcpBin = constructorBinary(options.mcpBin, "conu-mcp");
     this.cwd = options.cwd === undefined ? undefined : String(options.cwd);
     this.env = { ...process.env, ...(options.env ?? {}) };
     if (options.home !== undefined && options.home !== null) {
@@ -515,6 +515,13 @@ export class ConuClient {
     }
     return result;
   }
+}
+
+function constructorBinary(binary, fallback) {
+  if (binary === undefined || binary === null) {
+    return fallback;
+  }
+  return normalizeCommandBinary(binary);
 }
 
 function normalizeCommandBinary(binary) {

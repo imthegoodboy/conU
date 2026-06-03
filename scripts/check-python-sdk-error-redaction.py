@@ -155,6 +155,40 @@ def run_spawn_error_redaction_test(module) -> None:
         raise AssertionError("Python SDK spawn error should use a generic safe binary label")
 
 
+def run_constructor_binary_redaction_test(module) -> None:
+    class SecretBinary:
+        def __str__(self) -> str:
+            raise RuntimeError(f"binary conversion exposed {SENSITIVE_ENDPOINT}")
+
+    def fake_run(_argv, **_kwargs):
+        raise AssertionError("Python SDK should not execute subprocess for invalid binary")
+
+    module.subprocess.run = fake_run
+    try:
+        module.ConuClient(conu_bin=SecretBinary())
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu", 1)
+    else:
+        raise AssertionError("expected Python SDK constructor binary failure")
+
+    assert_redacted(rendered)
+    if "conU command binary could not be encoded: conu [arguments redacted]" not in rendered:
+        raise AssertionError("Python SDK constructor binary error should retain safe metadata only")
+
+    try:
+        module.ConuClient(mcp_bin="")
+    except module.ConuError as exc:
+        rendered = str(exc)
+        assert_safe_error_result(exc, "conu", 1)
+    else:
+        raise AssertionError("expected Python SDK empty constructor binary failure")
+
+    assert_redacted(rendered)
+    if "conU command binary could not be encoded: conu [arguments redacted]" not in rendered:
+        raise AssertionError("Python SDK empty constructor binary error should retain safe metadata")
+
+
 def run_subprocess_exception_redaction_test(module) -> None:
     def fake_run(_argv, **_kwargs):
         raise RuntimeError(f"custom runner exposed {SENSITIVE_ENDPOINT}")
@@ -773,6 +807,7 @@ def main() -> int:
     run_success_result_metadata_test(module)
     run_failed_command_redaction_test(module)
     run_spawn_error_redaction_test(module)
+    run_constructor_binary_redaction_test(module)
     run_subprocess_exception_redaction_test(module)
     run_malformed_completed_stdio_redaction_test(module)
     run_malformed_completed_returncode_redaction_test(module)
