@@ -177,9 +177,12 @@ def release_bool(payload: dict[str, Any], api_field: str, view_field: str) -> bo
 
 def asset_name(asset: dict[str, Any]) -> str:
     value = asset.get("name")
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value:
         raise ValueError("GitHub Release asset entry did not include a non-empty name")
-    return value.strip()
+    has_control = any(ord(character) <= 32 or ord(character) == 127 for character in value)
+    if value != value.strip() or has_control:
+        raise ValueError("GitHub Release asset names must not contain whitespace or control characters")
+    return value
 
 
 def asset_size_issue(asset: dict[str, Any], name: str) -> str | None:

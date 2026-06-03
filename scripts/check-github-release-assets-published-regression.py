@@ -196,6 +196,13 @@ def run_audit_tests(module) -> None:
         "forbiddenAssets",
     )
 
+    whitespace_payload = ready_payload(module)
+    whitespace_payload["assets"][0]["name"] = f"{whitespace_payload['assets'][0]['name']} "
+    assert_raises(
+        lambda: module.audit_release_assets("owner/repo", TEST_TAG, whitespace_payload),
+        "whitespace or control",
+    )
+
     unexpected_payload = ready_payload(module)
     unexpected_payload["assets"].append(
         {"name": "conu-0.1.0-extra-notes.txt", "size": 100, "state": "uploaded"}
