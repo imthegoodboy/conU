@@ -519,6 +519,25 @@ def run_dry_run_tests(module) -> None:
             raise AssertionError("dry run should report every required secret name")
         if calls:
             raise AssertionError("dry run must not call gh secret set")
+
+        module.require_npm_rotation_marker_for_token_write(
+            values=values,
+            marker_requested=False,
+            dry_run=True,
+        )
+        module.require_npm_rotation_marker_for_token_write(
+            values=values,
+            marker_requested=True,
+            dry_run=False,
+        )
+        assert_raises(
+            lambda: module.require_npm_rotation_marker_for_token_write(
+                values=values,
+                marker_requested=False,
+                dry_run=False,
+            ),
+            module.NPM_TOKEN_ROTATION_MARKER_VAR,
+        )
     finally:
         restore_env(original)
 
@@ -568,6 +587,28 @@ def run_env_file_main_tests(module) -> None:
                 raise AssertionError(f"expected env-file-only dry run to pass: {rendered}")
             if SENSITIVE_SENTINEL in rendered:
                 raise AssertionError("env-file-only dry-run output leaked a secret value")
+
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--repo",
+                    "owner/repo",
+                    "--gh",
+                    "gh",
+                    "--env-file",
+                    str(env_file),
+                    "--env-file-only",
+                ]
+            )
+            if exit_code == 0 or module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+                raise AssertionError(
+                    f"expected real NPM token setup without marker to fail: {rendered}"
+                )
+            if "missing local release secret values" in rendered:
+                raise AssertionError("marker guard should run after complete env-file loading")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("marker guard error leaked a secret value")
 
             original_find_gh = module.find_gh
             original_infer_repo = module.infer_repo

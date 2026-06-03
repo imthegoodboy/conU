@@ -341,6 +341,24 @@ def configure_release_secrets(
     return names
 
 
+def require_npm_rotation_marker_for_token_write(
+    *,
+    values: Mapping[str, str],
+    marker_requested: bool,
+    dry_run: bool,
+) -> None:
+    if dry_run or marker_requested:
+        return
+    if (value := values.get(NPM_TOKEN_SECRET_NAME)) is None or value.strip() == "":
+        return
+    raise ValueError(
+        f"{NPM_TOKEN_SECRET_NAME} upload requires "
+        f"{NPM_TOKEN_ROTATION_MARKER_VAR}; add "
+        "--set-npm-token-rotation-marker-from-secret-updated-at "
+        "--confirm-npm-token-rotated after rotating the token"
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -571,6 +589,11 @@ def main() -> int:
                     sys.stderr,
                 )
                 return 1
+            require_npm_rotation_marker_for_token_write(
+                values=values,
+                marker_requested=marker_requested,
+                dry_run=args.dry_run,
+            )
 
             if args.preflight_values:
                 run_value_preflights(require_openssl=args.require_openssl, values=values)
