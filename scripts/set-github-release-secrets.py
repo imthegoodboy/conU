@@ -21,6 +21,7 @@ from github_release_secrets import (
     find_gh,
     infer_repo,
     load_secret_metadata,
+    normalize_repo,
 )
 
 
@@ -601,7 +602,7 @@ def main() -> int:
             values = {}
 
         gh = args.gh or find_gh()
-        repo = args.repo.strip() or infer_repo(gh)
+        repo = normalize_repo(args.repo.strip() or infer_repo(gh))
         if secret_setup_requested:
             configured = configure_release_secrets(repo, gh, values, args.dry_run)
         if marker_requested:

@@ -26,6 +26,7 @@ from github_release_secrets import (
     infer_repo,
     load_secret_metadata,
     load_secret_names,
+    normalize_repo,
     run_gh_json,
 )
 
@@ -1300,7 +1301,7 @@ def main() -> int:
         version = read_repo_version()
         tag = validate_tag_for_version(args.tag or default_tag(version), version)
         gh = args.gh or find_gh()
-        repo = args.repo.strip() or infer_repo(gh)
+        repo = normalize_repo(args.repo.strip() or infer_repo(gh))
         secret_rotation_requirements = parse_secret_rotation_requirements(
             args.require_secret_updated_after
         )

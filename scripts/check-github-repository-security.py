@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from github_release_secrets import find_gh, infer_repo
+from github_release_secrets import find_gh, infer_repo, normalize_repo
 
 
 @dataclass(frozen=True)
@@ -307,7 +307,7 @@ def main() -> int:
     args = parse_args()
     try:
         gh = args.gh or find_gh()
-        repo = args.repo.strip() or infer_repo(gh)
+        repo = normalize_repo(args.repo.strip() or infer_repo(gh))
         repo_payload = (
             load_repo_payload(repo, gh)
             if args.repo_json is None

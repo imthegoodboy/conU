@@ -7,6 +7,7 @@ import importlib.util
 import json
 import contextlib
 import io
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +51,36 @@ def run_audit_tests(module) -> None:
     not_ready = module.audit_secret_names("owner/repo", configured)
     if not not_ready.missing == (missing_name,):
         raise AssertionError(f"expected only {missing_name} missing, got {not_ready.missing}")
+
+
+def run_repo_normalization_tests(module) -> None:
+    helper = sys.modules["github_release_secrets"]
+
+    for repo in ("owner/repo", "owner-name/repo.name", "owner/repo_name"):
+        if helper.normalize_repo(repo) != repo:
+            raise AssertionError(f"valid repository did not normalize cleanly: {repo}")
+
+    for repo, expected in (
+        ("owner/repo/branches/main", "owner/name form"),
+        ("../repo", "owner contains unsupported characters"),
+        ("owner/..", "repository name is invalid"),
+        ("owner repo/name", "owner contains unsupported characters"),
+        ("owner/repo?secret=value", "name contains unsupported characters"),
+        ("https://github.com/owner/repo", "owner/name form"),
+        ("owner/re%70o", "name contains unsupported characters"),
+    ):
+        assert_raises(lambda repo=repo: helper.normalize_repo(repo), expected)
+        assert_raises(lambda repo=repo: module.audit_secret_names(repo, set()), expected)
+
+    original = os.environ.get("GH_REPO")
+    os.environ["GH_REPO"] = "owner/repo/extra"
+    try:
+        assert_raises(lambda: helper.infer_repo("gh"), "owner/name form")
+    finally:
+        if original is None:
+            os.environ.pop("GH_REPO", None)
+        else:
+            os.environ["GH_REPO"] = original
 
 
 def run_gh_payload_tests(module) -> None:
@@ -148,10 +179,38 @@ def run_main_tests(module) -> None:
     if SENSITIVE_SENTINEL in rendered:
         raise AssertionError("main() output leaked a secret value")
 
+    sys.argv = [
+        "check-github-release-secret-readiness.py",
+        "--repo",
+        "owner/repo/branches/main",
+        "--gh",
+        "gh",
+    ]
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    helper.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("gh should not run for invalid repository names")
+    )
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = module.main()
+    finally:
+        helper.subprocess.run = original_run
+        sys.argv = original_argv
+
+    rendered = stdout.getvalue() + stderr.getvalue()
+    if exit_code == 0:
+        raise AssertionError("invalid repository name should fail main()")
+    if "owner/name form" not in rendered:
+        raise AssertionError(f"invalid repository failure was not reported: {rendered!r}")
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("invalid repository failure leaked a secret value")
+
 
 def main() -> int:
     module = load_module()
     run_audit_tests(module)
+    run_repo_normalization_tests(module)
     run_gh_payload_tests(module)
     run_error_tests(module)
     run_main_tests(module)

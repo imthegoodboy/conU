@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from github_release_secrets import find_gh, infer_repo
+from github_release_secrets import find_gh, infer_repo, normalize_repo
 
 
 DEFAULT_REQUIRED_SELECTED_PATTERNS = ("dtolnay/rust-toolchain@stable",)
@@ -288,7 +288,7 @@ def main() -> int:
     args = parse_args()
     try:
         gh = args.gh or find_gh()
-        repo = args.repo.strip() or infer_repo(gh)
+        repo = normalize_repo(args.repo.strip() or infer_repo(gh))
         if args.actions_json is None:
             actions_payload = load_actions_permissions(repo, gh)
         else:

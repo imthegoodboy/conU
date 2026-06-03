@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from github_release_secrets import find_gh, infer_repo
+from github_release_secrets import find_gh, infer_repo, normalize_repo
 
 
 DEFAULT_BRANCH = "main"
@@ -295,7 +295,7 @@ def main() -> int:
     args = parse_args()
     try:
         gh = args.gh or find_gh()
-        repo = args.repo.strip() or infer_repo(gh)
+        repo = normalize_repo(args.repo.strip() or infer_repo(gh))
         required_status = tuple(args.required_status or DEFAULT_REQUIRED_STATUS_CHECKS)
         if args.protection_json is None:
             payload = load_branch_protection(repo, args.branch, gh)

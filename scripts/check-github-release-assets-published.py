@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from github_release_secrets import find_gh, infer_repo, run_gh_json
+from github_release_secrets import find_gh, infer_repo, normalize_repo, run_gh_json
 
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
@@ -487,12 +487,13 @@ def main() -> int:
             raise ValueError("--release-json and --dist-dir cannot be used together")
 
         if args.dist_dir is not None:
-            repo = repo or "local/dist"
+            repo = normalize_repo(repo or "local/dist")
             payload = load_dist_metadata(tag, args.dist_dir)
         else:
             if not repo:
                 gh = gh or find_gh()
                 repo = infer_repo(gh)
+            repo = normalize_repo(repo)
 
             if args.release_json:
                 payload = load_release_json(args.release_json)
@@ -503,6 +504,7 @@ def main() -> int:
         if not repo:
             gh = gh or find_gh()
             repo = infer_repo(gh)
+        repo = normalize_repo(repo)
 
         report = audit_release_assets(repo, tag, payload)
     except (OSError, ValueError) as exc:
