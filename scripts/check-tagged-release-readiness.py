@@ -55,6 +55,8 @@ NPM_MANIFESTS = (
 DEFAULT_CI_WORKFLOW = "CI"
 DEFAULT_RELEASE_BRANCH = "main"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+NPM_TOKEN_ROTATION_MARKER_VAR = "CONU_NPM_TOKEN_ROTATED_AFTER"
+NPM_TOKEN_ROTATION_REQUIRED_AFTER = "2026-06-03T00:00:00Z"
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,13 @@ class SecretRotationRequirement:
 
 
 @dataclass(frozen=True)
+class SecretRotationMarkerRequirement:
+    secret_name: str
+    marker_env: str
+    required_after: str
+
+
+@dataclass(frozen=True)
 class SecretRotationReadiness:
     checked: bool
     ready: bool
@@ -141,6 +150,28 @@ class SecretRotationReadiness:
             "checked": self.checked,
             "ready": self.ready,
             "requirements": list(self.requirements),
+            "issues": list(self.issues),
+            "payloadDisplayed": False,
+            "tokenDisplayed": False,
+            "tokenHashDisplayed": False,
+            "keyMaterialDisplayed": False,
+            "contentsDisplayed": False,
+            "secretValuesDisplayed": False,
+        }
+
+
+@dataclass(frozen=True)
+class SecretRotationMarkerReadiness:
+    checked: bool
+    ready: bool
+    markers: tuple[dict[str, Any], ...]
+    issues: tuple[str, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "checked": self.checked,
+            "ready": self.ready,
+            "markers": list(self.markers),
             "issues": list(self.issues),
             "payloadDisplayed": False,
             "tokenDisplayed": False,
@@ -181,6 +212,7 @@ class TaggedReleaseReadiness:
     ready: bool
     release_secrets: Any
     secret_rotation: SecretRotationReadiness
+    secret_rotation_markers: SecretRotationMarkerReadiness
     linux_repository: LinuxRepositoryReadiness
     release_clobber: Any
     npm_registry: NpmRegistryReadiness
@@ -201,6 +233,7 @@ class TaggedReleaseReadiness:
             "ready": self.ready,
             "releaseSecrets": self.release_secrets.as_json(),
             "secretRotation": self.secret_rotation.as_json(),
+            "secretRotationMarkers": self.secret_rotation_markers.as_json(),
             "linuxRepository": self.linux_repository.as_json(),
             "releaseClobber": self.release_clobber.as_json(),
             "npmRegistry": self.npm_registry.as_json(),
@@ -384,6 +417,60 @@ def audit_secret_rotation(
         checked=True,
         ready=not issues,
         requirements=tuple(rendered_requirements),
+        issues=tuple(issues),
+    )
+
+
+def default_secret_rotation_marker_requirements() -> tuple[SecretRotationMarkerRequirement, ...]:
+    return (
+        SecretRotationMarkerRequirement(
+            secret_name="NPM_TOKEN",
+            marker_env=NPM_TOKEN_ROTATION_MARKER_VAR,
+            required_after=NPM_TOKEN_ROTATION_REQUIRED_AFTER,
+        ),
+    )
+
+
+def audit_secret_rotation_markers(
+    variable_values: dict[str, str],
+    requirements: tuple[SecretRotationMarkerRequirement, ...],
+) -> SecretRotationMarkerReadiness:
+    if not requirements:
+        return SecretRotationMarkerReadiness(
+            checked=False,
+            ready=True,
+            markers=(),
+            issues=(),
+        )
+
+    gate_module = load_script_module(
+        "check-release-secret-rotation-gate.py",
+        "check_release_secret_rotation_gate_for_tagged_readiness",
+    )
+    markers: list[dict[str, Any]] = []
+    issues: list[str] = []
+    for requirement in requirements:
+        report = gate_module.audit_rotation_marker(
+            secret_name=requirement.secret_name,
+            marker_env=requirement.marker_env,
+            required_after=requirement.required_after,
+            rotated_after=variable_values.get(requirement.marker_env, ""),
+        )
+        markers.append(
+            {
+                "secretName": report.secret_name,
+                "markerEnv": report.marker_env,
+                "requiredAfter": report.required_after,
+                "rotatedAfter": report.rotated_after,
+                "ready": report.ready,
+            }
+        )
+        issues.extend(report.issues)
+
+    return SecretRotationMarkerReadiness(
+        checked=True,
+        ready=not issues,
+        markers=tuple(markers),
         issues=tuple(issues),
     )
 
@@ -932,6 +1019,7 @@ def audit_repository_security(repo: str, gh: str) -> Any:
 def combine_issues(
     release_secrets: Any,
     secret_rotation: SecretRotationReadiness,
+    secret_rotation_markers: SecretRotationMarkerReadiness,
     linux_repository: LinuxRepositoryReadiness,
     release_clobber: Any,
     npm_registry: NpmRegistryReadiness,
@@ -947,6 +1035,8 @@ def combine_issues(
         issues.append(f"missing release secret: {name}")
     for issue in secret_rotation.issues:
         issues.append(f"release secret rotation readiness: {issue}")
+    for issue in secret_rotation_markers.issues:
+        issues.append(f"release secret rotation marker readiness: {issue}")
     for name in linux_repository.missing_variables:
         issues.append(f"missing repository variable: {name}")
     for name in linux_repository.missing_secrets:
@@ -984,6 +1074,7 @@ def audit_tagged_release_readiness(
     npm_registry_check: bool,
     secret_updated_at: dict[str, str] | None = None,
     secret_rotation_requirements: tuple[SecretRotationRequirement, ...] = (),
+    secret_rotation_marker_requirements: tuple[SecretRotationMarkerRequirement, ...] = (),
     npm: str = "",
     ci_required: bool = False,
     ci_workflow: str = DEFAULT_CI_WORKFLOW,
@@ -1003,6 +1094,10 @@ def audit_tagged_release_readiness(
     secret_rotation = audit_secret_rotation(
         secret_updated_at or {},
         secret_rotation_requirements,
+    )
+    secret_rotation_markers = audit_secret_rotation_markers(
+        variable_values,
+        secret_rotation_marker_requirements,
     )
     linux_repository = audit_linux_repository(repo, variable_values, secret_names, pages_payload)
     clobber_module = load_script_module(
@@ -1037,6 +1132,7 @@ def audit_tagged_release_readiness(
     issues = combine_issues(
         release_secrets,
         secret_rotation,
+        secret_rotation_markers,
         linux_repository,
         release_clobber,
         npm_registry,
@@ -1054,6 +1150,7 @@ def audit_tagged_release_readiness(
         ready=not issues,
         release_secrets=release_secrets,
         secret_rotation=secret_rotation,
+        secret_rotation_markers=secret_rotation_markers,
         linux_repository=linux_repository,
         release_clobber=release_clobber,
         npm_registry=npm_registry,
@@ -1288,6 +1385,7 @@ def main() -> int:
             npm_registry_check=args.npm_registry_check,
             secret_updated_at=secret_updated_at,
             secret_rotation_requirements=secret_rotation_requirements,
+            secret_rotation_marker_requirements=default_secret_rotation_marker_requirements(),
             npm=args.npm,
             ci_required=args.require_ci,
             ci_workflow=args.ci_workflow,

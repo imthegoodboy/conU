@@ -589,6 +589,98 @@ def run_secret_rotation_tests(module) -> None:
             raise AssertionError(f"expected secret rotation parse failure for {raw!r}")
 
 
+def run_secret_rotation_marker_tests(module) -> None:
+    requirement = module.default_secret_rotation_marker_requirements()[0]
+    ready = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={
+            module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-03T00:00:01Z",
+        },
+        secret_rotation_marker_requirements=(requirement,),
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        **ready_governance_kwargs(),
+    )
+    if not ready.ready:
+        raise AssertionError(f"expected fresh rotation marker readiness to pass: {ready.issues!r}")
+    parsed_ready = assert_safe_report(ready)
+    marker_report = parsed_ready["secretRotationMarkers"]
+    if marker_report["checked"] is not True:
+        raise AssertionError("secret rotation marker readiness should be checked")
+    if marker_report["markers"][0]["markerEnv"] != module.NPM_TOKEN_ROTATION_MARKER_VAR:
+        raise AssertionError("secret rotation marker report should identify the marker variable")
+    if marker_report["markers"][0]["rotatedAfter"] != "2026-06-03T00:00:01Z":
+        raise AssertionError("secret rotation marker timestamp should be reported when valid")
+
+    missing = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={},
+        secret_rotation_marker_requirements=(requirement,),
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        **ready_governance_kwargs(),
+    )
+    if missing.ready:
+        raise AssertionError("missing rotation marker should fail tagged release readiness")
+    parsed_missing = assert_safe_report(missing)
+    if (
+        "release secret rotation marker readiness: NPM_TOKEN rotation marker "
+        "CONU_NPM_TOKEN_ROTATED_AFTER is missing"
+        not in json.dumps(parsed_missing)
+    ):
+        raise AssertionError("missing rotation marker issue was not reported")
+
+    stale = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={
+            module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-03T00:00:00Z",
+        },
+        secret_rotation_marker_requirements=(requirement,),
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        **ready_governance_kwargs(),
+    )
+    if stale.ready:
+        raise AssertionError("stale rotation marker should fail tagged release readiness")
+    parsed_stale = assert_safe_report(stale)
+    if "NPM_TOKEN rotation marker is not after required timestamp" not in json.dumps(parsed_stale):
+        raise AssertionError("stale rotation marker issue was not reported")
+
+    invalid = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=all_release_secrets(module),
+        variable_values={
+            module.NPM_TOKEN_ROTATION_MARKER_VAR: SENSITIVE_SENTINEL,
+        },
+        secret_rotation_marker_requirements=(requirement,),
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        **ready_governance_kwargs(),
+    )
+    if invalid.ready:
+        raise AssertionError("invalid rotation marker should fail tagged release readiness")
+    parsed_invalid = assert_safe_report(invalid)
+    if parsed_invalid["secretRotationMarkers"]["markers"][0]["rotatedAfter"] != "":
+        raise AssertionError("invalid rotation marker value should not be echoed")
+    if "NPM_TOKEN rotation marker timestamp is invalid" not in json.dumps(parsed_invalid):
+        raise AssertionError("invalid rotation marker issue was not reported")
+
+
 def run_custom_repository_tests(module) -> None:
     report = module.audit_tagged_release_readiness(
         repo="owner/repo",
@@ -892,6 +984,7 @@ def main() -> int:
     run_release_branch_readiness_tests(module)
     run_missing_secret_tests(module)
     run_secret_rotation_tests(module)
+    run_secret_rotation_marker_tests(module)
     run_custom_repository_tests(module)
     run_safe_failure_tests(module)
     print("Tagged release readiness regression checks passed")
