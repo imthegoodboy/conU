@@ -52,6 +52,14 @@ RELEASE_VARIABLE_WRITE_GUARD_NAMES: tuple[str, ...] = (
 RELEASE_VARIABLE_WRITE_GUARD_PATTERN = "|".join(
     re.escape(name) for name in RELEASE_VARIABLE_WRITE_GUARD_NAMES
 )
+API_VARIABLE_FIELD_WRITE_PATTERN = (
+    r"\s(?:(?:-f|-F)(?:\s+|=)?|(?:--field|--raw-field)(?:\s+|=))"
+    r"(?:name|value)="
+)
+API_SECRET_FIELD_WRITE_PATTERN = (
+    r"\s(?:(?:-f|-F)(?:\s+|=)?|(?:--field|--raw-field)(?:\s+|=))"
+    r"(?:encrypted_value|key_id|secret_name)="
+)
 FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     (
         "--allow-unverified-npm-token-rotation-marker",
@@ -74,7 +82,7 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             rf"(?=[^\n;&|]*\b{NPM_TOKEN_ROTATION_MARKER_VAR}\b)"
             rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
             rf"(?:POST|PUT|PATCH)\b|"
-            rf"\s(?:-f|-F|--field|--raw-field)\s+(?:name|value)=))",
+            rf"{API_VARIABLE_FIELD_WRITE_PATTERN}))",
             re.IGNORECASE,
         ),
         "direct NPM token rotation marker variable API write",
@@ -95,7 +103,7 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             rf"(?=[^\n;&|]*\b(?:{RELEASE_VARIABLE_WRITE_GUARD_PATTERN})\b)"
             rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
             rf"(?:POST|PUT|PATCH)\b|"
-            rf"\s(?:-f|-F|--field|--raw-field)\s+(?:name|value)=))",
+            rf"{API_VARIABLE_FIELD_WRITE_PATTERN}))",
             re.IGNORECASE,
         ),
         "direct release variable workflow API write",
@@ -116,8 +124,7 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             rf"(?=[^\n;&|]*\b(?:{RELEASE_SECRET_WRITE_GUARD_PATTERN})\b)"
             rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
             rf"(?:POST|PUT|PATCH)\b|"
-            rf"\s(?:-f|-F|--field|--raw-field)\s+"
-            rf"(?:encrypted_value|key_id|secret_name)=))",
+            rf"{API_SECRET_FIELD_WRITE_PATTERN}))",
             re.IGNORECASE,
         ),
         "direct release secret workflow API write",
