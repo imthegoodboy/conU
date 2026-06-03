@@ -785,6 +785,37 @@ def run_custom_repository_tests(module) -> None:
         if expected not in json.dumps(parsed_invalid_prefix):
             raise AssertionError(f"expected S3 prefix failure was missing: {expected}")
 
+    for bucket, expected in (
+        ("Conu-Packages", "custom repository S3 bucket contains unsupported characters"),
+        ("conu_packages", "custom repository S3 bucket contains unsupported characters"),
+        ("192.168.0.1", "custom repository S3 bucket must not be formatted as an IPv4 address"),
+        ("bad..bucket", "custom repository S3 bucket must not contain adjacent dots"),
+        ("bad.-bucket", "custom repository S3 bucket must not contain dot-hyphen boundaries"),
+        ("bad-.bucket", "custom repository S3 bucket must not contain dot-hyphen boundaries"),
+    ):
+        invalid_bucket = module.audit_tagged_release_readiness(
+            repo="owner/repo",
+            tag=TAG,
+            version=VERSION,
+            secret_names=all_custom_secrets(module),
+            variable_values={
+                module.CUSTOM_REPOSITORY_BASE_URL_VAR: "https://packages.example.com/conu/",
+                module.CUSTOM_REPOSITORY_BUCKET_VAR: bucket,
+                module.CUSTOM_REPOSITORY_PREFIX_VAR: "stable/conu",
+                module.CUSTOM_REPOSITORY_ENDPOINT_VAR: "https://s3.example.com",
+                module.CUSTOM_REPOSITORY_REGION_VAR: "us-east-1",
+            },
+            pages_payload=None,
+            release_payload=None,
+            npm_registry_check=False,
+            **ready_governance_kwargs(),
+        )
+        if invalid_bucket.ready:
+            raise AssertionError(f"unsafe custom repository S3 bucket unexpectedly passed: {bucket}")
+        parsed_invalid_bucket = assert_safe_report(invalid_bucket)
+        if expected not in json.dumps(parsed_invalid_bucket):
+            raise AssertionError(f"expected S3 bucket failure was missing: {expected}")
+
     invalid_base_paths = module.audit_tagged_release_readiness(
         repo="owner/repo",
         tag=TAG,

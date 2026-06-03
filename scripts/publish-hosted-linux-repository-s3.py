@@ -32,7 +32,8 @@ MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CACHE_CONTROL_BYTES = 256
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
-BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,253}[A-Za-z0-9]$")
+BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+IPV4_BUCKET_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
 SAFE_REGION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -290,6 +291,12 @@ def validate_bucket(raw: str) -> str:
         raise PublicationError("S3 bucket must be a bucket name, not a URL or path")
     if not BUCKET_RE.fullmatch(bucket):
         raise PublicationError("S3 bucket contains unsupported characters")
+    if ".." in bucket:
+        raise PublicationError("S3 bucket must not contain adjacent dots")
+    if ".-" in bucket or "-." in bucket:
+        raise PublicationError("S3 bucket must not contain dot-hyphen boundaries")
+    if IPV4_BUCKET_RE.fullmatch(bucket):
+        raise PublicationError("S3 bucket must not be formatted as an IPv4 address")
     return bucket
 
 

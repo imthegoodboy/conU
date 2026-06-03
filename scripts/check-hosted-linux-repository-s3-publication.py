@@ -75,6 +75,17 @@ def main() -> int:
         missing_bucket = run_publisher_raw(site_dir, "--dry-run", "--bucket", "")
         assert_failure("missing bucket", missing_bucket, "S3 bucket is required")
 
+        for bucket, expected in (
+            ("Conu-Packages", "S3 bucket contains unsupported characters"),
+            ("conu_packages", "S3 bucket contains unsupported characters"),
+            ("192.168.0.1", "S3 bucket must not be formatted as an IPv4 address"),
+            ("bad..bucket", "S3 bucket must not contain adjacent dots"),
+            ("bad.-bucket", "S3 bucket must not contain dot-hyphen boundaries"),
+            ("bad-.bucket", "S3 bucket must not contain dot-hyphen boundaries"),
+        ):
+            invalid_bucket = run_publisher_raw(site_dir, "--dry-run", "--bucket", bucket)
+            assert_failure(f"invalid bucket {bucket}", invalid_bucket, expected)
+
         mismatch = run_publisher_raw(
             site_dir,
             "--dry-run",
@@ -661,6 +672,24 @@ def assert_preflight() -> None:
         assert_safe_preflight_report(prefix_report)
         if expected not in json.dumps(prefix_report):
             raise AssertionError(f"custom repository preflight missed prefix failure {expected!r}")
+
+    for bucket, expected in (
+        ("Conu-Packages", "custom repository S3 bucket contains unsupported characters"),
+        ("conu_packages", "custom repository S3 bucket contains unsupported characters"),
+        ("192.168.0.1", "custom repository S3 bucket must not be formatted as an IPv4 address"),
+        ("bad..bucket", "custom repository S3 bucket must not contain adjacent dots"),
+        ("bad.-bucket", "custom repository S3 bucket must not contain dot-hyphen boundaries"),
+        ("bad-.bucket", "custom repository S3 bucket must not contain dot-hyphen boundaries"),
+    ):
+        bucket_env = preflight_env()
+        bucket_env["CONU_LINUX_REPOSITORY_S3_BUCKET"] = bucket
+        bucket_result = run_preflight_raw(bucket_env)
+        if bucket_result.returncode == 0:
+            raise AssertionError(f"unsafe custom repository bucket unexpectedly passed: {bucket}")
+        bucket_report = json.loads(bucket_result.stdout)
+        assert_safe_preflight_report(bucket_report)
+        if expected not in json.dumps(bucket_report):
+            raise AssertionError(f"custom repository preflight missed bucket failure {expected!r}")
 
     unsafe_env = preflight_env()
     unsafe_env["CONU_LINUX_REPOSITORY_BASE_URL"] = (
