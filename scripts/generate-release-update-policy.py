@@ -237,6 +237,10 @@ def validate_release_base_url(raw: str, repo: str, tag: str) -> str:
         raise SystemExit("release update policy base URL path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise SystemExit("release update policy base URL path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_parts):
+        raise SystemExit(
+            "release update policy base URL path must not contain whitespace or control characters"
+        )
     normalized_path = "/" + "/".join(parts) if parts else ""
     return urlunparse(("https", netloc, normalized_path, "", "", ""))
 
@@ -251,12 +255,23 @@ def normalize_url_netloc(parsed, label: str) -> str:
         raise SystemExit(f"{label} authority must include a host")
     if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
         raise SystemExit(f"{label} authority is invalid")
+    raw_authority = parsed.netloc.rsplit("@", 1)[-1]
+    if has_url_authority_control(raw_authority) or has_url_authority_control(host):
+        raise SystemExit(f"{label} authority is invalid")
     host = host.lower()
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     if port is None:
         return host
     return f"{host}:{port}"
+
+
+def has_url_authority_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 or char in {"\\", "%"} for char in value)
+
+
+def has_url_path_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 for char in value)
 
 
 def build_update_policy(
