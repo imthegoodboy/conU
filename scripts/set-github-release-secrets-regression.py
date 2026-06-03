@@ -69,6 +69,19 @@ def secure_write_text(path: Path, text: str) -> None:
         path.chmod(0o600)
 
 
+def call_main(module, argv: list[str]) -> tuple[int, str]:
+    original_argv = sys.argv
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    sys.argv = argv
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = module.main()
+    finally:
+        sys.argv = original_argv
+    return exit_code, stdout.getvalue() + stderr.getvalue()
+
+
 def write_required_env_file(path: Path, module, value: str) -> None:
     lines = ["# local release secrets for regression"]
     for index, name in enumerate(module.REQUIRED_RELEASE_SECRETS):
@@ -267,6 +280,98 @@ def run_secret_set_tests(module) -> None:
         module.subprocess.run = original_run
 
 
+def run_rotation_marker_setup_tests(module) -> None:
+    normalized = module.normalize_npm_rotation_marker_timestamp(
+        "2026-06-03T05:30:01+05:30"
+    )
+    if normalized != "2026-06-03T00:00:01Z":
+        raise AssertionError("rotation marker timestamp was not normalized to UTC")
+
+    assert_raises(
+        lambda: module.normalize_npm_rotation_marker_timestamp("2026-06-03T00:00:00Z"),
+        "timestamp must be after",
+    )
+    assert_raises(
+        lambda: module.normalize_npm_rotation_marker_timestamp(SENSITIVE_SENTINEL),
+        "ISO-8601",
+    )
+    assert_raises(
+        lambda: module.configure_npm_rotation_marker(
+            "owner/repo",
+            "gh",
+            "2026-06-03T00:00:01Z",
+            confirm_rotated=False,
+            dry_run=True,
+        ),
+        "--confirm-npm-token-rotated",
+    )
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    original_run = subprocess.run
+    module.subprocess.run = fake_run
+    try:
+        configured = module.configure_npm_rotation_marker(
+            "owner/repo",
+            "gh",
+            "2026-06-03T00:00:01+00:00",
+            confirm_rotated=True,
+            dry_run=True,
+        )
+        if configured != "2026-06-03T00:00:01Z":
+            raise AssertionError("dry-run marker setup returned the wrong timestamp")
+        if calls:
+            raise AssertionError("dry-run marker setup must not call gh variable set")
+
+        configured = module.configure_npm_rotation_marker(
+            "owner/repo",
+            "gh",
+            "2026-06-03T00:00:02Z",
+            confirm_rotated=True,
+            dry_run=False,
+        )
+    finally:
+        module.subprocess.run = original_run
+
+    if configured != "2026-06-03T00:00:02Z":
+        raise AssertionError("marker setup returned the wrong configured timestamp")
+    if len(calls) != 1:
+        raise AssertionError(f"expected one gh variable set call, got {len(calls)}")
+    args, kwargs = calls[0]
+    rendered_args = " ".join(args)
+    expected = (
+        f"variable set {module.NPM_TOKEN_ROTATION_MARKER_VAR} "
+        "--repo owner/repo --body 2026-06-03T00:00:02Z"
+    )
+    if expected not in rendered_args:
+        raise AssertionError(f"unexpected gh variable set arguments: {rendered_args}")
+    if kwargs.get("input") is not None:
+        raise AssertionError("repository variable value should be passed through --body")
+    if SENSITIVE_SENTINEL in rendered_args:
+        raise AssertionError("marker setup leaked an accidental secret-like value")
+
+    def failed_run(*_args, **_kwargs):
+        return SimpleNamespace(returncode=9, stdout=SENSITIVE_SENTINEL, stderr=SENSITIVE_SENTINEL)
+
+    module.subprocess.run = failed_run
+    try:
+        assert_raises(
+            lambda: module.set_variable(
+                "gh",
+                "owner/repo",
+                module.NPM_TOKEN_ROTATION_MARKER_VAR,
+                "2026-06-03T00:00:03Z",
+            ),
+            "failed with exit code 9",
+        )
+    finally:
+        module.subprocess.run = original_run
+
+
 def run_value_preflight_tests(module) -> None:
     calls = []
 
@@ -370,18 +475,6 @@ def run_dry_run_tests(module) -> None:
 
 
 def run_env_file_main_tests(module) -> None:
-    def call_main(argv: list[str]) -> tuple[int, str]:
-        original_argv = sys.argv
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        sys.argv = argv
-        try:
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                exit_code = module.main()
-        finally:
-            sys.argv = original_argv
-        return exit_code, stdout.getvalue() + stderr.getvalue()
-
     original = {name: os.environ.get(name) for name in module.REQUIRED_RELEASE_SECRETS}
     try:
         for name in module.REQUIRED_RELEASE_SECRETS:
@@ -391,6 +484,7 @@ def run_env_file_main_tests(module) -> None:
             write_required_env_file(env_file, module, SENSITIVE_SENTINEL)
 
             exit_code, rendered = call_main(
+                module,
                 [
                     "set-github-release-secrets.py",
                     "--repo",
@@ -408,6 +502,7 @@ def run_env_file_main_tests(module) -> None:
                 raise AssertionError("env-file dry-run output leaked a secret value")
 
             exit_code, rendered = call_main(
+                module,
                 [
                     "set-github-release-secrets.py",
                     "--repo",
@@ -437,6 +532,7 @@ def run_env_file_main_tests(module) -> None:
             module.run_value_preflights = forbidden_call
             try:
                 exit_code, rendered = call_main(
+                    module,
                     [
                         "set-github-release-secrets.py",
                         "--env-file",
@@ -463,6 +559,7 @@ def run_env_file_main_tests(module) -> None:
             blank_lines[0] = f"{module.REQUIRED_RELEASE_SECRETS[0]}=   "
             secure_write_text(blank_env_file, "\n".join(blank_lines) + "\n")
             exit_code, rendered = call_main(
+                module,
                 [
                     "set-github-release-secrets.py",
                     "--env-file",
@@ -478,6 +575,7 @@ def run_env_file_main_tests(module) -> None:
                 raise AssertionError("blank-value report leaked a secret value")
 
             exit_code, rendered = call_main(
+                module,
                 [
                     "set-github-release-secrets.py",
                     "--env-file-only",
@@ -490,6 +588,7 @@ def run_env_file_main_tests(module) -> None:
                 raise AssertionError("env-file-only argument error leaked a secret value")
 
             exit_code, rendered = call_main(
+                module,
                 [
                     "set-github-release-secrets.py",
                     "--check-env-file",
@@ -501,6 +600,7 @@ def run_env_file_main_tests(module) -> None:
                 raise AssertionError("check-env-file argument error leaked a secret value")
 
             exit_code, rendered = call_main(
+                module,
                 [
                     "set-github-release-secrets.py",
                     "--env-file",
@@ -525,6 +625,7 @@ def run_env_file_main_tests(module) -> None:
                 ]
                 secure_write_text(partial_env_file, "\n".join(partial_lines) + "\n")
                 exit_code, rendered = call_main(
+                    module,
                     [
                         "set-github-release-secrets.py",
                         "--repo",
@@ -545,6 +646,7 @@ def run_env_file_main_tests(module) -> None:
                     raise AssertionError("env-file-only missing-value report leaked a secret value")
 
                 exit_code, rendered = call_main(
+                    module,
                     [
                         "set-github-release-secrets.py",
                         "--env-file",
@@ -560,6 +662,7 @@ def run_env_file_main_tests(module) -> None:
                     raise AssertionError("env-file check missing-value report leaked a secret value")
 
                 exit_code, rendered = call_main(
+                    module,
                     [
                         "set-github-release-secrets.py",
                         "--repo",
@@ -577,6 +680,142 @@ def run_env_file_main_tests(module) -> None:
                     raise AssertionError("normal env-file fallback output leaked a secret value")
             finally:
                 restore_env(original_with_env)
+    finally:
+        restore_env(original)
+
+
+def run_rotation_marker_main_tests(module) -> None:
+    original = {name: os.environ.get(name) for name in module.REQUIRED_RELEASE_SECRETS}
+    try:
+        for name in module.REQUIRED_RELEASE_SECRETS:
+            os.environ.pop(name, None)
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
+                "--set-npm-token-rotation-marker",
+                "2026-06-03T00:00:01+00:00",
+                "--confirm-npm-token-rotated",
+                "--dry-run",
+            ],
+        )
+        if exit_code != 0:
+            raise AssertionError(f"expected marker-only dry-run to pass: {rendered}")
+        if module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+            raise AssertionError("marker dry-run output omitted the marker variable name")
+        if "2026-06-03T00:00:01Z" not in rendered:
+            raise AssertionError("marker dry-run output omitted the normalized timestamp")
+        if "missing local release secret values" in rendered:
+            raise AssertionError("marker-only dry-run should not require signing secrets")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("marker-only dry-run leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
+                "--set-npm-token-rotation-marker",
+                "2026-06-03T00:00:01Z",
+                "--dry-run",
+            ],
+        )
+        if exit_code == 0 or "--confirm-npm-token-rotated" not in rendered:
+            raise AssertionError(f"expected marker setup without confirmation to fail: {rendered}")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("missing-confirm marker error leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
+                "--confirm-npm-token-rotated",
+                "--dry-run",
+            ],
+        )
+        if exit_code == 0 or "requires --set-npm-token-rotation-marker" not in rendered:
+            raise AssertionError(f"expected confirmation without marker to fail: {rendered}")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("confirmation-only marker error leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
+                "--set-npm-token-rotation-marker",
+                "2026-06-03T00:00:00Z",
+                "--confirm-npm-token-rotated",
+                "--dry-run",
+            ],
+        )
+        if exit_code == 0 or "timestamp must be after" not in rendered:
+            raise AssertionError(f"expected stale marker setup to fail: {rendered}")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("stale marker error leaked a secret-like value")
+
+        exit_code, rendered = call_main(
+            module,
+            [
+                "set-github-release-secrets.py",
+                "--repo",
+                "owner/repo",
+                "--gh",
+                "gh",
+                "--set-npm-token-rotation-marker",
+                SENSITIVE_SENTINEL,
+                "--confirm-npm-token-rotated",
+                "--dry-run",
+            ],
+        )
+        if exit_code == 0 or "ISO-8601" not in rendered:
+            raise AssertionError(f"expected invalid marker setup to fail: {rendered}")
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("invalid marker error leaked the provided marker value")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env.release"
+            write_required_env_file(env_file, module, SENSITIVE_SENTINEL)
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--repo",
+                    "owner/repo",
+                    "--gh",
+                    "gh",
+                    "--env-file",
+                    str(env_file),
+                    "--env-file-only",
+                    "--set-npm-token-rotation-marker",
+                    "2026-06-03T00:00:02Z",
+                    "--confirm-npm-token-rotated",
+                    "--dry-run",
+                ],
+            )
+            if exit_code != 0:
+                raise AssertionError(f"expected env-file plus marker dry-run to pass: {rendered}")
+            if "release secret setup" not in rendered:
+                raise AssertionError("combined dry-run omitted release secret setup output")
+            if module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+                raise AssertionError("combined dry-run omitted marker setup output")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("combined marker dry-run leaked a secret value")
     finally:
         restore_env(original)
 
@@ -696,9 +935,11 @@ def main() -> int:
     run_env_collection_tests(module)
     run_env_file_tests(module)
     run_secret_set_tests(module)
+    run_rotation_marker_setup_tests(module)
     run_value_preflight_tests(module)
     run_dry_run_tests(module)
     run_env_file_main_tests(module)
+    run_rotation_marker_main_tests(module)
     run_env_template_main_tests(module)
     run_missing_report_tests(module)
     print("GitHub release secret setup regression checks passed")

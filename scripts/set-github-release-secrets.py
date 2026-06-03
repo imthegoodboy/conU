@@ -9,10 +9,17 @@ import os
 import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Mapping
 
-from github_release_secrets import REQUIRED_RELEASE_SECRETS, find_gh, infer_repo
+from github_release_secrets import (
+    NPM_TOKEN_ROTATION_MARKER_VAR,
+    NPM_TOKEN_ROTATION_REQUIRED_AFTER,
+    REQUIRED_RELEASE_SECRETS,
+    find_gh,
+    infer_repo,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -180,6 +187,69 @@ def set_secret(gh: str, repo: str, name: str, value: str) -> None:
         raise ValueError(f"gh secret set {name} failed with exit code {result.returncode}")
 
 
+def set_variable(gh: str, repo: str, name: str, value: str) -> None:
+    result = subprocess.run(
+        [gh, "variable", "set", name, "--repo", repo, "--body", value],
+        check=False,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"gh variable set {name} failed with exit code {result.returncode}")
+
+
+def parse_utc_timestamp(value: str, label: str) -> datetime:
+    raw = value.strip()
+    if not raw:
+        raise ValueError(f"{label} timestamp must not be empty")
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"{label} timestamp must be ISO-8601 with a timezone") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label} timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def render_utc_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def normalize_npm_rotation_marker_timestamp(value: str) -> str:
+    observed = parse_utc_timestamp(value, NPM_TOKEN_ROTATION_MARKER_VAR)
+    required = parse_utc_timestamp(
+        NPM_TOKEN_ROTATION_REQUIRED_AFTER,
+        f"{NPM_TOKEN_ROTATION_MARKER_VAR} minimum",
+    )
+    if observed <= required:
+        raise ValueError(
+            f"{NPM_TOKEN_ROTATION_MARKER_VAR} timestamp must be after "
+            f"{render_utc_timestamp(required)}"
+        )
+    return render_utc_timestamp(observed)
+
+
+def configure_npm_rotation_marker(
+    repo: str,
+    gh: str,
+    timestamp: str,
+    confirm_rotated: bool,
+    dry_run: bool,
+) -> str:
+    if not confirm_rotated:
+        raise ValueError(
+            "--set-npm-token-rotation-marker requires --confirm-npm-token-rotated"
+        )
+    normalized = normalize_npm_rotation_marker_timestamp(timestamp)
+    if not dry_run:
+        set_variable(gh, repo, NPM_TOKEN_ROTATION_MARKER_VAR, normalized)
+    return normalized
+
+
 def run_value_preflights(
     *,
     require_openssl: bool,
@@ -311,6 +381,24 @@ def parse_args() -> argparse.Namespace:
         help="require OpenSSL-backed Windows/macOS PKCS#12 parsing when --preflight-values is used",
     )
     parser.add_argument(
+        "--set-npm-token-rotation-marker",
+        default="",
+        metavar="ISO-8601_TIMESTAMP",
+        help=(
+            "set non-secret GitHub variable "
+            f"{NPM_TOKEN_ROTATION_MARKER_VAR} after NPM_TOKEN has been rotated; "
+            f"timestamp must be after {NPM_TOKEN_ROTATION_REQUIRED_AFTER}"
+        ),
+    )
+    parser.add_argument(
+        "--confirm-npm-token-rotated",
+        action="store_true",
+        help=(
+            "confirm NPM_TOKEN was rotated before setting the non-secret "
+            f"{NPM_TOKEN_ROTATION_MARKER_VAR} variable"
+        ),
+    )
+    parser.add_argument(
         "--gh",
         default="",
         help=argparse.SUPPRESS,
@@ -332,17 +420,34 @@ def main() -> int:
             or args.check_env_file
             or args.preflight_values
             or args.require_openssl
+            or args.set_npm_token_rotation_marker
+            or args.confirm_npm_token_rotated
         ):
             raise ValueError("env template generation cannot be combined with setup options")
         if args.check_env_file:
             if not args.env_file:
                 raise ValueError("--check-env-file requires --env-file")
-            if args.dry_run or args.env_file_only or args.preflight_values or args.require_openssl:
+            if (
+                args.dry_run
+                or args.env_file_only
+                or args.preflight_values
+                or args.require_openssl
+                or args.set_npm_token_rotation_marker
+                or args.confirm_npm_token_rotated
+            ):
                 raise ValueError("--check-env-file cannot be combined with setup options")
         if args.require_openssl and not args.preflight_values:
             raise ValueError("--require-openssl requires --preflight-values")
         if args.env_file_only and not args.env_file:
             raise ValueError("--env-file-only requires --env-file")
+        if args.confirm_npm_token_rotated and not args.set_npm_token_rotation_marker:
+            raise ValueError(
+                "--confirm-npm-token-rotated requires --set-npm-token-rotation-marker"
+            )
+        if args.set_npm_token_rotation_marker and not args.confirm_npm_token_rotated:
+            raise ValueError(
+                "--set-npm-token-rotation-marker requires --confirm-npm-token-rotated"
+            )
         if args.print_env_template:
             print(render_env_template(REQUIRED_RELEASE_SECRETS), end="")
             return 0
@@ -370,29 +475,55 @@ def main() -> int:
                 print(f"present: {name}")
             return 0
 
-        if args.env_file_only:
-            values = {}
-        else:
-            values, _missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
-        if args.env_file:
-            values.update(
-                load_env_file_values(Path(args.env_file).expanduser(), REQUIRED_RELEASE_SECRETS)
+        marker_requested = bool(args.set_npm_token_rotation_marker)
+        secret_setup_requested = (
+            not marker_requested
+            or bool(args.env_file)
+            or args.env_file_only
+            or args.preflight_values
+        )
+        marker_timestamp = ""
+        if marker_requested:
+            marker_timestamp = normalize_npm_rotation_marker_timestamp(
+                args.set_npm_token_rotation_marker
             )
-        missing = missing_required_values(values, REQUIRED_RELEASE_SECRETS)
-        if missing:
-            print_secret_names(
-                "GitHub release secret setup failed: missing local release secret values:",
-                missing,
-                sys.stderr,
-            )
-            return 1
 
-        if args.preflight_values:
-            run_value_preflights(require_openssl=args.require_openssl, values=values)
+        configured: tuple[str, ...] = ()
+        if secret_setup_requested:
+            if args.env_file_only:
+                values = {}
+            else:
+                values, _missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
+            if args.env_file:
+                values.update(
+                    load_env_file_values(Path(args.env_file).expanduser(), REQUIRED_RELEASE_SECRETS)
+                )
+            missing = missing_required_values(values, REQUIRED_RELEASE_SECRETS)
+            if missing:
+                print_secret_names(
+                    "GitHub release secret setup failed: missing local release secret values:",
+                    missing,
+                    sys.stderr,
+                )
+                return 1
+
+            if args.preflight_values:
+                run_value_preflights(require_openssl=args.require_openssl, values=values)
+        else:
+            values = {}
 
         gh = args.gh or find_gh()
         repo = args.repo.strip() or infer_repo(gh)
-        configured = configure_release_secrets(repo, gh, values, args.dry_run)
+        if secret_setup_requested:
+            configured = configure_release_secrets(repo, gh, values, args.dry_run)
+        if marker_requested:
+            marker_timestamp = configure_npm_rotation_marker(
+                repo,
+                gh,
+                args.set_npm_token_rotation_marker,
+                args.confirm_npm_token_rotated,
+                args.dry_run,
+            )
     except (OSError, ValueError) as exc:
         action = (
             "GitHub release secret env file check failed"
@@ -403,12 +534,18 @@ def main() -> int:
         return 1
 
     action = "would configure" if args.dry_run else "configured"
-    print(
-        f"GitHub release secret setup {action} {len(configured)} "
-        f"required secret names for {repo}"
-    )
-    for name in configured:
-        print(f"{action}: {name}")
+    if configured:
+        print(
+            f"GitHub release secret setup {action} {len(configured)} "
+            f"required secret names for {repo}"
+        )
+        for name in configured:
+            print(f"{action}: {name}")
+    if marker_timestamp:
+        print(
+            f"GitHub release variable setup {action} "
+            f"{NPM_TOKEN_ROTATION_MARKER_VAR}={marker_timestamp} for {repo}"
+        )
     return 0
 
 
