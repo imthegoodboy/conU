@@ -491,7 +491,6 @@ pub struct ProcessReport {
 }
 
 /// Errors returned by the SDK.
-#[derive(Debug)]
 pub enum SdkError {
     State(state::StateError),
     Security(security::SecurityError),
@@ -513,6 +512,39 @@ pub enum SdkError {
         agent_id: String,
         envelope_id: String,
     },
+}
+
+impl fmt::Debug for SdkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::State(error) => formatter.debug_tuple("State").field(error).finish(),
+            Self::Security(error) => formatter.debug_tuple("Security").field(error).finish(),
+            Self::Agent(error) => formatter.debug_tuple("Agent").field(error).finish(),
+            Self::Message(error) => formatter.debug_tuple("Message").field(error).finish(),
+            Self::Policy(error) => formatter.debug_tuple("Policy").field(error).finish(),
+            Self::Runtime(error) => formatter.debug_tuple("Runtime").field(error).finish(),
+            Self::Route(error) => formatter.debug_tuple("Route").field(error).finish(),
+            Self::RelayDelivery(error) => {
+                formatter.debug_tuple("RelayDelivery").field(error).finish()
+            }
+            Self::Room(error) => formatter.debug_tuple("Room").field(error).finish(),
+            Self::Session(error) => formatter.debug_tuple("Session").field(error).finish(),
+            Self::Stream(error) => formatter.debug_tuple("Stream").field(error).finish(),
+            Self::Trust(error) => formatter.debug_tuple("Trust").field(error).finish(),
+            Self::EnvelopeNotFound { .. } => formatter
+                .debug_struct("EnvelopeNotFound")
+                .field("agent_id", &"[redacted]")
+                .field("envelope_id", &"[redacted]")
+                .field("contents_displayed", &false)
+                .finish(),
+            Self::UnauthorizedReceive { .. } => formatter
+                .debug_struct("UnauthorizedReceive")
+                .field("agent_id", &"[redacted]")
+                .field("envelope_id", &"[redacted]")
+                .field("contents_displayed", &false)
+                .finish(),
+        }
+    }
 }
 
 impl fmt::Display for SdkError {
@@ -690,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn sdk_receive_error_display_redacts_identifiers() {
+    fn sdk_receive_error_formatting_redacts_identifiers() {
         let missing = SdkError::EnvelopeNotFound {
             agent_id: "agent.secret-token".to_string(),
             envelope_id: "env.secret-token".to_string(),
@@ -700,11 +732,19 @@ mod tests {
             envelope_id: "env.secret-token".to_string(),
         };
 
-        for rendered in [missing.to_string(), unauthorized.to_string()] {
+        for rendered in [
+            missing.to_string(),
+            format!("{missing:?}"),
+            unauthorized.to_string(),
+            format!("{unauthorized:?}"),
+        ] {
             assert!(!rendered.contains("agent.secret-token"));
             assert!(!rendered.contains("env.secret-token"));
             assert!(!rendered.contains("secret-token"));
-            assert!(rendered.contains("contentsDisplayed=false"));
+            assert!(
+                rendered.contains("contentsDisplayed=false")
+                    || rendered.contains("contents_displayed: false")
+            );
         }
     }
 
