@@ -52,6 +52,12 @@ RELEASE_VARIABLE_WRITE_GUARD_NAMES: tuple[str, ...] = (
 RELEASE_VARIABLE_WRITE_GUARD_PATTERN = "|".join(
     re.escape(name) for name in RELEASE_VARIABLE_WRITE_GUARD_NAMES
 )
+ACTIONS_VARIABLE_ENDPOINT_PATTERN = (
+    r"(?:\bactions/variables\b|\benvironments/[^\s/;&|\"']+/variables\b)"
+)
+ACTIONS_SECRET_ENDPOINT_PATTERN = (
+    r"(?:\bactions/secrets\b|\benvironments/[^\s/;&|\"']+/secrets\b)"
+)
 API_VARIABLE_FIELD_WRITE_PATTERN = (
     r"\s(?:(?:-f|-F)(?:\s+|=)?|(?:--field|--raw-field)(?:\s+|=))"
     r"(?:name|value)="
@@ -120,10 +126,15 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         "direct GitHub Actions variable workflow write",
     ),
     (
+        "gh variable delete <any-actions-variable>",
+        re.compile(r"\bgh\s+variable\s+delete\b"),
+        "direct GitHub Actions variable workflow delete",
+    ),
+    (
         "gh api actions/variables write",
         re.compile(
             rf"\bgh\s+api\b"
-            rf"(?=[^\n;&|]*\bactions/variables\b)"
+            rf"(?=[^\n;&|]*{ACTIONS_VARIABLE_ENDPOINT_PATTERN})"
             rf"(?=[^\n;&|]*(?:{API_MUTATION_METHOD_PATTERN}|"
             rf"{API_VARIABLE_FIELD_WRITE_PATTERN}))",
             re.IGNORECASE,
@@ -136,7 +147,7 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             rf"(?:{HTTP_CLIENT_PATTERN}"
             rf"(?=[^\n;&|]*{HTTP_MUTATION_SIGNAL_PATTERN})|"
             rf"{HTTPIE_MUTATION_METHOD_PATTERN})"
-            rf"(?=[^\n;&|]*\bactions/variables\b)",
+            rf"(?=[^\n;&|]*{ACTIONS_VARIABLE_ENDPOINT_PATTERN})",
             re.IGNORECASE,
         ),
         "direct HTTP GitHub Actions variable workflow write",
@@ -145,7 +156,7 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         "script actions/variables write",
         re.compile(
             rf"{SCRIPT_CLIENT_PATTERN}"
-            rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}\bactions/variables\b)"
+            rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}{ACTIONS_VARIABLE_ENDPOINT_PATTERN})"
             rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}{SCRIPT_MUTATION_SIGNAL_PATTERN})",
             re.IGNORECASE,
         ),
@@ -157,10 +168,15 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         "direct GitHub Actions secret workflow write",
     ),
     (
+        "gh secret delete <any-actions-secret>",
+        re.compile(r"\bgh\s+secret\s+delete\b"),
+        "direct GitHub Actions secret workflow delete",
+    ),
+    (
         "gh api actions/secrets write",
         re.compile(
             rf"\bgh\s+api\b"
-            rf"(?=[^\n;&|]*\bactions/secrets\b)"
+            rf"(?=[^\n;&|]*{ACTIONS_SECRET_ENDPOINT_PATTERN})"
             rf"(?=[^\n;&|]*(?:{API_MUTATION_METHOD_PATTERN}|"
             rf"{API_SECRET_FIELD_WRITE_PATTERN}))",
             re.IGNORECASE,
@@ -173,7 +189,7 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             rf"(?:{HTTP_CLIENT_PATTERN}"
             rf"(?=[^\n;&|]*{HTTP_MUTATION_SIGNAL_PATTERN})|"
             rf"{HTTPIE_MUTATION_METHOD_PATTERN})"
-            rf"(?=[^\n;&|]*\bactions/secrets\b)",
+            rf"(?=[^\n;&|]*{ACTIONS_SECRET_ENDPOINT_PATTERN})",
             re.IGNORECASE,
         ),
         "direct HTTP GitHub Actions secret workflow write",
@@ -182,7 +198,7 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         "script actions/secrets write",
         re.compile(
             rf"{SCRIPT_CLIENT_PATTERN}"
-            rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}\bactions/secrets\b)"
+            rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}{ACTIONS_SECRET_ENDPOINT_PATTERN})"
             rf"(?={SCRIPT_COMMAND_SPAN_PATTERN}{SCRIPT_MUTATION_SIGNAL_PATTERN})",
             re.IGNORECASE,
         ),
@@ -199,7 +215,7 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         f"gh api actions/variables {NPM_TOKEN_ROTATION_MARKER_VAR} write",
         re.compile(
             rf"\bgh\s+api\b"
-            rf"(?=[^\n;&|]*\bactions/variables\b)"
+            rf"(?=[^\n;&|]*{ACTIONS_VARIABLE_ENDPOINT_PATTERN})"
             rf"(?=[^\n;&|]*\b{NPM_TOKEN_ROTATION_MARKER_VAR}\b)"
             rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
             rf"(?:POST|PUT|PATCH)\b|"
@@ -217,10 +233,18 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         "direct release variable workflow write",
     ),
     (
+        "gh variable delete <release-variable>",
+        re.compile(
+            rf"\bgh\s+variable\s+delete\b[^\n;&|]*\b"
+            rf"(?:{RELEASE_VARIABLE_WRITE_GUARD_PATTERN})\b"
+        ),
+        "direct release variable workflow delete",
+    ),
+    (
         "gh api actions/variables <release-variable> write",
         re.compile(
             rf"\bgh\s+api\b"
-            rf"(?=[^\n;&|]*\bactions/variables\b)"
+            rf"(?=[^\n;&|]*{ACTIONS_VARIABLE_ENDPOINT_PATTERN})"
             rf"(?=[^\n;&|]*\b(?:{RELEASE_VARIABLE_WRITE_GUARD_PATTERN})\b)"
             rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
             rf"(?:POST|PUT|PATCH)\b|"
@@ -238,10 +262,18 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
         "direct release secret workflow write",
     ),
     (
+        "gh secret delete <release-secret>",
+        re.compile(
+            rf"\bgh\s+secret\s+delete\b[^\n;&|]*\b"
+            rf"(?:{RELEASE_SECRET_WRITE_GUARD_PATTERN})\b"
+        ),
+        "direct release secret workflow delete",
+    ),
+    (
         "gh api actions/secrets <release-secret> write",
         re.compile(
             rf"\bgh\s+api\b"
-            rf"(?=[^\n;&|]*\bactions/secrets\b)"
+            rf"(?=[^\n;&|]*{ACTIONS_SECRET_ENDPOINT_PATTERN})"
             rf"(?=[^\n;&|]*\b(?:{RELEASE_SECRET_WRITE_GUARD_PATTERN})\b)"
             rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
             rf"(?:POST|PUT|PATCH)\b|"
@@ -256,7 +288,7 @@ FORBIDDEN_WORKFLOW_BLOCK_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] 
         "script actions/variables write",
         re.compile(
             rf"{SCRIPT_CLIENT_PATTERN}"
-            rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}\bactions/variables\b)"
+            rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}{ACTIONS_VARIABLE_ENDPOINT_PATTERN})"
             rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}{SCRIPT_BLOCK_MUTATION_SIGNAL_PATTERN})",
             re.IGNORECASE,
         ),
@@ -266,7 +298,7 @@ FORBIDDEN_WORKFLOW_BLOCK_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] 
         "script actions/secrets write",
         re.compile(
             rf"{SCRIPT_CLIENT_PATTERN}"
-            rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}\bactions/secrets\b)"
+            rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}{ACTIONS_SECRET_ENDPOINT_PATTERN})"
             rf"(?={SCRIPT_BLOCK_SPAN_PATTERN}{SCRIPT_BLOCK_MUTATION_SIGNAL_PATTERN})",
             re.IGNORECASE,
         ),
