@@ -20,6 +20,28 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by dependency-free r
 DEFAULT_WORKFLOW_DIR = Path(".github/workflows")
 FORBIDDEN_EVENTS = ("pull_request_target", "workflow_run")
 NPM_TOKEN_ROTATION_MARKER_VAR = "CONU_NPM_TOKEN_ROTATED_AFTER"
+RELEASE_SECRET_WRITE_GUARD_NAMES: tuple[str, ...] = (
+    "CONU_WINDOWS_SIGN_CERT_PFX_BASE64",
+    "CONU_WINDOWS_SIGN_CERT_PASSWORD",
+    "CONU_WINDOWS_TIMESTAMP_URL",
+    "CONU_MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64",
+    "CONU_MACOS_DEVELOPER_ID_APPLICATION_PASSWORD",
+    "CONU_MACOS_CODESIGN_IDENTITY",
+    "CONU_MACOS_NOTARY_APPLE_ID",
+    "CONU_MACOS_NOTARY_TEAM_ID",
+    "CONU_MACOS_NOTARY_PASSWORD",
+    "CONU_LINUX_GPG_PRIVATE_KEY_BASE64",
+    "CONU_LINUX_GPG_PASSPHRASE",
+    "CONU_LINUX_GPG_KEY_ID",
+    "CONU_LINUX_GPG_KEY_FINGERPRINT",
+    "CONU_LINUX_REPOSITORY_AWS_ACCESS_KEY_ID",
+    "CONU_LINUX_REPOSITORY_AWS_SECRET_ACCESS_KEY",
+    "CONU_LINUX_REPOSITORY_AWS_SESSION_TOKEN",
+    "NPM_TOKEN",
+)
+RELEASE_SECRET_WRITE_GUARD_PATTERN = "|".join(
+    re.escape(name) for name in RELEASE_SECRET_WRITE_GUARD_NAMES
+)
 FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS: tuple[tuple[str, str], ...] = (
     (
         "--allow-unverified-npm-token-rotation-marker",
@@ -45,6 +67,28 @@ FORBIDDEN_WORKFLOW_COMMAND_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...
             re.IGNORECASE,
         ),
         "direct NPM token rotation marker variable API write",
+    ),
+    (
+        "gh secret set <release-secret>",
+        re.compile(
+            rf"\bgh\s+secret\s+set\b[^\n;&|]*\b"
+            rf"(?:{RELEASE_SECRET_WRITE_GUARD_PATTERN})\b"
+        ),
+        "direct release secret workflow write",
+    ),
+    (
+        "gh api actions/secrets <release-secret> write",
+        re.compile(
+            rf"\bgh\s+api\b"
+            rf"(?=[^\n;&|]*\bactions/secrets\b)"
+            rf"(?=[^\n;&|]*\b(?:{RELEASE_SECRET_WRITE_GUARD_PATTERN})\b)"
+            rf"(?=[^\n;&|]*(?:\b(?:--method|-X)(?:\s+|=)"
+            rf"(?:POST|PUT|PATCH)\b|"
+            rf"\s(?:-f|-F|--field|--raw-field)\s+"
+            rf"(?:encrypted_value|key_id|secret_name)=))",
+            re.IGNORECASE,
+        ),
+        "direct release secret workflow API write",
     ),
 )
 ALLOWED_PERMISSION_KEYS = (
