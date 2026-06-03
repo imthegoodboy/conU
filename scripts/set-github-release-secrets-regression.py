@@ -520,9 +520,17 @@ def run_dry_run_tests(module) -> None:
         if calls:
             raise AssertionError("dry run must not call gh secret set")
 
+        assert_raises(
+            lambda: module.require_npm_rotation_marker_for_token_write(
+                values=values,
+                marker_requested=False,
+                dry_run=True,
+            ),
+            module.NPM_TOKEN_ROTATION_MARKER_VAR,
+        )
         module.require_npm_rotation_marker_for_token_write(
             values=values,
-            marker_requested=False,
+            marker_requested=True,
             dry_run=True,
         )
         module.require_npm_rotation_marker_for_token_write(
@@ -564,10 +572,10 @@ def run_env_file_main_tests(module) -> None:
                     "--dry-run",
                 ]
             )
-            if exit_code != 0:
-                raise AssertionError(f"expected env-file dry run to pass: {rendered}")
+            if exit_code == 0 or module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+                raise AssertionError(f"expected env-file dry run without marker to fail: {rendered}")
             if SENSITIVE_SENTINEL in rendered:
-                raise AssertionError("env-file dry-run output leaked a secret value")
+                raise AssertionError("env-file dry-run marker error leaked a secret value")
 
             exit_code, rendered = call_main(
                 module,
@@ -583,10 +591,37 @@ def run_env_file_main_tests(module) -> None:
                     "--dry-run",
                 ]
             )
-            if exit_code != 0:
-                raise AssertionError(f"expected env-file-only dry run to pass: {rendered}")
+            if exit_code == 0 or module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+                raise AssertionError(
+                    f"expected env-file-only dry run without marker to fail: {rendered}"
+                )
             if SENSITIVE_SENTINEL in rendered:
-                raise AssertionError("env-file-only dry-run output leaked a secret value")
+                raise AssertionError("env-file-only dry-run marker error leaked a secret value")
+
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--repo",
+                    "owner/repo",
+                    "--gh",
+                    "gh",
+                    "--env-file",
+                    str(env_file),
+                    "--env-file-only",
+                    "--dry-run",
+                    "--set-npm-token-rotation-marker",
+                    "2026-06-03T00:00:01Z",
+                    "--allow-unverified-npm-token-rotation-marker",
+                    "--confirm-npm-token-rotated",
+                ]
+            )
+            if exit_code != 0:
+                raise AssertionError(f"expected env-file-only dry run with marker to pass: {rendered}")
+            if module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+                raise AssertionError("env-file-only dry run with marker omitted marker variable")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("env-file-only dry-run with marker leaked a secret value")
 
             exit_code, rendered = call_main(
                 module,
@@ -764,10 +799,14 @@ def run_env_file_main_tests(module) -> None:
                         "--dry-run",
                     ]
                 )
-                if exit_code != 0:
-                    raise AssertionError("normal env-file mode should allow environment fallback")
+                if exit_code == 0 or module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
+                    raise AssertionError(
+                        "normal env-file fallback should still require the npm rotation marker"
+                    )
+                if "missing local release secret values" in rendered:
+                    raise AssertionError("normal env-file fallback should load environment values")
                 if SENSITIVE_SENTINEL in rendered:
-                    raise AssertionError("normal env-file fallback output leaked a secret value")
+                    raise AssertionError("normal env-file fallback marker error leaked a secret value")
             finally:
                 restore_env(original_with_env)
     finally:

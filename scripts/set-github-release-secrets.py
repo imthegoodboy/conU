@@ -348,12 +348,13 @@ def require_npm_rotation_marker_for_token_write(
     marker_requested: bool,
     dry_run: bool,
 ) -> None:
-    if dry_run or marker_requested:
+    # Dry-run must fail like the real write so setup checks cannot bless a stale token.
+    if marker_requested:
         return
     if (value := values.get(NPM_TOKEN_SECRET_NAME)) is None or value.strip() == "":
         return
     raise ValueError(
-        f"{NPM_TOKEN_SECRET_NAME} upload requires "
+        f"{NPM_TOKEN_SECRET_NAME} setup requires "
         f"{NPM_TOKEN_ROTATION_MARKER_VAR}; add "
         "--set-npm-token-rotation-marker-from-secret-updated-at "
         "--confirm-npm-token-rotated after rotating the token"
