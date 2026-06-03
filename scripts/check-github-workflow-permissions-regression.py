@@ -1026,6 +1026,53 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not split_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("split forbidden workflow command finding was not listed")
 
+    marker_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe direct NPM marker variable write\n"
+            "        run: gh variable set CONU_NPM_TOKEN_ROTATED_AFTER "
+            "--body 2026-06-03T01:00:00Z\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if marker_write_report.ready:
+        raise AssertionError("direct NPM marker workflow write should fail")
+    marker_write_parsed = assert_safe_report(marker_write_report)
+    marker_write_rendered = json.dumps(marker_write_parsed)
+    if (
+        "must not use direct NPM token rotation marker variable write: "
+        "gh variable set CONU_NPM_TOKEN_ROTATED_AFTER"
+    ) not in marker_write_rendered:
+        raise AssertionError("direct NPM marker workflow write was not reported")
+    if not marker_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct marker write finding was not listed")
+
+    api_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe API NPM marker variable write\n"
+            "        run: gh api repos/$GITHUB_REPOSITORY/actions/variables/"
+            "CONU_NPM_TOKEN_ROTATED_AFTER --method PATCH "
+            "-f value=2026-06-03T01:00:00Z\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if api_write_report.ready:
+        raise AssertionError("direct NPM marker API workflow write should fail")
+    api_write_parsed = assert_safe_report(api_write_report)
+    api_write_rendered = json.dumps(api_write_parsed)
+    if (
+        "must not use direct NPM token rotation marker variable API write: "
+        "gh api actions/variables CONU_NPM_TOKEN_ROTATED_AFTER write"
+    ) not in api_write_rendered:
+        raise AssertionError("direct NPM marker API workflow write was not reported")
+    if not api_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct marker API write finding was not listed")
+
 
 def run_checkout_credential_persistence_tests(module) -> None:
     report = with_fixture(
