@@ -3,14 +3,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import importlib.util
+import io
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 SCRIPT = Path(__file__).with_name("verify-npm-package-contents.py")
+SENSITIVE_SENTINEL = "do-not-print-this-npm-token"
 
 
 def load_module():
@@ -97,9 +101,41 @@ def run_public_metadata_tests(module) -> None:
     )
 
 
+def run_npm_pack_privacy_tests(module) -> None:
+    original_run = module.subprocess.run
+
+    def failed_pack(*_args, **_kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=f"npm ERR! auth token {SENSITIVE_SENTINEL}\n",
+        )
+
+    module.subprocess.run = failed_pack
+    stderr = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(stderr):
+            try:
+                module.run_npm_pack("npm", Path("packaging/npm/conu-cli"))
+            except ValueError as exc:
+                rendered = str(exc)
+                if "npm stderr suppressed" not in rendered:
+                    raise AssertionError(f"expected suppressed-stderr error: {rendered}") from exc
+                if SENSITIVE_SENTINEL in rendered:
+                    raise AssertionError("npm pack failure leaked the npm stderr value") from exc
+            else:
+                raise AssertionError("failed npm pack unexpectedly passed")
+    finally:
+        module.subprocess.run = original_run
+
+    if SENSITIVE_SENTINEL in stderr.getvalue():
+        raise AssertionError("npm pack failure printed raw npm stderr")
+
+
 def main() -> int:
     module = load_module()
     run_public_metadata_tests(module)
+    run_npm_pack_privacy_tests(module)
     print("npm package content regression checks passed")
     return 0
 

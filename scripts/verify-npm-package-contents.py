@@ -199,9 +199,9 @@ def run_npm_pack(npm: str, package_dir: Path) -> dict[str, Any]:
         stderr=subprocess.PIPE,
     )
     if result.returncode != 0:
-        if result.stderr:
-            print(result.stderr, file=sys.stderr, end="")
-        raise ValueError(f"npm pack dry-run failed in {package_dir}")
+        raise ValueError(
+            f"npm pack dry-run failed in {package_dir}; npm stderr suppressed"
+        )
 
     try:
         report = json.loads(result.stdout)
