@@ -17,6 +17,9 @@ from typing import Any
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from github_release_secrets import (
+    NPM_TOKEN_ROTATION_MARKER_VAR,
+    NPM_TOKEN_ROTATION_REQUIRED_AFTER,
+    NPM_TOKEN_SECRET_NAME,
     REQUIRED_RELEASE_SECRETS,
     audit_secret_names,
     find_gh,
@@ -55,8 +58,6 @@ NPM_MANIFESTS = (
 DEFAULT_CI_WORKFLOW = "CI"
 DEFAULT_RELEASE_BRANCH = "main"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
-NPM_TOKEN_ROTATION_MARKER_VAR = "CONU_NPM_TOKEN_ROTATED_AFTER"
-NPM_TOKEN_ROTATION_REQUIRED_AFTER = "2026-06-03T00:00:00Z"
 
 
 @dataclass(frozen=True)
@@ -424,7 +425,7 @@ def audit_secret_rotation(
 def default_secret_rotation_marker_requirements() -> tuple[SecretRotationMarkerRequirement, ...]:
     return (
         SecretRotationMarkerRequirement(
-            secret_name="NPM_TOKEN",
+            secret_name=NPM_TOKEN_SECRET_NAME,
             marker_env=NPM_TOKEN_ROTATION_MARKER_VAR,
             required_after=NPM_TOKEN_ROTATION_REQUIRED_AFTER,
         ),
