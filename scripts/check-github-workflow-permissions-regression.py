@@ -1097,6 +1097,30 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not api_equals_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("equals-form marker API write finding was not listed")
 
+    api_field_equals_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe field equals-form API NPM marker write\n"
+            "        run: gh api repos/$GITHUB_REPOSITORY/actions/variables/"
+            "CONU_NPM_TOKEN_ROTATED_AFTER "
+            "--field=value=2026-06-03T01:00:00Z\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if api_field_equals_write_report.ready:
+        raise AssertionError("field equals-form NPM marker API write should fail")
+    api_field_equals_write_parsed = assert_safe_report(api_field_equals_write_report)
+    api_field_equals_write_rendered = json.dumps(api_field_equals_write_parsed)
+    if (
+        "must not use direct NPM token rotation marker variable API write: "
+        "gh api actions/variables CONU_NPM_TOKEN_ROTATED_AFTER write"
+    ) not in api_field_equals_write_rendered:
+        raise AssertionError("field equals-form marker API write was not reported")
+    if not api_field_equals_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("field equals-form marker API write finding was not listed")
+
     variable_write_report = with_fixture(
         module,
         None,
@@ -1144,6 +1168,34 @@ def run_forbidden_workflow_command_tests(module) -> None:
     if not variable_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release variable API write finding was not listed")
 
+    variable_api_field_equals_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate custom Linux repository publication config\n",
+            "      - name: Unsafe field equals-form API release variable write\n"
+            "        run: gh api repos/$GITHUB_REPOSITORY/actions/variables/"
+            "CONU_LINUX_REPOSITORY_BASE_URL "
+            "--raw-field=value=https://example.invalid/conu\n"
+            "      - name: Validate custom Linux repository publication config\n",
+        ),
+    )
+    if variable_api_field_equals_write_report.ready:
+        raise AssertionError("field equals-form release variable API write should fail")
+    variable_api_field_equals_write_parsed = assert_safe_report(
+        variable_api_field_equals_write_report
+    )
+    variable_api_field_equals_write_rendered = json.dumps(
+        variable_api_field_equals_write_parsed
+    )
+    if (
+        "must not use direct release variable workflow API write: "
+        "gh api actions/variables <release-variable> write"
+    ) not in variable_api_field_equals_write_rendered:
+        raise AssertionError("field equals-form variable API write was not reported")
+    if not variable_api_field_equals_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("field equals-form variable API write finding was not listed")
+
     secret_write_report = with_fixture(
         module,
         None,
@@ -1189,6 +1241,33 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("direct release secret API workflow write was not reported")
     if not secret_api_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct release secret API write finding was not listed")
+
+    secret_api_field_equals_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe field equals-form API release secret write\n"
+            "        run: gh api repos/$GITHUB_REPOSITORY/actions/secrets/NPM_TOKEN "
+            "--field=encrypted_value=redacted --field=key_id=redacted\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if secret_api_field_equals_write_report.ready:
+        raise AssertionError("field equals-form release secret API write should fail")
+    secret_api_field_equals_write_parsed = assert_safe_report(
+        secret_api_field_equals_write_report
+    )
+    secret_api_field_equals_write_rendered = json.dumps(
+        secret_api_field_equals_write_parsed
+    )
+    if (
+        "must not use direct release secret workflow API write: "
+        "gh api actions/secrets <release-secret> write"
+    ) not in secret_api_field_equals_write_rendered:
+        raise AssertionError("field equals-form secret API write was not reported")
+    if not secret_api_field_equals_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("field equals-form secret API write finding was not listed")
 
 
 def run_checkout_credential_persistence_tests(module) -> None:
