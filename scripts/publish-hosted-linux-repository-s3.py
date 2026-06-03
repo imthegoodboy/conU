@@ -35,6 +35,33 @@ PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 IPV4_BUCKET_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
 SAFE_REGION_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$")
+AWS_CLI_RESERVED_TOKENS = {
+    "--",
+    "-",
+    "cp",
+    "ls",
+    "mb",
+    "mv",
+    "presign",
+    "rb",
+    "rm",
+    "s3",
+    "s3api",
+    "sync",
+}
+AWS_CLI_RESERVED_OPTIONS = {
+    "--acl",
+    "--cache-control",
+    "--content-type",
+    "--debug",
+    "--endpoint-url",
+    "--expected-size",
+    "--metadata",
+    "--no-verify-ssl",
+    "--only-show-errors",
+    "--recursive",
+    "--region",
+}
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 FORBIDDEN_SEGMENTS = {
@@ -874,6 +901,7 @@ def parse_aws_cli(raw: str) -> list[str]:
         parsed = [strip_matching_quotes(item) for item in parsed]
     if not parsed:
         raise PublicationError("AWS CLI command must not be empty")
+    validate_aws_cli_wrapper(parsed)
     return parsed
 
 
@@ -881,6 +909,26 @@ def strip_matching_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def validate_aws_cli_wrapper(args: list[str]) -> None:
+    executable = args[0]
+    if executable.startswith("-"):
+        raise PublicationError("AWS CLI command executable must not be an option")
+    for item in args:
+        if not item or any(ord(character) < 32 or ord(character) == 127 for character in item):
+            raise PublicationError("AWS CLI command must not contain empty or control arguments")
+
+        normalized = item.lower()
+        option_name = normalized.split("=", 1)[0]
+        if normalized in AWS_CLI_RESERVED_TOKENS:
+            raise PublicationError("AWS CLI command must not include S3 service or upload subcommands")
+        if normalized.startswith("s3://"):
+            raise PublicationError("AWS CLI command must not include S3 targets")
+        if option_name in AWS_CLI_RESERVED_OPTIONS:
+            raise PublicationError(
+                "AWS CLI command must not include publication-owned or unsafe options"
+            )
 
 
 def run_endpoint_check(plan: PublishPlan, args: argparse.Namespace) -> None:

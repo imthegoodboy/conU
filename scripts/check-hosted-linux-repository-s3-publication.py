@@ -71,6 +71,8 @@ def main() -> int:
         confirm_report = json.loads(confirm)
         assert_publication_report(confirm_report, published=True)
         assert_fake_aws_log(fake_log, confirm_report["fileCount"])
+        publisher = load_publisher()
+        assert_aws_cli_wrapper_guard(publisher, fake_aws)
 
         missing_bucket = run_publisher_raw(site_dir, "--dry-run", "--bucket", "")
         assert_failure("missing bucket", missing_bucket, "S3 bucket is required")
@@ -220,7 +222,6 @@ def main() -> int:
             loopback_endpoint,
             "S3 endpoint URL must use HTTPS",
         )
-        publisher = load_publisher()
         normalized_loopback_endpoint = publisher.validate_endpoint_url(
             "http://127.0.0.1:9000",
             allow_loopback_http=True,
@@ -612,6 +613,40 @@ def assert_fake_aws_log(log: Path, expected_count: int) -> None:
 def assert_failure(description: str, result: subprocess.CompletedProcess[str], expected: str) -> None:
     if result.returncode == 0 or expected not in result.stdout:
         raise AssertionError(f"{description} failed with {result.stdout!r}, expected {expected!r}")
+
+
+def assert_aws_cli_wrapper_guard(publisher, fake_aws: str) -> None:
+    if publisher.parse_aws_cli("aws") != ["aws"]:
+        raise AssertionError("plain aws CLI wrapper did not parse")
+    if len(publisher.parse_aws_cli(fake_aws)) < 2:
+        raise AssertionError("fake AWS CLI wrapper with a script path did not parse")
+
+    for raw, expected in (
+        ("aws s3 rm s3://victim --recursive", "S3 service or upload subcommands"),
+        ("aws s3api delete-object --bucket victim --key release", "S3 service or upload subcommands"),
+        ("aws s3://victim", "S3 targets"),
+        ("aws --endpoint-url https://evil.example", "publication-owned or unsafe options"),
+        ("aws --region us-east-1", "publication-owned or unsafe options"),
+        ("aws --cache-control public", "publication-owned or unsafe options"),
+        ("aws --debug", "publication-owned or unsafe options"),
+        ("aws --no-verify-ssl", "publication-owned or unsafe options"),
+        ("--profile release", "executable must not be an option"),
+    ):
+        try:
+            publisher.parse_aws_cli(raw)
+        except publisher.PublicationError as exc:
+            if expected not in str(exc):
+                raise AssertionError(f"unexpected AWS CLI wrapper failure for {raw!r}: {exc}")
+        else:
+            raise AssertionError(f"unsafe AWS CLI wrapper unexpectedly parsed: {raw}")
+
+    try:
+        publisher.validate_aws_cli_wrapper(["aws", "bad\narg"])
+    except publisher.PublicationError as exc:
+        if "control arguments" not in str(exc):
+            raise AssertionError(f"unexpected AWS CLI control argument failure: {exc}")
+    else:
+        raise AssertionError("AWS CLI wrapper with a control character unexpectedly parsed")
 
 
 def assert_preflight() -> None:
