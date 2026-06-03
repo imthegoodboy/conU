@@ -33,6 +33,7 @@ from github_release_secrets import (
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 BUCKET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,253}[A-Za-z0-9]$")
+SAFE_REGION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 CUSTOM_REPOSITORY_BASE_URL_VAR = "CONU_LINUX_REPOSITORY_BASE_URL"
 CUSTOM_REPOSITORY_BUCKET_VAR = "CONU_LINUX_REPOSITORY_S3_BUCKET"
 CUSTOM_REPOSITORY_PREFIX_VAR = "CONU_LINUX_REPOSITORY_S3_PREFIX"
@@ -516,6 +517,8 @@ def normalize_custom_base_url(raw: str) -> str:
         raise ValueError("custom repository base URL path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise ValueError("custom repository base URL path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_parts):
+        raise ValueError("custom repository base URL path must not contain whitespace or control characters")
     path = "/" + "/".join(parts) if parts else ""
     return urlunparse(("https", netloc, path, "", "", ""))
 
@@ -575,6 +578,10 @@ def validate_endpoint_url(raw: str, *, allow_loopback_http: bool = False) -> str
         raise ValueError("custom repository S3 endpoint URL path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise ValueError("custom repository S3 endpoint URL path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_parts):
+        raise ValueError(
+            "custom repository S3 endpoint URL path must not contain whitespace or control characters"
+        )
     path = "/" + "/".join(parts) if parts else ""
     return urlunparse((scheme, netloc, path, "", "", ""))
 
@@ -588,6 +595,9 @@ def normalize_url_netloc(parsed, label: str) -> str:
     if not host:
         raise ValueError(f"{label} authority must include a host")
     if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
+        raise ValueError(f"{label} authority is invalid")
+    raw_authority = parsed.netloc.rsplit("@", 1)[-1]
+    if has_url_authority_control(raw_authority) or has_url_authority_control(host):
         raise ValueError(f"{label} authority is invalid")
     host = host.lower()
     if ":" in host and not host.startswith("["):
@@ -605,7 +615,17 @@ def validate_region(raw: str) -> str:
         raise ValueError("custom repository AWS region must not contain whitespace")
     if "/" in region or "\\" in region or "?" in region or "#" in region:
         raise ValueError("custom repository AWS region must be a region name, not a URL or path")
+    if not SAFE_REGION_RE.fullmatch(region):
+        raise ValueError("custom repository AWS region contains unsupported characters")
     return region
+
+
+def has_url_authority_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 or char in {"\\", "%"} for char in value)
+
+
+def has_url_path_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 for char in value)
 
 
 def audit_linux_repository(

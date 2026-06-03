@@ -259,6 +259,9 @@ def normalize_base_url(raw_value: str, *, allow_loopback_http: bool) -> str:
         raise EndpointReadinessError("hosted Linux repository base URL authority is invalid") from exc
     if not host:
         raise EndpointReadinessError("hosted Linux repository base URL must include a host")
+    raw_authority = parsed.netloc.rsplit("@", 1)[-1]
+    if has_url_authority_control(raw_authority) or has_url_authority_control(host):
+        raise EndpointReadinessError("hosted Linux repository base URL authority is invalid")
     scheme = parsed.scheme.lower()
     host_lower = host.lower()
     if scheme != "https":
@@ -276,6 +279,10 @@ def normalize_base_url(raw_value: str, *, allow_loopback_http: bool) -> str:
     if any("/" in part or "\\" in part for part in decoded_path_parts):
         raise EndpointReadinessError(
             "hosted Linux repository base URL path must not contain encoded separators"
+        )
+    if any(has_url_path_control(part) for part in decoded_path_parts):
+        raise EndpointReadinessError(
+            "hosted Linux repository base URL path must not contain whitespace or control characters"
         )
     path = "/" + "/".join(path_parts) if path_parts else ""
     netloc = normalize_netloc(host_lower, port)
@@ -307,6 +314,14 @@ def is_loopback_host(host: str) -> bool:
         return socket.gethostbyname(host).startswith("127.")
     except OSError:
         return False
+
+
+def has_url_authority_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 or char in {"\\", "%"} for char in value)
+
+
+def has_url_path_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 for char in value)
 
 
 def fetch_path(
@@ -482,6 +497,8 @@ def validate_repository_path(path: str, label: str) -> str:
     parts = path.split("/")
     if any(part in {"", ".", ".."} for part in parts[1:]):
         raise EndpointReadinessError(f"{label} must not contain empty or dot segments")
+    if any(has_url_path_control(part) for part in parts[1:]):
+        raise EndpointReadinessError(f"{label} must not contain whitespace or control characters")
     forbidden = sorted({part.lower() for part in parts[1:]} & FORBIDDEN_PATH_SEGMENTS)
     if forbidden:
         raise EndpointReadinessError(
@@ -628,6 +645,8 @@ def url_to_base_path(base_url: str, value: str, label: str) -> str:
         raise EndpointReadinessError(f"{label} path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_path_parts):
         raise EndpointReadinessError(f"{label} path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_path_parts):
+        raise EndpointReadinessError(f"{label} path must not contain whitespace or control characters")
     forbidden = sorted({part.lower() for part in decoded_path_parts} & FORBIDDEN_PATH_SEGMENTS)
     if forbidden:
         raise EndpointReadinessError(

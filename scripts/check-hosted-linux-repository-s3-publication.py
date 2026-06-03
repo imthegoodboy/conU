@@ -113,6 +113,35 @@ def main() -> int:
                 "repository base URL authority",
             )
 
+        for bad_url in (
+            "https://packages.example.com%20.evil/conu",
+            "https://packages.example.com%40evil.test/conu",
+            "https://packages.example.com\\evil.test/conu",
+        ):
+            unsafe_base_authority = run_publisher_raw(
+                site_dir,
+                "--dry-run",
+                "--base-url",
+                bad_url,
+            )
+            assert_failure(
+                "unsafe repository base URL authority",
+                unsafe_base_authority,
+                "repository base URL authority",
+            )
+
+        control_base_path = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--base-url",
+            f"{BASE_URL}/%00",
+        )
+        assert_failure(
+            "control repository base URL path",
+            control_base_path,
+            "whitespace or control characters",
+        )
+
         query_download_url = temp / "query-download-url-site"
         shutil.copytree(site_dir, query_download_url)
         repository_path = query_download_url / "repository.json"
@@ -241,6 +270,43 @@ def main() -> int:
                 malformed_endpoint,
                 "S3 endpoint URL authority",
             )
+
+        for bad_url in (
+            "https://s3.example.com%20.evil/api",
+            "https://s3.example.com%40evil.test/api",
+            "https://s3.example.com\\evil.test/api",
+        ):
+            unsafe_endpoint_authority = run_publisher_raw(
+                site_dir,
+                "--dry-run",
+                "--endpoint-url",
+                bad_url,
+            )
+            assert_failure(
+                "unsafe endpoint URL authority",
+                unsafe_endpoint_authority,
+                "S3 endpoint URL authority",
+            )
+
+        control_endpoint_path = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--endpoint-url",
+            "https://s3.example.com/api/%00/v1",
+        )
+        assert_failure(
+            "control endpoint URL path",
+            control_endpoint_path,
+            "whitespace or control characters",
+        )
+
+        unsafe_region = run_publisher_raw(
+            site_dir,
+            "--dry-run",
+            "--region",
+            "us-east-1;rm",
+        )
+        assert_failure("unsafe AWS region", unsafe_region, "AWS region contains unsupported characters")
 
         oversized_metadata = temp / "oversized-metadata-site"
         shutil.copytree(site_dir, oversized_metadata)
@@ -578,6 +644,28 @@ def assert_preflight() -> None:
         "single-line secret value",
     ):
         if expected not in rendered:
+            raise AssertionError(f"custom repository preflight missed {expected!r}")
+
+    unsafe_env = preflight_env()
+    unsafe_env["CONU_LINUX_REPOSITORY_BASE_URL"] = (
+        "https://packages.example.com%40evil.test/conu"
+    )
+    unsafe_env["CONU_LINUX_REPOSITORY_S3_ENDPOINT_URL"] = (
+        "https://s3.example.com%20.evil/api"
+    )
+    unsafe_env["CONU_LINUX_REPOSITORY_AWS_REGION"] = "us-east-1;rm"
+    unsafe = run_preflight_raw(unsafe_env)
+    if unsafe.returncode == 0:
+        raise AssertionError("unsafe custom repository preflight config unexpectedly passed")
+    unsafe_report = json.loads(unsafe.stdout)
+    assert_safe_preflight_report(unsafe_report)
+    unsafe_rendered = json.dumps(unsafe_report)
+    for expected in (
+        "custom repository base URL authority is invalid",
+        "custom repository S3 endpoint URL authority is invalid",
+        "custom repository AWS region contains unsupported characters",
+    ):
+        if expected not in unsafe_rendered:
             raise AssertionError(f"custom repository preflight missed {expected!r}")
 
 

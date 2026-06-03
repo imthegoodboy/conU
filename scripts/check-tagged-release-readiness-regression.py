@@ -834,6 +834,27 @@ def run_custom_repository_tests(module) -> None:
     ):
         raise AssertionError("malformed custom repository base URL authority failure was missing")
 
+    for bad_base_url in (
+        "https://packages.example.com%20.evil/conu",
+        "https://packages.example.com%40evil.test/conu",
+        "https://packages.example.com\\evil.test/conu",
+    ):
+        try:
+            module.normalize_custom_base_url(bad_base_url)
+        except ValueError as exc:
+            if "custom repository base URL authority is invalid" not in str(exc):
+                raise AssertionError(f"unexpected custom base URL authority failure: {exc}")
+        else:
+            raise AssertionError(f"unsafe custom base URL authority unexpectedly passed: {bad_base_url}")
+
+    try:
+        module.normalize_custom_base_url("https://packages.example.com/conu/%00/v0.1.0")
+    except ValueError as exc:
+        if "whitespace or control characters" not in str(exc):
+            raise AssertionError(f"unexpected custom base URL path failure: {exc}")
+    else:
+        raise AssertionError("custom base URL with encoded control path unexpectedly passed")
+
     invalid_endpoint_paths = module.audit_tagged_release_readiness(
         repo="owner/repo",
         tag=TAG,
@@ -911,6 +932,35 @@ def run_custom_repository_tests(module) -> None:
         not in json.dumps(parsed_invalid_endpoint_authority)
     ):
         raise AssertionError("malformed custom repository endpoint URL authority failure was missing")
+
+    for bad_endpoint in (
+        "https://s3.example.com%20.evil/api",
+        "https://s3.example.com%40evil.test/api",
+        "https://s3.example.com\\evil.test/api",
+    ):
+        try:
+            module.validate_endpoint_url(bad_endpoint)
+        except ValueError as exc:
+            if "custom repository S3 endpoint URL authority is invalid" not in str(exc):
+                raise AssertionError(f"unexpected custom endpoint authority failure: {exc}")
+        else:
+            raise AssertionError(f"unsafe custom endpoint authority unexpectedly passed: {bad_endpoint}")
+
+    try:
+        module.validate_endpoint_url("https://s3.example.com/api/%00/v1")
+    except ValueError as exc:
+        if "whitespace or control characters" not in str(exc):
+            raise AssertionError(f"unexpected custom endpoint path failure: {exc}")
+    else:
+        raise AssertionError("custom endpoint URL with encoded control path unexpectedly passed")
+
+    try:
+        module.validate_region("us-east-1;rm")
+    except ValueError as exc:
+        if "unsupported characters" not in str(exc):
+            raise AssertionError(f"unexpected custom region failure: {exc}")
+    else:
+        raise AssertionError("custom AWS region with unsafe punctuation unexpectedly passed")
 
     loopback_endpoint = module.audit_tagged_release_readiness(
         repo="owner/repo",

@@ -522,6 +522,10 @@ def validate_repository_base_url(raw: str) -> str:
         raise SystemExit("repository.json baseUrl path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise SystemExit("repository.json baseUrl path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_parts):
+        raise SystemExit(
+            "repository.json baseUrl path must not contain whitespace or control characters"
+        )
     normalized_path = "/" + "/".join(path_parts) if path_parts else ""
     return urlunparse(("https", netloc, normalized_path, "", "", ""))
 
@@ -535,6 +539,9 @@ def normalize_url_netloc(parsed, label: str) -> str:
     if not host:
         raise SystemExit(f"{label} authority must include a host")
     if port is None and parsed.netloc.rsplit("@", 1)[-1].endswith(":"):
+        raise SystemExit(f"{label} authority is invalid")
+    raw_authority = parsed.netloc.rsplit("@", 1)[-1]
+    if has_url_authority_control(raw_authority) or has_url_authority_control(host):
         raise SystemExit(f"{label} authority is invalid")
     host = host.lower()
     if ":" in host and not host.startswith("["):
@@ -568,6 +575,8 @@ def url_to_base_path(base_url: str, value: object, label: str) -> str:
         raise SystemExit(f"{label} path must not contain dot segments")
     if any("/" in part or "\\" in part for part in decoded_parts):
         raise SystemExit(f"{label} path must not contain encoded separators")
+    if any(has_url_path_control(part) for part in decoded_parts):
+        raise SystemExit(f"{label} path must not contain whitespace or control characters")
     forbidden = sorted({part.lower() for part in decoded_parts} & FORBIDDEN_SEGMENTS)
     if forbidden:
         raise SystemExit(
@@ -594,10 +603,20 @@ def validate_repository_path(path: str, label: str) -> str:
     parts = path.split("/")
     if any(part in {"", ".", ".."} for part in parts[1:]):
         raise SystemExit(f"{label} must not contain empty or dot segments")
+    if any(has_url_path_control(part) for part in parts[1:]):
+        raise SystemExit(f"{label} must not contain whitespace or control characters")
     forbidden = sorted({part.lower() for part in parts[1:]} & FORBIDDEN_SEGMENTS)
     if forbidden:
         raise SystemExit(f"{label} contains forbidden local-state segment: {', '.join(forbidden)}")
     return path
+
+
+def has_url_authority_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 or char in {"\\", "%"} for char in value)
+
+
+def has_url_path_control(value: str) -> bool:
+    return any(ord(char) <= 32 or ord(char) == 127 for char in value)
 
 
 def validate_cache_policy_json(version: str, base_url: str, data: bytes) -> None:
