@@ -594,6 +594,10 @@ def write_failing_fake_aws(temp: Path) -> str:
                 f"print('NODE_AUTH_TOKEN={SENSITIVE_SENTINEL}', file=sys.stderr)",
                 f"print('Authorization: Bearer {SENSITIVE_SENTINEL}', file=sys.stderr)",
                 f"print('https://user:{SENSITIVE_SENTINEL}@example.invalid/conu', file=sys.stderr)",
+                "print('https://s3.example.invalid/conu?"
+                f"X-Amz-Signature={SENSITIVE_SENTINEL}&"
+                f"X-Amz-Credential={SENSITIVE_SENTINEL}&"
+                f"X-Amz-Security-Token={SENSITIVE_SENTINEL}', file=sys.stderr)",
                 "sys.exit(7)",
             ]
         )
