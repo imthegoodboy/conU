@@ -84,6 +84,21 @@ function expectExclusiveDownloadArtifactCreation() {
     'throw tempInstallDirError("remove");',
     "redacted temp install dir cleanup failure"
   );
+  expectIncludes(
+    source,
+    "createExtractDir(extractDir);",
+    "redacted temp extraction dir creation"
+  );
+  expectIncludes(
+    source,
+    "function createExtractDir(extractDir)",
+    "redacted temp extraction dir helper"
+  );
+  expectIncludes(
+    source,
+    "failed to create temporary extraction directory; pathDisplayed=false contentsDisplayed=false",
+    "redacted temp extraction dir failure"
+  );
 }
 
 function expectDefaultLimits() {
