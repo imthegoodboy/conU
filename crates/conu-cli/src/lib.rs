@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::env;
+use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
@@ -35,7 +36,8 @@ use conu_core::streams::{self, StreamEvent, StreamRecord};
 use conu_core::trust::{self, PeerCard, TrustStatus, TrustedPeer};
 use conu_protocol::{AgentCapabilities, OpaquePayload};
 use native_tls::{HandshakeError, TlsConnector};
-use serde_json::Value;
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use serde_json::{Map, Number, Value};
 use sha2::{Digest, Sha256};
 
 /// A rendered CLI command result.
@@ -6937,8 +6939,7 @@ fn validate_release_update_policy_files(
     verify_update_sha256_sidecar(&sha256_file, &policy_name, &sha256)?;
     verify_update_signature_sidecar(&signature_file)?;
 
-    let policy: Value = serde_json::from_slice(&policy_bytes)
-        .map_err(|error| format!("release update policy JSON is invalid: {error}"))?;
+    let policy = parse_release_update_policy_json(&policy_bytes)?;
     let policy_object = policy
         .as_object()
         .ok_or_else(|| "release update policy must be a JSON object".to_string())?;
@@ -7056,6 +7057,115 @@ fn validate_release_update_policy_files(
         },
         policy,
     })
+}
+
+struct DuplicateKeyCheckedJson;
+
+impl<'de> DeserializeSeed<'de> for DuplicateKeyCheckedJson {
+    type Value = Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(DuplicateKeyCheckedVisitor)
+    }
+}
+
+struct DuplicateKeyCheckedVisitor;
+
+impl<'de> Visitor<'de> for DuplicateKeyCheckedVisitor {
+    type Value = Value;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JSON without duplicate object keys")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Value::Number(Number::from(value)))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Value::Number(Number::from(value)))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Number::from_f64(value)
+            .map(Value::Number)
+            .ok_or_else(|| E::custom("invalid JSON number"))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Value::String(value.to_string()))
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E> {
+        Ok(Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Value::String(value))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        DuplicateKeyCheckedJson.deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = access.next_element_seed(DuplicateKeyCheckedJson)? {
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+
+    fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut seen = HashSet::new();
+        let mut object = Map::new();
+        while let Some(key) = access.next_key::<String>()? {
+            if !seen.insert(key.clone()) {
+                return Err(de::Error::custom(format!("duplicate JSON key: {key}")));
+            }
+            let value = access.next_value_seed(DuplicateKeyCheckedJson)?;
+            object.insert(key, value);
+        }
+        Ok(Value::Object(object))
+    }
+}
+
+fn parse_release_update_policy_json(policy_bytes: &[u8]) -> Result<Value, String> {
+    let mut deserializer = serde_json::Deserializer::from_slice(policy_bytes);
+    let policy = DuplicateKeyCheckedJson
+        .deserialize(&mut deserializer)
+        .map_err(|error| format!("release update policy JSON is invalid: {error}"))?;
+    deserializer
+        .end()
+        .map_err(|error| format!("release update policy JSON is invalid: {error}"))?;
+    Ok(policy)
 }
 
 fn validate_policy_asset(
@@ -11841,6 +11951,41 @@ mod tests {
         assert!(!text_output.stdout.contains("BEGIN PGP SIGNATURE"));
         assert!(!output.stdout.contains("private message contents"));
         assert!(!text_output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn update_check_rejects_duplicate_policy_json_keys_without_leaking_shadow_value() {
+        let home = temp_home("update-check-duplicate-policy-json");
+        let policy = write_update_policy_fixture(&home, false);
+        let policy_path = policy.to_str().expect("policy path");
+        let shadow_value = "do-not-print-this-shadow-value";
+        let mut policy_text = fs::read_to_string(&policy).expect("policy reads");
+        let trimmed_len = policy_text.trim_end().len();
+        policy_text.truncate(trimmed_len);
+        policy_text.pop();
+        policy_text.push_str(&format!(",\n  \"version\": \"{shadow_value}\"\n}}\n"));
+        fs::write(&policy, policy_text.as_bytes()).expect("policy rewrite succeeds");
+        let digest = sha256_hex(policy_text.as_bytes());
+        fs::write(
+            sidecar_path(&policy, ".sha256"),
+            format!("{digest}  conu-0.1.0-update-policy.json\n"),
+        )
+        .expect("policy sidecar rewrite succeeds");
+
+        let output = run(["update", "check", "--policy-file", policy_path]);
+
+        assert_eq!(output.code, 1);
+        assert!(
+            output
+                .stderr
+                .contains("release update policy JSON is invalid")
+        );
+        assert!(output.stderr.contains("duplicate JSON key: version"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(!output.stderr.contains(shadow_value));
+        assert!(!output.stderr.contains(policy_path));
+        assert!(!output.stderr.contains("BEGIN PGP SIGNATURE"));
+        assert!(!output.stderr.contains("private message contents"));
     }
 
     #[test]
