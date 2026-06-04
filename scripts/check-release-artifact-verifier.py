@@ -177,6 +177,34 @@ def expect_failure(
     raise AssertionError(f"{description} unexpectedly passed")
 
 
+def expect_redacted_member_failure(
+    description: str,
+    action,
+    expected: str,
+    forbidden_values: tuple[str, ...],
+) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        message = str(exc)
+        if expected not in message:
+            raise AssertionError(
+                f"{description} failed with {message!r}, expected {expected!r}"
+            ) from exc
+        for guard in ("pathDisplayed=false", "contentsDisplayed=false"):
+            if guard not in message:
+                raise AssertionError(
+                    f"{description} omitted display guard {guard}: {message!r}"
+                ) from exc
+        for value in forbidden_values:
+            if value in message:
+                raise AssertionError(
+                    f"{description} leaked forbidden value {value!r}: {message!r}"
+                ) from exc
+        return
+    raise AssertionError(f"{description} unexpectedly passed")
+
+
 def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
     try:
         os.symlink(target, link, target_is_directory=target_is_directory)
@@ -290,44 +318,60 @@ def main() -> int:
 
         duplicate = root / "conu-0.1.0-duplicate.zip"
         write_zip(duplicate, {f"{archive_prefix(duplicate)}/./manifest.toml": b"duplicate"})
-        expect_failure(
+        expect_redacted_member_failure(
             "duplicate normalized path",
             lambda: verifier.archive_members(duplicate),
             "duplicate archive path",
+            ("manifest.toml",),
         )
 
         encrypted = root / "conu-0.1.0-encrypted.zip"
         write_zip(encrypted)
         mark_zip_member_encrypted(encrypted, f"{archive_prefix(encrypted)}/bin/conu")
-        expect_failure(
+        expect_redacted_member_failure(
             "encrypted zip member",
             lambda: verifier.archive_members(encrypted),
             "encrypted zip member",
+            ("bin/conu",),
         )
 
         corrupt_member = root / "conu-0.1.0-corrupt-member.zip"
         write_zip(corrupt_member)
         corrupt_zip_member_data(corrupt_member, f"{archive_prefix(corrupt_member)}/bin/conu")
-        expect_failure(
+        expect_redacted_member_failure(
             "corrupt zip member",
             lambda: verifier.archive_members(corrupt_member),
             "could not read zip member",
+            ("bin/conu",),
+        )
+
+        secret_corrupt_member = root / "conu-0.1.0-secret-corrupt-member.zip"
+        secret_corrupt_path = f"{archive_prefix(secret_corrupt_member)}/docs/secret-local-path.txt"
+        write_zip(secret_corrupt_member, {secret_corrupt_path: b"secret path fixture"})
+        corrupt_zip_member_data(secret_corrupt_member, secret_corrupt_path)
+        expect_redacted_member_failure(
+            "corrupt secret-named zip member",
+            lambda: verifier.archive_members(secret_corrupt_member),
+            "could not read zip member",
+            ("secret-local-path.txt",),
         )
 
         forbidden = root / "conu-0.1.0-forbidden.zip"
         write_zip(forbidden, {f"{archive_prefix(forbidden)}/.conu/node.toml": b"state"})
-        expect_failure(
+        expect_redacted_member_failure(
             "forbidden state path",
             lambda: verify_archive(verifier, forbidden),
             "forbidden release archive path",
+            (".conu", "node.toml"),
         )
 
         forbidden_dir = root / "conu-0.1.0-forbidden-dir.zip"
         write_zip(forbidden_dir, {f"{archive_prefix(forbidden_dir)}/security/": b""})
-        expect_failure(
+        expect_redacted_member_failure(
             "forbidden state directory",
             lambda: verify_archive(verifier, forbidden_dir),
             "forbidden release archive path",
+            ("security",),
         )
 
         forbidden_env = root / "conu-0.1.0-forbidden-env.zip"
@@ -369,26 +413,41 @@ def main() -> int:
 
         wrong_root = root / "conu-0.1.0-wrong-root.zip"
         write_zip(wrong_root, prefix="conu-9.9.9-test")
-        expect_failure(
+        expect_redacted_member_failure(
             "unexpected archive root",
             lambda: verifier.archive_members(wrong_root),
             "unexpected archive root",
+            ("conu-9.9.9-test",),
         )
 
         mixed_root = root / "conu-0.1.0-mixed-root.zip"
         write_zip(mixed_root, {"bin/conu": b"rootless duplicate"})
-        expect_failure(
+        expect_redacted_member_failure(
             "mixed rooted and rootless archive paths",
             lambda: verifier.archive_members(mixed_root),
             "mixes rooted and rootless",
+            ("bin/conu",),
         )
 
         data_dir = root / "conu-0.1.0-data-dir.zip"
         write_zip(data_dir, {f"{archive_prefix(data_dir)}/docs/": b"payload"})
-        expect_failure(
+        expect_redacted_member_failure(
             "data-bearing directory",
             lambda: verifier.archive_members(data_dir),
             "directory member with data",
+            ("docs/",),
+        )
+
+        windows_path = root / "conu-0.1.0-windows-path.zip"
+        write_zip(
+            windows_path,
+            {"C:\\Users\\parth\\AppData\\Local\\Temp\\conu-secret.exe": b"secret"},
+        )
+        expect_redacted_member_failure(
+            "windows absolute archive path",
+            lambda: verifier.archive_members(windows_path),
+            "unsafe archive path",
+            ("C:\\Users\\parth", "AppData", "conu-secret.exe"),
         )
 
     print("release artifact verifier regression checks passed")
