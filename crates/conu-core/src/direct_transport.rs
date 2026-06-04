@@ -621,7 +621,7 @@ fn receive_direct_frame(
         std::str::from_utf8(bytes).map_err(|_| DirectTransportError::InvalidRequest {
             reason: "direct frame metadata is not UTF-8".to_string(),
         })?;
-    let values = parse_key_values(contents);
+    let values = parse_key_values(contents)?;
     if value_or_empty(&values, "version") != DIRECT_VERSION {
         return Err(DirectTransportError::InvalidRequest {
             reason: "unsupported direct frame version".to_string(),
@@ -890,7 +890,7 @@ fn read_config(paths: &StatePaths) -> Result<HashMap<String, String>, DirectTran
         Some(contents) => contents,
         None => return Ok(HashMap::new()),
     };
-    Ok(parse_key_values(&contents))
+    parse_key_values(&contents)
 }
 
 fn direct_endpoint_for_peer(
@@ -1092,7 +1092,7 @@ fn render_direct_response(
 }
 
 fn parse_direct_response(response: &str) -> Result<HashMap<String, String>, DirectTransportError> {
-    let values = parse_key_values(response);
+    let values = parse_key_values(response)?;
     if value_or_empty(&values, "version") != DIRECT_VERSION {
         return Err(DirectTransportError::InvalidRequest {
             reason: "unsupported direct response version".to_string(),
@@ -1472,7 +1472,7 @@ fn config_key_suffix(value: &str) -> String {
         .collect()
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, DirectTransportError> {
     let mut values = HashMap::new();
     for line in contents.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') {
@@ -1481,9 +1481,27 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_direct_value(&mut values, key, value)?;
     }
-    values
+    Ok(values)
+}
+
+fn insert_direct_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), DirectTransportError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty direct key".to_string()
+        } else {
+            format!("duplicate direct key {key}")
+        };
+        return Err(DirectTransportError::InvalidRequest { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn clean_value(value: &str) -> String {
@@ -1647,6 +1665,59 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[test]
+    fn direct_config_duplicate_key_fails_closed_without_values() {
+        let home = test_home("direct-config-duplicate-key");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        fs::write(
+            &init.paths.config,
+            "version = \"1\"\ndirect_quic_endpoint = \"quic://127.0.0.1:9443\"\ndirect_quic_endpoint = \"private direct endpoint contents\"\n",
+        )
+        .expect("config writes");
+
+        let error = configured_direct_quic_endpoint_from_paths(&init.paths)
+            .expect_err("duplicate direct config key should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate direct key direct_quic_endpoint"));
+        assert!(!rendered.contains("quic://127.0.0.1:9443"));
+        assert!(!rendered.contains("private direct endpoint contents"));
+    }
+
+    #[test]
+    fn direct_frame_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("direct-frame-duplicate-key");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        let frame = format!(
+            "version = \"{}\"\ntype = \"direct_message\"\nkind = \"message\"\npayload_ciphertext_hex = \"private direct frame contents\"\npayload_ciphertext_hex = \"shadowed ciphertext\"\n",
+            DIRECT_VERSION
+        );
+
+        let error = receive_direct_frame(&init.paths, &init.node.node_id, frame.as_bytes())
+            .expect_err("duplicate direct frame key should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate direct key payload_ciphertext_hex"));
+        assert!(!rendered.contains("private direct frame contents"));
+        assert!(!rendered.contains("shadowed ciphertext"));
+    }
+
+    #[test]
+    fn direct_response_duplicate_key_fails_closed_without_payloads() {
+        let response = format!(
+            "version = \"{}\"\ntype = \"direct_ack\"\nenvelope_id = \"private direct ack contents\"\nenvelope_id = \"shadowed envelope\"\n",
+            DIRECT_VERSION
+        );
+
+        let error = parse_direct_response(&response)
+            .expect_err("duplicate direct response key should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate direct key envelope_id"));
+        assert!(!rendered.contains("private direct ack contents"));
+        assert!(!rendered.contains("shadowed envelope"));
     }
 
     #[test]
