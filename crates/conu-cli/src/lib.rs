@@ -9879,8 +9879,12 @@ fn is_public_ipv6(ip: Ipv6Addr) -> bool {
         || is_ipv6_link_local(ip)
         || is_ipv6_site_local(ip)
         || is_ipv6_documentation(ip)
+        || is_ipv6_3fff_documentation(ip)
         || is_ipv6_discard_only(ip)
+        || is_ipv6_dummy_prefix(ip)
         || is_ipv6_protocol_assignment(ip)
+        || is_ipv6_nat64_local_use(ip)
+        || is_ipv6_segment_routing_sid(ip)
         || is_ipv6_6to4(ip)
     {
         return false;
@@ -9891,6 +9895,9 @@ fn is_public_ipv6(ip: Ipv6Addr) -> bool {
     }
     if let Some(compatible) = ipv4_compatible_address(ip) {
         return is_public_ipv4(compatible);
+    }
+    if let Some(well_known_nat64) = ipv6_well_known_nat64_address(ip) {
+        return is_public_ipv4(well_known_nat64);
     }
 
     true
@@ -9913,9 +9920,19 @@ fn is_ipv6_documentation(ip: Ipv6Addr) -> bool {
     segments[0] == 0x2001 && segments[1] == 0x0db8
 }
 
+fn is_ipv6_3fff_documentation(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x3fff && (segments[1] & 0xf000) == 0
+}
+
 fn is_ipv6_discard_only(ip: Ipv6Addr) -> bool {
     let segments = ip.segments();
     segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0
+}
+
+fn is_ipv6_dummy_prefix(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 1
 }
 
 fn is_ipv6_protocol_assignment(ip: Ipv6Addr) -> bool {
@@ -9923,8 +9940,30 @@ fn is_ipv6_protocol_assignment(ip: Ipv6Addr) -> bool {
     segments[0] == 0x2001 && segments[1] <= 0x01ff
 }
 
+fn is_ipv6_nat64_local_use(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 1
+}
+
+fn is_ipv6_segment_routing_sid(ip: Ipv6Addr) -> bool {
+    ip.segments()[0] == 0x5f00
+}
+
 fn is_ipv6_6to4(ip: Ipv6Addr) -> bool {
     ip.segments()[0] == 0x2002
+}
+
+fn ipv6_well_known_nat64_address(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = ip.segments();
+    if segments[..6] != [0x0064, 0xff9b, 0, 0, 0, 0] {
+        return None;
+    }
+    Some(Ipv4Addr::new(
+        (segments[6] >> 8) as u8,
+        segments[6] as u8,
+        (segments[7] >> 8) as u8,
+        segments[7] as u8,
+    ))
 }
 
 fn ipv4_compatible_address(ip: Ipv6Addr) -> Option<Ipv4Addr> {
@@ -11995,8 +12034,14 @@ mod tests {
             "fe80::1",
             "fec0::1",
             "100::1",
+            "100:0:0:1::1",
             "2001::1",
             "2001:db8::1",
+            "3fff::1",
+            "3fff:0fff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "5f00::1",
+            "64:ff9b:1::1",
+            "64:ff9b::10.0.0.1",
             "2002::1",
             "::ffff:127.0.0.1",
             "::ffff:10.0.0.1",
@@ -12012,6 +12057,7 @@ mod tests {
             "2606:4700:4700::1111",
             "2001:4860:4860::8888",
             "::ffff:8.8.8.8",
+            "64:ff9b::8.8.8.8",
             "::8.8.8.8",
         ] {
             let ip = value.parse::<IpAddr>().expect("test IP parses");
