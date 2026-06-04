@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from github_release_secrets import find_gh, infer_repo, normalize_repo, run_gh_json
+from json_safety import load_json_object
 
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
@@ -361,13 +362,11 @@ def load_release_assets(repo: str, release_id: int, gh: str) -> list[dict[str, A
 
 def load_release_json(path: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = load_json_object(path, encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"failed to read release fixture JSON: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"release fixture JSON was invalid: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("release fixture JSON must contain an object")
     return payload
 
 

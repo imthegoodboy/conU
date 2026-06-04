@@ -58,6 +58,8 @@ def assert_raises(func, pattern: str) -> None:
     try:
         func()
     except ValueError as exc:
+        if SENSITIVE_SENTINEL in str(exc):
+            raise AssertionError("error message leaked a sensitive fixture value") from exc
         if pattern not in str(exc):
             raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
         return
@@ -313,6 +315,21 @@ def run_loader_tests(module) -> None:
         payload = module.load_release_metadata("owner/repo", TEST_TAG, "gh")
     finally:
         module.run_gh_json = original_run_gh_json
+
+    with tempfile.TemporaryDirectory(prefix="conu-release-json-guard-") as temp_dir:
+        release_json = Path(temp_dir) / "release.json"
+        release_json.write_text(
+            (
+                '{"tag_name":"v0.1.0",'
+                f'"tag_name":"{SENSITIVE_SENTINEL}",'
+                '"assets":[]}\n'
+            ),
+            encoding="utf-8",
+        )
+        assert_raises(
+            lambda: module.load_release_json(release_json),
+            "duplicate JSON key",
+        )
     if payload.get("tag_name") != TEST_TAG:
         raise AssertionError("loader did not return fixture release metadata")
     if len(payload.get("assets", [])) != len(module.expected_release_asset_names(TEST_VERSION)):

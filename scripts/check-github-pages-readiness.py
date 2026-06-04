@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
 from github_release_secrets import find_gh, infer_repo, normalize_repo, run_gh_json
+from json_safety import load_json_object
 from public_host_validation import validate_public_host
 
 
@@ -190,13 +191,11 @@ def load_pages_metadata(repo: str, gh: str) -> dict[str, Any]:
 
 def load_pages_json(path: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = load_json_object(path, encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"failed to read Pages fixture JSON: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"Pages fixture JSON was invalid: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("Pages fixture JSON must contain an object")
     return payload
 
 
