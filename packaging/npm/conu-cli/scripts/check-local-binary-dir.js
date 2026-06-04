@@ -43,6 +43,41 @@ function main() {
   });
 
   withFixture((root) => {
+    writeBinaries(root);
+    withPatchedFs({ lstatSync: () => failWithPath(root) }, () => {
+      expectRedactedFailure(
+        root,
+        "failed to inspect CONU_NPM_BINARY_DIR",
+        root,
+        "redacted source directory inspection failure"
+      );
+    });
+  });
+
+  withFixture((root) => {
+    writeBinaries(root);
+    const originalLstatSync = fs.lstatSync;
+    withPatchedFs(
+      {
+        lstatSync: (target) => {
+          if (path.basename(target) === "conud") {
+            failWithPath(root);
+          }
+          return originalLstatSync.call(fs, target);
+        }
+      },
+      () => {
+        expectRedactedFailure(
+          root,
+          "failed to inspect CONU_NPM_BINARY_DIR required binary conud",
+          root,
+          "redacted required binary inspection failure"
+        );
+      }
+    );
+  });
+
+  withFixture((root) => {
     writeBinaries(root, { skip: "conu-relay" });
     fs.mkdirSync(path.join(root, "conu-relay"));
     expectFailure(root, "not a regular file: conu-relay", "directory named as binary");
@@ -90,6 +125,25 @@ function trySymlink(link, target, type) {
   }
 }
 
+function withPatchedFs(patches, callback) {
+  const originals = {};
+  for (const name of Object.keys(patches)) {
+    originals[name] = fs[name];
+    fs[name] = patches[name];
+  }
+  try {
+    callback();
+  } finally {
+    for (const name of Object.keys(originals)) {
+      fs[name] = originals[name];
+    }
+  }
+}
+
+function failWithPath(root) {
+  throw new Error(`simulated filesystem failure at ${root}`);
+}
+
 function resolve(sourceDir) {
   return resolveLocalBinaries(sourceDir, {
     binaryNames: BINARIES,
@@ -107,6 +161,28 @@ function expectFailure(sourceDir, expectedMessage, label) {
     throw new Error(`${label}: expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`${label}: expected local binary dir failure`);
+}
+
+function expectRedactedFailure(sourceDir, expectedMessage, forbiddenPath, label) {
+  try {
+    resolve(sourceDir);
+  } catch (error) {
+    const message = error.message;
+    if (!message.includes(expectedMessage)) {
+      throw new Error(`${label}: expected ${expectedMessage}, got: ${message}`);
+    }
+    if (!message.includes("pathDisplayed=false")) {
+      throw new Error(`${label}: missing path display guard: ${message}`);
+    }
+    if (!message.includes("contentsDisplayed=false")) {
+      throw new Error(`${label}: missing contents display guard: ${message}`);
+    }
+    if (message.includes(forbiddenPath)) {
+      throw new Error(`${label}: displayed filesystem path: ${message}`);
+    }
+    return;
+  }
+  throw new Error(`${label}: expected redacted local binary dir failure`);
 }
 
 function expectEqual(actual, expected, label) {

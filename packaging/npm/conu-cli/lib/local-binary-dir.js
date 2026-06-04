@@ -9,7 +9,7 @@ function resolveLocalBinaries(sourceDir, { binaryNames, binarySuffix }) {
   }
 
   const resolvedDir = path.resolve(sourceDir);
-  const dirStat = lstatMaybe(resolvedDir);
+  const dirStat = lstatMaybe(resolvedDir, "CONU_NPM_BINARY_DIR");
   if (!dirStat) {
     throw new Error("CONU_NPM_BINARY_DIR must point to an existing directory");
   }
@@ -24,7 +24,7 @@ function resolveLocalBinaries(sourceDir, { binaryNames, binarySuffix }) {
   for (const name of binaryNames) {
     const fileName = `${name}${binarySuffix}`;
     const source = path.join(resolvedDir, fileName);
-    const stat = lstatMaybe(source);
+    const stat = lstatMaybe(source, `CONU_NPM_BINARY_DIR required binary ${fileName}`);
     if (!stat) {
       throw new Error(`CONU_NPM_BINARY_DIR missing required binary: ${fileName}`);
     }
@@ -36,15 +36,21 @@ function resolveLocalBinaries(sourceDir, { binaryNames, binarySuffix }) {
   return binaries;
 }
 
-function lstatMaybe(target) {
+function lstatMaybe(target, label) {
   try {
     return fs.lstatSync(target);
   } catch (error) {
     if (error && error.code === "ENOENT") {
       return null;
     }
-    throw error;
+    throw localBinaryDirInspectionError(label);
   }
+}
+
+function localBinaryDirInspectionError(label) {
+  return new Error(
+    `failed to inspect ${label}; pathDisplayed=false contentsDisplayed=false`
+  );
 }
 
 module.exports = {
