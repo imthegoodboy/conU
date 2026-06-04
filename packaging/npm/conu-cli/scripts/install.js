@@ -84,7 +84,7 @@ async function main() {
       downloadLimits.maxChecksumBytes
     );
     if (checksum) {
-      fs.writeFileSync(checksumPath, checksum, "utf8");
+      fs.writeFileSync(checksumPath, checksum, { encoding: "utf8", flag: "wx" });
       verifySha256File(archivePath, checksum, asset);
     } else if (!allowUnverified) {
       throw new Error(
@@ -267,7 +267,7 @@ function downloadFile(url, target, maxBytes) {
         return;
       }
 
-      file = fs.createWriteStream(target);
+      file = fs.createWriteStream(target, { flags: "wx" });
       let bytes = 0;
 
       response.on("data", (chunk) => {

@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
@@ -19,6 +20,7 @@ const packageRoot = path.resolve(__dirname, "..");
 const installScript = path.join(__dirname, "install.js");
 
 async function main() {
+  expectExclusiveDownloadArtifactCreation();
   expectDefaultLimits();
   expectOverrideLimits();
   expectInvalidLimit("CONU_NPM_MAX_ARCHIVE_BYTES", "0");
@@ -33,6 +35,20 @@ async function main() {
   await expectInvalidArchiveUsesNeutralTempLabel();
   await expectTimeoutFailure();
   console.log("download limit check passed");
+}
+
+function expectExclusiveDownloadArtifactCreation() {
+  const source = fs.readFileSync(installScript, "utf8");
+  expectIncludes(
+    source,
+    'fs.writeFileSync(checksumPath, checksum, { encoding: "utf8", flag: "wx" })',
+    "exclusive checksum artifact creation"
+  );
+  expectIncludes(
+    source,
+    'fs.createWriteStream(target, { flags: "wx" })',
+    "exclusive archive artifact creation"
+  );
 }
 
 function expectDefaultLimits() {
@@ -248,6 +264,12 @@ function expectNoSecretDisplay(result) {
   const output = `${result.stdout || ""}${result.stderr || ""}`;
   if (output.includes("token=secret")) {
     throw new Error(`installer output displayed URL query material: ${output}`);
+  }
+}
+
+function expectIncludes(output, value, label) {
+  if (!output.includes(value)) {
+    throw new Error(`expected ${label} to include ${value}`);
   }
 }
 
