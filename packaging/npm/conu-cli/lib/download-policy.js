@@ -1,5 +1,6 @@
 "use strict";
 
+const dns = require("node:dns");
 const net = require("node:net");
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -47,6 +48,66 @@ function validateDownloadRedirect(fromRawUrl, toRawUrl) {
     );
   }
   return to;
+}
+
+function createDownloadLookup(rawUrl, lookup = dns.lookup) {
+  validateDownloadUrl(rawUrl);
+  return (hostname, options, callback) => {
+    let lookupOptions = options;
+    let lookupCallback = callback;
+    if (typeof lookupOptions === "function") {
+      lookupCallback = lookupOptions;
+      lookupOptions = {};
+    }
+
+    return lookup(hostname, lookupOptions, (error, address, family) => {
+      if (error) {
+        lookupCallback(error);
+        return;
+      }
+
+      try {
+        if (Array.isArray(address)) {
+          for (const entry of address) {
+            if (!entry || typeof entry.address !== "string") {
+              throw new Error("download URL hostname resolved to invalid address metadata");
+            }
+            validateResolvedDownloadAddress(rawUrl, entry.address);
+          }
+          lookupCallback(null, address);
+          return;
+        }
+
+        validateResolvedDownloadAddress(rawUrl, address);
+        lookupCallback(null, address, family);
+      } catch (policyError) {
+        lookupCallback(policyError);
+      }
+    });
+  };
+}
+
+function validateResolvedDownloadAddress(rawUrl, address) {
+  const parsed = validateDownloadUrl(rawUrl);
+  const hostClass = classifyDownloadHost(parsed.hostname);
+  const resolved = normalizeHostname(address);
+  const ipVersion = net.isIP(resolved);
+  if (ipVersion === 0) {
+    throw new Error("download URL hostname resolved to an invalid IP address");
+  }
+
+  if (hostClass === "loopback") {
+    if (!isLoopbackHost(resolved)) {
+      throw new Error("download URL loopback hostname resolved outside loopback");
+    }
+    return resolved;
+  }
+
+  const publicAddress = ipVersion === 4 ? isPublicIpv4(resolved) : isPublicIpv6(resolved);
+  if (!publicAddress) {
+    throw new Error("download URL public hostname resolved to a non-public address");
+  }
+  return resolved;
 }
 
 function formatDownloadUrlForError(rawUrl) {
@@ -276,9 +337,11 @@ function splitIpv6Half(value) {
 }
 
 module.exports = {
+  createDownloadLookup,
   formatDownloadUrlForError,
   isLoopbackHost,
   validateDownloadRedirect,
+  validateResolvedDownloadAddress,
   validateDownloadUrl,
   validateUnverifiedDownloadBase
 };

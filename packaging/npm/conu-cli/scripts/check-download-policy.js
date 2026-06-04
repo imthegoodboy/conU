@@ -1,8 +1,10 @@
 "use strict";
 
 const {
+  createDownloadLookup,
   formatDownloadUrlForError,
   validateDownloadRedirect,
+  validateResolvedDownloadAddress,
   validateDownloadUrl,
   validateUnverifiedDownloadBase
 } = require("../lib/download-policy");
@@ -29,6 +31,21 @@ function main() {
   expectFail("https://release.local/conu.zip", "host must be public or loopback");
   expectFail("http://localhost.evil.test/conu.zip", "download URL must use HTTPS");
   expectFail("not a url", "invalid download URL");
+  expectResolvedPass("https://example.com/conu.zip", "93.184.216.34");
+  expectResolvedPass("https://example.com/conu.zip", "2001:4860:4860::8888");
+  expectResolvedPass("http://localhost:50123/conu.zip", "127.0.0.1");
+  expectResolvedPass("https://localhost/conu.zip", "::1");
+  expectResolvedFail("https://example.com/conu.zip", "10.0.0.1", "non-public address");
+  expectResolvedFail(
+    "https://example.com/conu.zip",
+    "::ffff:192.168.1.1",
+    "non-public address"
+  );
+  expectResolvedFail("http://localhost:50123/conu.zip", "93.184.216.34", "outside loopback");
+  expectResolvedFail("https://example.com/conu.zip", "not-an-ip", "invalid IP address");
+  expectLookupPass("https://example.com/conu.zip", "93.184.216.34");
+  expectLookupFail("https://example.com/conu.zip", "172.16.0.1", "non-public address");
+  expectLookupAllFail("https://example.com/conu.zip", "192.168.1.10", "non-public address");
   expectUnverifiedPass("http://127.0.0.1:50123/releases");
   expectUnverifiedPass("https://localhost/releases");
   expectUnverifiedPass("http://[::1]:50123/releases");
@@ -84,6 +101,75 @@ function expectFail(url, expectedMessage) {
     throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`expected download URL policy failure: ${expectedMessage}`);
+}
+
+function expectResolvedPass(url, address) {
+  validateResolvedDownloadAddress(url, address);
+}
+
+function expectResolvedFail(url, address, expectedMessage) {
+  try {
+    validateResolvedDownloadAddress(url, address);
+  } catch (error) {
+    if (error.message.includes(expectedMessage)) {
+      return;
+    }
+    throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
+  }
+  throw new Error(`expected resolved-address policy failure: ${expectedMessage}`);
+}
+
+function expectLookupPass(url, address) {
+  let called = false;
+  const lookup = createDownloadLookup(url, (_hostname, _options, callback) => {
+    callback(null, address, address.includes(":") ? 6 : 4);
+  });
+  lookup(new URL(url).hostname, {}, (error, resolved) => {
+    called = true;
+    if (error) {
+      throw error;
+    }
+    if (resolved !== address) {
+      throw new Error(`expected lookup to resolve ${address}, got ${resolved}`);
+    }
+  });
+  if (!called) {
+    throw new Error("expected download lookup callback to run");
+  }
+}
+
+function expectLookupFail(url, address, expectedMessage) {
+  let called = false;
+  const lookup = createDownloadLookup(url, (_hostname, _options, callback) => {
+    callback(null, address, address.includes(":") ? 6 : 4);
+  });
+  lookup(new URL(url).hostname, {}, (error) => {
+    called = true;
+    if (error && error.message.includes(expectedMessage)) {
+      return;
+    }
+    throw new Error(`expected lookup failure ${expectedMessage}, got: ${error && error.message}`);
+  });
+  if (!called) {
+    throw new Error("expected download lookup callback to run");
+  }
+}
+
+function expectLookupAllFail(url, address, expectedMessage) {
+  let called = false;
+  const lookup = createDownloadLookup(url, (_hostname, _options, callback) => {
+    callback(null, [{ address, family: address.includes(":") ? 6 : 4 }]);
+  });
+  lookup(new URL(url).hostname, { all: true }, (error) => {
+    called = true;
+    if (error && error.message.includes(expectedMessage)) {
+      return;
+    }
+    throw new Error(`expected lookup-all failure ${expectedMessage}, got: ${error && error.message}`);
+  });
+  if (!called) {
+    throw new Error("expected download lookup callback to run");
+  }
 }
 
 function expectUnverifiedPass(url) {

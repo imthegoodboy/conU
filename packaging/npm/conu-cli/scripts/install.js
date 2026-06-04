@@ -17,6 +17,7 @@ const {
   parseContentLength
 } = require("../lib/download-limits");
 const {
+  createDownloadLookup,
   formatDownloadUrlForError,
   validateDownloadRedirect,
   validateDownloadUrl,
@@ -293,26 +294,31 @@ function downloadFile(url, target, maxBytes) {
 function request(url, onError, handler, redirects = 0) {
   const parsedUrl = validateDownloadUrl(url);
   const client = parsedUrl.protocol === "https:" ? https : http;
-  const requestHandle = client.get(parsedUrl, (response) => {
-    if (
-      response.statusCode >= 300 &&
-      response.statusCode < 400 &&
-      response.headers.location &&
-      redirects < 5
-    ) {
-      response.resume();
-      const redirectUrl = new URL(response.headers.location, url).toString();
-      try {
-        validateDownloadRedirect(url, redirectUrl);
-      } catch (error) {
-        onError(error);
+  const requestHandle = client.get(
+    parsedUrl,
+    { lookup: createDownloadLookup(url) },
+    (response) => {
+      if (
+        response.statusCode >= 300 &&
+        response.statusCode < 400 &&
+        response.headers.location &&
+        redirects < 5
+      ) {
+        response.resume();
+        const redirectUrl = new URL(response.headers.location, url).toString();
+        try {
+          validateDownloadRedirect(url, redirectUrl);
+        } catch (error) {
+          onError(error);
+          return;
+        }
+        request(redirectUrl, onError, handler, redirects + 1).on("error", onError);
         return;
       }
-      request(redirectUrl, onError, handler, redirects + 1).on("error", onError);
-      return;
+
+      handler(response);
     }
-    handler(response);
-  });
+  );
   requestHandle.setTimeout(downloadLimits.timeoutMs, () => {
     requestHandle.destroy(
       new Error(
