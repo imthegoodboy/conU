@@ -209,6 +209,19 @@ def main() -> int:
         )
 
     with fixture_dir() as root:
+        archive = root / "conu-0.1.0-manifest-corrupt.zip"
+        secret_member = "secret-manifest-member-should-not-print.txt"
+        write_zip_entries(archive, [(secret_member, "secret")])
+        corrupt_zip_member_data(archive, secret_member)
+        expect_action_failure(
+            lambda: smoke.read_archive_member(archive, secret_member),
+            "could not read zip member",
+            "corrupt member during manifest read",
+            forbidden=secret_member,
+            require_member_redaction=True,
+        )
+
+    with fixture_dir() as root:
         archive = root / "conu-0.1.0-manifest-drive.zip"
         drive_member = "C:\\secret-manifest-path-should-not-print"
         write_zip_entries(archive, [(drive_member, "x")])
@@ -316,6 +329,19 @@ def main() -> int:
         )
 
     with fixture_dir() as root:
+        archive = root / "conu-0.1.0-corrupt-extract.zip"
+        secret_member = "secret-extract-member-should-not-print.txt"
+        write_zip_entries(archive, [(secret_member, "secret")])
+        corrupt_zip_member_data(archive, secret_member)
+        expect_action_failure(
+            lambda: smoke.extract_archive(archive, root / "extract-corrupt"),
+            "could not read zip member",
+            "corrupt member during extraction",
+            forbidden=secret_member,
+            require_member_redaction=True,
+        )
+
+    with fixture_dir() as root:
         archive = root / "conu-0.1.0-drive.zip"
         drive_member = "C:\\secret-extract-path-should-not-print"
         write_zip_entries(archive, [(drive_member, "x")])
@@ -407,6 +433,32 @@ def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
             continue
         offset += 1
     path.write_bytes(data)
+
+
+def corrupt_zip_member_data(path: Path, member_name: str) -> None:
+    data = bytearray(path.read_bytes())
+    target = member_name.encode("utf-8")
+    offset = 0
+    while offset + 4 <= len(data):
+        signature = int.from_bytes(data[offset : offset + 4], "little")
+        if signature != 0x04034B50:
+            offset += 1
+            continue
+        name_length = int.from_bytes(data[offset + 26 : offset + 28], "little")
+        extra_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+        name_start = offset + 30
+        name_end = name_start + name_length
+        data_start = name_end + extra_length
+        compressed_size = int.from_bytes(data[offset + 18 : offset + 22], "little")
+        data_end = data_start + compressed_size
+        if data[name_start:name_end] == target:
+            if compressed_size == 0:
+                raise SystemExit(f"{member_name} had no compressed data to corrupt")
+            data[data_end - 1] ^= 0xFF
+            path.write_bytes(data)
+            return
+        offset = data_end
+    raise SystemExit(f"zip member not found for corruption: {member_name}")
 
 
 def assert_safe_snippet_redacts(smoke) -> None:
