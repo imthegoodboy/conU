@@ -9,12 +9,24 @@ const {
 
 function main() {
   expectPass("https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu.zip");
+  expectPass("https://[64:ff9b::808:808]/conu.zip");
   expectPass("http://127.0.0.1:50123/conu.zip");
   expectPass("http://localhost:50123/conu.zip");
   expectPass("http://[::1]:50123/conu.zip");
   expectFail("http://example.com/conu.zip", "download URL must use HTTPS");
   expectFail("ftp://example.com/conu.zip", "unsupported download URL protocol");
   expectFail("https://user:pass@example.com/conu.zip", "embedded credentials");
+  expectFail("https://10.0.0.1/conu.zip", "host must be public or loopback");
+  expectFail("https://169.254.169.254/conu.zip", "host must be public or loopback");
+  expectFail("https://[fc00::1]/conu.zip", "host must be public or loopback");
+  expectFail("https://[fec0::1]/conu.zip", "host must be public or loopback");
+  expectFail("https://[2001:db8:1::1]/conu.zip", "host must be public or loopback");
+  expectFail("https://[3fff::1]/conu.zip", "host must be public or loopback");
+  expectFail("https://[5f00::1]/conu.zip", "host must be public or loopback");
+  expectFail("https://[64:ff9b:1::1]/conu.zip", "host must be public or loopback");
+  expectFail("https://[64:ff9b::a00:1]/conu.zip", "host must be public or loopback");
+  expectFail("https://[100:0:0:1::1]/conu.zip", "host must be public or loopback");
+  expectFail("https://release.local/conu.zip", "host must be public or loopback");
   expectFail("http://localhost.evil.test/conu.zip", "download URL must use HTTPS");
   expectFail("not a url", "invalid download URL");
   expectUnverifiedPass("http://127.0.0.1:50123/releases");
@@ -33,6 +45,11 @@ function main() {
     "https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu.zip",
     "http://127.0.0.1:50123/conu.zip?token=secret",
     "public and loopback"
+  );
+  expectRedirectFail(
+    "https://github.com/imthegoodboy/conU/releases/download/v0.1.0/conu.zip",
+    "https://[3fff::1]/conu.zip?token=secret",
+    "host must be public or loopback"
   );
   expectRedirectFail(
     "http://127.0.0.1:50123/conu.zip",

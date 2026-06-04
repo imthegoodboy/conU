@@ -135,6 +135,11 @@ def run_audit_tests(module) -> None:
         "https://10.0.0.1/conu",
         "https://[fc00::1]/conu",
         "https://[2001:db8:1::1]/conu",
+        "https://[3fff::1]/conu",
+        "https://[5f00::1]/conu",
+        "https://[64:ff9b:1::1]/conu",
+        "https://[64:ff9b::a00:1]/conu",
+        "https://[100:0:0:1::1]/conu",
         "https://packages.local/conu",
     ):
         assert_raises(

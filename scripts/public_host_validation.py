@@ -75,8 +75,12 @@ def is_public_ipv6(ip: ipaddress.IPv6Address) -> bool:
         or is_ipv6_link_local(ip)
         or is_ipv6_site_local(ip)
         or is_ipv6_documentation(ip)
+        or is_ipv6_3fff_documentation(ip)
         or is_ipv6_discard_only(ip)
+        or is_ipv6_dummy_prefix(ip)
         or is_ipv6_protocol_assignment(ip)
+        or is_ipv6_nat64_local_use(ip)
+        or is_ipv6_segment_routing_sid(ip)
         or is_ipv6_6to4(ip)
     ):
         return False
@@ -85,6 +89,9 @@ def is_public_ipv6(ip: ipaddress.IPv6Address) -> bool:
     compatible = ipv4_compatible_address(ip)
     if compatible is not None:
         return is_public_ipv4(compatible)
+    well_known_nat64 = ipv6_well_known_nat64_address(ip)
+    if well_known_nat64 is not None:
+        return is_public_ipv4(well_known_nat64)
     return True
 
 
@@ -104,8 +111,16 @@ def is_ipv6_documentation(ip: ipaddress.IPv6Address) -> bool:
     return int(ip) >> 96 == int(ipaddress.IPv6Address("2001:db8::")) >> 96
 
 
+def is_ipv6_3fff_documentation(ip: ipaddress.IPv6Address) -> bool:
+    return int(ip) >> 108 == int(ipaddress.IPv6Address("3fff::")) >> 108
+
+
 def is_ipv6_discard_only(ip: ipaddress.IPv6Address) -> bool:
     return int(ip) >> 64 == int(ipaddress.IPv6Address("100::")) >> 64
+
+
+def is_ipv6_dummy_prefix(ip: ipaddress.IPv6Address) -> bool:
+    return int(ip) >> 64 == int(ipaddress.IPv6Address("100:0:0:1::")) >> 64
 
 
 def is_ipv6_protocol_assignment(ip: ipaddress.IPv6Address) -> bool:
@@ -113,8 +128,25 @@ def is_ipv6_protocol_assignment(ip: ipaddress.IPv6Address) -> bool:
     return int(segments[0], 16) == 0x2001 and int(segments[1], 16) <= 0x01FF
 
 
+def is_ipv6_nat64_local_use(ip: ipaddress.IPv6Address) -> bool:
+    return int(ip) >> 80 == int(ipaddress.IPv6Address("64:ff9b:1::")) >> 80
+
+
+def is_ipv6_segment_routing_sid(ip: ipaddress.IPv6Address) -> bool:
+    return int(ip) >> 112 == int(ipaddress.IPv6Address("5f00::")) >> 112
+
+
 def is_ipv6_6to4(ip: ipaddress.IPv6Address) -> bool:
     return ip.exploded.startswith("2002:")
+
+
+def ipv6_well_known_nat64_address(
+    ip: ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | None:
+    value = int(ip)
+    if value >> 32 != int(ipaddress.IPv6Address("64:ff9b::")) >> 32:
+        return None
+    return ipaddress.IPv4Address(value & 0xFFFFFFFF)
 
 
 def ipv4_compatible_address(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
