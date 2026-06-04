@@ -128,10 +128,15 @@ def main() -> int:
         encrypted_bundle = temp / "encrypted-hosted-bundle.zip"
         shutil.copy2(hosted_bundle, encrypted_bundle)
         mark_zip_member_encrypted(encrypted_bundle, "apt/Packages")
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: site_generator.read_hosted_bundle(encrypted_bundle),
             "encrypted zip member",
             "encrypted hosted bundle member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "encrypted hosted bundle member",
+            "apt/Packages",
         )
 
         unsupported_bundle = temp / "unsupported-hosted-bundle.zip"
@@ -140,10 +145,15 @@ def main() -> int:
             info.compress_type = zipfile.ZIP_STORED
             info.external_attr = (stat.S_IFCHR | 0o644) << 16
             archive.writestr(info, b"device\n")
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: site_generator.read_hosted_bundle(unsupported_bundle),
             "unsupported zip member",
             "unsupported hosted bundle member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "unsupported hosted bundle member",
+            "README.txt",
         )
 
         run_generator(dist, repeat, BASE_URL)
@@ -286,11 +296,17 @@ def main() -> int:
             write_zip_bytes(archive, "../apt/Packages", b"Package: conu\n")
         write_checksum(unsafe_bundle / HOSTED_BUNDLE)
         write_signature(unsafe_bundle / HOSTED_BUNDLE)
-        expect_failure(
+        output = expect_failure(
             "unsafe hosted bundle member",
             unsafe_bundle,
             BASE_URL,
             "unsafe hosted repository zip path",
+        )
+        assert_member_failure_redacted(
+            output,
+            "unsafe hosted bundle member",
+            "../apt/Packages",
+            "apt/Packages",
         )
 
         expect_failure(
@@ -417,8 +433,8 @@ def run_generator(dist: Path, output: Path, base_url: str) -> str:
     ).stdout
 
 
-def expect_failure(description: str, dist: Path, base_url: str, expected: str) -> None:
-    expect_failure_at_output(description, dist, dist / "out", base_url, expected)
+def expect_failure(description: str, dist: Path, base_url: str, expected: str) -> str:
+    return expect_failure_at_output(description, dist, dist / "out", base_url, expected)
 
 
 def expect_failure_at_output(
@@ -427,7 +443,7 @@ def expect_failure_at_output(
     output: Path,
     base_url: str,
     expected: str,
-) -> None:
+) -> str:
     failed = subprocess.run(
         [
             sys.executable,
@@ -450,6 +466,7 @@ def expect_failure_at_output(
         raise AssertionError(
             f"{description} failed with {failed.stdout!r}, expected {expected!r}"
         )
+    return failed.stdout
 
 
 def expect_zip_bound_failure(
@@ -481,6 +498,15 @@ def expect_action_failure(action, expected: str, label: str) -> str:
             return message
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_member_failure_redacted(message: str, label: str, *forbidden_values: str) -> None:
+    for marker in ("pathDisplayed=false", "contentsDisplayed=false"):
+        if marker not in message:
+            raise AssertionError(f"{label}: missing {marker}: {message!r}")
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{label}: displayed archive member value {value!r}: {message!r}")
 
 
 def assert_no_sentinel(output: str, label: str) -> None:

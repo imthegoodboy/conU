@@ -161,10 +161,15 @@ def run_zip_ingestion_preflights() -> None:
         encrypted = temp / "encrypted.zip"
         shutil.copy2(metadata, encrypted)
         mark_zip_member_encrypted(encrypted, "Release")
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: signer.read_zip_members(encrypted),
             "encrypted zip member",
             "repository signing encrypted member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "repository signing encrypted member",
+            "Release",
         )
 
         unsupported = temp / "unsupported.zip"
@@ -173,10 +178,30 @@ def run_zip_ingestion_preflights() -> None:
             info.compress_type = zipfile.ZIP_STORED
             info.external_attr = (stat.S_IFCHR | 0o644) << 16
             archive.writestr(info, b"device\n")
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: signer.read_zip_members(unsupported),
             "unsupported zip member",
             "repository signing unsupported member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "repository signing unsupported member",
+            "Release",
+        )
+
+        unsafe = temp / "unsafe.zip"
+        with zipfile.ZipFile(unsafe, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("../Release", b"escape\n")
+        message = expect_action_failure(
+            lambda: signer.read_zip_members(unsafe),
+            "unsafe repository metadata zip path",
+            "repository signing unsafe member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "repository signing unsafe member",
+            "../Release",
+            "Release",
         )
 
 
@@ -383,15 +408,24 @@ def expect_constant_failure(
         setattr(signer, constant_name, original)
 
 
-def expect_action_failure(action, expected: str, label: str) -> None:
+def expect_action_failure(action, expected: str, label: str) -> str:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
         if expected in message:
-            return
+            return message
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_member_failure_redacted(message: str, label: str, *forbidden_values: str) -> None:
+    for marker in ("pathDisplayed=false", "contentsDisplayed=false"):
+        if marker not in message:
+            raise AssertionError(f"{label}: missing {marker}: {message!r}")
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{label}: displayed archive member value {value!r}: {message!r}")
 
 
 def try_symlink(link: Path, target: Path) -> bool:

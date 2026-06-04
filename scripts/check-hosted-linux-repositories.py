@@ -211,10 +211,16 @@ def main() -> int:
         with zipfile.ZipFile(unsafe_zip / RPM_METADATA, "w", compression=zipfile.ZIP_STORED) as archive:
             write_zip_bytes(archive, "repodata/../repomd.xml", b"<repomd />\n")
         write_checksum(unsafe_zip / RPM_METADATA)
-        expect_failure(
+        output = expect_failure(
             "unsafe zip member",
             unsafe_zip,
             "unsafe repository metadata zip path",
+        )
+        assert_member_failure_redacted(
+            output,
+            "unsafe zip member",
+            "repodata/../repomd.xml",
+            "repomd.xml",
         )
 
         generator = load_generator()
@@ -246,10 +252,15 @@ def main() -> int:
         encrypted_zip = temp / "encrypted-zip"
         shutil.copytree(dist, encrypted_zip)
         mark_zip_member_encrypted(encrypted_zip / APT_METADATA, "Packages")
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: generator.read_zip_members(encrypted_zip / APT_METADATA),
             "encrypted zip member",
             "encrypted repository metadata member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "encrypted repository metadata member",
+            "Packages",
         )
 
         unsupported_zip = temp / "unsupported-zip"
@@ -259,10 +270,15 @@ def main() -> int:
             info.compress_type = zipfile.ZIP_STORED
             info.external_attr = (stat.S_IFCHR | 0o644) << 16
             archive.writestr(info, b"device\n")
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: generator.read_zip_members(unsupported_zip / APT_METADATA),
             "unsupported zip member",
             "unsupported repository metadata member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "unsupported repository metadata member",
+            "Packages",
         )
 
     print("Hosted Linux repository regression checks passed")
@@ -302,11 +318,11 @@ def run_generator(dist: Path, output: Path) -> str:
     ).stdout
 
 
-def expect_failure(description: str, dist: Path, expected: str) -> None:
-    expect_failure_at_output(description, dist, dist / "out", expected)
+def expect_failure(description: str, dist: Path, expected: str) -> str:
+    return expect_failure_at_output(description, dist, dist / "out", expected)
 
 
-def expect_failure_at_output(description: str, dist: Path, output: Path, expected: str) -> None:
+def expect_failure_at_output(description: str, dist: Path, output: Path, expected: str) -> str:
     failed = subprocess.run(
         [
             sys.executable,
@@ -327,6 +343,7 @@ def expect_failure_at_output(description: str, dist: Path, output: Path, expecte
         raise AssertionError(
             f"{description} failed with {failed.stdout!r}, expected {expected!r}"
         )
+    return failed.stdout
 
 
 def expect_zip_bound_failure(
@@ -358,6 +375,15 @@ def expect_action_failure(action, expected: str, label: str) -> str:
             return message
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_member_failure_redacted(message: str, label: str, *forbidden_values: str) -> None:
+    for marker in ("pathDisplayed=false", "contentsDisplayed=false"):
+        if marker not in message:
+            raise AssertionError(f"{label}: missing {marker}: {message!r}")
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{label}: displayed archive member value {value!r}: {message!r}")
 
 
 def assert_no_sentinel(output: str, label: str) -> None:
