@@ -808,7 +808,7 @@ fn relay_endpoint(paths: &StatePaths) -> Result<String, SessionError> {
         Some(contents) => contents,
         None => return Ok(DEFAULT_RELAY_ENDPOINT.to_string()),
     };
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
     let endpoint = values
         .get("default_relay")
         .filter(|value| !value.trim().is_empty())
@@ -849,7 +849,7 @@ fn record_session_log(paths: &StatePaths, sessions: &[RemoteSession], remote_age
     let _ = append_session_log(paths, sessions, remote_agents);
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, SessionError> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -859,10 +859,10 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_session_value(&mut values, key, value)?;
     }
 
-    values
+    Ok(values)
 }
 
 fn clean_value(value: &str) -> String {
@@ -1140,6 +1140,27 @@ mod tests {
         assert!(rendered.contains("relay endpoint is invalid"));
         assert!(!rendered.contains("secret"));
         assert!(!rendered.contains("token=private"));
+    }
+
+    #[test]
+    fn session_relay_config_duplicate_key_fails_closed_without_echoing_value() {
+        let home = test_home("session-relay-config-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let private_marker = "private-relay-shadow";
+        fs::write(
+            &init.paths.config,
+            format!(
+                "version = \"1\"\ndefault_relay = \"wss://relay.example.com\"\ndefault_relay = \"wss://{private_marker}.example.com\"\n"
+            ),
+        )
+        .expect("config writes");
+
+        let error =
+            relay_endpoint(&init.paths).expect_err("duplicate relay config key should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate session key default_relay"));
+        assert!(!rendered.contains(private_marker));
     }
 
     #[test]
@@ -1429,7 +1450,8 @@ kind = \"test-agent\"\n\
 presence = \"ready\"\n\
 last_seen_unix = 1\n\
 cap_messages = maybe\n",
-        );
+        )
+        .expect("metadata parses");
 
         let error = remote_agent_from_values(&values)
             .expect_err("malformed remote capability should fail closed");
