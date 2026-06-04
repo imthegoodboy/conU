@@ -6,6 +6,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from command_output_redaction import redact_command_output
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_SCRIPTS = (
@@ -37,6 +39,7 @@ def main() -> int:
 
     check_identity_cleanup(ROOT / "scripts" / "smoke-identity-retirement.ps1", issues)
     check_relay_output_suppression(ROOT / "scripts" / "smoke-relay-daemon.ps1", issues)
+    check_command_output_redaction(issues)
 
     if issues:
         print("smoke output privacy check failed", file=sys.stderr)
@@ -89,6 +92,23 @@ def check_relay_output_suppression(path: Path, issues: list[str]) -> None:
         issues.append(f"{path.relative_to(ROOT)} is missing commandOutputDisplayed=false guard")
     if "$($output -join" in text:
         issues.append(f"{path.relative_to(ROOT)} can echo captured command output on failure")
+
+
+def check_command_output_redaction(issues: list[str]) -> None:
+    sentinel = "do-not-print-this-secret-value"
+    cases = (
+        f"tool --token {sentinel}",
+        f"tool --password='{sentinel} with spaces'",
+        f"tool --security-token \"{sentinel} with spaces\"",
+        f"tool -auth {sentinel}",
+        f"tool --target conu --secret {sentinel} --mode dry-run",
+    )
+    for value in cases:
+        redacted = redact_command_output(value)
+        if sentinel in redacted:
+            issues.append(f"command output redaction leaked secret flag value from {value!r}")
+        if "[redacted]" not in redacted:
+            issues.append(f"command output redaction did not mark secret flag value from {value!r}")
 
 
 if __name__ == "__main__":
