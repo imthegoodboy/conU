@@ -18,6 +18,7 @@ from json_safety import load_json_object
 
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 FORBIDDEN_ASSET_MARKERS = (
     ".mailbox",
     ".session",
@@ -215,6 +216,15 @@ def asset_local_issue(asset: dict[str, Any], name: str) -> str | None:
     return f"{name}: {value.strip()}"
 
 
+def asset_digest_issue(repo: str, asset: dict[str, Any], name: str) -> str | None:
+    if repo == "local/dist" and asset.get("localAsset") is True:
+        return None
+    value = asset.get("digest")
+    if not isinstance(value, str) or not SHA256_DIGEST_RE.fullmatch(value):
+        return f"{name}: digest must be sha256 metadata"
+    return None
+
+
 def forbidden_asset_marker(name: str) -> str | None:
     lower = name.lower()
     if "/" in name or "\\" in name or name in {".", ".."} or ".." in name.split("."):
@@ -261,6 +271,9 @@ def audit_release_assets(
         local_issue = asset_local_issue(asset, name)
         if local_issue:
             invalid.append(local_issue)
+        digest_issue = asset_digest_issue(repo, asset, name)
+        if digest_issue:
+            invalid.append(digest_issue)
 
         marker = forbidden_asset_marker(name)
         if marker:
@@ -381,7 +394,7 @@ def load_dist_metadata(tag: str, dist_dir: Path) -> dict[str, Any]:
     assets: list[dict[str, Any]] = []
     for path in sorted(dist.iterdir(), key=lambda item: item.name):
         name = path.name
-        asset: dict[str, Any] = {"name": name, "state": "uploaded"}
+        asset: dict[str, Any] = {"name": name, "state": "uploaded", "localAsset": True}
         try:
             stat_result = path.lstat()
         except OSError as exc:
