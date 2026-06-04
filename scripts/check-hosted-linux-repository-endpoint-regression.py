@@ -87,6 +87,11 @@ def main() -> int:
                 ("https://10.0.0.1/conu", "host must be public"),
                 ("https://[fc00::1]/conu", "host must be public"),
                 ("https://[2001:db8:1::1]/conu", "host must be public"),
+                ("https://[3fff::1]/conu", "host must be public"),
+                ("https://[5f00::1]/conu", "host must be public"),
+                ("https://[64:ff9b:1::1]/conu", "host must be public"),
+                ("https://[64:ff9b::a00:1]/conu", "host must be public"),
+                ("https://[100:0:0:1::1]/conu", "host must be public"),
                 ("https://packages.local/conu", "host must be public"),
             ):
                 run_checker_expect_failure(

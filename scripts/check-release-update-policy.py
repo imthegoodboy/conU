@@ -273,6 +273,11 @@ def main() -> int:
             "https://[fec0::1]/imthegoodboy/conU/releases/download/v0.1.0",
             "https://[2001:db8::1]/imthegoodboy/conU/releases/download/v0.1.0",
             "https://[2001:db8:1::1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[3fff::1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[5f00::1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[64:ff9b:1::1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[64:ff9b::a00:1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[100:0:0:1::1]/imthegoodboy/conU/releases/download/v0.1.0",
             "https://[::ffff:127.0.0.1]/imthegoodboy/conU/releases/download/v0.1.0",
             "https://release.local/imthegoodboy/conU/releases/download/v0.1.0",
         ):
