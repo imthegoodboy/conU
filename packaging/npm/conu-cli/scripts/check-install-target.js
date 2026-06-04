@@ -97,6 +97,19 @@ function main() {
   withFixture((root) => {
     const source = writeSource(root, "conu");
     const target = path.join(root, "vendor", "linux-x64", "conu");
+    withPatchedFs({ lstatSync: () => failWithPath(root) }, () => {
+      expectRedactedFailure(
+        () => install(root, source, target),
+        "failed to inspect test binary source",
+        root,
+        "redacted source inspection failure"
+      );
+    });
+  });
+
+  withFixture((root) => {
+    const source = writeSource(root, "conu");
+    const target = path.join(root, "vendor", "linux-x64", "conu");
     withPatchedFs({ copyFileSync: () => failWithPath(root) }, () => {
       expectRedactedFailure(
         () => install(root, source, target),

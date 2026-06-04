@@ -59,7 +59,7 @@ function assertRegularSource(source, label) {
 }
 
 function assertSafeInstallTarget(target, label) {
-  const stat = lstatMaybe(target);
+  const stat = lstatMaybe(target, `${label} install target`);
   if (!stat) {
     return;
   }
@@ -83,7 +83,7 @@ function assertRegularTempTarget(target, label) {
 
 function assertExistingInstallAncestors(root, targetDir, label) {
   for (const current of pathComponents(root, targetDir, { includeMissing: false })) {
-    const stat = lstatMaybe(current);
+    const stat = lstatMaybe(current, `${label} install directory`);
     if (!stat) {
       return;
     }
@@ -121,7 +121,7 @@ function pathComponents(root, targetDir, { includeMissing }) {
   let current = rootPath;
   for (const part of relative.split(path.sep)) {
     current = path.join(current, part);
-    if (!includeMissing && !lstatMaybe(current)) {
+    if (!includeMissing && !lstatMaybe(current, "install target directory")) {
       break;
     }
     components.push(current);
@@ -190,7 +190,7 @@ function temporarySiblingPath(target) {
       dir,
       `.${base}.${process.pid}.${Date.now()}.${index}.tmp`
     );
-    if (!lstatMaybe(candidate)) {
+    if (!lstatMaybe(candidate, `${base} temporary install target`)) {
       return candidate;
     }
   }
@@ -198,22 +198,28 @@ function temporarySiblingPath(target) {
 }
 
 function lstatRequired(target, label) {
-  const stat = lstatMaybe(target);
+  const stat = lstatMaybe(target, label);
   if (!stat) {
     throw new Error(`missing ${label}: ${path.basename(target)}`);
   }
   return stat;
 }
 
-function lstatMaybe(target) {
+function lstatMaybe(target, label) {
   try {
     return fs.lstatSync(target);
   } catch (error) {
     if (error && error.code === "ENOENT") {
       return null;
     }
-    throw error;
+    throw installTargetInspectionError(label);
   }
+}
+
+function installTargetInspectionError(label) {
+  return new Error(
+    `failed to inspect ${label}; pathDisplayed=false contentsDisplayed=false`
+  );
 }
 
 module.exports = {
