@@ -19,6 +19,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+from command_output_redaction import redact_command_output
+
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATOR_PATH = ROOT / "scripts" / "generate-package-manager-manifests.py"
@@ -47,6 +49,16 @@ RPM_ARCHES = {
 }
 RPM_X64_FILENAME = f"conu-{VERSION}-1.x86_64.rpm"
 RPM_ARM64_FILENAME = f"conu-{VERSION}-1.aarch64.rpm"
+SENSITIVE_FAILURE_VALUES = (
+    "npm_fakePackageToolToken1234567890",
+    "ghp_fakePackageToolToken1234567890",
+    "fake-bearer-token-1234567890",
+    "fake-basic-token-1234567890",
+    "fake-node-auth-token-1234567890",
+    "fake-url-password-1234567890",
+    "fake-query-token-1234567890",
+    "fake-private-key-1234567890",
+)
 
 
 def load_generator():
@@ -258,6 +270,22 @@ def expect_failure(description: str, action, expected: str) -> None:
     raise AssertionError(f"{description} unexpectedly passed")
 
 
+def expect_redacted_failure(description: str, action, expected: str) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        message = str(exc)
+    else:
+        raise AssertionError(f"{description} unexpectedly passed")
+    if expected not in message:
+        raise AssertionError(f"{description} failed with {message!r}, expected {expected!r}")
+    if "[redacted]" not in message:
+        raise AssertionError(f"{description} did not mark redacted output")
+    for value in SENSITIVE_FAILURE_VALUES:
+        if value in message:
+            raise AssertionError(f"{description} leaked a sensitive value")
+
+
 def run_generator_cli(dist: Path, output: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -340,6 +368,76 @@ def assert_no_forbidden_text(text: str, label: str, temp: Path) -> None:
     for literal in forbidden:
         if literal and literal in normalized:
             raise AssertionError(f"{label} contained forbidden literal {literal!r}")
+
+
+def assert_external_tool_output_redacts(generator) -> None:
+    original_which = generator.shutil.which
+    original_run = generator.subprocess.run
+    raw = sensitive_command_output()
+    try:
+
+        def fake_which(name: str):
+            if name == "rpmbuild":
+                return "rpmbuild"
+            if name == "createrepo_c":
+                return "createrepo_c"
+            if name == "createrepo":
+                return None
+            return original_which(name)
+
+        def failed_run(command, *_args, **_kwargs):
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=command,
+                output=raw,
+            )
+
+        generator.shutil.which = fake_which
+        generator.subprocess.run = failed_run
+        with tempfile.TemporaryDirectory(prefix="conu-package-tool-output-check-") as temp_text:
+            temp = Path(temp_text)
+            dist = temp / "dist"
+            output = temp / "output"
+            dist.mkdir()
+            output.mkdir()
+            spec_path = temp / RPM_SPEC_FILENAME
+            spec_path.write_text("Name: conu\n", encoding="ascii", newline="\n")
+
+            expect_redacted_failure(
+                "rpmbuild failure output",
+                lambda: generator.build_rpm_packages(VERSION, dist, spec_path, output),
+                "rpmbuild failed",
+            )
+
+            package_paths = []
+            for target in RPM_ARCHES:
+                package = output / generator.rpm_filename(VERSION, target)
+                package.write_bytes(b"rpm package fixture\n")
+                write_checksum(package)
+                package_paths.append(package)
+            expect_redacted_failure(
+                "createrepo failure output",
+                lambda: generator.build_rpm_repository_metadata(VERSION, tuple(package_paths)),
+                "createrepo_c failed",
+            )
+    finally:
+        generator.shutil.which = original_which
+        generator.subprocess.run = original_run
+
+
+def sensitive_command_output() -> str:
+    return "\n".join(
+        [
+            f"npm ERR! auth token {SENSITIVE_FAILURE_VALUES[0]}",
+            f"gh token {SENSITIVE_FAILURE_VALUES[1]}",
+            f"Authorization: Bearer {SENSITIVE_FAILURE_VALUES[2]}",
+            f"Authorization: Basic {SENSITIVE_FAILURE_VALUES[3]}",
+            f"NODE_AUTH_TOKEN={SENSITIVE_FAILURE_VALUES[4]}",
+            f"https://user:{SENSITIVE_FAILURE_VALUES[5]}@example.invalid/conu",
+            f"https://example.invalid/conu?token={SENSITIVE_FAILURE_VALUES[6]}",
+            f"PRIVATE_KEY={SENSITIVE_FAILURE_VALUES[7]}",
+        ]
+    )
 
 
 def read_chocolatey_package(path: Path) -> dict[str, str]:
@@ -494,7 +592,8 @@ def assert_rpmbuild_accepts(generator, spec_path: Path, dist: Path) -> None:
                 )
             except subprocess.CalledProcessError as exc:
                 raise AssertionError(
-                    f"rpmbuild failed for {target} with output:\n{exc.stdout}"
+                    f"rpmbuild failed for {target} with output:\n"
+                    f"{redact_command_output(exc.stdout or '')}"
                 ) from exc
             packages = sorted((topdir / "RPMS").rglob("conu-*.rpm"))
             if len(packages) != 1:
@@ -787,6 +886,7 @@ def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
 
 def main() -> int:
     generator = load_generator()
+    assert_external_tool_output_redacts(generator)
     if generator.validate_version("1.2.3-rc.1+build.5") != "1.2.3-rc.1+build.5":
         raise AssertionError("package-manager generator rejected semver prerelease plus build metadata")
     if generator.validate_tag("v1.2.3-rc.1+build.5") != "v1.2.3-rc.1+build.5":
