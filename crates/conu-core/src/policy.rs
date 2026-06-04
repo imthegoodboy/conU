@@ -282,7 +282,7 @@ fn read_policies(paths: &StatePaths) -> Result<Vec<PeerPolicyRecord>, PolicyErro
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_record_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -290,6 +290,24 @@ fn read_policies(paths: &StatePaths) -> Result<Vec<PeerPolicyRecord>, PolicyErro
     }
 
     Ok(policies)
+}
+
+fn insert_record_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), PolicyError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty key".to_string()
+        } else {
+            format!("duplicate {key}")
+        };
+        return Err(PolicyError::InvalidRecord { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn write_policies(paths: &StatePaths, policies: &[PeerPolicyRecord]) -> Result<(), PolicyError> {
@@ -457,6 +475,22 @@ mod tests {
         assert_eq!(policies.len(), 1);
         assert!(contents.contains("payload_displayed = false"));
         assert!(!contents.contains("private message contents"));
+    }
+
+    #[test]
+    fn peer_policy_duplicate_permission_key_fails_closed_without_payloads() {
+        let home = test_home("duplicate-key");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            home.join("policy.toml"),
+            "# conU peer policy store\nversion = \"1\"\n\n[[peer_policy]]\npeer_node_id = \"peer.codex\"\nmessages = false\nmessages = true\nstreams = false\nrooms = false\nfiles = false\nmailbox = false\nupdated_at_unix = 1\npayload_displayed = false\nsecret_payload = \"private message contents\"\n",
+        )
+        .expect("policy writes");
+
+        let error = list_peer_policies(Some(home)).expect_err("duplicate key fails closed");
+
+        assert!(error.to_string().contains("duplicate messages"));
+        assert!(!error.to_string().contains("private message contents"));
     }
 
     fn test_home(label: &str) -> PathBuf {

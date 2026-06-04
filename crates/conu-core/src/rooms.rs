@@ -1147,7 +1147,7 @@ fn parse_topic_policies(contents: &str) -> Result<Vec<RoomTopicPolicyRecord>, Ro
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_topic_policy_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -1155,6 +1155,24 @@ fn parse_topic_policies(contents: &str) -> Result<Vec<RoomTopicPolicyRecord>, Ro
     }
 
     Ok(policies)
+}
+
+fn insert_topic_policy_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), RoomError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty key".to_string()
+        } else {
+            format!("duplicate {key}")
+        };
+        return Err(RoomError::InvalidRequest { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn room_from_values(values: &HashMap<String, String>) -> Result<RoomRecord, RoomError> {
@@ -1787,6 +1805,23 @@ mod tests {
 
         assert!(error.to_string().contains("not allowed to publish"));
         assert!(!error.to_string().contains("private message contents"));
+    }
+
+    #[test]
+    fn room_topic_policy_duplicate_permission_key_fails_closed_without_payloads() {
+        let home = test_home("topic-policy-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::create_dir_all(&init.paths.rooms_dir).expect("rooms directory creates");
+        fs::write(
+            &init.paths.room_policy,
+            "# conU room topic policy\nversion = \"1\"\n\n[[topic_policy]]\nroom_id = \"room.dev\"\nagent_id = \"agent.codex\"\ntopic = \"build\"\npublish = false\npublish = true\nsubscribe = false\nupdated_at_unix = 1\npayload_displayed = false\nsecret_payload = \"private room contents\"\n",
+        )
+        .expect("topic policy writes");
+
+        let error = list_room_topic_policies(Some(home)).expect_err("duplicate key fails closed");
+
+        assert!(error.to_string().contains("duplicate publish"));
+        assert!(!error.to_string().contains("private room contents"));
     }
 
     #[cfg(unix)]
