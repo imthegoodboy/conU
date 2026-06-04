@@ -340,7 +340,7 @@ pub fn render_signed_agent_card_metadata(card: &SignedAgentCard) -> String {
 
 /// Parse a signed agent card exchanged as encrypted control-plane metadata.
 pub fn parse_signed_agent_card_metadata(contents: &str) -> Result<SignedAgentCard, AgentError> {
-    let values = parse_key_values(contents);
+    let values = parse_key_values(contents)?;
     if value_or_empty(&values, "version") != "1"
         || value_or_empty(&values, "type") != "signed_agent_card"
     {
@@ -421,7 +421,7 @@ fn process_one_request(
         "inspect IPC request",
         "read IPC request",
     )?;
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
 
     if value_or_empty(&values, "version") != REQUEST_VERSION {
         return Err(AgentError::InvalidRequest {
@@ -726,7 +726,7 @@ fn parse_registry(contents: &str) -> Result<Vec<LocalAgentRecord>, AgentError> {
             continue;
         };
 
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_agent_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -734,6 +734,24 @@ fn parse_registry(contents: &str) -> Result<Vec<LocalAgentRecord>, AgentError> {
     }
 
     Ok(records)
+}
+
+fn insert_agent_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), AgentError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty agent key".to_string()
+        } else {
+            format!("duplicate agent key {key}")
+        };
+        return Err(AgentError::InvalidRequest { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn record_from_values(values: &HashMap<String, String>) -> Result<LocalAgentRecord, AgentError> {
@@ -1104,7 +1122,7 @@ fn validate_hex_value(
     Ok(value)
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, AgentError> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -1116,10 +1134,10 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
             continue;
         };
 
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_agent_value(&mut values, key, value)?;
     }
 
-    values
+    Ok(values)
 }
 
 fn clean_value(value: &str) -> String {
@@ -1274,7 +1292,8 @@ mod tests {
 display_name = \"Codex Desktop\"\n\
 kind = \"coding-agent\"\n\
 cap_messages = maybe\n",
-        );
+        )
+        .expect("metadata parses");
 
         let error = registration_from_values(&values)
             .expect_err("malformed registration capability should fail closed");
@@ -1295,7 +1314,8 @@ presence = \"ready\"\n\
 last_seen_unix = 1\n\
 cap_messages = true\n\
 cap_streams = maybe\n",
-        );
+        )
+        .expect("metadata parses");
 
         let error =
             record_from_values(&values).expect_err("malformed local capability should fail closed");
@@ -1330,6 +1350,79 @@ payload_displayed = false\n";
 
         assert!(rendered.contains("cap_messages must be true or false"));
         assert!(!rendered.contains("maybe"));
+    }
+
+    #[test]
+    fn agent_registry_duplicate_capability_key_fails_closed_without_payloads() {
+        let home = test_home("registry-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            &init.paths.agent_registry,
+            "# conU local agent registry\nversion = \"1\"\n\n[[agent]]\nagent_id = \"agent.codex\"\ndisplay_name = \"Codex Desktop\"\nnode_id = \"node.local\"\nkind = \"coding-agent\"\npresence = \"ready\"\nlast_seen_unix = 1\ncap_messages = true\ncap_streams = false\ncap_rooms = false\ncap_rooms = \"private.message.contents\"\ncap_files = false\ncap_presence = true\n",
+        )
+        .expect("registry writes");
+
+        let error = list_local_agents(Some(home)).expect_err("duplicate registry key fails closed");
+
+        assert!(error.to_string().contains("duplicate agent key cap_rooms"));
+        assert!(!error.to_string().contains("private.message.contents"));
+    }
+
+    #[test]
+    fn gateway_request_duplicate_type_key_fails_closed_without_payloads() {
+        let home = test_home("request-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let request = init.paths.ipc_inbox_dir.join("duplicate.req");
+        fs::write(
+            &request,
+            "version = \"1\"\ntype = \"register_agent\"\ntype = \"private message contents\"\nrequest_id = \"duplicate\"\nagent_id = \"agent.codex\"\ndisplay_name = \"Codex Desktop\"\nkind = \"coding-agent\"\ncap_messages = true\ncap_streams = false\ncap_rooms = false\ncap_files = false\ncap_presence = true\n",
+        )
+        .expect("request writes");
+
+        let report = process_gateway_requests(Some(home.clone())).expect("requests process");
+        let error_text = fs::read_to_string(
+            StatePaths::from_home(home.clone())
+                .ipc_rejected_dir
+                .join("duplicate.error"),
+        )
+        .expect("rejection reason reads");
+        let agents = list_local_agents(Some(home)).expect("agents list");
+
+        assert_eq!(report.rejected, 1);
+        assert!(agents.is_empty());
+        assert!(error_text.contains("duplicate agent key type"));
+        assert!(!error_text.contains("private message contents"));
+    }
+
+    #[test]
+    fn signed_agent_card_duplicate_capability_key_fails_closed_without_payloads() {
+        let metadata = "version = \"1\"\n\
+type = \"signed_agent_card\"\n\
+agent_id = \"agent.codex\"\n\
+display_name = \"Codex Desktop\"\n\
+node_id = \"node.local\"\n\
+kind = \"coding-agent\"\n\
+cap_messages = true\n\
+cap_messages = \"private_message_contents\"\n\
+cap_streams = false\n\
+cap_rooms = false\n\
+cap_files = false\n\
+cap_presence = true\n\
+signature_algorithm = \"ed25519\"\n\
+signature_key_id = \"key.1\"\n\
+signing_public_key_hex = \"aa\"\n\
+signature_hex = \"bb\"\n\
+payload_displayed = false\n";
+
+        let error = parse_signed_agent_card_metadata(metadata)
+            .expect_err("duplicate signed card key fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate agent key cap_messages")
+        );
+        assert!(!error.to_string().contains("private_message_contents"));
     }
 
     #[test]
