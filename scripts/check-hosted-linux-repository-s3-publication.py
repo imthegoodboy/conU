@@ -168,6 +168,7 @@ def main() -> int:
             "https://127.0.0.1/conu",
             "https://10.0.0.1/conu",
             "https://[fc00::1]/conu",
+            "https://[2001:db8:1::1]/conu",
             "https://packages.local/conu",
         ):
             non_public_base = run_publisher_raw(

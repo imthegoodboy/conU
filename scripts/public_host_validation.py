@@ -101,7 +101,7 @@ def is_ipv6_site_local(ip: ipaddress.IPv6Address) -> bool:
 
 
 def is_ipv6_documentation(ip: ipaddress.IPv6Address) -> bool:
-    return int(ip) >> 32 == int(ipaddress.IPv6Address("2001:db8::")) >> 32
+    return int(ip) >> 96 == int(ipaddress.IPv6Address("2001:db8::")) >> 96
 
 
 def is_ipv6_discard_only(ip: ipaddress.IPv6Address) -> bool:
