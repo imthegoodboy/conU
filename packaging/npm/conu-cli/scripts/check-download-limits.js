@@ -64,6 +64,26 @@ function expectExclusiveDownloadArtifactCreation() {
     "function removeDownloadArtifact(target)",
     "redacted archive cleanup failure guard"
   );
+  expectIncludes(
+    source,
+    "const tempDir = createTempInstallDir();",
+    "redacted temp install dir creation"
+  );
+  expectIncludes(
+    source,
+    "removeTempInstallDir(tempDir, { preserveFailure: installFailed });",
+    "redacted temp install dir cleanup"
+  );
+  expectIncludes(
+    source,
+    'throw tempInstallDirError("create");',
+    "redacted temp install dir creation failure"
+  );
+  expectIncludes(
+    source,
+    'throw tempInstallDirError("remove");',
+    "redacted temp install dir cleanup failure"
+  );
 }
 
 function expectDefaultLimits() {

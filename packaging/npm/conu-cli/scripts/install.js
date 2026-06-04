@@ -73,7 +73,8 @@ async function main() {
     validateUnverifiedDownloadBase(releaseBase);
   }
 
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conu-npm-"));
+  const tempDir = createTempInstallDir();
+  let installFailed = false;
   try {
     const archivePath = path.join(tempDir, tempArchiveFileName(asset));
     const checksumPath = `${archivePath}.sha256`;
@@ -98,8 +99,11 @@ async function main() {
     fs.mkdirSync(extractDir, { recursive: true });
     extractArchive(archivePath, extractDir);
     installFromExtractedArchive(extractDir);
+  } catch (error) {
+    installFailed = true;
+    throw error;
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    removeTempInstallDir(tempDir, { preserveFailure: installFailed });
   }
 }
 
@@ -321,6 +325,30 @@ function removeDownloadArtifact(target) {
   } catch (_error) {
     // Preserve the original redacted installer failure.
   }
+}
+
+function createTempInstallDir() {
+  try {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "conu-npm-"));
+  } catch (_error) {
+    throw tempInstallDirError("create");
+  }
+}
+
+function removeTempInstallDir(tempDir, options = {}) {
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch (_error) {
+    if (!options.preserveFailure) {
+      throw tempInstallDirError("remove");
+    }
+  }
+}
+
+function tempInstallDirError(action) {
+  return new Error(
+    `failed to ${action} temporary install directory; pathDisplayed=false contentsDisplayed=false`
+  );
 }
 
 function downloadArtifactWriteError(kind) {
