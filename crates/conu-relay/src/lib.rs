@@ -1505,6 +1505,7 @@ pub fn parse_scoped_credentials_file(contents: &str) -> Result<Vec<RelayCredenti
 fn parse_credential_file_records(contents: &str) -> Result<Vec<CredentialFileRecord>, RelayError> {
     let mut version = None::<String>;
     let mut current = None::<CredentialFileRecord>;
+    let mut top_level_keys = ConfigKeyTracker::default();
     let mut records = Vec::new();
 
     for (line_index, raw_line) in contents.lines().enumerate() {
@@ -1528,12 +1529,18 @@ fn parse_credential_file_records(contents: &str) -> Result<Vec<CredentialFileRec
         })?;
         let key = key.trim();
         let value = clean_config_value(value);
+        if key.is_empty() {
+            return Err(RelayError::InvalidConfigValue(format!(
+                "relay credential file line {line_number} must include a key"
+            )));
+        }
 
         if let Some(record) = current.as_mut() {
             record.set(key, &value, line_number)?;
             continue;
         }
 
+        top_level_keys.record(key, "relay credential file", line_number)?;
         match key {
             "version" => version = Some(value),
             _ => {
@@ -1584,6 +1591,7 @@ fn parse_admin_tokens_file(
 ) -> Result<RelayAdminTokenManifest, RelayError> {
     let mut version = None::<String>;
     let mut current = None::<AdminTokenFileRecord>;
+    let mut top_level_keys = ConfigKeyTracker::default();
     let mut records = Vec::new();
 
     for (line_index, raw_line) in contents.lines().enumerate() {
@@ -1607,12 +1615,18 @@ fn parse_admin_tokens_file(
         })?;
         let key = key.trim();
         let value = clean_config_value(value);
+        if key.is_empty() {
+            return Err(RelayError::InvalidConfigValue(format!(
+                "relay admin tokens file line {line_number} must include a key"
+            )));
+        }
 
         if let Some(record) = current.as_mut() {
             record.set(key, &value, line_number)?;
             continue;
         }
 
+        top_level_keys.record(key, "relay admin tokens file", line_number)?;
         match key {
             "version" => version = Some(value),
             _ => {
@@ -3608,6 +3622,7 @@ fn load_hosted_tenant_manifest_or_empty(path: &Path) -> Result<HostedTenantManif
 
 fn parse_hosted_tenant_manifest(contents: &str) -> Result<HostedTenantManifest, RelayError> {
     let mut version = None::<String>;
+    let mut top_level_keys = ConfigKeyTracker::default();
     let mut section = None::<HostedTenantManifestSection>;
     let mut tenants = Vec::new();
     let mut nodes = Vec::new();
@@ -3641,6 +3656,11 @@ fn parse_hosted_tenant_manifest(contents: &str) -> Result<HostedTenantManifest, 
         })?;
         let key = key.trim();
         let value = clean_config_value(value);
+        if key.is_empty() {
+            return Err(RelayError::InvalidConfigValue(format!(
+                "hosted tenant file line {line_number} must include a key"
+            )));
+        }
 
         match section.as_mut() {
             Some(HostedTenantManifestSection::Tenant(record)) => {
@@ -3650,8 +3670,12 @@ fn parse_hosted_tenant_manifest(contents: &str) -> Result<HostedTenantManifest, 
                 record.set(key, &value, line_number)?;
             }
             None => match key {
-                "version" => version = Some(value),
+                "version" => {
+                    top_level_keys.record(key, "hosted tenant file", line_number)?;
+                    version = Some(value);
+                }
                 _ => {
+                    top_level_keys.record(key, "hosted tenant file", line_number)?;
                     return Err(RelayError::InvalidConfigValue(format!(
                         "hosted tenant file line {line_number} has key before a section"
                     )));
@@ -4064,6 +4088,22 @@ impl fmt::Debug for RelayAdminTokenRecord {
 }
 
 #[derive(Clone, Default)]
+struct ConfigKeyTracker {
+    seen: HashSet<String>,
+}
+
+impl ConfigKeyTracker {
+    fn record(&mut self, key: &str, label: &str, line_number: usize) -> Result<(), RelayError> {
+        if !self.seen.insert(key.to_string()) {
+            return Err(RelayError::InvalidConfigValue(format!(
+                "{label} line {line_number} contains duplicate key {key}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
 struct AdminTokenFileRecord {
     account_id: Option<String>,
     token_sha256_hex: Option<String>,
@@ -4071,10 +4111,13 @@ struct AdminTokenFileRecord {
     status: Option<RelayCredentialStatus>,
     expires_at_unix: Option<u64>,
     scopes: RelayAdminTokenScopes,
+    keys: ConfigKeyTracker,
 }
 
 impl AdminTokenFileRecord {
     fn set(&mut self, key: &str, value: &str, line_number: usize) -> Result<(), RelayError> {
+        self.keys
+            .record(key, "relay admin tokens file", line_number)?;
         match key {
             "account_id" => self.account_id = Some(validate_account_id(value.to_string())?),
             "token_sha256_hex" => self.token_sha256_hex = Some(value.to_string()),
@@ -4166,10 +4209,13 @@ struct CredentialFileRecord {
     expires_at_unix: Option<u64>,
     created_at_unix: Option<u64>,
     updated_at_unix: Option<u64>,
+    keys: ConfigKeyTracker,
 }
 
 impl CredentialFileRecord {
     fn set(&mut self, key: &str, value: &str, line_number: usize) -> Result<(), RelayError> {
+        self.keys
+            .record(key, "relay credential file", line_number)?;
         match key {
             "account_id" => self.account_id = Some(validate_account_id(value.to_string())?),
             "node_id" => self.node_id = Some(value.to_string()),
@@ -4230,6 +4276,7 @@ impl CredentialFileRecord {
             expires_at_unix: credential.expires_at_unix,
             created_at_unix: Some(credential.created_at_unix),
             updated_at_unix: Some(updated_at_unix),
+            keys: ConfigKeyTracker::default(),
         }
     }
 
@@ -4250,6 +4297,7 @@ impl CredentialFileRecord {
             expires_at_unix,
             created_at_unix: Some(created_at_unix),
             updated_at_unix: Some(created_at_unix),
+            keys: ConfigKeyTracker::default(),
         })
     }
 
@@ -4369,6 +4417,7 @@ struct HostedTenantFileRecord {
     status: Option<HostedTenantStatus>,
     created_at_unix: Option<u64>,
     updated_at_unix: Option<u64>,
+    keys: ConfigKeyTracker,
 }
 
 #[derive(Clone, Default)]
@@ -4385,10 +4434,12 @@ struct HostedTenantNodeFileRecord {
     exchange_key_id: Option<String>,
     created_at_unix: Option<u64>,
     updated_at_unix: Option<u64>,
+    keys: ConfigKeyTracker,
 }
 
 impl HostedTenantFileRecord {
     fn set(&mut self, key: &str, value: &str, line_number: usize) -> Result<(), RelayError> {
+        self.keys.record(key, "hosted tenant file", line_number)?;
         match key {
             "account_id" => self.account_id = Some(validate_account_id(value.to_string())?),
             "status" => self.status = Some(HostedTenantStatus::parse(value)?),
@@ -4431,6 +4482,7 @@ impl HostedTenantFileRecord {
 
 impl HostedTenantNodeFileRecord {
     fn set(&mut self, key: &str, value: &str, line_number: usize) -> Result<(), RelayError> {
+        self.keys.record(key, "hosted tenant file", line_number)?;
         match key {
             "account_id" => self.account_id = Some(validate_account_id(value.to_string())?),
             "node_id" => self.node_id = Some(validate_node_id(value.to_string())?),
@@ -10678,6 +10730,137 @@ token_displayed = true\n",
         assert!(error.to_string().contains("token_displayed must be false"));
         assert!(!error.to_string().contains(token));
         assert!(!error.to_string().contains(&hash));
+    }
+
+    #[test]
+    fn relay_manifest_parsers_reject_duplicate_keys_without_secret_values() {
+        let secret = "relay-duplicate-secret";
+        let token = "duplicate-manifest-token-1234567890";
+        let hash = relay_token_sha256_hex(token).expect("hash");
+        let duplicate_message = |error: RelayError, key: &str| {
+            let message = error.to_string();
+            assert!(message.contains(&format!("duplicate key {key}")));
+            assert!(!message.contains(secret));
+            assert!(!message.contains(&hash));
+        };
+
+        let credential_top_level = format!(
+            "version = \"1\"\nversion = \"{secret}\"\n\n\
+[[credential]]\n\
+node_id = \"node.a\"\n\
+token_sha256_hex = \"{hash}\"\n\
+token_length = {}\n\
+payload_displayed = false\n\
+token_displayed = false\n",
+            token.len()
+        );
+        duplicate_message(
+            parse_scoped_credentials_file(&credential_top_level)
+                .expect_err("duplicate credential version should fail closed"),
+            "version",
+        );
+
+        let credential_entry = format!(
+            "version = \"1\"\n\n\
+[[credential]]\n\
+node_id = \"node.a\"\n\
+node_id = \"{secret}\"\n\
+token_sha256_hex = \"{hash}\"\n\
+token_length = {}\n\
+payload_displayed = false\n\
+token_displayed = false\n",
+            token.len()
+        );
+        duplicate_message(
+            parse_scoped_credentials_file(&credential_entry)
+                .expect_err("duplicate credential entry key should fail closed"),
+            "node_id",
+        );
+
+        let admin_top_level = format!(
+            "version = \"1\"\nversion = \"{secret}\"\n\n\
+[[admin_token]]\n\
+token_sha256_hex = \"{hash}\"\n\
+token_length = {}\n\
+scope_dashboard = true\n\
+token_hash_displayed = false\n",
+            token.len()
+        );
+        duplicate_message(
+            parse_admin_tokens_file(&admin_top_level, "127.0.0.1:0")
+                .expect_err("duplicate admin-token version should fail closed"),
+            "version",
+        );
+
+        let admin_entry = format!(
+            "version = \"1\"\n\n\
+[[admin_token]]\n\
+token_sha256_hex = \"{hash}\"\n\
+token_sha256_hex = \"{secret}\"\n\
+token_length = {}\n\
+scope_dashboard = true\n\
+token_hash_displayed = false\n",
+            token.len()
+        );
+        duplicate_message(
+            parse_admin_tokens_file(&admin_entry, "127.0.0.1:0")
+                .expect_err("duplicate admin-token entry key should fail closed"),
+            "token_sha256_hex",
+        );
+
+        let tenant_top_level = format!(
+            "version = \"1\"\nversion = \"{secret}\"\n\n\
+[[tenant]]\n\
+account_id = \"account.prod\"\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+key_material_displayed = false\n\
+contents_displayed = false\n"
+        );
+        duplicate_message(
+            parse_hosted_tenant_manifest(&tenant_top_level)
+                .expect_err("duplicate hosted-tenant version should fail closed"),
+            "version",
+        );
+
+        let tenant_entry = format!(
+            "version = \"1\"\n\n\
+[[tenant]]\n\
+account_id = \"account.prod\"\n\
+account_id = \"{secret}\"\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+key_material_displayed = false\n\
+contents_displayed = false\n"
+        );
+        duplicate_message(
+            parse_hosted_tenant_manifest(&tenant_entry)
+                .expect_err("duplicate hosted-tenant entry key should fail closed"),
+            "account_id",
+        );
+
+        let tenant_node_entry = format!(
+            "version = \"1\"\n\n\
+[[tenant]]\n\
+account_id = \"account.prod\"\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+key_material_displayed = false\n\
+contents_displayed = false\n\n\
+[[tenant_node]]\n\
+account_id = \"account.prod\"\n\
+node_id = \"node.a\"\n\
+node_id = \"{secret}\"\n\
+payload_displayed = false\n\
+token_displayed = false\n\
+key_material_displayed = false\n\
+contents_displayed = false\n"
+        );
+        duplicate_message(
+            parse_hosted_tenant_manifest(&tenant_node_entry)
+                .expect_err("duplicate hosted-tenant node key should fail closed"),
+            "node_id",
+        );
     }
 
     #[test]
