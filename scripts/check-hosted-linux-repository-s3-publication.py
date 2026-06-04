@@ -73,6 +73,15 @@ def main() -> int:
         assert_fake_aws_log(fake_log, confirm_report["fileCount"])
         publisher = load_publisher()
         assert_aws_cli_wrapper_guard(publisher, fake_aws)
+        failing_aws = write_failing_fake_aws(temp)
+        failed_confirm = run_publisher_raw(
+            site_dir,
+            "--confirm",
+            "--json",
+            "--aws-cli",
+            failing_aws,
+        )
+        assert_failed_publication_redacts(failed_confirm, failing_aws)
 
         missing_bucket = run_publisher_raw(site_dir, "--dry-run", "--bucket", "")
         assert_failure("missing bucket", missing_bucket, "S3 bucket is required")
@@ -576,6 +585,25 @@ def write_fake_aws(temp: Path) -> str:
     return subprocess.list2cmdline([sys.executable, str(fake_py)])
 
 
+def write_failing_fake_aws(temp: Path) -> str:
+    fake_py = temp / "failing fake aws.py"
+    fake_py.write_text(
+        "\n".join(
+            [
+                "import sys",
+                f"print('NODE_AUTH_TOKEN={SENSITIVE_SENTINEL}', file=sys.stderr)",
+                f"print('Authorization: Bearer {SENSITIVE_SENTINEL}', file=sys.stderr)",
+                f"print('https://user:{SENSITIVE_SENTINEL}@example.invalid/conu', file=sys.stderr)",
+                "sys.exit(7)",
+            ]
+        )
+        + "\n",
+        encoding="ascii",
+        newline="\n",
+    )
+    return subprocess.list2cmdline([sys.executable, str(fake_py)])
+
+
 def assert_fake_aws_log(log: Path, expected_count: int) -> None:
     if not log.exists():
         raise AssertionError("fake AWS log was not written")
@@ -615,6 +643,26 @@ def assert_failure(description: str, result: subprocess.CompletedProcess[str], e
         raise AssertionError(f"{description} failed with {result.stdout!r}, expected {expected!r}")
 
 
+def assert_failed_publication_redacts(
+    result: subprocess.CompletedProcess[str],
+    fake_aws: str,
+) -> None:
+    if result.returncode == 0:
+        raise AssertionError("failing fake AWS publication unexpectedly passed")
+    if SENSITIVE_SENTINEL in result.stdout:
+        raise AssertionError("failing fake AWS publication leaked a sensitive value")
+    if Path(fake_aws).name in result.stdout or "failing fake aws" in result.stdout:
+        raise AssertionError("failing fake AWS publication leaked the wrapper command path")
+    report = json.loads(result.stdout)
+    if report["published"] is not False or report["endpointChecked"] is not False:
+        raise AssertionError("failed publication report claimed work completed")
+    for guard in ("payloadDisplayed", "tokenDisplayed", "keyMaterialDisplayed"):
+        if report[guard] is not False:
+            raise AssertionError(f"failed publication report expected {guard}=false")
+    if "[redacted]" not in json.dumps(report):
+        raise AssertionError("failed publication report did not include redacted command output")
+
+
 def assert_aws_cli_wrapper_guard(publisher, fake_aws: str) -> None:
     if publisher.parse_aws_cli("aws") != ["aws"]:
         raise AssertionError("plain aws CLI wrapper did not parse")
@@ -630,6 +678,15 @@ def assert_aws_cli_wrapper_guard(publisher, fake_aws: str) -> None:
         ("aws --cache-control public", "publication-owned or unsafe options"),
         ("aws --debug", "publication-owned or unsafe options"),
         ("aws --no-verify-ssl", "publication-owned or unsafe options"),
+        (
+            f"env AWS_SECRET_ACCESS_KEY={SENSITIVE_SENTINEL} aws",
+            "inline credentials or secrets",
+        ),
+        (f"aws --password {SENSITIVE_SENTINEL}", "inline credentials or secrets"),
+        (
+            f"aws https://user:{SENSITIVE_SENTINEL}@example.invalid",
+            "inline credentials or secrets",
+        ),
         ("--profile release", "executable must not be an option"),
     ):
         try:
