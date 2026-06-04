@@ -7,8 +7,8 @@ import contextlib
 import copy
 import importlib.util
 import io
-import json
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,9 +37,9 @@ def assert_raises(func, pattern: str) -> None:
     raise AssertionError(f"expected ValueError containing {pattern!r}")
 
 
-def manifest_for(rule) -> dict[str, object]:
+def manifest_for(module, rule) -> dict[str, object]:
     repo = Path(__file__).resolve().parents[1]
-    return json.loads((repo / rule.directory / "package.json").read_text(encoding="utf-8"))
+    return module.load_json(repo / rule.directory / "package.json")
 
 
 def rule_by_name(module, name: str):
@@ -51,7 +51,7 @@ def rule_by_name(module, name: str):
 
 def run_public_metadata_tests(module) -> None:
     cli_rule = rule_by_name(module, "@conu/cli")
-    cli_manifest = manifest_for(cli_rule)
+    cli_manifest = manifest_for(module, cli_rule)
     module.validate_manifest_public_surface(cli_rule, cli_manifest)
 
     broken_bin = copy.deepcopy(cli_manifest)
@@ -83,7 +83,7 @@ def run_public_metadata_tests(module) -> None:
     )
 
     sdk_rule = rule_by_name(module, "@conu/sdk")
-    sdk_manifest = manifest_for(sdk_rule)
+    sdk_manifest = manifest_for(module, sdk_rule)
     module.validate_manifest_public_surface(sdk_rule, sdk_manifest)
 
     broken_exports = copy.deepcopy(sdk_manifest)
@@ -99,6 +99,40 @@ def run_public_metadata_tests(module) -> None:
         lambda: module.validate_manifest_public_surface(sdk_rule, broken_engine),
         "engines.node",
     )
+
+
+def run_json_duplicate_key_tests(module) -> None:
+    with tempfile.TemporaryDirectory(prefix="conu-npm-json-") as temp_text:
+        temp = Path(temp_text)
+        duplicate = temp / "package.json"
+        duplicate.write_text(
+            '{"name":"@conu/cli","version":"0.1.0","version":"'
+            + SENSITIVE_SENTINEL
+            + '"}\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        try:
+            module.load_json(duplicate)
+        except ValueError as exc:
+            rendered = str(exc)
+            if "duplicate JSON key: version" not in rendered:
+                raise AssertionError(f"unexpected duplicate-key error: {rendered!r}") from exc
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("duplicate-key error leaked the shadow value") from exc
+        else:
+            raise AssertionError("duplicate top-level package JSON key unexpectedly passed")
+
+        nested = temp / "nested-package.json"
+        nested.write_text(
+            '{"name":"@conu/cli","scripts":{"postinstall":"node scripts/install.js",'
+            + '"postinstall":"'
+            + SENSITIVE_SENTINEL
+            + '"}}\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        assert_raises(lambda: module.load_json(nested), "duplicate JSON key: postinstall")
 
 
 def run_npm_pack_privacy_tests(module) -> None:
@@ -135,6 +169,7 @@ def run_npm_pack_privacy_tests(module) -> None:
 def main() -> int:
     module = load_module()
     run_public_metadata_tests(module)
+    run_json_duplicate_key_tests(module)
     run_npm_pack_privacy_tests(module)
     print("npm package content regression checks passed")
     return 0

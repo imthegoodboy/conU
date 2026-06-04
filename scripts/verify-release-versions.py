@@ -9,6 +9,8 @@ import re
 import sys
 from pathlib import Path
 
+from json_safety import load_json_object
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - CI uses Python 3.11+.
@@ -38,8 +40,7 @@ def read_toml(path: Path) -> dict:
 
 
 def read_json(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    return load_json_object(path, encoding="utf-8")
 
 
 def package_version(manifest: Path) -> str:
