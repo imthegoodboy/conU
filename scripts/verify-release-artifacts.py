@@ -510,8 +510,8 @@ def verify_members(archive: Path, members: ArchiveMembers) -> None:
 
     if members.manifest is None:
         raise SystemExit(f"{archive.name} missing manifest.toml")
-    manifest_text = members.manifest.decode("utf-8", errors="replace")
-    if "payload_contents_included = false" not in manifest_text:
+    manifest = parse_manifest_key_values(archive, members.manifest)
+    if manifest.get("payload_contents_included") != "false":
         raise SystemExit(
             f"{archive.name} manifest does not declare payload_contents_included = false"
         )
@@ -526,6 +526,38 @@ def required_binary_paths(paths: set[str]) -> set[str]:
     if windows_bins <= paths:
         return windows_bins
     return {f"bin/{binary}" for binary in REQUIRED_BINARIES}
+
+
+def parse_manifest_key_values(archive: Path, manifest_bytes: bytes) -> dict[str, str]:
+    try:
+        manifest_text = manifest_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{archive.name} manifest.toml is invalid UTF-8") from exc
+
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(manifest_text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise SystemExit(
+                f"{archive.name} manifest.toml line {line_number} must include a key"
+            )
+        if key in values:
+            raise SystemExit(
+                f"{archive.name} manifest.toml line {line_number} contains duplicate key {key}"
+            )
+        values[key] = parse_manifest_value(raw_value)
+    return values
+
+
+def parse_manifest_value(raw_value: str) -> str:
+    value = raw_value.strip()
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    return value
 
 
 def is_forbidden_release_path(path: str) -> bool:

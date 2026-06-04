@@ -120,15 +120,44 @@ def read_manifest_target(archive: Path) -> str:
     if manifest_bytes is None:
         raise SystemExit(f"{archive.name} missing manifest.toml")
 
-    for raw_line in manifest_bytes.decode("utf-8", errors="replace").splitlines():
-        line = raw_line.strip()
-        if line.startswith("target") and "=" in line:
-            value = line.split("=", 1)[1].strip()
-            if value.startswith('"') and value.endswith('"'):
-                return value[1:-1]
-            return value
+    manifest = parse_manifest_key_values(archive, manifest_bytes)
+    target = manifest.get("target")
+    if target is not None:
+        return target
 
     raise SystemExit(f"{archive.name} manifest.toml missing target")
+
+
+def parse_manifest_key_values(archive: Path, manifest_bytes: bytes) -> dict[str, str]:
+    try:
+        manifest_text = manifest_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{archive.name} manifest.toml is invalid UTF-8") from exc
+
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(manifest_text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise SystemExit(
+                f"{archive.name} manifest.toml line {line_number} must include a key"
+            )
+        if key in values:
+            raise SystemExit(
+                f"{archive.name} manifest.toml line {line_number} contains duplicate key {key}"
+            )
+        values[key] = parse_manifest_value(raw_value)
+    return values
+
+
+def parse_manifest_value(raw_value: str) -> str:
+    value = raw_value.strip()
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    return value
 
 
 def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:

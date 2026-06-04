@@ -63,10 +63,16 @@ def write_zip(
     prefix: str | None = None,
 ) -> None:
     prefix = prefix or archive_prefix(path)
+    extra = extra or {}
+    written: set[str] = set()
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as package:
         for name, content in REQUIRED_FILES.items():
-            package.writestr(f"{prefix}/{name}", content)
-        for name, content in (extra or {}).items():
+            archive_name = f"{prefix}/{name}"
+            package.writestr(archive_name, extra.get(archive_name, content))
+            written.add(archive_name)
+        for name, content in extra.items():
+            if name in written:
+                continue
             package.writestr(name, content)
     write_checksum(path)
 
@@ -148,11 +154,21 @@ def verify_archive(verifier, archive: Path) -> None:
     verifier.verify_members(archive, members)
 
 
-def expect_failure(description: str, action, expected: str) -> None:
+def expect_failure(
+    description: str,
+    action,
+    expected: str,
+    *,
+    forbidden: str | None = None,
+) -> None:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
+        if forbidden is not None and forbidden in message:
+            raise AssertionError(
+                f"{description} leaked forbidden value in error: {message!r}"
+            ) from exc
         if expected not in message:
             raise AssertionError(
                 f"{description} failed with {message!r}, expected {expected!r}"
@@ -331,6 +347,24 @@ def main() -> int:
             "forbidden secret suffix",
             lambda: verify_archive(verifier, forbidden_secret_suffix),
             "forbidden release archive path",
+        )
+
+        duplicate_payload_manifest = root / "conu-0.1.0-duplicate-payload.zip"
+        duplicate_secret = "secret-payload-flag-should-not-print"
+        write_zip(
+            duplicate_payload_manifest,
+            {
+                f"{archive_prefix(duplicate_payload_manifest)}/manifest.toml": (
+                    b"payload_contents_included = false\n"
+                    + f'payload_contents_included = "{duplicate_secret}"\n'.encode("utf-8")
+                )
+            },
+        )
+        expect_failure(
+            "duplicate payload manifest key",
+            lambda: verify_archive(verifier, duplicate_payload_manifest),
+            "duplicate key payload_contents_included",
+            forbidden=duplicate_secret,
         )
 
         wrong_root = root / "conu-0.1.0-wrong-root.zip"
