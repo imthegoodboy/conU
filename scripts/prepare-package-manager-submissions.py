@@ -30,6 +30,7 @@ MAX_SUBMISSION_BUNDLE_BYTES = MAX_TOTAL_SOURCE_BYTES + MAX_TEXT_BYTES + (1024 * 
 MAX_CHECKSUM_BYTES = 4096
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
+MEMBER_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false"
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 DEBIAN_ARCHES = ("amd64", "arm64")
 RPM_ARCHES = ("x86_64", "aarch64")
@@ -430,12 +431,15 @@ def validate_chocolatey_package(path: Path, dist: Path) -> None:
             for info in infos:
                 validate_chocolatey_member(path.name, info)
             if names != expected:
-                raise SystemExit(f"{path.name} has unexpected Chocolatey package entries: {names!r}")
+                raise archive_member_failure(
+                    path.name,
+                    "has unexpected Chocolatey package entries",
+                )
             for info in infos:
                 name = info.filename
                 normalized = normalize_archive_path(name)
                 if normalized != name:
-                    raise SystemExit(f"{path.name} has unsafe Chocolatey package path: {name}")
+                    raise archive_member_failure(path.name, "has unsafe Chocolatey package path")
                 text = read_chocolatey_text_member(package, info, path.name)
                 assert_safe_text(text, f"{path.name}:{name}", dist)
     except (RuntimeError, zipfile.BadZipFile) as exc:
@@ -447,19 +451,22 @@ def validate_chocolatey_package(path: Path, dist: Path) -> None:
 def validate_chocolatey_member(package_name: str, info: zipfile.ZipInfo) -> None:
     name = info.filename
     if info.flag_bits & 0x1:
-        raise SystemExit(f"{package_name} contains encrypted Chocolatey package member: {name}")
+        raise archive_member_failure(package_name, "contains encrypted Chocolatey package member")
     file_type = (info.external_attr >> 16) & 0o170000
     is_directory = info.is_dir() or file_type == stat.S_IFDIR
     if file_type == stat.S_IFLNK:
-        raise SystemExit(f"{package_name} contains unsupported Chocolatey link member: {name}")
+        raise archive_member_failure(package_name, "contains unsupported Chocolatey link member")
     if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
-        raise SystemExit(f"{package_name} contains unsupported Chocolatey package member: {name}")
+        raise archive_member_failure(package_name, "contains unsupported Chocolatey package member")
     if is_directory:
         if info.file_size != 0:
-            raise SystemExit(f"{package_name} contains Chocolatey directory member with data: {name}")
-        raise SystemExit(f"{package_name} has unexpected Chocolatey package directory: {name}")
+            raise archive_member_failure(
+                package_name,
+                "contains Chocolatey directory member with data",
+            )
+        raise archive_member_failure(package_name, "has unexpected Chocolatey package directory")
     if info.file_size > MAX_TEXT_BYTES:
-        raise SystemExit(f"{package_name}:{name} is too large")
+        raise archive_member_failure(package_name, "Chocolatey package member is too large")
 
 
 def read_chocolatey_text_member(
@@ -471,9 +478,12 @@ def read_chocolatey_text_member(
         with package.open(info, "r") as handle:
             data = handle.read(MAX_TEXT_BYTES + 1)
     except (RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
-        raise SystemExit(f"{package_name} could not read Chocolatey package member: {info.filename}") from exc
+        raise archive_member_failure(
+            package_name,
+            "could not read Chocolatey package member",
+        ) from exc
     if len(data) > MAX_TEXT_BYTES:
-        raise SystemExit(f"{package_name}:{info.filename} is too large")
+        raise archive_member_failure(package_name, "Chocolatey package member is too large")
     return data.decode("ascii")
 
 
@@ -548,7 +558,10 @@ def validate_no_duplicate_archive_names(names: Any) -> None:
     for name in names:
         normalized = normalize_archive_path(name)
         if normalized in seen:
-            raise SystemExit(f"duplicate package-manager submission archive path: {normalized}")
+            raise archive_member_failure(
+                "package-manager submission bundle",
+                "contains duplicate package-manager submission archive path",
+            )
         seen.add(normalized)
 
 
@@ -556,9 +569,26 @@ def normalize_archive_path(raw_name: str) -> str:
     normalized = raw_name.replace("\\", "/")
     path = PurePosixPath(normalized)
     parts = [part for part in path.parts if part not in {"", ".", "/"}]
-    if path.is_absolute() or ".." in parts or not parts:
-        raise SystemExit(f"unsafe package-manager submission archive path: {raw_name}")
+    if (
+        path.is_absolute()
+        or normalized.startswith("//")
+        or has_windows_drive_prefix(normalized)
+        or ".." in parts
+        or not parts
+    ):
+        raise archive_member_failure(
+            "package-manager submission bundle",
+            "contains unsafe package-manager submission archive path",
+        )
     return "/".join(parts)
+
+
+def archive_member_failure(archive_name: str, reason: str) -> SystemExit:
+    return SystemExit(f"{archive_name} {reason}; {MEMBER_FAILURE_GUARDS}")
+
+
+def has_windows_drive_prefix(path: str) -> bool:
+    return len(path) >= 2 and path[1] == ":" and path[0].isalpha()
 
 
 def validate_input_directory(path: Path, label: str) -> None:

@@ -158,7 +158,7 @@ def assert_bundle(preparer, dist: Path, output: Path) -> Path:
     return bundle
 
 
-def expect_failure(description: str, action, expected: str) -> None:
+def expect_failure(description: str, action, expected: str) -> str:
     try:
         action()
     except SystemExit as exc:
@@ -167,7 +167,7 @@ def expect_failure(description: str, action, expected: str) -> None:
             raise AssertionError(
                 f"{description} failed with {message!r}, expected {expected!r}"
             ) from exc
-        return
+        return message
     raise AssertionError(f"{description} unexpectedly passed")
 
 
@@ -189,6 +189,21 @@ def expect_failure_without_leak(
             raise AssertionError(f"{description} leaked forbidden value: {message!r}") from exc
         return
     raise AssertionError(f"{description} unexpectedly passed")
+
+
+def expect_member_redacted_failure(
+    description: str,
+    action,
+    expected: str,
+    *forbidden_values: str,
+) -> None:
+    message = expect_failure(description, action, expected)
+    for marker in ("pathDisplayed=false", "contentsDisplayed=false"):
+        if marker not in message:
+            raise AssertionError(f"{description} did not include {marker}: {message!r}")
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{description} leaked archive member value {value!r}: {message!r}")
 
 
 def expect_failure_with_limit(
@@ -517,7 +532,7 @@ def main() -> int:
         )
         write_signed_release_extras(encrypted_chocolatey)
         mark_zip_member_encrypted(encrypted_chocolatey / "conu.0.1.0.nupkg", "conu.nuspec")
-        expect_failure(
+        expect_member_redacted_failure(
             "encrypted Chocolatey package member",
             lambda: preparer.prepare_submission_bundle(
                 encrypted_chocolatey,
@@ -528,6 +543,7 @@ def main() -> int:
                 require_linux_signatures=True,
             ),
             "contains encrypted Chocolatey package member",
+            "conu.nuspec",
         )
 
         unsupported_chocolatey = temp / "unsupported-chocolatey"
@@ -546,7 +562,7 @@ def main() -> int:
             info = zipfile.ZipInfo("device")
             info.external_attr = stat.S_IFCHR << 16
             archive.writestr(info, b"device\n")
-        expect_failure(
+        expect_member_redacted_failure(
             "unsupported Chocolatey package member",
             lambda: preparer.prepare_submission_bundle(
                 unsupported_chocolatey,
@@ -557,6 +573,55 @@ def main() -> int:
                 require_linux_signatures=True,
             ),
             "contains unsupported Chocolatey package member",
+            "device",
+        )
+
+        unexpected_chocolatey = temp / "unexpected-chocolatey"
+        manifest_check.generate(
+            generator,
+            dist,
+            unexpected_chocolatey,
+            build_apt_repository_metadata=True,
+        )
+        write_signed_release_extras(unexpected_chocolatey)
+        unexpected_member = "tools/secret-package-manager-member.txt"
+        with zipfile.ZipFile(
+            unexpected_chocolatey / "conu.0.1.0.nupkg",
+            "a",
+            compression=zipfile.ZIP_STORED,
+        ) as archive:
+            archive.writestr(unexpected_member, b"secret\n")
+        expect_member_redacted_failure(
+            "unexpected Chocolatey package member",
+            lambda: preparer.prepare_submission_bundle(
+                unexpected_chocolatey,
+                temp / "unexpected-chocolatey-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "has unexpected Chocolatey package entries",
+            unexpected_member,
+            "secret-package-manager-member",
+        )
+
+        expect_member_redacted_failure(
+            "duplicate package-manager submission archive path",
+            lambda: preparer.validate_no_duplicate_archive_names(
+                ("bundle/safe.txt", "bundle/./safe.txt")
+            ),
+            "duplicate package-manager submission archive path",
+            "bundle/safe.txt",
+        )
+
+        unsafe_submission_member = "C:\\secret-package-manager-submission-path"
+        expect_member_redacted_failure(
+            "unsafe package-manager submission archive path",
+            lambda: preparer.normalize_archive_path(unsafe_submission_member),
+            "unsafe package-manager submission archive path",
+            unsafe_submission_member,
+            "secret-package-manager-submission-path",
         )
 
         forbidden = temp / "forbidden"
