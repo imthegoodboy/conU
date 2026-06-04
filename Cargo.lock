@@ -204,6 +204,7 @@ dependencies = [
  "conu-protocol",
  "flate2",
  "native-tls",
+ "serde",
  "serde_json",
  "sha2",
  "tar",
