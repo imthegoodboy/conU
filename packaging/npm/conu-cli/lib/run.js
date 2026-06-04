@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
+const { buildChildEnv } = require("./child-env");
 const { BINARIES, binaryPath } = require("./platform");
 
 const binaryName = readBinaryName(process.env.CONU_BIN_NAME);
@@ -80,7 +81,7 @@ function launchExecutable(name, executable) {
   try {
     return spawn(executable, process.argv.slice(2), {
       stdio: "inherit",
-      env: process.env
+      env: buildChildEnv()
     });
   } catch (error) {
     reportLaunchError(name, error);

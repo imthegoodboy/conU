@@ -82,6 +82,7 @@ PACKAGES = (
                 "bin/conu.js",
                 "bin/conud.js",
                 "lib/archive-preflight.js",
+                "lib/child-env.js",
                 "lib/checksum.js",
                 "lib/download-limits.js",
                 "lib/download-policy.js",
