@@ -1091,7 +1091,7 @@ fn parse_rooms(contents: &str) -> Result<Vec<RoomRecord>, RoomError> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_room_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -1119,7 +1119,7 @@ fn parse_events(contents: &str) -> Result<Vec<RoomEvent>, RoomError> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_room_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -1147,7 +1147,7 @@ fn parse_topic_policies(contents: &str) -> Result<Vec<RoomTopicPolicyRecord>, Ro
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        insert_topic_policy_value(&mut current, key, value)?;
+        insert_room_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -1157,7 +1157,7 @@ fn parse_topic_policies(contents: &str) -> Result<Vec<RoomTopicPolicyRecord>, Ro
     Ok(policies)
 }
 
-fn insert_topic_policy_value(
+fn insert_room_value(
     values: &mut HashMap<String, String>,
     key: &str,
     value: &str,
@@ -1822,6 +1822,43 @@ mod tests {
 
         assert!(error.to_string().contains("duplicate publish"));
         assert!(!error.to_string().contains("private room contents"));
+    }
+
+    #[test]
+    fn room_registry_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("room-registry-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::create_dir_all(&init.paths.rooms_dir).expect("rooms directory creates");
+        fs::write(
+            &init.paths.room_registry,
+            "# conU room registry\nversion = \"1\"\n\n[[room]]\nroom_id = \"room.safe\"\ndisplay_name = \"Safe Room\"\nstate = \"open\"\ncreated_by_agent_id = \"agent.codex\"\nparticipants = \"agent.codex:local:1\"\nparticipants = \"private room contents\"\ntopics = \"build\"\nevents_published = 0\nbytes_published = 0\ncreated_at_unix = 1\nupdated_at_unix = 1\npayload_displayed = false\n",
+        )
+        .expect("duplicate room registry writes");
+
+        let error = list_rooms(Some(home)).expect_err("duplicate room key fails closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate participants"));
+        assert!(!rendered.contains("private room contents"));
+    }
+
+    #[test]
+    fn room_event_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("room-event-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::create_dir_all(&init.paths.rooms_dir).expect("rooms directory creates");
+        fs::write(
+            &init.paths.room_events,
+            "# conU room event bus\nversion = \"1\"\n\n[[event]]\nevent_id = \"event.safe\"\nroom_id = \"room.safe\"\ntopic = \"build\"\nfrom_agent_id = \"agent.codex\"\nevent_type = \"message\"\nroute = \"room-local\"\npayload_bytes = 10\npayload_bytes = \"private room contents\"\ncreated_at_unix = 1\npayload_displayed = false\n",
+        )
+        .expect("duplicate room event writes");
+
+        let error =
+            list_room_events(Some(home)).expect_err("duplicate room event key fails closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate payload_bytes"));
+        assert!(!rendered.contains("private room contents"));
     }
 
     #[cfg(unix)]
