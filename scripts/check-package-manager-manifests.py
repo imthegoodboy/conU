@@ -58,6 +58,10 @@ SENSITIVE_FAILURE_VALUES = (
     "fake-url-password-1234567890",
     "fake-query-token-1234567890",
     "fake-private-key-1234567890",
+    "fake-amz-signature-1234567890",
+    "fake-amz-credential-1234567890",
+    "fake-amz-security-token-1234567890",
+    "fake-azure-sas-signature-1234567890",
 )
 
 
@@ -436,6 +440,11 @@ def sensitive_command_output() -> str:
             f"https://user:{SENSITIVE_FAILURE_VALUES[5]}@example.invalid/conu",
             f"https://example.invalid/conu?token={SENSITIVE_FAILURE_VALUES[6]}",
             f"PRIVATE_KEY={SENSITIVE_FAILURE_VALUES[7]}",
+            "https://s3.example.invalid/conu?"
+            f"X-Amz-Signature={SENSITIVE_FAILURE_VALUES[8]}&"
+            f"X-Amz-Credential={SENSITIVE_FAILURE_VALUES[9]}&"
+            f"X-Amz-Security-Token={SENSITIVE_FAILURE_VALUES[10]}",
+            f"https://blob.example.invalid/conu?sig={SENSITIVE_FAILURE_VALUES[11]}",
         ]
     )
 

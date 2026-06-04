@@ -16,7 +16,13 @@ NPM_TOKEN_RE = re.compile(r"\bnpm_[A-Za-z0-9]{10,}\b")
 GITHUB_TOKEN_RE = re.compile(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}\b")
 URL_CREDENTIAL_RE = re.compile(r"\b(https?://)([^/\s:@]+):([^@\s/]+)@", re.IGNORECASE)
 URL_SECRET_QUERY_RE = re.compile(
-    r"([?&](?:token|access_token|auth|apikey|api_key|secret|password|pass|key)=)([^&#\s]+)",
+    r"([?&](?:"
+    r"token|access_token|auth|apikey|api_key|secret|password|pass|key|sig|"
+    r"[A-Za-z0-9_.-]*(?:"
+    r"credential|signature|signed|access[_-]?key|secret[_-]?key|"
+    r"security[_-]?token|session[_-]?token"
+    r")[A-Za-z0-9_.-]*"
+    r")=)([^&#\s]+)",
     re.IGNORECASE,
 )
 
