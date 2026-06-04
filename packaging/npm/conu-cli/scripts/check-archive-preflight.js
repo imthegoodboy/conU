@@ -1,8 +1,12 @@
 "use strict";
 
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const {
   MAX_ARCHIVE_MEMBERS,
-  assertSafeArchiveMemberList
+  assertSafeArchiveMemberList,
+  validateArchiveMembers
 } = require("../lib/archive-preflight");
 
 const SAFE_MEMBERS = [
@@ -34,6 +38,8 @@ function main() {
   expectFail([{ name: "conu-0.1.0/security/identity.key", type: "file" }], "forbidden state path");
   expectFail([{ name: "conu-0.1.0/runtime/node.toml", type: "file" }], "forbidden state path");
   expectFail(makeMemberList(MAX_ARCHIVE_MEMBERS + 1), `more than ${MAX_ARCHIVE_MEMBERS} entries`);
+  expectArchiveInspectionPathRedacted();
+  expectArchiveInspectionFailurePathGuard();
   console.log("archive member preflight check passed");
 }
 
@@ -58,6 +64,53 @@ function makeMemberList(count) {
     name: `conu-0.1.0/docs/file-${index}.txt`,
     type: "file"
   }));
+}
+
+function expectArchiveInspectionPathRedacted() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "conu-secret-local-path-"));
+  try {
+    const archive = path.join(root, "conu-0.1.0-windows-x64.zip");
+    fs.writeFileSync(archive, "not a zip archive\n", "utf8");
+    try {
+      validateArchiveMembers(archive);
+    } catch (error) {
+      if (!error.message.includes(path.basename(archive))) {
+        throw new Error(`expected archive filename in error, got: ${error.message}`);
+      }
+      if (error.message.includes(root) || error.message.includes(archive)) {
+        throw new Error(`archive preflight leaked local path: ${error.message}`);
+      }
+      return;
+    }
+    throw new Error("expected invalid archive inspection failure");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function expectArchiveInspectionFailurePathGuard() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "conu-secret-inspect-path-"));
+  try {
+    const archive = path.join(root, "conu-0.1.0.invalid");
+    fs.writeFileSync(archive, "not an archive\n", "utf8");
+    try {
+      validateArchiveMembers(archive);
+    } catch (error) {
+      if (!error.message.includes("pathDisplayed=false")) {
+        throw new Error(`expected path display guard, got: ${error.message}`);
+      }
+      if (!error.message.includes(path.basename(archive))) {
+        throw new Error(`expected archive filename in error, got: ${error.message}`);
+      }
+      if (error.message.includes(root) || error.message.includes(archive)) {
+        throw new Error(`archive inspection failure leaked local path: ${error.message}`);
+      }
+      return;
+    }
+    throw new Error("expected archive inspection failure");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 }
 
 main();
