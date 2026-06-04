@@ -96,7 +96,7 @@ async function main() {
     }
 
     const extractDir = path.join(tempDir, "extract");
-    fs.mkdirSync(extractDir, { recursive: true });
+    createExtractDir(extractDir);
     extractArchive(archivePath, extractDir);
     installFromExtractedArchive(extractDir);
   } catch (error) {
@@ -345,9 +345,23 @@ function removeTempInstallDir(tempDir, options = {}) {
   }
 }
 
+function createExtractDir(extractDir) {
+  try {
+    fs.mkdirSync(extractDir, { recursive: true });
+  } catch (_error) {
+    throw tempExtractDirError();
+  }
+}
+
 function tempInstallDirError(action) {
   return new Error(
     `failed to ${action} temporary install directory; pathDisplayed=false contentsDisplayed=false`
+  );
+}
+
+function tempExtractDirError() {
+  return new Error(
+    "failed to create temporary extraction directory; pathDisplayed=false contentsDisplayed=false"
   );
 }
 
