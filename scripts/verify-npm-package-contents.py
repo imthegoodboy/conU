@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from json_safety import load_json_object, loads_json
+
 
 MAX_ENTRY_BYTES = 1_000_000
 MAX_PACKAGE_BYTES = 1_000_000
@@ -154,11 +156,7 @@ def find_npm() -> str:
 
 
 def load_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        value = json.load(handle)
-    if not isinstance(value, dict):
-        raise ValueError(f"{path} must contain a JSON object")
-    return value
+    return load_json_object(path, encoding="utf-8")
 
 
 def normalize_pack_path(raw_path: Any) -> str:
@@ -204,7 +202,7 @@ def run_npm_pack(npm: str, package_dir: Path) -> dict[str, Any]:
         )
 
     try:
-        report = json.loads(result.stdout)
+        report = loads_json(result.stdout)
     except json.JSONDecodeError as exc:
         raise ValueError(f"npm pack dry-run did not return JSON for {package_dir}: {exc}") from exc
 
