@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
+from json_safety import load_json_object, loads_json
+
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
@@ -140,8 +142,7 @@ def parse_args() -> argparse.Namespace:
 
 def read_repo_version() -> str:
     package_json = Path(__file__).resolve().parents[1] / "packaging/npm/conu-cli/package.json"
-    with package_json.open("r", encoding="utf-8") as handle:
-        package = json.load(handle)
+    package = load_json_object(package_json, encoding="utf-8")
     version = package.get("version")
     if not isinstance(version, str) or not version:
         raise SystemExit(f"{package_json} does not contain a non-empty version")
@@ -397,8 +398,8 @@ def validate_structured_manifest(text: str, entry: BundleEntry, source: Path) ->
                 raise SystemExit(f"{entry.source_name} is missing expected Homebrew field: {required}")
     elif entry.kind == "scoop":
         try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
+            payload = loads_json(text)
+        except (json.JSONDecodeError, ValueError) as exc:
             raise SystemExit(f"{entry.source_name} is not valid JSON") from exc
         if not isinstance(payload, dict):
             raise SystemExit(f"{entry.source_name} must contain a JSON object")

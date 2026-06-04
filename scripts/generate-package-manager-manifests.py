@@ -25,6 +25,7 @@ from typing import Any, BinaryIO
 
 from command_output_redaction import redact_command_output
 from github_release_secrets import normalize_repo
+from json_safety import load_json_object
 
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
@@ -244,8 +245,7 @@ def parse_args() -> argparse.Namespace:
 
 def read_repo_version() -> str:
     package_json = Path(__file__).resolve().parents[1] / "packaging/npm/conu-cli/package.json"
-    with package_json.open("r", encoding="utf-8") as handle:
-        package = json.load(handle)
+    package = load_json_object(package_json, encoding="utf-8")
     version = package.get("version")
     if not isinstance(version, str) or not version:
         raise SystemExit(f"{package_json} does not contain a non-empty version")
