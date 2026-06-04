@@ -607,7 +607,7 @@ fn read_config(paths: &StatePaths) -> Result<HashMap<String, String>, RouteError
         Some(contents) => contents,
         None => return Ok(HashMap::new()),
     };
-    Ok(parse_key_values(&contents))
+    parse_key_values(&contents)
 }
 
 fn relay_endpoint(config: &HashMap<String, String>) -> Result<String, RouteError> {
@@ -823,7 +823,7 @@ fn parse_routes(contents: &str) -> Result<Vec<RouteRecord>, RouteError> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_route_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -851,7 +851,7 @@ fn parse_probes(contents: &str) -> Result<Vec<RouteProbe>, RouteError> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_route_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -926,7 +926,7 @@ fn probe_from_values(values: &HashMap<String, String>) -> Result<RouteProbe, Rou
     })
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, RouteError> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -936,10 +936,28 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_route_value(&mut values, key, value)?;
     }
 
-    values
+    Ok(values)
+}
+
+fn insert_route_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), RouteError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty route key".to_string()
+        } else {
+            format!("duplicate route key {key}")
+        };
+        return Err(RouteError::InvalidRecord { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn clean_value(value: &str) -> String {
@@ -1597,6 +1615,63 @@ mod tests {
         assert_eq!(report.peers, 1);
         assert_eq!(selected.transport, RouteTransport::RelayWebSocket);
         assert!(route_log.is_dir());
+    }
+
+    #[test]
+    fn route_config_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("route-config-duplicate-key");
+        trusted_peer(&home);
+        let secret_endpoint = "wss://relay.example.com/private-message-contents?token=secret";
+        fs::write(
+            StatePaths::from_home(home.clone()).config,
+            format!(
+                "version = \"1\"\ndefault_relay = \"ws://127.0.0.1:8787\"\ndefault_relay = \"{secret_endpoint}\"\n"
+            ),
+        )
+        .expect("duplicate route config writes");
+
+        let error = sync_routes(Some(home)).expect_err("duplicate route config key fails closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate route key default_relay"));
+        assert!(!rendered.contains(secret_endpoint));
+        assert!(!rendered.contains("private-message-contents"));
+        assert!(!rendered.contains("token=secret"));
+    }
+
+    #[test]
+    fn route_registry_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("route-registry-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            init.paths.route_registry,
+            "# conU route registry\nversion = \"1\"\n\n[[route]]\nroute_id = \"route.safe\"\npeer_node_id = \"node.safe\"\ndisplay_name = \"Safe Peer\"\ntransport = \"relay-websocket\"\nendpoint = \"ws://127.0.0.1:8787\"\nendpoint = \"secret private route contents\"\nstate = \"selected\"\nscore = 80\nlatency_ms = 80\ndirect_attempted = false\nrelay_fallback = true\nnat_profile = \"unknown\"\ncandidate_source = \"none\"\ncandidate_kind = \"none\"\nrendezvous_state = \"not_configured\"\nfailure_reason = \"\"\nupdated_at_unix = 1\npayload_displayed = false\n",
+        )
+        .expect("duplicate route registry writes");
+
+        let error = list_routes(Some(home)).expect_err("duplicate route key fails closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate route key endpoint"));
+        assert!(!rendered.contains("secret private route contents"));
+    }
+
+    #[test]
+    fn route_probe_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("route-probe-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            init.paths.route_probes,
+            "# conU route probes\nversion = \"1\"\n\n[[probe]]\nprobe_id = \"probe.safe\"\nroute_id = \"route.safe\"\npeer_node_id = \"node.safe\"\ntransport = \"relay-websocket\"\nendpoint = \"ws://127.0.0.1:8787\"\noutcome = \"selected\"\noutcome = \"secret private probe contents\"\nscore = 80\nlatency_ms = 80\ncandidate_source = \"none\"\ncandidate_kind = \"none\"\nrendezvous_state = \"not_configured\"\ncreated_at_unix = 1\npayload_displayed = false\n",
+        )
+        .expect("duplicate route probe writes");
+
+        let error =
+            list_route_probes(Some(home)).expect_err("duplicate route probe key fails closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate route key outcome"));
+        assert!(!rendered.contains("secret private probe contents"));
     }
 
     #[cfg(unix)]
