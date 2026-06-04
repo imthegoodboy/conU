@@ -21,6 +21,7 @@ from typing import BinaryIO
 from linux_gpg_common import (
     add_fingerprint_env_argument,
     read_expected_fingerprint,
+    redact_command_output,
     verify_imported_secret_key_fingerprint,
 )
 
@@ -489,9 +490,15 @@ def verify_rpm_signature(
     )
     lowered = output.lower()
     if "nokey" in lowered or "not ok" in lowered or "missing" in lowered:
-        raise SystemExit(f"RPM signature verification was not trusted for {package.name}:\n{output}")
+        raise SystemExit(
+            f"RPM signature verification was not trusted for {package.name}:\n"
+            f"{redact_command_output(output)}"
+        )
     if SIGNATURE_OUTPUT_RE.search(output) is None:
-        raise SystemExit(f"RPM signature verification did not report a package signature for {package.name}:\n{output}")
+        raise SystemExit(
+            "RPM signature verification did not report a package signature for "
+            f"{package.name}:\n{redact_command_output(output)}"
+        )
     return output
 
 
@@ -518,7 +525,7 @@ def run_gpg(
             output += exc.stdout.decode("utf-8", errors="replace")
         if exc.stderr:
             output += exc.stderr.decode("utf-8", errors="replace")
-        raise SystemExit(f"gpg failed with output:\n{output}") from exc
+        raise SystemExit(f"gpg failed with output:\n{redact_command_output(output)}") from exc
     return result.stdout
 
 
@@ -541,7 +548,7 @@ def run_tool(
             env=env,
         )
     except subprocess.CalledProcessError as exc:
-        raise SystemExit(f"{label}:\n{exc.stdout}") from exc
+        raise SystemExit(f"{label}:\n{redact_command_output(exc.stdout or '')}") from exc
     return result.stdout
 
 
