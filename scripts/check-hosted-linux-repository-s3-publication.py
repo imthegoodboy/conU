@@ -164,6 +164,24 @@ def main() -> int:
             "whitespace or control characters",
         )
 
+        for bad_url in (
+            "https://127.0.0.1/conu",
+            "https://10.0.0.1/conu",
+            "https://[fc00::1]/conu",
+            "https://packages.local/conu",
+        ):
+            non_public_base = run_publisher_raw(
+                site_dir,
+                "--dry-run",
+                "--base-url",
+                bad_url,
+            )
+            assert_failure(
+                "non-public repository base URL",
+                non_public_base,
+                "repository base URL host must be public",
+            )
+
         query_download_url = temp / "query-download-url-site"
         shutil.copytree(site_dir, query_download_url)
         repository_path = query_download_url / "repository.json"

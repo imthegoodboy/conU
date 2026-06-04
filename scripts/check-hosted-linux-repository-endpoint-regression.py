@@ -83,6 +83,10 @@ def main() -> int:
                 ("https://packages.example.com%40evil.test/conu", "authority"),
                 ("https://packages.example.com\\evil.test/conu", "authority"),
                 (f"{base_url}/%00", "whitespace or control characters"),
+                ("https://127.0.0.1/conu", "host must be public"),
+                ("https://10.0.0.1/conu", "host must be public"),
+                ("https://[fc00::1]/conu", "host must be public"),
+                ("https://packages.local/conu", "host must be public"),
             ):
                 run_checker_expect_failure(
                     bad_url,

@@ -130,6 +130,16 @@ def run_audit_tests(module) -> None:
         ),
         "encoded separators",
     )
+    for bad_url in (
+        "https://127.0.0.1/conu",
+        "https://10.0.0.1/conu",
+        "https://[fc00::1]/conu",
+        "https://packages.local/conu",
+    ):
+        assert_raises(
+            lambda bad_url=bad_url: module.audit_pages_readiness("owner/repo", None, bad_url),
+            "host must be public",
+        )
     default_custom = module.audit_pages_readiness(
         "owner/repo",
         None,

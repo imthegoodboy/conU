@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
 from github_release_secrets import find_gh, infer_repo, normalize_repo, run_gh_json
+from public_host_validation import validate_public_host
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ def normalize_https_url(value: str, field_name: str) -> str:
     if parsed.params or parsed.query or parsed.fragment:
         raise ValueError(f"{field_name} must not contain params, query, or fragment")
     netloc = normalize_url_netloc(parsed, field_name)
+    validate_public_host(parsed.hostname or "", field_name)
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise ValueError(f"{field_name} path must not contain dot segments")
