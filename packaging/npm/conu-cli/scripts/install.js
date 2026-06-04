@@ -33,6 +33,8 @@ const {
   vendorDir
 } = require("../lib/platform");
 
+const EXTRACT_TOOL_TIMEOUT_MS = 120 * 1000;
+
 const checkOnly = process.argv.includes("--check-only");
 const skipDownload = process.env.CONU_NPM_SKIP_DOWNLOAD === "1";
 const allowUnverified = process.env.CONU_NPM_ALLOW_UNVERIFIED === "1";
@@ -139,7 +141,8 @@ function extractArchive(archivePath, destination) {
 
   const tar = spawnSync("tar", ["-xf", archivePath, "-C", destination], {
     env: buildChildEnv(),
-    stdio: "ignore"
+    stdio: "ignore",
+    timeout: EXTRACT_TOOL_TIMEOUT_MS
   });
   if (tar.status === 0) {
     return;
@@ -159,7 +162,8 @@ function extractArchive(archivePath, destination) {
       ],
       {
         env: buildChildEnv(),
-        stdio: "ignore"
+        stdio: "ignore",
+        timeout: EXTRACT_TOOL_TIMEOUT_MS
       }
     );
     if (ps.status === 0) {

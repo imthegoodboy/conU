@@ -7,6 +7,7 @@ const { buildChildEnv } = require("./child-env");
 
 const MAX_ARCHIVE_LIST_BYTES = 2 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBERS = 10000;
+const MAX_ARCHIVE_TOOL_TIMEOUT_MS = 60 * 1000;
 const MAX_ZIP_EOCD_SEARCH_BYTES = 22 + 65535;
 const ZIP_EOCD_SIGNATURE = 0x06054b50;
 const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
@@ -297,7 +298,8 @@ function runTool(command, args) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
     env: buildChildEnv(),
-    maxBuffer: MAX_ARCHIVE_LIST_BYTES
+    maxBuffer: MAX_ARCHIVE_LIST_BYTES,
+    timeout: MAX_ARCHIVE_TOOL_TIMEOUT_MS
   });
   return {
     status: result.status === null ? 1 : result.status,
@@ -313,6 +315,7 @@ function splitToolLines(output) {
 
 module.exports = {
   MAX_ARCHIVE_MEMBERS,
+  MAX_ARCHIVE_TOOL_TIMEOUT_MS,
   assertSafeArchiveMemberList,
   validateArchiveMembers
 };
