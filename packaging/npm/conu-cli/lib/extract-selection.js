@@ -36,7 +36,7 @@ function resolveExtractedBinaries(
   for (const name of binaryNames) {
     const fileName = `${name}${binarySuffix}`;
     const expectedPath = path.join(root, "bin", fileName);
-    if (!isFile(expectedPath)) {
+    if (!isFile(expectedPath, archiveName)) {
       throw new Error(`archive ${archiveName} missing expected binary: bin/${fileName}`);
     }
 
@@ -59,8 +59,8 @@ function resolveReleaseRoot(extractDir, archiveName, expectedRootName) {
   const rootlessManifest = path.join(extractDir, "manifest.toml");
   const rootedDir = path.join(extractDir, expectedRootName);
   const rootedManifest = path.join(rootedDir, "manifest.toml");
-  const hasRootless = isFile(rootlessManifest);
-  const hasRooted = isFile(rootedManifest);
+  const hasRootless = isFile(rootlessManifest, archiveName);
+  const hasRooted = isFile(rootedManifest, archiveName);
 
   if (hasRootless && hasRooted) {
     throw new Error(`archive ${archiveName} contains multiple release roots`);
@@ -88,9 +88,9 @@ function collectBinaryMatches(root, fileNames, archiveName, limits) {
 }
 
 function visit(root, archiveName, limits, onEntry, depth = 0, state = { entries: 0 }) {
-  const dir = fs.opendirSync(root);
+  const dir = openExtractedTreeDirectory(root, archiveName);
   try {
-    let entry = dir.readSync();
+    let entry = readExtractedTreeDirectory(dir, archiveName);
     while (entry !== null) {
       state.entries += 1;
       if (state.entries > limits.maxEntries) {
@@ -111,7 +111,7 @@ function visit(root, archiveName, limits, onEntry, depth = 0, state = { entries:
       if (entry.isDirectory()) {
         visit(entryPath, archiveName, limits, onEntry, entryDepth, state);
       }
-      entry = dir.readSync();
+      entry = readExtractedTreeDirectory(dir, archiveName);
     }
   } finally {
     dir.closeSync();
@@ -125,15 +125,37 @@ function parsePositiveInteger(value, label, archiveName) {
   return value;
 }
 
-function isFile(filePath) {
+function isFile(filePath, archiveName) {
   try {
     return fs.statSync(filePath).isFile();
   } catch (error) {
     if (error && error.code === "ENOENT") {
       return false;
     }
-    throw error;
+    throw extractedTreeInspectionError(archiveName);
   }
+}
+
+function openExtractedTreeDirectory(root, archiveName) {
+  try {
+    return fs.opendirSync(root);
+  } catch (_error) {
+    throw extractedTreeInspectionError(archiveName);
+  }
+}
+
+function readExtractedTreeDirectory(dir, archiveName) {
+  try {
+    return dir.readSync();
+  } catch (_error) {
+    throw extractedTreeInspectionError(archiveName);
+  }
+}
+
+function extractedTreeInspectionError(archiveName) {
+  return new Error(
+    `failed to inspect extracted tree for archive ${archiveName}; pathDisplayed=false contentsDisplayed=false`
+  );
 }
 
 function samePath(left, right) {

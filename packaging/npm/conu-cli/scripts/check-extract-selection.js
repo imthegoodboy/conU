@@ -65,6 +65,30 @@ function main() {
 
   withFixture((root) => {
     writeReleaseLayout(root);
+    withPatchedFs({ statSync: () => failWithPath(root) }, () => {
+      expectRedactedFailure(
+        root,
+        "failed to inspect extracted tree",
+        root,
+        "redacted extracted stat failure"
+      );
+    });
+  });
+
+  withFixture((root) => {
+    writeReleaseLayout(root);
+    withPatchedFs({ opendirSync: () => failWithPath(root) }, () => {
+      expectRedactedFailure(
+        root,
+        "failed to inspect extracted tree",
+        root,
+        "redacted extracted directory open failure"
+      );
+    });
+  });
+
+  withFixture((root) => {
+    writeReleaseLayout(root);
     expectFailure(
       root,
       "exceeds maximum entry count",
@@ -126,6 +150,25 @@ function writeFile(filePath, content) {
   fs.writeFileSync(filePath, content);
 }
 
+function withPatchedFs(patches, callback) {
+  const originals = {};
+  for (const name of Object.keys(patches)) {
+    originals[name] = fs[name];
+    fs[name] = patches[name];
+  }
+  try {
+    callback();
+  } finally {
+    for (const name of Object.keys(originals)) {
+      fs[name] = originals[name];
+    }
+  }
+}
+
+function failWithPath(root) {
+  throw new Error(`simulated filesystem failure at ${root}`);
+}
+
 function expectResolved(root, expectedRoot, label) {
   const resolved = resolveExtractedBinaries(root, resolveOptions());
   for (const name of BINARIES) {
@@ -143,6 +186,28 @@ function expectFailure(root, expectedMessage, label, overrides = {}) {
     throw new Error(`${label}: expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`${label}: expected extract selection failure`);
+}
+
+function expectRedactedFailure(root, expectedMessage, forbiddenPath, label, overrides = {}) {
+  try {
+    resolveExtractedBinaries(root, resolveOptions(overrides));
+  } catch (error) {
+    const message = error.message;
+    if (!message.includes(expectedMessage)) {
+      throw new Error(`${label}: expected ${expectedMessage}, got: ${message}`);
+    }
+    if (!message.includes("pathDisplayed=false")) {
+      throw new Error(`${label}: missing path display guard: ${message}`);
+    }
+    if (!message.includes("contentsDisplayed=false")) {
+      throw new Error(`${label}: missing contents display guard: ${message}`);
+    }
+    if (message.includes(forbiddenPath)) {
+      throw new Error(`${label}: displayed filesystem path: ${message}`);
+    }
+    return;
+  }
+  throw new Error(`${label}: expected redacted extract selection failure`);
 }
 
 function resolveOptions(overrides = {}) {
