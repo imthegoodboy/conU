@@ -119,6 +119,12 @@ function expectChildEnvScrubsWrapperSelector() {
   const sourceEnv = {
     CONU_BIN_NAME: "conu",
     CONU_HOME: "runtime-state",
+    CONU_NPM_ALLOW_UNVERIFIED: "1",
+    CONU_NPM_BINARY_DIR: "local-binary-dir",
+    CONU_NPM_DIST_BASE: "https://example.invalid/conu",
+    CONU_NPM_DOWNLOAD_TIMEOUT_MS: "5000",
+    CONU_NPM_MAX_ARCHIVE_BYTES: "1024",
+    CONU_NPM_MAX_CHECKSUM_BYTES: "512",
     CONU_RELAY_TOKEN: "relay-token",
     NODE_AUTH_TOKEN: "node-auth-token",
     NPM_CONFIG_USERCONFIG: "npm-user-config",
@@ -134,6 +140,12 @@ function expectChildEnvScrubsWrapperSelector() {
     throw new Error("launcher child env included wrapper-only CONU_BIN_NAME");
   }
   for (const name of [
+    "CONU_NPM_ALLOW_UNVERIFIED",
+    "CONU_NPM_BINARY_DIR",
+    "CONU_NPM_DIST_BASE",
+    "CONU_NPM_DOWNLOAD_TIMEOUT_MS",
+    "CONU_NPM_MAX_ARCHIVE_BYTES",
+    "CONU_NPM_MAX_CHECKSUM_BYTES",
     "NODE_AUTH_TOKEN",
     "NPM_CONFIG_USERCONFIG",
     "NPM_PACKAGE_NAME",
@@ -151,6 +163,9 @@ function expectChildEnvScrubsWrapperSelector() {
   expectEqual(childEnv.CONU_RELAY_TOKEN, "relay-token", "child env keeps conU relay env");
   if (!("CONU_BIN_NAME" in sourceEnv)) {
     throw new Error("launcher child env builder mutated source env");
+  }
+  if (!("CONU_NPM_BINARY_DIR" in sourceEnv)) {
+    throw new Error("launcher child env builder mutated installer env source");
   }
 }
 
