@@ -81,6 +81,66 @@ function main() {
     );
   });
 
+  withFixture((root) => {
+    const source = writeSource(root, "conu");
+    const target = path.join(root, "vendor", "linux-x64", "conu");
+    withPatchedFs({ mkdirSync: () => failWithPath(root) }, () => {
+      expectRedactedFailure(
+        () => install(root, source, target),
+        "failed to create install directory for test binary",
+        root,
+        "redacted install directory creation failure"
+      );
+    });
+  });
+
+  withFixture((root) => {
+    const source = writeSource(root, "conu");
+    const target = path.join(root, "vendor", "linux-x64", "conu");
+    withPatchedFs({ copyFileSync: () => failWithPath(root) }, () => {
+      expectRedactedFailure(
+        () => install(root, source, target),
+        "failed to copy temporary install target for test binary",
+        root,
+        "redacted temporary copy failure"
+      );
+    });
+  });
+
+  if (process.platform !== "win32") {
+    withFixture((root) => {
+      const source = writeSource(root, "conu");
+      const target = path.join(root, "vendor", "linux-x64", "conu");
+      withPatchedFs({ chmodSync: () => failWithPath(root) }, () => {
+        expectRedactedFailure(
+          () => install(root, source, target),
+          "failed to set temporary install target permissions for test binary",
+          root,
+          "redacted temporary permission failure"
+        );
+      });
+    });
+  }
+
+  withFixture((root) => {
+    const source = writeSource(root, "conu");
+    const target = path.join(root, "vendor", "linux-x64", "conu");
+    withPatchedFs(
+      {
+        renameSync: () => failWithPath(root),
+        rmSync: () => failWithPath(root)
+      },
+      () => {
+        expectRedactedFailure(
+          () => install(root, source, target),
+          "failed to replace install target for test binary",
+          root,
+          "redacted replace failure with cleanup failure"
+        );
+      }
+    );
+  });
+
   console.log("install target check passed");
 }
 
@@ -118,6 +178,25 @@ function trySymlink(link, target, type) {
   }
 }
 
+function withPatchedFs(patches, callback) {
+  const originals = {};
+  for (const name of Object.keys(patches)) {
+    originals[name] = fs[name];
+    fs[name] = patches[name];
+  }
+  try {
+    callback();
+  } finally {
+    for (const name of Object.keys(originals)) {
+      fs[name] = originals[name];
+    }
+  }
+}
+
+function failWithPath(root) {
+  throw new Error(`simulated filesystem failure at ${root}`);
+}
+
 function expectFailure(action, expectedMessage, label) {
   try {
     action();
@@ -128,6 +207,28 @@ function expectFailure(action, expectedMessage, label) {
     throw new Error(`${label}: expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`${label}: expected install target failure`);
+}
+
+function expectRedactedFailure(action, expectedMessage, forbiddenPath, label) {
+  try {
+    action();
+  } catch (error) {
+    const message = error.message;
+    if (!message.includes(expectedMessage)) {
+      throw new Error(`${label}: expected ${expectedMessage}, got: ${message}`);
+    }
+    if (!message.includes("pathDisplayed=false")) {
+      throw new Error(`${label}: missing path display guard: ${message}`);
+    }
+    if (!message.includes("contentsDisplayed=false")) {
+      throw new Error(`${label}: missing contents display guard: ${message}`);
+    }
+    if (message.includes(forbiddenPath)) {
+      throw new Error(`${label}: displayed filesystem path: ${message}`);
+    }
+    return;
+  }
+  throw new Error(`${label}: expected redacted install target failure`);
 }
 
 function expectEqual(actual, expected, label) {

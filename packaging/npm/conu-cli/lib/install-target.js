@@ -21,7 +21,7 @@ function installFile(source, target, label, options = {}) {
   assertPathUnderRoot(targetPath, trustedRoot, label);
   assertRegularSource(sourcePath, label);
   assertExistingInstallAncestors(trustedRoot, installDir, label);
-  fs.mkdirSync(installDir, { recursive: true });
+  createInstallDirectory(installDir, label);
   assertInstallDirectoryTree(trustedRoot, installDir, label);
   if (options.vendorRoot) {
     assertInstallDirectoryTree(trustedRoot, path.resolve(options.vendorRoot), label);
@@ -32,18 +32,18 @@ function installFile(source, target, label, options = {}) {
   let tempCreated = false;
   let renamed = false;
   try {
-    fs.copyFileSync(sourcePath, tempTarget, fs.constants.COPYFILE_EXCL);
+    copyTemporaryInstallTarget(sourcePath, tempTarget, label);
     tempCreated = true;
     if (process.platform !== "win32") {
-      fs.chmodSync(tempTarget, 0o755);
+      setTemporaryInstallTargetPermissions(tempTarget, label);
     }
     assertRegularTempTarget(tempTarget, label);
-    fs.renameSync(tempTarget, targetPath);
+    replaceInstallTarget(tempTarget, targetPath, label);
     renamed = true;
     assertSafeInstallTarget(targetPath, label);
   } finally {
     if (tempCreated && !renamed) {
-      fs.rmSync(tempTarget, { force: true });
+      removeTemporaryInstallTarget(tempTarget);
     }
   }
 }
@@ -134,6 +134,52 @@ function assertPathUnderRoot(target, root, label) {
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`${label} install target must stay inside the package directory`);
   }
+}
+
+function createInstallDirectory(installDir, label) {
+  try {
+    fs.mkdirSync(installDir, { recursive: true });
+  } catch (_error) {
+    throw installTargetIoError(label, "create install directory");
+  }
+}
+
+function copyTemporaryInstallTarget(source, target, label) {
+  try {
+    fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+  } catch (_error) {
+    throw installTargetIoError(label, "copy temporary install target");
+  }
+}
+
+function setTemporaryInstallTargetPermissions(target, label) {
+  try {
+    fs.chmodSync(target, 0o755);
+  } catch (_error) {
+    throw installTargetIoError(label, "set temporary install target permissions");
+  }
+}
+
+function replaceInstallTarget(source, target, label) {
+  try {
+    fs.renameSync(source, target);
+  } catch (_error) {
+    throw installTargetIoError(label, "replace install target");
+  }
+}
+
+function removeTemporaryInstallTarget(target) {
+  try {
+    fs.rmSync(target, { force: true });
+  } catch (_error) {
+    // Preserve the original redacted install failure.
+  }
+}
+
+function installTargetIoError(label, action) {
+  return new Error(
+    `failed to ${action} for ${label}; pathDisplayed=false contentsDisplayed=false`
+  );
 }
 
 function temporarySiblingPath(target) {
