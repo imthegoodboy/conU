@@ -98,10 +98,15 @@ def main() -> int:
         encrypted_site = temp / "encrypted-site.zip"
         shutil.copy2(site, encrypted_site)
         mark_zip_member_encrypted(encrypted_site, "index.html")
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: preparer.read_site_members(encrypted_site),
             "encrypted zip member",
             "encrypted Pages site member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "encrypted Pages site member",
+            "index.html",
         )
 
         unsupported_site = temp / "unsupported-site.zip"
@@ -110,10 +115,15 @@ def main() -> int:
             info.compress_type = zipfile.ZIP_STORED
             info.external_attr = (stat.S_IFCHR | 0o644) << 16
             archive.writestr(info, b"device\n")
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: preparer.read_site_members(unsupported_site),
             "unsupported member type",
             "unsupported Pages site member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "unsupported Pages site member",
+            "index.html",
         )
 
         missing_checksum = temp / "missing-checksum"
@@ -198,11 +208,17 @@ def main() -> int:
         shutil.copytree(dist, unsafe)
         rewrite_site_zip(unsafe / SITE_BUNDLE, {"../index.html": b"escape\n"})
         sign_site(unsafe / SITE_BUNDLE)
-        expect_failure(
+        output = expect_failure(
             "unsafe site member path",
             unsafe / SITE_BUNDLE,
             temp / "unsafe-pages",
             "unsafe hosted repository site path",
+        )
+        assert_member_failure_redacted(
+            output,
+            "unsafe site member path",
+            "../index.html",
+            "index.html",
         )
 
         forbidden = temp / "forbidden"
@@ -558,15 +574,24 @@ def expect_zip_bound_failure(
         setattr(preparer, constant_name, original)
 
 
-def expect_action_failure(action, expected: str, label: str) -> None:
+def expect_action_failure(action, expected: str, label: str) -> str:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
         if expected in message:
-            return
+            return message
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_member_failure_redacted(message: str, label: str, *forbidden_values: str) -> None:
+    for marker in ("pathDisplayed=false", "contentsDisplayed=false"):
+        if marker not in message:
+            raise AssertionError(f"{label}: missing {marker}: {message!r}")
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{label}: displayed archive member value {value!r}: {message!r}")
 
 
 def assert_no_sentinel(output: str, label: str) -> None:

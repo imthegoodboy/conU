@@ -31,6 +31,7 @@ MAX_SITE_ZIP_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SITE_MEMBER_BYTES = 512_000_000
 MAX_SITE_MEMBERS = 10000
 MAX_SITE_TOTAL_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+MEMBER_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false"
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
 CACHE_CONTROL_RULES = (
@@ -312,11 +313,11 @@ def read_site_members(site_zip: Path) -> dict[str, bytes]:
                 if len(infos) > MAX_SITE_MEMBERS:
                     raise SystemExit(f"{site_zip.name} has too many members for Pages deployment")
                 for info in infos:
-                    name = normalize_zip_path(info.filename)
+                    name = normalize_zip_path(site_zip.name, info.filename)
                     if not validate_zip_member_for_read(site_zip.name, info, name):
                         continue
                     if name in members:
-                        raise SystemExit(f"{site_zip.name} contains duplicate zip member: {name}")
+                        raise zip_member_failure(site_zip.name, "contains duplicate zip member")
                     total_uncompressed += info.file_size
                     if total_uncompressed > MAX_SITE_TOTAL_UNCOMPRESSED_BYTES:
                         raise SystemExit(
@@ -334,36 +335,49 @@ def read_site_members(site_zip: Path) -> dict[str, bytes]:
     return members
 
 
-def normalize_zip_path(raw_name: str) -> str:
+def zip_member_failure(archive_name: str, reason: str) -> SystemExit:
+    return SystemExit(f"{archive_name} {reason}; {MEMBER_FAILURE_GUARDS}")
+
+
+def has_windows_drive_prefix(path: str) -> bool:
+    return len(path) >= 2 and path[1] == ":" and path[0].isalpha()
+
+
+def normalize_zip_path(archive_name: str, raw_name: str) -> str:
     normalized = raw_name.replace("\\", "/")
     path = PurePosixPath(normalized)
     parts = [part for part in path.parts if part not in {"", ".", "/"}]
-    if path.is_absolute() or ".." in parts:
-        raise SystemExit(f"unsafe hosted repository site path: {raw_name}")
+    if (
+        path.is_absolute()
+        or normalized.startswith("//")
+        or has_windows_drive_prefix(normalized)
+        or ".." in parts
+    ):
+        raise zip_member_failure(archive_name, "contains unsafe hosted repository site path")
     if not parts:
-        raise SystemExit(f"unsafe empty hosted repository site path: {raw_name}")
+        raise zip_member_failure(archive_name, "contains empty hosted repository site path")
     lowered = {part.lower() for part in parts}
     forbidden = sorted(lowered & FORBIDDEN_SEGMENTS)
     if forbidden:
-        raise SystemExit(f"hosted repository site contains forbidden local-state path: {'/'.join(parts)}")
+        raise zip_member_failure(archive_name, "contains forbidden local-state path")
     return "/".join(parts)
 
 
 def validate_zip_member_for_read(site_name: str, info: zipfile.ZipInfo, name: str) -> bool:
     if info.flag_bits & 0x1:
-        raise SystemExit(f"{site_name} contains encrypted zip member: {name}")
+        raise zip_member_failure(site_name, "contains encrypted zip member")
     file_type = (info.external_attr >> 16) & 0o170000
     is_directory = info.is_dir() or file_type == stat.S_IFDIR
     if file_type == stat.S_IFLNK:
-        raise SystemExit(f"hosted repository site contains unsupported link member: {name}")
+        raise zip_member_failure(site_name, "contains unsupported link member")
     if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
-        raise SystemExit(f"hosted repository site contains unsupported member type: {name}")
+        raise zip_member_failure(site_name, "contains unsupported member type")
     if is_directory:
         if info.file_size != 0:
-            raise SystemExit(f"{site_name} contains directory member with data: {name}")
+            raise zip_member_failure(site_name, "contains directory member with data")
         return False
     if info.file_size > MAX_SITE_MEMBER_BYTES:
-        raise SystemExit(f"{site_name} member is too large for Pages deployment: {name}")
+        raise zip_member_failure(site_name, "member is too large for Pages deployment")
     return True
 
 
