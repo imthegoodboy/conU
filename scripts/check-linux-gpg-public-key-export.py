@@ -22,14 +22,28 @@ USER_ID = "conU Linux Public Key Regression <noreply@github.com>"
 PUBLIC_KEY_ASSET = "conu-linux-gpg-key.asc"
 WRONG_FINGERPRINT = "F" * 40
 PUBLIC_KEY_FIXTURE = b"-----BEGIN PGP PUBLIC KEY BLOCK-----\nfixture\n"
+SENSITIVE_FAILURE_VALUES = (
+    "npm_fakeLinuxPublicKeyToken1234567890",
+    "ghp_fakeLinuxPublicKeyToken1234567890",
+    "fake-bearer-token-1234567890",
+    "fake-basic-token-1234567890",
+    "fake-node-auth-token-1234567890",
+    "fake-url-password-1234567890",
+    "fake-query-token-1234567890",
+    "fake-private-key-1234567890",
+)
 
 
 def main() -> int:
     run_output_file_preflights()
+    run_command_output_redaction_preflight()
 
     gpg = shutil.which("gpg")
     if gpg is None:
-        print("Linux GPG public-key export regression skipped: gpg is unavailable")
+        print(
+            "Linux GPG public-key export preflight checks passed; "
+            "GPG integration regression skipped: gpg is unavailable"
+        )
         return 0
 
     with tempfile.TemporaryDirectory(prefix="conu-linux-public-key-check-") as temp_text:
@@ -243,6 +257,53 @@ def run_output_file_preflights() -> None:
                 "must not be a symlink",
                 "public-key symlink sidecar output",
             )
+
+
+def run_command_output_redaction_preflight() -> None:
+    exporter = load_exporter()
+    raw = sensitive_command_output()
+    original_subprocess_run = exporter.subprocess.run
+    try:
+
+        def failed_run(*args, **_kwargs):
+            command = args[0] if args else "gpg"
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=command,
+                output=raw.encode("utf-8"),
+                stderr=raw.encode("utf-8"),
+            )
+
+        exporter.subprocess.run = failed_run
+        try:
+            exporter.run_gpg("gpg", {}, ["--fixture"])
+        except SystemExit as exc:
+            rendered = str(exc)
+        else:
+            raise AssertionError("Linux public-key exporter unexpectedly passed")
+    finally:
+        exporter.subprocess.run = original_subprocess_run
+
+    if "gpg failed with output:" not in rendered:
+        raise AssertionError("public-key exporter failure output omitted the command failure label")
+    for value in SENSITIVE_FAILURE_VALUES:
+        if value in rendered:
+            raise AssertionError("public-key exporter failure output leaked a sensitive value")
+
+
+def sensitive_command_output() -> str:
+    return "\n".join(
+        [
+            f"npm ERR! auth token {SENSITIVE_FAILURE_VALUES[0]}",
+            f"gh token {SENSITIVE_FAILURE_VALUES[1]}",
+            f"Authorization: Bearer {SENSITIVE_FAILURE_VALUES[2]}",
+            f"Authorization: Basic {SENSITIVE_FAILURE_VALUES[3]}",
+            f"NODE_AUTH_TOKEN={SENSITIVE_FAILURE_VALUES[4]}",
+            f"https://user:{SENSITIVE_FAILURE_VALUES[5]}@example.invalid/conu",
+            f"https://example.invalid/conu?token={SENSITIVE_FAILURE_VALUES[6]}",
+            f"PRIVATE_KEY={SENSITIVE_FAILURE_VALUES[7]}",
+        ]
+    )
 
 
 def load_exporter():

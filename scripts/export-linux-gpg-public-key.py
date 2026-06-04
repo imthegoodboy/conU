@@ -19,6 +19,7 @@ from typing import BinaryIO
 from linux_gpg_common import (
     add_fingerprint_env_argument,
     read_expected_fingerprint,
+    redact_command_output,
     verify_imported_secret_key_fingerprint,
 )
 
@@ -409,7 +410,7 @@ def run_gpg(
             output += exc.stdout.decode("utf-8", errors="replace")
         if exc.stderr:
             output += exc.stderr.decode("utf-8", errors="replace")
-        raise SystemExit(f"gpg failed with output:\n{output}") from exc
+        raise SystemExit(f"gpg failed with output:\n{redact_command_output(output)}") from exc
     return result.stdout
 
 
