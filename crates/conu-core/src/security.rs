@@ -1750,7 +1750,8 @@ fn local_storage_payload_file(
     path: &Path,
 ) -> Result<Option<LocalStoragePayloadFile>, SecurityError> {
     let contents = read_local_storage_payload_file(path)?;
-    let values = parse_key_values(&contents);
+    let values =
+        parse_key_values(&contents).map_err(|reason| SecurityError::InvalidPayload { reason })?;
     if !values.contains_key("payload_ciphertext_hex") {
         return Ok(None);
     }
@@ -2087,7 +2088,10 @@ fn key_file_is_readable(path: &Path) -> bool {
 
 fn read_key_values(path: &Path) -> Result<HashMap<String, String>, SecurityError> {
     let contents = read_secret_file(path, "read security key")?;
-    Ok(parse_key_values(&contents))
+    parse_key_values(&contents).map_err(|reason| SecurityError::InvalidKey {
+        path: path.to_path_buf(),
+        reason,
+    })
 }
 
 fn secret_bytes<const N: usize>(
@@ -3360,7 +3364,7 @@ fn set_sensitive_file_permissions(_file: &fs::File, _path: &Path) -> Result<(), 
     Ok(())
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, String> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -3372,10 +3376,27 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
             continue;
         };
 
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_security_value(&mut values, key, value)?;
     }
 
-    values
+    Ok(values)
+}
+
+fn insert_security_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        return if key.is_empty() {
+            Err("duplicate empty security key".to_string())
+        } else {
+            Err(format!("duplicate security key {key}"))
+        };
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn clean_value(value: &str) -> String {
@@ -3545,7 +3566,7 @@ mod tests {
 
         let signing = fs::read_to_string(paths.identity_signing_key).expect("signing key reads");
         if os_secret_protection_available() {
-            let values = parse_key_values(&signing);
+            let values = parse_key_values(&signing).expect("signing key parses");
             assert!(secret_file_uses_os_protection(&values, "secret_key"));
             assert!(!signing.contains("secret_key_hex"));
             assert!(report.secrets_os_protected);
@@ -3694,6 +3715,25 @@ mod tests {
             fs::read_to_string(&target).expect("target reads"),
             "version = \"1\"\nsecret_key_hex = \"outside\"\n"
         );
+    }
+
+    #[test]
+    fn secret_key_duplicate_key_fails_closed_without_values() {
+        let home = test_home("read-secret-duplicate-key");
+        fs::create_dir_all(&home).expect("home directory created");
+        let path = home.join("secret.key");
+        fs::write(
+            &path,
+            "version = \"1\"\nkey_id = \"private-old-key-id\"\nkey_id = \"shadowed-new-key-id\"\n",
+        )
+        .expect("secret key writes");
+
+        let error = read_key_values(&path).expect_err("duplicate security key should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate security key key_id"));
+        assert!(!rendered.contains("private-old-key-id"));
+        assert!(!rendered.contains("shadowed-new-key-id"));
     }
 
     #[test]
@@ -3894,7 +3934,7 @@ mod tests {
         assert_eq!(report.signing_key_id, signing_key_id);
         assert_eq!(storage.key, storage_key);
         if os_secret_protection_available() {
-            let values = parse_key_values(&signing);
+            let values = parse_key_values(&signing).expect("signing key parses");
             assert!(report.secrets_os_protected);
             assert!(secret_file_uses_os_protection(&values, "secret_key"));
             assert!(!signing.contains("secret_key_hex"));
@@ -3922,7 +3962,7 @@ mod tests {
         assert!(contents.contains("contents_displayed = false"));
         assert!(!contents.contains(token));
         if os_secret_protection_available() {
-            let values = parse_key_values(&contents);
+            let values = parse_key_values(&contents).expect("relay credential parses");
             assert!(status.os_protected);
             assert!(secret_file_uses_os_protection(&values, "token"));
             assert!(!contents.contains("token_hex"));
@@ -4197,7 +4237,7 @@ mod tests {
                 (&storage, "key"),
                 (&credential, "token"),
             ] {
-                let values = parse_key_values(contents);
+                let values = parse_key_values(contents).expect("secret metadata parses");
                 assert!(contents.contains(&format!(
                     "secret_protection = \"{}\"",
                     native_test_backend_name()
@@ -4303,8 +4343,8 @@ mod tests {
         let new_key_id = read_storage_key(&paths).expect("new key reads").key_id;
         let request_after = fs::read_to_string(&request_path).expect("request reads");
         let envelope_after = fs::read_to_string(&envelope_path).expect("envelope reads");
-        let request_values = parse_key_values(&request_after);
-        let envelope_values = parse_key_values(&envelope_after);
+        let request_values = parse_key_values(&request_after).expect("request metadata parses");
+        let envelope_values = parse_key_values(&envelope_after).expect("envelope metadata parses");
         let request_rotated = encrypted_payload_from_values(&request_values);
         let envelope_rotated = encrypted_payload_from_values(&envelope_values);
 
@@ -4471,6 +4511,27 @@ mod tests {
         assert!(!error.contains(private_marker));
     }
 
+    #[test]
+    fn storage_payload_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("storage-payload-duplicate-key");
+        fs::create_dir_all(&home).expect("home creates");
+        let path = home.join("payload.msg");
+        fs::write(
+            &path,
+            "version = \"1\"\ntype = \"send_message\"\nrequest_id = \"req.duplicate\"\nfrom_agent_id = \"agent.sender\"\nto_agent_id = \"agent.receiver\"\npayload_len = 24\npayload_privacy = \"encrypted_at_rest\"\npayload_cipher = \"XChaCha20Poly1305\"\npayload_key_id = \"key.private\"\npayload_nonce_hex = \"nonce.private\"\npayload_ciphertext_hex = \"private encrypted payload contents\"\npayload_ciphertext_hex = \"shadowed encrypted payload contents\"\n",
+        )
+        .expect("payload writes");
+
+        let rendered = match local_storage_payload_file(&path) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("duplicate encrypted payload key should fail closed"),
+        };
+
+        assert!(rendered.contains("duplicate security key payload_ciphertext_hex"));
+        assert!(!rendered.contains("private encrypted payload contents"));
+        assert!(!rendered.contains("shadowed encrypted payload contents"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn storage_payload_rewrite_rejects_symlink_without_touching_target() {
@@ -4548,7 +4609,7 @@ mod tests {
             .expect("stale archived-key request rewrites");
         let second = rotate_storage_key_from_paths(&paths).expect("second rotation succeeds");
         let request_after = fs::read_to_string(&request_path).expect("request reads");
-        let values = parse_key_values(&request_after);
+        let values = parse_key_values(&request_after).expect("request metadata parses");
         let rotated = encrypted_payload_from_values(&values);
 
         assert_eq!(second.files_scanned, 1);
@@ -4580,7 +4641,7 @@ mod tests {
         let retirement =
             retire_unused_storage_keys_from_paths(&paths).expect("retirement succeeds");
         let request_after = fs::read_to_string(&request_path).expect("request reads");
-        let values = parse_key_values(&request_after);
+        let values = parse_key_values(&request_after).expect("request metadata parses");
         let rotated = encrypted_payload_from_values(&values);
 
         assert_eq!(retirement.archived_storage_keys_scanned, 1);
