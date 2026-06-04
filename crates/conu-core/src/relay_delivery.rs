@@ -1250,7 +1250,7 @@ fn read_relay_request(path: &Path) -> Result<RelayRequest, RelayDeliveryError> {
         "inspect relay outbox request",
         "read relay outbox request",
     )?;
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
 
     if value_or_empty(&values, "version") != RELAY_REQUEST_VERSION {
         return Err(RelayDeliveryError::InvalidRequest {
@@ -1557,7 +1557,7 @@ fn configured_default_relay(paths: &StatePaths) -> Result<Option<String>, RelayD
         Some(contents) => contents,
         None => return Ok(None),
     };
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
     Ok(values
         .get("default_relay")
         .map(|value| value.trim().to_string())
@@ -1573,7 +1573,7 @@ fn relay_auto_sync_enabled(paths: &StatePaths) -> Result<bool, RelayDeliveryErro
         Some(contents) => contents,
         None => return Ok(true),
     };
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
     let value = values
         .get("relay_auto_sync")
         .map(|value| value.trim().to_ascii_lowercase())
@@ -1947,7 +1947,7 @@ fn validate_relay_kind_stream(
     }
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, RelayDeliveryError> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -1957,10 +1957,28 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_relay_delivery_value(&mut values, key, value)?;
     }
 
-    values
+    Ok(values)
+}
+
+fn insert_relay_delivery_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), RelayDeliveryError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty relay delivery key".to_string()
+        } else {
+            format!("duplicate relay delivery key {key}")
+        };
+        return Err(RelayDeliveryError::InvalidRequest { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn clean_value(value: &str) -> String {
@@ -2180,6 +2198,27 @@ mod tests {
         let error = read_relay_request(&path).expect_err("mismatched request fails");
 
         assert!(error.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn relay_request_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("relay-request-duplicate-key");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        fs::create_dir_all(&init.paths.relay_outbox_dir).expect("relay outbox");
+        let path = init.paths.relay_outbox_dir.join("duplicate.relay");
+        fs::write(
+            &path,
+            "version = \"1\"\ntype = \"relay_message\"\nkind = \"message\"\nrequest_id = \"relayreq.1\"\nenvelope_id = \"env.1\"\nfrom_node_id = \"node.a\"\nto_node_id = \"node.b\"\nfrom_agent_id = \"agent.a\"\nto_agent_id = \"agent.b\"\npayload_len = 32\npayload_cipher = \"xchacha20poly1305\"\npayload_key_id = \"key.1\"\nsender_exchange_public_key_hex = \"aa\"\npayload_nonce_hex = \"bb\"\npayload_ciphertext_hex = \"private relay ciphertext contents\"\npayload_ciphertext_hex = \"shadowed relay ciphertext\"\n",
+        )
+        .expect("request writes");
+
+        let error =
+            read_relay_request(&path).expect_err("duplicate relay request key should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate relay delivery key payload_ciphertext_hex"));
+        assert!(!rendered.contains("private relay ciphertext contents"));
+        assert!(!rendered.contains("shadowed relay ciphertext"));
     }
 
     #[cfg(unix)]
@@ -2548,6 +2587,26 @@ mod tests {
 
         assert!(rendered.contains("relay endpoint is invalid"));
         assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains("token=private"));
+    }
+
+    #[test]
+    fn relay_config_duplicate_key_fails_closed_without_values() {
+        let home = test_home("runtime-duplicate-relay-config");
+        let init = state::init_state(Some(home)).expect("state initializes");
+        fs::write(
+            &init.paths.config,
+            "version = \"1\"\ndefault_relay = \"wss://relay.example.com/conu\"\ndefault_relay = \"wss://user:secret@relay.example.com/conu?token=private#fragment\"\nrelay_auto_sync = true\n",
+        )
+        .expect("config writes");
+
+        let error =
+            configured_relay_endpoint(&init.paths).expect_err("duplicate relay config key fails");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate relay delivery key default_relay"));
+        assert!(!rendered.contains("wss://relay.example.com/conu"));
+        assert!(!rendered.contains("user:secret"));
         assert!(!rendered.contains("token=private"));
     }
 
