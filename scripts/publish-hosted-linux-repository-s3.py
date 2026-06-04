@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import unquote, urlparse, urlunparse
 
+from command_output_redaction import redact_command_output
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENDPOINT_CHECKER = ROOT / "scripts" / "check-hosted-linux-repository-endpoint.py"
@@ -62,6 +64,10 @@ AWS_CLI_RESERVED_OPTIONS = {
     "--recursive",
     "--region",
 }
+AWS_CLI_SECRET_ARGUMENT_RE = re.compile(
+    r"(token|secret|password|passwd|private[_-]?key|auth)",
+    re.IGNORECASE,
+)
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 FORBIDDEN_SEGMENTS = {
@@ -149,6 +155,7 @@ def main() -> int:
         elif args.post_upload_check:
             raise PublicationError("--post-upload-check requires --confirm")
     except (PublicationError, OSError, subprocess.CalledProcessError, ValueError) as exc:
+        error_message = publication_error_message(exc)
         if args.json:
             print(
                 json.dumps(
@@ -156,7 +163,7 @@ def main() -> int:
                         "schema": "conu.hostedLinuxRepository.s3Publication.v1",
                         "published": False,
                         "endpointChecked": False,
-                        "issues": [str(exc)],
+                        "issues": [error_message],
                         "payloadDisplayed": False,
                         "tokenDisplayed": False,
                         "keyMaterialDisplayed": False,
@@ -166,7 +173,10 @@ def main() -> int:
                 )
             )
         else:
-            print(f"Hosted Linux repository S3 publication failed: {exc}", file=sys.stderr)
+            print(
+                f"Hosted Linux repository S3 publication failed: {error_message}",
+                file=sys.stderr,
+            )
         return 1
 
     if args.json:
@@ -188,6 +198,25 @@ def main() -> int:
             f"{len(plan.files)} files for {plan.base_url}"
         )
     return 0
+
+
+def publication_error_message(exc: Exception) -> str:
+    if not isinstance(exc, subprocess.CalledProcessError):
+        return redact_command_output(str(exc))
+
+    message = f"publication command failed with exit code {exc.returncode}"
+    output = decode_process_output(exc.stdout)
+    if output:
+        message += f"\n{redact_command_output(output)}"
+    return message
+
+
+def decode_process_output(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
 
 
 def parse_args() -> argparse.Namespace:
@@ -886,7 +915,16 @@ def publish_plan(plan: PublishPlan, args: argparse.Namespace) -> None:
                 str(file.size),
                 "--only-show-errors",
             ]
-            subprocess.run(command, stdin=handle, check=True)
+            subprocess.run(
+                command,
+                stdin=handle,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
 
 
 def parse_aws_cli(raw: str) -> list[str]:
@@ -915,12 +953,16 @@ def validate_aws_cli_wrapper(args: list[str]) -> None:
     executable = args[0]
     if executable.startswith("-"):
         raise PublicationError("AWS CLI command executable must not be an option")
-    for item in args:
+    for index, item in enumerate(args):
         if not item or any(ord(character) < 32 or ord(character) == 127 for character in item):
             raise PublicationError("AWS CLI command must not contain empty or control arguments")
 
         normalized = item.lower()
         option_name = normalized.split("=", 1)[0]
+        if redact_command_output(item) != item or (
+            index > 0 and AWS_CLI_SECRET_ARGUMENT_RE.search(option_name)
+        ):
+            raise PublicationError("AWS CLI command must not include inline credentials or secrets")
         if normalized in AWS_CLI_RESERVED_TOKENS:
             raise PublicationError("AWS CLI command must not include S3 service or upload subcommands")
         if normalized.startswith("s3://"):
