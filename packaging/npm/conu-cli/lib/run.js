@@ -7,11 +7,7 @@ const { BINARIES, binaryPath } = require("./platform");
 const binaryName = readBinaryName(process.env.CONU_BIN_NAME);
 const executable = resolveExecutable(binaryName);
 
-if (!fs.existsSync(executable)) {
-  console.error(`conU binary is missing for ${binaryName}; pathDisplayed=false contentsDisplayed=false`);
-  console.error("Run npm install again, or set CONU_NPM_BINARY_DIR during install.");
-  process.exit(127);
-}
+assertSafeExecutable(binaryName, executable);
 
 const child = launchExecutable(binaryName, executable);
 
@@ -48,6 +44,36 @@ function resolveExecutable(name) {
     );
     process.exit(127);
   }
+}
+
+function assertSafeExecutable(name, executable) {
+  let stat;
+  try {
+    stat = fs.lstatSync(executable);
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      failInstallState(name, "conU binary is missing");
+    } else {
+      failInstallState(
+        name,
+        `conU binary could not be inspected; errorCode=${runtimeErrorCode(error)}`
+      );
+    }
+  }
+
+  if (stat.isSymbolicLink()) {
+    failInstallState(name, "conU binary is unsafe");
+  }
+
+  if (!stat.isFile()) {
+    failInstallState(name, "conU binary is not a regular file");
+  }
+}
+
+function failInstallState(name, message) {
+  console.error(`${message} for ${name}; pathDisplayed=false contentsDisplayed=false`);
+  console.error("Run npm install again, or set CONU_NPM_BINARY_DIR during install.");
+  process.exit(127);
 }
 
 function launchExecutable(name, executable) {

@@ -39,7 +39,8 @@ function main() {
 
   expectLauncherMissingBinaryIsRedacted();
   expectLauncherInvalidBinaryIsRedacted();
-  expectLauncherSpawnFailureIsRedacted();
+  expectLauncherNonFileBinaryIsRedacted();
+  expectLauncherSymlinkBinaryIsRedacted();
 
   console.log("install and launcher output privacy check passed");
 }
@@ -117,7 +118,7 @@ function expectLauncherInvalidBinaryIsRedacted() {
   });
 }
 
-function expectLauncherSpawnFailureIsRedacted() {
+function expectLauncherNonFileBinaryIsRedacted() {
   withFixture((root) => {
     const packageCopy = path.join(root, "package");
     copyPackage(packageRoot, packageCopy);
@@ -127,9 +128,32 @@ function expectLauncherSpawnFailureIsRedacted() {
 
     const output = runNodeFailure([path.join(packageCopy, "bin", "conu.js")], {}, packageCopy);
 
-    expectNoLocalPath(output, root, "launcher spawn error temp root");
-    expectIncludes(output, "pathDisplayed=false", "launcher spawn path display guard");
-    expectIncludes(output, "contentsDisplayed=false", "launcher spawn content display guard");
+    expectNoLocalPath(output, root, "launcher non-file temp root");
+    expectIncludes(output, "not a regular file", "launcher non-file target guard");
+    expectIncludes(output, "pathDisplayed=false", "launcher non-file path display guard");
+    expectIncludes(output, "contentsDisplayed=false", "launcher non-file content display guard");
+  });
+}
+
+function expectLauncherSymlinkBinaryIsRedacted() {
+  withFixture((root) => {
+    const packageCopy = path.join(root, "package");
+    const outside = path.join(root, "outside-binary");
+    copyPackage(packageRoot, packageCopy);
+    fs.writeFileSync(outside, "do not run\n");
+
+    const executable = path.join(packageCopy, "vendor", platformKey(), `conu${binarySuffix()}`);
+    fs.mkdirSync(path.dirname(executable), { recursive: true });
+    if (!trySymlink(executable, outside, "file")) {
+      return;
+    }
+
+    const output = runNodeFailure([path.join(packageCopy, "bin", "conu.js")], {}, packageCopy);
+
+    expectNoLocalPath(output, root, "launcher symlink temp root");
+    expectIncludes(output, "binary is unsafe", "launcher symlink target guard");
+    expectIncludes(output, "pathDisplayed=false", "launcher symlink path display guard");
+    expectIncludes(output, "contentsDisplayed=false", "launcher symlink content display guard");
   });
 }
 
@@ -161,6 +185,21 @@ function writeBinaries(binaryDir) {
   const suffix = binarySuffix();
   for (const name of BINARIES) {
     fs.writeFileSync(path.join(binaryDir, `${name}${suffix}`), `${name}\n`);
+  }
+}
+
+function trySymlink(link, target, type) {
+  try {
+    fs.symlinkSync(target, link, type);
+    return true;
+  } catch (error) {
+    if (
+      error &&
+      ["EPERM", "EACCES", "ENOSYS", "EINVAL"].includes(error.code)
+    ) {
+      return false;
+    }
+    throw error;
   }
 }
 
