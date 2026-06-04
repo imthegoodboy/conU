@@ -601,7 +601,7 @@ fn parse_streams(contents: &str) -> Result<Vec<StreamRecord>, StreamError> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_stream_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -629,7 +629,7 @@ fn parse_events(contents: &str) -> Result<Vec<StreamEvent>, StreamError> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_stream_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -735,6 +735,24 @@ fn required(values: &HashMap<String, String>, key: &'static str) -> Result<Strin
         .ok_or_else(|| StreamError::InvalidRequest {
             reason: format!("missing {key}"),
         })
+}
+
+fn insert_stream_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), StreamError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty stream key".to_string()
+        } else {
+            format!("duplicate stream key {key}")
+        };
+        return Err(StreamError::InvalidRequest { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn validate_identifier(value: String, field: &'static str) -> Result<String, StreamError> {
@@ -884,6 +902,42 @@ mod tests {
         assert_eq!(closed.stream.state, StreamState::Closed);
         assert_eq!(events.len(), 3);
         assert!(stream_log.is_dir());
+    }
+
+    #[test]
+    fn stream_registry_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("stream-registry-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            &init.paths.stream_registry,
+            "# conU stream registry\nversion = \"1\"\n\n[[stream]]\nstream_id = \"stream.safe\"\nstream_id = \"secret private stream contents\"\nfrom_agent_id = \"agent.a\"\nto_agent_id = \"agent.b\"\nkind = \"message\"\nstate = \"open\"\nroute = \"local\"\nchunks_written = 0\nbytes_written = 0\nbackpressure_window = 65536\nopened_at_unix = 1\nupdated_at_unix = 1\npayload_displayed = false\n",
+        )
+        .expect("duplicate stream registry writes");
+
+        let error = list_streams(Some(home)).expect_err("duplicate stream key fails closed");
+
+        assert!(error.to_string().contains("duplicate stream key stream_id"));
+        assert!(!error.to_string().contains("secret private stream contents"));
+    }
+
+    #[test]
+    fn stream_event_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("stream-event-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            &init.paths.stream_events,
+            "# conU stream event bus\nversion = \"1\"\n\n[[event]]\nevent_id = \"event.safe\"\nstream_id = \"stream.safe\"\nevent_type = \"chunk\"\nfrom_agent_id = \"agent.a\"\nto_agent_id = \"agent.b\"\nroute = \"local\"\npayload_bytes = 10\npayload_bytes = \"secret private stream contents\"\ncreated_at_unix = 1\npayload_displayed = false\n",
+        )
+        .expect("duplicate stream event writes");
+
+        let error = list_events(Some(home)).expect_err("duplicate stream event key fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate stream key payload_bytes")
+        );
+        assert!(!error.to_string().contains("secret private stream contents"));
     }
 
     #[test]
