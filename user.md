@@ -18,7 +18,7 @@ You already ran:
 gh secret set NPM_TOKEN --repo imthegoodboy/conU
 ```
 
-The npm token rotation marker is also already set, so there is nothing else you need to paste or configure for npm right now.
+For simple testing, there is nothing else you need to paste or configure for npm right now. Before any real npm publish, rotate the token because a token value was pasted in chat.
 
 ## What You Can Skip For Now
 

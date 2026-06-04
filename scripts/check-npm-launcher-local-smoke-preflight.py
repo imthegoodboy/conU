@@ -162,6 +162,8 @@ def main() -> int:
             lambda: smoke.read_manifest_target(archive),
             "unexpected archive root",
             "unexpected manifest root",
+            forbidden="conu-9.9.9-test",
+            require_member_redaction=True,
         )
 
     with fixture_dir() as root:
@@ -177,6 +179,8 @@ def main() -> int:
             lambda: smoke.read_manifest_target(archive),
             "mixes rooted and rootless",
             "mixed manifest root style",
+            forbidden="conu-0.1.0-mixed/bin/conu",
+            require_member_redaction=True,
         )
 
     with fixture_dir() as root:
@@ -193,6 +197,8 @@ def main() -> int:
             lambda: smoke.read_manifest_target(archive),
             "duplicate archive path",
             "duplicate path during manifest read",
+            forbidden="bin/conu",
+            require_member_redaction=True,
         )
 
     with fixture_dir() as root:
@@ -205,6 +211,8 @@ def main() -> int:
                 lambda: smoke.read_manifest_target(archive),
                 "member is too large",
                 "oversized manifest read member",
+                forbidden="manifest.toml",
+                require_member_redaction=True,
             )
         finally:
             smoke.MAX_MEMBER_BYTES = original_limit
@@ -252,6 +260,8 @@ def main() -> int:
             lambda: smoke.read_manifest_target(archive),
             "unsupported zip member",
             "unsupported member during manifest read",
+            forbidden="device",
+            require_member_redaction=True,
         )
 
     with fixture_dir() as root:
@@ -262,6 +272,20 @@ def main() -> int:
             lambda: smoke.read_manifest_target(archive),
             "encrypted zip member",
             "encrypted member during manifest read",
+            forbidden="bin/conu",
+            require_member_redaction=True,
+        )
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-manifest-drive.zip"
+        drive_member = "C:\\secret-manifest-path-should-not-print"
+        write_zip_entries(archive, [(drive_member, "x")])
+        expect_action_failure(
+            lambda: smoke.read_manifest_target(archive),
+            "unsafe archive path",
+            "manifest read Windows drive path",
+            forbidden="secret-manifest-path-should-not-print",
+            require_member_redaction=True,
         )
 
     with fixture_dir() as root:
@@ -281,6 +305,8 @@ def main() -> int:
             lambda: smoke.find_package_root(Path("conu-0.1.0-test.zip"), root),
             "unexpected archive root",
             "unexpected extracted root",
+            forbidden="conu-9.9.9-test",
+            require_member_redaction=True,
         )
 
     with fixture_dir() as root:
@@ -296,6 +322,8 @@ def main() -> int:
             lambda: smoke.extract_archive(archive, root / "extract-duplicate"),
             "duplicate archive path",
             "duplicate extracted path",
+            forbidden="bin/conu",
+            require_member_redaction=True,
         )
 
     with fixture_dir() as root:
@@ -308,6 +336,8 @@ def main() -> int:
                 lambda: smoke.extract_archive(archive, root / "extract-large"),
                 "member is too large",
                 "oversized extracted member",
+                forbidden="bin/conu",
+                require_member_redaction=True,
             )
         finally:
             smoke.MAX_MEMBER_BYTES = original_limit
@@ -349,6 +379,20 @@ def main() -> int:
             lambda: smoke.extract_archive(archive, root / "extract-unsupported"),
             "unsupported zip member",
             "unsupported zip member type",
+            forbidden="device",
+            require_member_redaction=True,
+        )
+
+    with fixture_dir() as root:
+        archive = root / "conu-0.1.0-drive.zip"
+        drive_member = "C:\\secret-extract-path-should-not-print"
+        write_zip_entries(archive, [(drive_member, "x")])
+        expect_action_failure(
+            lambda: smoke.extract_archive(archive, root / "extract-drive"),
+            "unsafe archive path",
+            "extracted Windows drive path",
+            forbidden="secret-extract-path-should-not-print",
+            require_member_redaction=True,
         )
 
     print("npm launcher local smoke preflight check passed")
@@ -491,6 +535,7 @@ def expect_action_failure(
     label: str,
     *,
     forbidden: str | None = None,
+    require_member_redaction: bool = False,
 ) -> None:
     try:
         action()
@@ -498,6 +543,12 @@ def expect_action_failure(
         message = str(exc)
         if forbidden is not None and forbidden in message:
             raise SystemExit(f"{label}: error leaked forbidden value: {message}") from exc
+        if require_member_redaction:
+            for marker in ("pathDisplayed=false", "contentsDisplayed=false"):
+                if marker not in message:
+                    raise SystemExit(
+                        f"{label}: error missing redaction marker {marker}: {message}"
+                    ) from exc
         if expected in message:
             return
         raise SystemExit(f"{label}: expected {expected}, got: {message}") from exc
