@@ -45,6 +45,8 @@ def assert_raises(func, pattern: str) -> None:
     try:
         func()
     except ValueError as exc:
+        if SENSITIVE_SENTINEL in str(exc):
+            raise AssertionError("error message leaked a sensitive fixture value") from exc
         if pattern not in str(exc):
             raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
         return
@@ -172,6 +174,21 @@ def run_loader_tests(module) -> None:
         payload = module.load_pages_metadata("owner/repo", "gh")
     finally:
         module.run_gh_json = original_run_gh_json
+
+    with tempfile.TemporaryDirectory(prefix="conu-pages-json-guard-") as temp_dir:
+        pages_json = Path(temp_dir) / "pages.json"
+        pages_json.write_text(
+            (
+                '{"html_url":"https://owner.github.io/repo/",'
+                f'"html_url":"{SENSITIVE_SENTINEL}",'
+                '"build_type":"workflow"}\n'
+            ),
+            encoding="utf-8",
+        )
+        assert_raises(
+            lambda: module.load_pages_json(pages_json),
+            "duplicate JSON key",
+        )
     if payload.get("build_type") != "workflow":
         raise AssertionError("loader did not return fixture Pages metadata")
 

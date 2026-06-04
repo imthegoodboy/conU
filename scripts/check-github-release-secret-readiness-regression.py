@@ -241,6 +241,25 @@ def run_error_tests(module) -> None:
     finally:
         helper.subprocess.run = original_run
 
+    def duplicate_json(*_args, **_kwargs):
+        payload = (
+            '[{"name":"'
+            + module.REQUIRED_RELEASE_SECRETS[0]
+            + '","name":"'
+            + SENSITIVE_SENTINEL
+            + '"}]'
+        )
+        return SimpleNamespace(returncode=0, stdout=payload, stderr="")
+
+    helper.subprocess.run = duplicate_json
+    try:
+        assert_raises(
+            lambda: module.load_secret_names("owner/repo", "gh"),
+            "duplicate JSON key",
+        )
+    finally:
+        helper.subprocess.run = original_run
+
     def failed_command(*_args, **_kwargs):
         return SimpleNamespace(returncode=1, stdout="", stderr=SENSITIVE_SENTINEL)
 

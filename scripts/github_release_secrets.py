@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from json_safety import loads_json
+
 
 NPM_TOKEN_SECRET_NAME = "NPM_TOKEN"
 NPM_TOKEN_ROTATION_MARKER_VAR = "CONU_NPM_TOKEN_ROTATED_AFTER"
@@ -103,8 +105,8 @@ def run_gh_json(gh: str, args: list[str], description: str) -> Any:
             f"{description} failed with exit code {result.returncode}; run gh auth status"
         )
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
+        return loads_json(result.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"{description} returned invalid JSON: {exc}") from exc
 
 
