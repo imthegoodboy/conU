@@ -67,6 +67,8 @@ jobs:
         run: python scripts/check-github-release-assets-published-regression.py
       - name: GitHub Release clobber preflight regression
         run: python scripts/check-github-release-clobber-preflight-regression.py
+      - name: Unsigned preview release asset regression
+        run: python scripts/check-unsigned-preview-release-assets-regression.py
       - name: Tagged release readiness regression
         run: python scripts/check-tagged-release-readiness-regression.py
       - name: RPM package signing regression
