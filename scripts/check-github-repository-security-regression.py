@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -66,6 +68,88 @@ def assert_safe_report(report) -> dict[str, object]:
         if parsed.get(field) is not False:
             raise AssertionError(f"expected {field}=false")
     return parsed
+
+
+def assert_raises(func, pattern: str) -> None:
+    try:
+        func()
+    except ValueError as exc:
+        rendered = str(exc)
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("error message leaked a sensitive fixture value") from exc
+        if pattern not in rendered:
+            raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
+        return
+    raise AssertionError(f"expected ValueError containing {pattern!r}")
+
+
+def run_loader_tests(module) -> None:
+    with tempfile.TemporaryDirectory(prefix="conu-repository-security-json-guard-") as temp_dir:
+        fixture = Path(temp_dir) / "repo.json"
+        fixture.write_text(
+            (
+                '{"visibility":"public",'
+                f'"visibility":"{SENSITIVE_SENTINEL}",'
+                '"archived":false}\n'
+            ),
+            encoding="utf-8",
+        )
+        assert_raises(
+            lambda: module.load_json_fixture(fixture, "repository metadata fixture JSON"),
+            "duplicate JSON key",
+        )
+
+    original_run = module.subprocess.run
+
+    def duplicate_repo_json(args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=(
+                '{"visibility":"public",'
+                f'"visibility":"{SENSITIVE_SENTINEL}",'
+                '"archived":false}\n'
+            ),
+            stderr="",
+        )
+
+    module.subprocess.run = duplicate_repo_json
+    try:
+        assert_raises(
+            lambda: module.run_gh_json(
+                "gh",
+                ["api", "repos/owner/repo"],
+                "gh api repository metadata",
+            ),
+            "duplicate JSON key",
+        )
+    finally:
+        module.subprocess.run = original_run
+
+    def duplicate_alert_json(args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=(
+                '[{"state":"open",'
+                f'"state":"{SENSITIVE_SENTINEL}"}}]\n'
+            ),
+            stderr="",
+        )
+
+    module.subprocess.run = duplicate_alert_json
+    try:
+        assert_raises(
+            lambda: module.load_alerts(
+                "owner/repo",
+                "gh",
+                "dependabot/alerts",
+                "gh api Dependabot alerts",
+            ),
+            "duplicate JSON key",
+        )
+    finally:
+        module.subprocess.run = original_run
 
 
 def run_ready_tests(module) -> None:
@@ -189,6 +273,7 @@ def run_optional_secret_scanning_tests(module) -> None:
 
 def main() -> int:
     module = load_module()
+    run_loader_tests(module)
     run_ready_tests(module)
     run_disabled_feature_tests(module)
     run_repository_state_tests(module)

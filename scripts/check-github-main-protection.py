@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 from github_release_secrets import find_gh, infer_repo, normalize_repo
+from json_safety import load_json, loads_json
 
 
 DEFAULT_BRANCH = "main"
@@ -79,8 +80,8 @@ def run_gh_json_or_none(gh: str, args: list[str], description: str) -> Any | Non
     )
     if result.returncode == 0:
         try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
+            return loads_json(result.stdout)
+        except (json.JSONDecodeError, ValueError) as exc:
             raise ValueError(f"{description} returned invalid JSON: {exc}") from exc
     stderr = result.stderr.lower()
     if "http 404" in stderr or "branch not protected" in stderr:
@@ -106,10 +107,10 @@ def load_branch_protection(repo: str, branch: str, gh: str) -> dict[str, Any] | 
 
 def load_protection_json(path: Path) -> dict[str, Any] | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = load_json(path, encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"failed to read protection fixture JSON: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"protection fixture JSON was invalid: {exc}") from exc
     if payload is None:
         return None

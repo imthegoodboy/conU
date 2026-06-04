@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from github_release_secrets import find_gh, infer_repo, normalize_repo
+from json_safety import load_json, loads_json
 
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
@@ -147,8 +148,8 @@ def verify_repo_access(repo: str, gh: str) -> None:
             f"exit code {result.returncode}; run gh auth status or check repository access"
         )
     try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
+        payload = loads_json(result.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"gh api repository lookup returned invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("gh api repository lookup returned an unexpected payload")
@@ -172,8 +173,8 @@ def load_release_metadata(repo: str, tag: str, gh: str) -> dict[str, Any] | None
             f"exit code {result.returncode}; run gh auth status or check repository access"
         )
     try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
+        payload = loads_json(result.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"gh api GitHub Release lookup returned invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("gh api GitHub Release lookup returned an unexpected payload")
@@ -182,10 +183,10 @@ def load_release_metadata(repo: str, tag: str, gh: str) -> dict[str, Any] | None
 
 def load_release_json(path: Path) -> dict[str, Any] | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = load_json(path, encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"failed to read release fixture JSON: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"release fixture JSON was invalid: {exc}") from exc
     if payload is None:
         return None

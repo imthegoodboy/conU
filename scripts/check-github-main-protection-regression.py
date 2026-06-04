@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -63,6 +65,61 @@ def assert_safe_report(report) -> dict[str, object]:
         if parsed.get(field) is not False:
             raise AssertionError(f"expected {field}=false")
     return parsed
+
+
+def assert_raises(func, pattern: str) -> None:
+    try:
+        func()
+    except ValueError as exc:
+        rendered = str(exc)
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("error message leaked a sensitive fixture value") from exc
+        if pattern not in rendered:
+            raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
+        return
+    raise AssertionError(f"expected ValueError containing {pattern!r}")
+
+
+def run_loader_tests(module) -> None:
+    with tempfile.TemporaryDirectory(prefix="conu-protection-json-guard-") as temp_dir:
+        fixture = Path(temp_dir) / "protection.json"
+        fixture.write_text(
+            (
+                '{"required_status_checks":{"strict":true},'
+                f'"required_status_checks":"{SENSITIVE_SENTINEL}"}}\n'
+            ),
+            encoding="utf-8",
+        )
+        assert_raises(
+            lambda: module.load_protection_json(fixture),
+            "duplicate JSON key",
+        )
+
+    original_run = module.subprocess.run
+
+    def duplicate_gh_json(args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=(
+                '{"required_status_checks":{"strict":true},'
+                f'"required_status_checks":"{SENSITIVE_SENTINEL}"}}\n'
+            ),
+            stderr="",
+        )
+
+    module.subprocess.run = duplicate_gh_json
+    try:
+        assert_raises(
+            lambda: module.run_gh_json_or_none(
+                "gh",
+                ["api", "repos/owner/repo/branches/main/protection"],
+                "gh api branch protection",
+            ),
+            "duplicate JSON key",
+        )
+    finally:
+        module.subprocess.run = original_run
 
 
 def audit(module, payload, **kwargs):
@@ -171,6 +228,7 @@ def run_optional_admin_tests(module) -> None:
 
 def main() -> int:
     module = load_module()
+    run_loader_tests(module)
     run_ready_tests(module)
     run_unprotected_tests(module)
     run_status_check_tests(module)

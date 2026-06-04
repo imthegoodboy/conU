@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from github_release_secrets import find_gh, infer_repo, normalize_repo
+from json_safety import load_json_object, loads_json
 
 
 DEFAULT_REQUIRED_SELECTED_PATTERNS = ("dtolnay/rust-toolchain@stable",)
@@ -79,8 +80,8 @@ def run_gh_json(gh: str, args: list[str], description: str) -> dict[str, Any]:
     if result.returncode != 0:
         raise ValueError(f"{description} failed with exit code {result.returncode}; run gh auth status")
     try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
+        payload = loads_json(result.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"{description} returned invalid JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{description} returned an unexpected payload")
@@ -89,13 +90,11 @@ def run_gh_json(gh: str, args: list[str], description: str) -> dict[str, Any]:
 
 def load_json_fixture(path: Path, description: str) -> dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = load_json_object(path, encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"failed to read {description}: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"{description} was invalid: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError(f"{description} must contain a JSON object")
     return payload
 
 
