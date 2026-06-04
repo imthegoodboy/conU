@@ -487,6 +487,9 @@ pub enum RuntimeError {
         path: PathBuf,
         source: io::Error,
     },
+    InvalidStatus {
+        reason: String,
+    },
     AlreadyRunning(Box<RuntimeStatus>),
 }
 
@@ -512,6 +515,7 @@ impl fmt::Display for RuntimeError {
                 path,
                 source,
             } => write!(formatter, "{action} at {}: {source}", path.display()),
+            Self::InvalidStatus { reason } => write!(formatter, "invalid runtime status: {reason}"),
             Self::AlreadyRunning(status) => {
                 let pid = status
                     .pid
@@ -652,7 +656,7 @@ fn read_runtime_from_paths(paths: &StatePaths) -> Result<RuntimeStatus, RuntimeE
     else {
         return Ok(offline_status(paths));
     };
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
     let mut status = RuntimeStatus {
         state: RuntimeState::from_str(value_or_empty(&values, "state")),
         pid: parse_u32(values.get("pid")),
@@ -1195,7 +1199,7 @@ fn remove_file_if_exists(path: &Path) -> Result<(), RuntimeError> {
     }
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, RuntimeError> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -1207,10 +1211,28 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
             continue;
         };
 
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_runtime_value(&mut values, key, value)?;
     }
 
-    values
+    Ok(values)
+}
+
+fn insert_runtime_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), RuntimeError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty runtime status key".to_string()
+        } else {
+            format!("duplicate runtime status key {key}")
+        };
+        return Err(RuntimeError::InvalidStatus { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn clean_value(value: &str) -> String {
@@ -1701,6 +1723,27 @@ mod tests {
         let error = error.to_string();
 
         assert!(error.contains("runtime control file exceeds"));
+        assert!(!error.contains(private_marker));
+    }
+
+    #[test]
+    fn runtime_status_read_rejects_duplicate_key_without_printing_values() {
+        let home = test_home("status-read-duplicate-key");
+        let paths = StatePaths::from_home(home.clone());
+        fs::create_dir_all(&paths.runtime_dir).expect("runtime dir creates");
+        let private_marker = "private-runtime-shadow";
+        fs::write(
+            &paths.runtime_status,
+            format!(
+                "version = \"1\"\nstate = \"running\"\nstate = \"{private_marker}\"\npid = 123\nnode_id = \"node_local\"\nstarted_at_unix = 1\nheartbeat_at_unix = 1\nlocal_endpoint = \"file-ipc:runtime/ipc/inbox\"\n"
+            ),
+        )
+        .expect("status writes");
+
+        let error = read_runtime(Some(home)).expect_err("duplicate key should fail closed");
+        let error = error.to_string();
+
+        assert!(error.contains("duplicate runtime status key state"));
         assert!(!error.contains(private_marker));
     }
 
