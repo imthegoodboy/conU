@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -71,6 +73,63 @@ def assert_safe_report(report) -> dict[str, object]:
         if parsed.get(field) is not False:
             raise AssertionError(f"expected {field}=false")
     return parsed
+
+
+def assert_raises(func, pattern: str) -> None:
+    try:
+        func()
+    except ValueError as exc:
+        rendered = str(exc)
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("error message leaked a sensitive fixture value") from exc
+        if pattern not in rendered:
+            raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
+        return
+    raise AssertionError(f"expected ValueError containing {pattern!r}")
+
+
+def run_loader_tests(module) -> None:
+    with tempfile.TemporaryDirectory(prefix="conu-actions-json-guard-") as temp_dir:
+        fixture = Path(temp_dir) / "actions.json"
+        fixture.write_text(
+            (
+                '{"enabled":true,'
+                f'"enabled":"{SENSITIVE_SENTINEL}",'
+                '"allowed_actions":"selected"}\n'
+            ),
+            encoding="utf-8",
+        )
+        assert_raises(
+            lambda: module.load_json_fixture(fixture, "Actions permissions fixture JSON"),
+            "duplicate JSON key",
+        )
+
+    original_run = module.subprocess.run
+
+    def duplicate_gh_json(args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=(
+                '{"enabled":true,'
+                f'"enabled":"{SENSITIVE_SENTINEL}",'
+                '"allowed_actions":"selected"}\n'
+            ),
+            stderr="",
+        )
+
+    module.subprocess.run = duplicate_gh_json
+    try:
+        assert_raises(
+            lambda: module.run_gh_json(
+                "gh",
+                ["api", "repos/owner/repo/actions/permissions"],
+                "gh api GitHub Actions permissions",
+            ),
+            "duplicate JSON key",
+        )
+    finally:
+        module.subprocess.run = original_run
 
 
 def run_ready_tests(module) -> None:
@@ -178,6 +237,7 @@ def run_optional_policy_tests(module) -> None:
 
 def main() -> int:
     module = load_module()
+    run_loader_tests(module)
     run_ready_tests(module)
     run_repository_permission_tests(module)
     run_workflow_permission_tests(module)

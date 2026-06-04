@@ -49,7 +49,10 @@ def assert_raises(func, pattern: str) -> None:
     try:
         func()
     except ValueError as exc:
-        if pattern not in str(exc):
+        rendered = str(exc)
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("error message leaked a sensitive fixture value") from exc
+        if pattern not in rendered:
             raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
         return
     raise AssertionError(f"expected ValueError containing {pattern!r}")
@@ -180,6 +183,47 @@ def run_loader_tests(module) -> None:
     if payload is None or payload.get("tag_name") != TEST_TAG:
         raise AssertionError("expected loader to return release metadata")
 
+    def fake_duplicate_release_json_run(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=["gh"],
+            returncode=0,
+            stdout=(
+                '{"tag_name":"v0.1.0",'
+                f'"tag_name":"{SENSITIVE_SENTINEL}",'
+                '"draft":false,"prerelease":false,"assets":[]}\n'
+            ),
+            stderr="",
+        )
+
+    module.subprocess.run = fake_duplicate_release_json_run
+    try:
+        assert_raises(
+            lambda: module.load_release_metadata("owner/repo", TEST_TAG, "gh"),
+            "duplicate JSON key",
+        )
+    finally:
+        module.subprocess.run = original_run
+
+    def fake_duplicate_repo_json_run(args, **_kwargs):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=(
+                '{"full_name":"owner/repo",'
+                f'"full_name":"{SENSITIVE_SENTINEL}"}}\n'
+            ),
+            stderr="",
+        )
+
+    module.subprocess.run = fake_duplicate_repo_json_run
+    try:
+        assert_raises(
+            lambda: module.verify_repo_access("owner/repo", "gh"),
+            "duplicate JSON key",
+        )
+    finally:
+        module.subprocess.run = original_run
+
     def fake_failure_run(*_args, **_kwargs):
         return subprocess.CompletedProcess(
             args=["gh"],
@@ -223,6 +267,20 @@ def run_fixture_tests(module) -> None:
         existing_payload = module.load_release_json(existing_path)
         if existing_payload is None:
             raise AssertionError("expected existing release fixture to load")
+
+        duplicate_path = Path(temp_dir) / "duplicate.json"
+        duplicate_path.write_text(
+            (
+                '{"tag_name":"v0.1.0",'
+                f'"tag_name":"{SENSITIVE_SENTINEL}",'
+                '"draft":false,"prerelease":false,"assets":[]}\n'
+            ),
+            encoding="utf-8",
+        )
+        assert_raises(
+            lambda: module.load_release_json(duplicate_path),
+            "duplicate JSON key",
+        )
 
 
 def run_main_tests(module) -> None:
