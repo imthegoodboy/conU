@@ -84,7 +84,7 @@ async function main() {
       downloadLimits.maxChecksumBytes
     );
     if (checksum) {
-      fs.writeFileSync(checksumPath, checksum, { encoding: "utf8", flag: "wx" });
+      writeChecksumArtifact(checksumPath, checksum);
       verifySha256File(archivePath, checksum, asset);
     } else if (!allowUnverified) {
       throw new Error(
@@ -249,7 +249,7 @@ function downloadFile(url, target, maxBytes) {
       if (file) {
         file.destroy();
       }
-      fs.rmSync(target, { force: true });
+      removeDownloadArtifact(target);
       reject(error);
     };
 
@@ -267,7 +267,7 @@ function downloadFile(url, target, maxBytes) {
         return;
       }
 
-      file = fs.createWriteStream(target, { flags: "wx" });
+      file = createDownloadArtifactStream(target, fail);
       let bytes = 0;
 
       response.on("data", (chunk) => {
@@ -296,10 +296,37 @@ function downloadFile(url, target, maxBytes) {
       });
       response.on("error", fail);
       file.on("drain", () => response.resume());
-      file.on("error", fail);
     });
     activeRequest.on("error", fail);
   });
+}
+
+function writeChecksumArtifact(checksumPath, checksum) {
+  try {
+    fs.writeFileSync(checksumPath, checksum, { encoding: "utf8", flag: "wx" });
+  } catch (_error) {
+    throw downloadArtifactWriteError("checksum");
+  }
+}
+
+function createDownloadArtifactStream(target, fail) {
+  const file = fs.createWriteStream(target, { flags: "wx" });
+  file.on("error", () => fail(downloadArtifactWriteError("archive")));
+  return file;
+}
+
+function removeDownloadArtifact(target) {
+  try {
+    fs.rmSync(target, { force: true });
+  } catch (_error) {
+    // Preserve the original redacted installer failure.
+  }
+}
+
+function downloadArtifactWriteError(kind) {
+  return new Error(
+    `failed to write ${kind} download artifact; pathDisplayed=false contentsDisplayed=false`
+  );
 }
 
 function request(url, onError, handler, redirects = 0) {

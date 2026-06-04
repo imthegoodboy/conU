@@ -49,6 +49,21 @@ function expectExclusiveDownloadArtifactCreation() {
     'fs.createWriteStream(target, { flags: "wx" })',
     "exclusive archive artifact creation"
   );
+  expectIncludes(
+    source,
+    'throw downloadArtifactWriteError("checksum");',
+    "redacted checksum artifact write failure"
+  );
+  expectIncludes(
+    source,
+    'file.on("error", () => fail(downloadArtifactWriteError("archive")));',
+    "redacted archive artifact write failure"
+  );
+  expectIncludes(
+    source,
+    "function removeDownloadArtifact(target)",
+    "redacted archive cleanup failure guard"
+  );
 }
 
 function expectDefaultLimits() {
