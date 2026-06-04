@@ -7751,10 +7751,9 @@ impl UpdateArchiveScan {
         let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
             format!("release update archive manifest.toml is invalid UTF-8: {error}")
         })?;
-        self.manifest_target = parse_update_archive_manifest_target(&text);
-        self.manifest_payload_safe = text
-            .lines()
-            .any(|line| line.trim() == "payload_contents_included = false");
+        let manifest = parse_update_archive_manifest(&text)?;
+        self.manifest_target = manifest.target;
+        self.manifest_payload_safe = manifest.payload_contents_included == Some(false);
         Ok(())
     }
 
@@ -7965,20 +7964,57 @@ fn copy_update_binary_with_sha256<R: Read, W: Write>(
     Ok((copied, sha256))
 }
 
-fn parse_update_archive_manifest_target(text: &str) -> Option<String> {
-    text.lines().find_map(|line| {
+#[derive(Default)]
+struct UpdateArchiveManifest {
+    target: Option<String>,
+    payload_contents_included: Option<bool>,
+}
+
+fn parse_update_archive_manifest(text: &str) -> Result<UpdateArchiveManifest, String> {
+    let mut seen = HashSet::new();
+    let mut manifest = UpdateArchiveManifest::default();
+
+    for (line_index, line) in text.lines().enumerate() {
+        let line_number = line_index + 1;
         let trimmed = line.trim();
-        let (key, value) = trimmed.split_once('=')?;
-        if key.trim() != "target" {
-            return None;
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!(
+                "release update archive manifest.toml line {line_number} must include a key"
+            ));
+        }
+        if !seen.insert(key.to_string()) {
+            return Err(format!(
+                "release update archive manifest.toml line {line_number} contains duplicate key {key}"
+            ));
         }
         let value = value.trim();
-        value
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-            .filter(|value| !value.trim().is_empty())
-            .map(ToString::to_string)
-    })
+        match key {
+            "target" => {
+                manifest.target = value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+                    .filter(|value| !value.trim().is_empty())
+                    .map(ToString::to_string);
+            }
+            "payload_contents_included" => {
+                manifest.payload_contents_included = match value {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    Ok(manifest)
 }
 
 fn update_binary_suffix_for_target(target: &str) -> Result<&'static str, String> {
@@ -12519,6 +12555,37 @@ mod tests {
         assert!(!output.stderr.contains("BEGIN PGP SIGNATURE"));
     }
 
+    #[test]
+    fn update_apply_rejects_duplicate_archive_manifest_keys_without_values() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let secret_target = "secret-local-target";
+        let duplicate_target_manifest = format!(
+            "version = \"0.1.0\"\ntarget = \"{target}\"\ntarget = \"{secret_target}\"\npayload_contents_included = false\n"
+        );
+        let duplicate_target_archive =
+            update_archive_fixture_bytes_with_manifest(&target, &duplicate_target_manifest);
+
+        let duplicate_target_error =
+            stage_update_archive_binaries(&filename, &duplicate_target_archive, &target)
+                .expect_err("duplicate manifest target should fail closed");
+
+        assert!(duplicate_target_error.contains("duplicate key target"));
+        assert!(!duplicate_target_error.contains(secret_target));
+
+        let duplicate_payload_manifest = format!(
+            "version = \"0.1.0\"\ntarget = \"{target}\"\npayload_contents_included = false\npayload_contents_included = true\n"
+        );
+        let duplicate_payload_archive =
+            update_archive_fixture_bytes_with_manifest(&target, &duplicate_payload_manifest);
+
+        let duplicate_payload_error =
+            stage_update_archive_binaries(&filename, &duplicate_payload_archive, &target)
+                .expect_err("duplicate payload guard should fail closed");
+
+        assert!(duplicate_payload_error.contains("duplicate key payload_contents_included"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn update_apply_dry_run_rejects_symlinked_install_dir_without_installing() {
@@ -15450,6 +15517,29 @@ mod tests {
     fn update_archive_fixture_bytes(target: &str, unsafe_member: bool) -> Vec<u8> {
         let root = format!("conu-0.1.0-{target}");
         update_archive_fixture_bytes_with_root(target, &root, unsafe_member)
+    }
+
+    fn update_archive_fixture_bytes_with_manifest(target: &str, manifest: &str) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let root = format!("conu-0.1.0-{target}");
+        append_update_archive_fixture_file(
+            &mut builder,
+            &format!("{root}/manifest.toml"),
+            manifest.as_bytes(),
+            0o644,
+        );
+        for name in UPDATE_BINARY_NAMES {
+            append_update_archive_fixture_file(
+                &mut builder,
+                &format!("{root}/bin/{}", update_binary_filename(name)),
+                &update_archive_binary_bytes(name),
+                0o755,
+            );
+        }
+        builder.finish().expect("tar builder finishes");
+        let encoder = builder.into_inner().expect("tar encoder returns");
+        encoder.finish().expect("gzip finishes")
     }
 
     fn update_archive_fixture_bytes_with_root(
