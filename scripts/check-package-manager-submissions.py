@@ -171,6 +171,26 @@ def expect_failure(description: str, action, expected: str) -> None:
     raise AssertionError(f"{description} unexpectedly passed")
 
 
+def expect_failure_without_leak(
+    description: str,
+    action,
+    expected: str,
+    forbidden: str,
+) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        message = str(exc)
+        if expected not in message:
+            raise AssertionError(
+                f"{description} failed with {message!r}, expected {expected!r}"
+            ) from exc
+        if forbidden in message:
+            raise AssertionError(f"{description} leaked forbidden value: {message!r}") from exc
+        return
+    raise AssertionError(f"{description} unexpectedly passed")
+
+
 def expect_failure_with_limit(
     module,
     limit_name: str,
@@ -252,6 +272,21 @@ def main() -> int:
         second = assert_bundle(preparer, generated, repeat_output)
         if first.read_bytes() != second.read_bytes():
             raise AssertionError("package-manager submission bundle was not deterministic")
+
+        expect_failure_without_leak(
+            "duplicate Scoop manifest JSON key",
+            lambda: preparer.validate_structured_manifest(
+                (
+                    '{"version":"0.1.0","version":"'
+                    + SENSITIVE_SENTINEL
+                    + '","architecture":{},"bin":[]}\n'
+                ),
+                preparer.BundleEntry("conu.json", "scoop-bucket/bucket/conu.json", "scoop"),
+                generated / "conu.json",
+            ),
+            "not valid JSON",
+            SENSITIVE_SENTINEL,
+        )
 
         symlink_dist = temp / "symlink-dist"
         if try_symlink(generated, symlink_dist, target_is_directory=True):

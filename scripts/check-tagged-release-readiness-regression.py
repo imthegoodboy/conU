@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -493,6 +494,44 @@ def run_missing_secret_tests(module) -> None:
     parsed = assert_safe_report(report)
     if "NPM_TOKEN" not in parsed["releaseSecrets"]["missing"]:
         raise AssertionError("missing release secret name was not reported")
+
+
+def run_repo_version_json_duplicate_tests(module) -> None:
+    original_root = module.ROOT
+    original_crates = module.CRATE_MANIFESTS
+    original_npm = module.NPM_MANIFESTS
+    with tempfile.TemporaryDirectory(prefix="conu-tagged-version-json-") as temp_text:
+        temp = Path(temp_text)
+        (temp / "Cargo.toml").write_text(
+            "[package]\nname = \"conu-fixture\"\nversion = \"0.1.0\"\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (temp / "package.json").write_text(
+            '{"version":"0.1.0","version":"' + SENSITIVE_SENTINEL + '"}\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        try:
+            module.ROOT = temp
+            module.CRATE_MANIFESTS = (Path("Cargo.toml"),)
+            module.NPM_MANIFESTS = (Path("package.json"),)
+            try:
+                module.read_repo_version()
+            except ValueError as exc:
+                rendered = str(exc)
+                if "duplicate JSON key: version" not in rendered:
+                    raise AssertionError(
+                        f"unexpected duplicate package version error: {rendered!r}"
+                    ) from exc
+                if SENSITIVE_SENTINEL in rendered:
+                    raise AssertionError("duplicate package version error leaked shadow value") from exc
+            else:
+                raise AssertionError("duplicate package version JSON key unexpectedly passed")
+        finally:
+            module.ROOT = original_root
+            module.CRATE_MANIFESTS = original_crates
+            module.NPM_MANIFESTS = original_npm
 
 
 def run_secret_rotation_tests(module) -> None:
@@ -1265,6 +1304,7 @@ def main() -> int:
     run_ci_readiness_tests(module)
     run_release_branch_readiness_tests(module)
     run_missing_secret_tests(module)
+    run_repo_version_json_duplicate_tests(module)
     run_secret_rotation_tests(module)
     run_secret_rotation_marker_tests(module)
     run_custom_repository_tests(module)

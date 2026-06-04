@@ -17,6 +17,7 @@ from typing import Any, BinaryIO
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from github_release_secrets import normalize_repo
+from json_safety import load_json_object
 from public_host_validation import validate_public_host
 
 
@@ -165,8 +166,7 @@ def parse_args() -> argparse.Namespace:
 
 def read_package_version(relative_path: str) -> str:
     path = Path(__file__).resolve().parents[1] / relative_path
-    with path.open("r", encoding="utf-8") as handle:
-        package = json.load(handle)
+    package = load_json_object(path, encoding="utf-8")
     version = package.get("version")
     if not isinstance(version, str) or not version:
         raise SystemExit(f"{path} does not contain a non-empty version")

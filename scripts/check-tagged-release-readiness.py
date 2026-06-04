@@ -30,6 +30,7 @@ from github_release_secrets import (
     normalize_repo,
     run_gh_json,
 )
+from json_safety import load_json_object
 from public_host_validation import is_loopback_host, validate_public_host
 
 
@@ -293,7 +294,7 @@ def read_repo_version() -> str:
         versions[str(manifest)] = version.strip()
 
     for manifest in NPM_MANIFESTS:
-        payload = json.loads((ROOT / manifest).read_text(encoding="utf-8"))
+        payload = load_json_object(ROOT / manifest, encoding="utf-8")
         version = payload.get("version")
         if not isinstance(version, str) or not version.strip():
             raise ValueError(f"{manifest} does not contain version")

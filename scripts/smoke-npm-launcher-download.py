@@ -7,13 +7,14 @@ import argparse
 import functools
 import http.server
 import importlib.util
-import json
 import os
 import socketserver
 import sys
 import tempfile
 import threading
 from pathlib import Path
+
+from json_safety import load_json_object
 
 
 DEFAULT_PACKAGE_DIR = Path("packaging/npm/conu-cli")
@@ -112,7 +113,7 @@ def load_local_smoke_helpers():
 
 
 def npm_asset_name(package_dir: Path, local_smoke) -> str:
-    manifest = json.loads(package_dir.joinpath("package.json").read_text(encoding="utf-8"))
+    manifest = load_json_object(package_dir.joinpath("package.json"), encoding="utf-8")
     version = manifest.get("version")
     if not isinstance(version, str) or not version:
         raise SystemExit(f"{package_dir / 'package.json'} missing package version")
