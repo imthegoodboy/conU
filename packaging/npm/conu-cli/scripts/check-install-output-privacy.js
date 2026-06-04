@@ -26,6 +26,17 @@ function main() {
     "installer extraction tool env scrub guard"
   );
   expectIncludes(
+    installScript,
+    "const EXTRACT_TOOL_TIMEOUT_MS =",
+    "installer extraction timeout constant"
+  );
+  expectOccurrenceCount(
+    installScript,
+    "timeout: EXTRACT_TOOL_TIMEOUT_MS",
+    2,
+    "installer extraction tool timeout guard"
+  );
+  expectIncludes(
     archivePreflight,
     'const { buildChildEnv } = require("./child-env");',
     "archive preflight child env scrub import"
@@ -35,6 +46,17 @@ function main() {
     "env: buildChildEnv()",
     1,
     "archive preflight tool env scrub guard"
+  );
+  expectIncludes(
+    archivePreflight,
+    "const MAX_ARCHIVE_TOOL_TIMEOUT_MS =",
+    "archive preflight tool timeout constant"
+  );
+  expectOccurrenceCount(
+    archivePreflight,
+    "timeout: MAX_ARCHIVE_TOOL_TIMEOUT_MS",
+    1,
+    "archive preflight tool timeout guard"
   );
 
   expectChildEnvScrubsWrapperSelector();
