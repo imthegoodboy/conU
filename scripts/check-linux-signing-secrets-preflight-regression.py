@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -18,15 +19,26 @@ PREFLIGHT = ROOT / "scripts" / "check-linux-signing-secrets-preflight.py"
 PASSPHRASE = "conu-linux-signing-preflight-regression-passphrase"
 USER_ID = "conU Linux Signing Preflight Regression <noreply@github.com>"
 WRONG_FINGERPRINT = "F" * 40
+SENSITIVE_FAILURE_VALUES = (
+    "npm_fakeLinuxSigningToken1234567890",
+    "ghp_fakeLinuxSigningToken1234567890",
+    "fake-bearer-token-1234567890",
+    "fake-basic-token-1234567890",
+    "fake-node-auth-token-1234567890",
+    "fake-url-password-1234567890",
+    "fake-query-token-1234567890",
+    "fake-private-key-1234567890",
+)
 
 
 def main() -> int:
     run_common_output_redaction_tests()
+    run_preflight_output_redaction_tests()
 
     gpg = shutil.which("gpg")
     if gpg is None:
         print(
-            "Linux signing-secret common redaction checks passed; "
+            "Linux signing-secret redaction checks passed; "
             "GPG integration regression skipped: gpg is unavailable"
         )
         return 0
@@ -134,33 +146,63 @@ def run_common_output_redaction_tests() -> None:
         linux_gpg_common.subprocess.run = original_subprocess_run
 
 
+def run_preflight_output_redaction_tests() -> None:
+    preflight = load_preflight()
+    original_subprocess_run = preflight.subprocess.run
+    raw = sensitive_command_output()
+    try:
+
+        def failed_run(*args, **_kwargs):
+            command = args[0] if args else "gpg"
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=command,
+                output=raw.encode("utf-8"),
+            )
+
+        preflight.subprocess.run = failed_run
+        try:
+            preflight.run_gpg("gpg", {}, ["--fixture"])
+        except SystemExit as exc:
+            rendered = str(exc)
+        else:
+            raise AssertionError("Linux signing-secret preflight unexpectedly passed")
+    finally:
+        preflight.subprocess.run = original_subprocess_run
+
+    if "gpg failed with output:" not in rendered:
+        raise AssertionError("preflight failure output omitted the command failure label")
+    for value in SENSITIVE_FAILURE_VALUES:
+        if value in rendered:
+            raise AssertionError("preflight GPG failure output leaked a sensitive value")
+
+
+def load_preflight():
+    sys.path.insert(0, str(SCRIPT_DIR))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "check_linux_signing_secrets_preflight",
+            PREFLIGHT,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("could not load Linux signing-secret preflight")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        try:
+            sys.path.remove(str(SCRIPT_DIR))
+        except ValueError:
+            pass
+
+
 def assert_common_command_output_redacts(linux_gpg_common) -> None:
-    sensitive_values = (
-        "npm_fakeLinuxSigningToken1234567890",
-        "ghp_fakeLinuxSigningToken1234567890",
-        "fake-bearer-token-1234567890",
-        "fake-basic-token-1234567890",
-        "fake-node-auth-token-1234567890",
-        "fake-url-password-1234567890",
-        "fake-query-token-1234567890",
-        "fake-private-key-1234567890",
-    )
-    raw = "\n".join(
-        [
-            f"npm ERR! auth token {sensitive_values[0]}",
-            f"gh token {sensitive_values[1]}",
-            f"Authorization: Bearer {sensitive_values[2]}",
-            f"Authorization: Basic {sensitive_values[3]}",
-            f"NODE_AUTH_TOKEN={sensitive_values[4]}",
-            f"https://user:{sensitive_values[5]}@example.invalid/conu",
-            f"https://example.invalid/conu?token={sensitive_values[6]}",
-            f"PRIVATE_KEY={sensitive_values[7]}",
-        ]
-    )
+    raw = sensitive_command_output()
     redacted = linux_gpg_common.redact_command_output(raw)
     if "[redacted]" not in redacted:
         raise AssertionError("Linux GPG command output redaction did not mark redacted output")
-    for value in sensitive_values:
+    for value in SENSITIVE_FAILURE_VALUES:
         if value in redacted:
             raise AssertionError("Linux GPG command output redaction leaked a sensitive value")
 
@@ -181,9 +223,24 @@ def assert_common_command_output_redacts(linux_gpg_common) -> None:
         raise AssertionError("Linux GPG command output redaction unexpectedly passed")
     if "gpg failed with output:" not in rendered:
         raise AssertionError("Linux GPG failure output omitted the command failure label")
-    for value in sensitive_values:
+    for value in SENSITIVE_FAILURE_VALUES:
         if value in rendered:
             raise AssertionError("Linux GPG failure output leaked a sensitive value")
+
+
+def sensitive_command_output() -> str:
+    return "\n".join(
+        [
+            f"npm ERR! auth token {SENSITIVE_FAILURE_VALUES[0]}",
+            f"gh token {SENSITIVE_FAILURE_VALUES[1]}",
+            f"Authorization: Bearer {SENSITIVE_FAILURE_VALUES[2]}",
+            f"Authorization: Basic {SENSITIVE_FAILURE_VALUES[3]}",
+            f"NODE_AUTH_TOKEN={SENSITIVE_FAILURE_VALUES[4]}",
+            f"https://user:{SENSITIVE_FAILURE_VALUES[5]}@example.invalid/conu",
+            f"https://example.invalid/conu?token={SENSITIVE_FAILURE_VALUES[6]}",
+            f"PRIVATE_KEY={SENSITIVE_FAILURE_VALUES[7]}",
+        ]
+    )
 
 
 def assert_common_failed(
