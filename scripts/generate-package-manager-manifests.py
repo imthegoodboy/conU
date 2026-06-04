@@ -56,6 +56,7 @@ MAX_RELEASE_ARCHIVE_BYTES = 1_000_000_000
 MAX_RELEASE_MEMBER_BYTES = 512_000_000
 MAX_RELEASE_MEMBER_COUNT = 10_000
 MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
+MEMBER_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false"
 MAX_PACKAGE_BINARY_BYTES = MAX_RELEASE_MEMBER_BYTES
 MAX_GENERATED_OUTPUT_BYTES = MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES
 
@@ -65,6 +66,14 @@ class ArchiveScanState:
     paths: set[str]
     entry_count: int = 0
     total_uncompressed: int = 0
+
+
+def release_member_failure(archive_name: str, reason: str) -> SystemExit:
+    return SystemExit(f"{archive_name} {reason}; {MEMBER_FAILURE_GUARDS}")
+
+
+def has_windows_drive_prefix(path: str) -> bool:
+    return len(path) >= 2 and path[1] == ":" and path[0].isalpha()
 
 
 @dataclass(frozen=True)
@@ -644,16 +653,16 @@ def validate_zip_release_member_for_scan(
 ) -> tuple[str, str | None, bool]:
     raw_name = member.filename
     if member.flag_bits & 0x1:
-        raise SystemExit(f"{archive_name} contains encrypted zip member: {raw_name}")
+        raise release_member_failure(archive_name, "contains encrypted zip member")
     file_type = (member.external_attr >> 16) & 0o170000
     is_directory = member.is_dir() or file_type == stat.S_IFDIR
     if file_type == stat.S_IFLNK:
-        raise SystemExit(f"{archive_name} contains unsupported link member: {raw_name}")
+        raise release_member_failure(archive_name, "contains unsupported link member")
     if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
-        raise SystemExit(f"{archive_name} contains unsupported zip member: {raw_name}")
+        raise release_member_failure(archive_name, "contains unsupported zip member")
     if is_directory:
         if member.file_size != 0:
-            raise SystemExit(f"{archive_name} contains directory member with data: {raw_name}")
+            raise release_member_failure(archive_name, "contains directory member with data")
         normalized, root_style = record_release_archive_member(
             archive_name,
             raw_name,
@@ -686,23 +695,27 @@ def record_release_archive_member(
     allow_empty: bool = False,
 ) -> tuple[str, str | None]:
     if size < 0:
-        raise SystemExit(f"{archive_name} contains member with invalid size: {raw_name}")
+        raise release_member_failure(archive_name, "contains member with invalid size")
     if size > MAX_RELEASE_MEMBER_BYTES:
-        raise SystemExit(f"{archive_name} member is too large: {raw_name}")
+        raise release_member_failure(archive_name, "member is too large")
 
     state.entry_count += 1
     if state.entry_count > MAX_RELEASE_MEMBER_COUNT:
         raise SystemExit(f"{archive_name} contains more than {MAX_RELEASE_MEMBER_COUNT} entries")
 
-    normalized, member_style = normalize_release_member_path(raw_name, expected_root)
-    root_style = update_release_root_style(archive_name, raw_name, root_style, member_style)
+    normalized, member_style = normalize_release_member_path(
+        archive_name,
+        raw_name,
+        expected_root,
+    )
+    root_style = update_release_root_style(archive_name, root_style, member_style)
     if not normalized:
         if allow_empty:
             return normalized, root_style
-        raise SystemExit(f"{archive_name} contains empty archive path: {raw_name}")
+        raise release_member_failure(archive_name, "contains empty archive path")
 
     if normalized in state.paths:
-        raise SystemExit(f"{archive_name} contains duplicate archive path: {normalized}")
+        raise release_member_failure(archive_name, "contains duplicate archive path")
     state.paths.add(normalized)
 
     state.total_uncompressed += size
@@ -714,21 +727,30 @@ def record_release_archive_member(
     return normalized, root_style
 
 
-def normalize_release_member_path(raw_name: str, expected_root: str) -> tuple[str, str | None]:
+def normalize_release_member_path(
+    archive_name: str,
+    raw_name: str,
+    expected_root: str,
+) -> tuple[str, str | None]:
     normalized = raw_name.replace("\\", "/")
     path = PurePosixPath(normalized)
     parts = [part for part in path.parts if part not in {"", ".", "/"}]
-    if path.is_absolute() or ".." in parts:
-        raise SystemExit(f"unsafe archive path in package-manager asset: {raw_name}")
+    if (
+        path.is_absolute()
+        or normalized.startswith("//")
+        or has_windows_drive_prefix(normalized)
+        or ".." in parts
+    ):
+        raise release_member_failure(archive_name, "contains unsafe archive path")
     root_style = None
     if parts:
         if parts[0] == expected_root:
             root_style = "rooted"
             parts = parts[1:]
         elif parts[0].startswith("conu-"):
-            raise SystemExit(
-                f"unexpected archive root in package-manager asset: {parts[0]} "
-                f"(expected {expected_root})"
+            raise release_member_failure(
+                archive_name,
+                f"contains unexpected archive root (expected {expected_root})",
             )
         else:
             root_style = "rootless"
@@ -737,14 +759,13 @@ def normalize_release_member_path(raw_name: str, expected_root: str) -> tuple[st
 
 def update_release_root_style(
     archive_name: str,
-    raw_name: str,
     current: str | None,
     member_style: str | None,
 ) -> str | None:
     if member_style is None:
         return current
     if current is not None and current != member_style:
-        raise SystemExit(f"{archive_name} mixes rooted and rootless archive paths: {raw_name}")
+        raise release_member_failure(archive_name, "mixes rooted and rootless archive paths")
     return member_style
 
 
@@ -767,8 +788,9 @@ def extract_linux_binaries(archive: Path, version: str, target: str) -> dict[str
                 for member in package:
                     if member.isdir():
                         if member.size != 0:
-                            raise SystemExit(
-                                f"{archive.name} contains directory member with data: {member.name}"
+                            raise release_member_failure(
+                                archive.name,
+                                "contains directory member with data",
                             )
                         _, root_style = record_release_archive_member(
                             archive.name,
@@ -781,8 +803,9 @@ def extract_linux_binaries(archive: Path, version: str, target: str) -> dict[str
                         )
                         continue
                     if not member.isfile():
-                        raise SystemExit(
-                            f"{archive.name} contains unsupported non-file member: {member.name}"
+                        raise release_member_failure(
+                            archive.name,
+                            "contains unsupported non-file member",
                         )
                     normalized, root_style = record_release_archive_member(
                         archive.name,
@@ -799,7 +822,7 @@ def extract_linux_binaries(archive: Path, version: str, target: str) -> dict[str
                         continue
                     handle = package.extractfile(member)
                     if handle is None:
-                        raise SystemExit(f"{archive.name} could not read binary: {member.name}")
+                        raise release_member_failure(archive.name, "could not read binary")
                     extracted[normalized] = read_limited_release_member(
                         archive.name,
                         member.name,
@@ -831,7 +854,7 @@ def read_limited_release_member(
 ) -> bytes:
     content = handle.read(limit + 1)
     if len(content) > limit:
-        raise SystemExit(f"{archive_name} member is too large: {member_name}")
+        raise release_member_failure(archive_name, "member is too large")
     return content
 
 

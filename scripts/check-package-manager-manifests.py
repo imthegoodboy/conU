@@ -274,6 +274,28 @@ def expect_failure(description: str, action, expected: str) -> None:
     raise AssertionError(f"{description} unexpectedly passed")
 
 
+def expect_member_redacted_failure(
+    description: str,
+    action,
+    expected: str,
+    *forbidden_values: str,
+) -> None:
+    try:
+        action()
+    except SystemExit as exc:
+        message = str(exc)
+    else:
+        raise AssertionError(f"{description} unexpectedly passed")
+    if expected not in message:
+        raise AssertionError(f"{description} failed with {message!r}, expected {expected!r}")
+    for marker in ("pathDisplayed=false", "contentsDisplayed=false"):
+        if marker not in message:
+            raise AssertionError(f"{description} did not include {marker}: {message!r}")
+    for value in forbidden_values:
+        if value in message:
+            raise AssertionError(f"{description} leaked archive member value {value!r}")
+
+
 def expect_redacted_failure(description: str, action, expected: str) -> None:
     try:
         action()
@@ -348,6 +370,23 @@ def expect_failure_with_limit(
     setattr(generator, limit_name, value)
     try:
         expect_failure(description, action, expected)
+    finally:
+        setattr(generator, limit_name, original)
+
+
+def expect_member_redacted_failure_with_limit(
+    generator,
+    limit_name: str,
+    value: int,
+    description: str,
+    action,
+    expected: str,
+    *forbidden_values: str,
+) -> None:
+    original = getattr(generator, limit_name)
+    setattr(generator, limit_name, value)
+    try:
+        expect_member_redacted_failure(description, action, expected, *forbidden_values)
     finally:
         setattr(generator, limit_name, original)
 
@@ -1348,10 +1387,11 @@ def main() -> int:
         write_dist(encrypted_windows)
         encrypted_archive = encrypted_windows / TARGETS["windows-x64"]
         mark_zip_member_encrypted(encrypted_archive, "bin/conu.exe")
-        expect_failure(
+        expect_member_redacted_failure(
             "encrypted windows zip member",
             lambda: generator.detect_windows_extract_dir(encrypted_archive, VERSION),
             "contains encrypted zip member",
+            "bin/conu.exe",
         )
 
         unsupported_windows = temp / "unsupported-windows"
@@ -1362,10 +1402,41 @@ def main() -> int:
             info = zipfile.ZipInfo("device")
             info.external_attr = stat.S_IFCHR << 16
             package.writestr(info, b"device\n")
-        expect_failure(
+        expect_member_redacted_failure(
             "unsupported windows zip member",
             lambda: generator.detect_windows_extract_dir(unsupported_archive, VERSION),
             "contains unsupported zip member",
+            "device",
+        )
+
+        duplicate_windows = temp / "duplicate-windows"
+        duplicate_windows.mkdir()
+        write_dist(duplicate_windows)
+        duplicate_archive = duplicate_windows / TARGETS["windows-x64"]
+        with zipfile.ZipFile(duplicate_archive, "a", compression=zipfile.ZIP_STORED) as package:
+            package.writestr("bin/./conu.exe", b"duplicate\n")
+        expect_member_redacted_failure(
+            "duplicate windows zip member",
+            lambda: generator.detect_windows_extract_dir(duplicate_archive, VERSION),
+            "contains duplicate archive path",
+            "bin/./conu.exe",
+            "bin/conu.exe",
+        )
+
+        drive_windows = temp / "drive-windows"
+        drive_windows.mkdir()
+        write_dist(drive_windows)
+        drive_archive = drive_windows / TARGETS["windows-x64"]
+        drive_member = "C:\\secret-package-manager-path"
+        with zipfile.ZipFile(drive_archive, "a", compression=zipfile.ZIP_STORED) as package:
+            package.writestr(drive_member, b"drive\n")
+        expect_member_redacted_failure(
+            "Windows drive zip member",
+            lambda: generator.detect_windows_extract_dir(drive_archive, VERSION),
+            "unsafe archive path",
+            drive_member,
+            "C:/secret-package-manager-path",
+            "secret-package-manager-path",
         )
 
         mixed_windows = temp / "mixed-windows"
@@ -1374,13 +1445,14 @@ def main() -> int:
         mixed_archive = mixed_windows / TARGETS["windows-x64"]
         with zipfile.ZipFile(mixed_archive, "a", compression=zipfile.ZIP_STORED) as package:
             package.writestr(f"conu-{VERSION}-windows-x64/README.md", "# conU\n")
-        expect_failure(
+        expect_member_redacted_failure(
             "mixed rooted windows archive",
             lambda: generator.detect_windows_extract_dir(mixed_archive, VERSION),
             "mixes rooted and rootless archive paths",
+            f"conu-{VERSION}-windows-x64/README.md",
         )
 
-        expect_failure_with_limit(
+        expect_member_redacted_failure_with_limit(
             generator,
             "MAX_RELEASE_MEMBER_BYTES",
             1,
@@ -1391,6 +1463,7 @@ def main() -> int:
                 "linux-x64",
             ),
             "member is too large",
+            "bin/conu",
         )
 
         expect_failure_with_limit(
@@ -1422,7 +1495,7 @@ def main() -> int:
             link.linkname = "bin/conu"
             link.mtime = 1577836800
             package.addfile(link)
-        expect_failure(
+        expect_member_redacted_failure(
             "unsupported linux tar member",
             lambda: generator.extract_linux_binaries(
                 unsupported_linux_archive,
@@ -1430,6 +1503,7 @@ def main() -> int:
                 "linux-x64",
             ),
             "contains unsupported non-file member",
+            "bin/linked-conu",
         )
 
         mixed_linux = temp / "mixed-linux"
@@ -1449,7 +1523,7 @@ def main() -> int:
             rooted_info.mode = 0o644
             rooted_info.mtime = 1577836800
             package.addfile(rooted_info, io.BytesIO(rooted_data))
-        expect_failure(
+        expect_member_redacted_failure(
             "mixed rooted linux archive",
             lambda: generator.extract_linux_binaries(
                 mixed_linux_archive,
@@ -1457,6 +1531,7 @@ def main() -> int:
                 "linux-x64",
             ),
             "mixes rooted and rootless archive paths",
+            f"conu-{VERSION}-linux-x64/README.md",
         )
 
     print("package-manager manifest generation regressions passed")
