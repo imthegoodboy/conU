@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
+const { buildChildEnv } = require("../lib/child-env");
 const { BINARIES, binarySuffix, platformKey, vendorDir } = require("../lib/platform");
 
 const packageRoot = path.resolve(__dirname, "..");
@@ -12,6 +13,8 @@ const packageRoot = path.resolve(__dirname, "..");
 function main() {
   const installScript = fs.readFileSync(path.join(packageRoot, "scripts", "install.js"), "utf8");
   expectNotIncludes(installScript, 'stdio: "inherit"', "installer child output privacy guard");
+
+  expectChildEnvScrubsWrapperSelector();
 
   const checkOnly = runNode([path.join(packageRoot, "scripts", "install.js"), "--check-only"]);
   expectNoLocalPath(checkOnly, packageRoot, "check-only package root");
@@ -87,6 +90,23 @@ function buildEnv(envOverrides = {}) {
     }
   }
   return env;
+}
+
+function expectChildEnvScrubsWrapperSelector() {
+  const sourceEnv = {
+    CONU_BIN_NAME: "conu",
+    CONU_HOME: "runtime-state",
+    CONU_RELAY_TOKEN: "relay-token"
+  };
+  const childEnv = buildChildEnv(sourceEnv);
+  if ("CONU_BIN_NAME" in childEnv) {
+    throw new Error("launcher child env included wrapper-only CONU_BIN_NAME");
+  }
+  expectEqual(childEnv.CONU_HOME, "runtime-state", "child env keeps conU runtime env");
+  expectEqual(childEnv.CONU_RELAY_TOKEN, "relay-token", "child env keeps conU relay env");
+  if (!("CONU_BIN_NAME" in sourceEnv)) {
+    throw new Error("launcher child env builder mutated source env");
+  }
 }
 
 function expectLocalBinaryDirFailureIsRedacted() {
@@ -239,6 +259,12 @@ function expectIncludes(output, value, label) {
 function expectNotIncludes(output, value, label) {
   if (output.includes(value)) {
     throw new Error(`${label}: expected output not to include ${value}`);
+  }
+}
+
+function expectEqual(actual, expected, label) {
+  if (actual !== expected) {
+    throw new Error(`${label}: expected ${expected}, got ${actual}`);
   }
 }
 
