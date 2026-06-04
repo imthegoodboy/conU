@@ -23,8 +23,9 @@ const FORBIDDEN_PARTS = new Set([
 const FORBIDDEN_NAMES = new Set(["node.toml", "runtime.toml", "trust.toml"]);
 
 function validateArchiveMembers(archivePath) {
-  const members = listArchiveMembers(archivePath);
-  assertSafeArchiveMemberList(members, archivePath);
+  const archiveLabel = displayArchiveLabel(archivePath);
+  const members = listArchiveMembers(archivePath, archiveLabel);
+  assertSafeArchiveMemberList(members, archiveLabel);
 }
 
 function assertSafeArchiveMemberList(members, archiveLabel = "archive") {
@@ -90,20 +91,22 @@ function rejectForbiddenArchivePath(normalized, archiveLabel) {
   }
 }
 
-function listArchiveMembers(archivePath) {
-  const tarMembers = listArchiveMembersWithTar(archivePath);
+function listArchiveMembers(archivePath, archiveLabel) {
+  const tarMembers = listArchiveMembersWithTar(archivePath, archiveLabel);
   if (tarMembers) {
     return tarMembers;
   }
 
   if (process.platform === "win32" && archivePath.endsWith(".zip")) {
-    return listZipMembersWithPowerShell(archivePath);
+    return listZipMembersWithPowerShell(archivePath, archiveLabel);
   }
 
-  throw new Error(`could not inspect archive members before extraction: ${archivePath}`);
+  throw new Error(
+    `could not inspect archive members before extraction: ${archiveLabel}; pathDisplayed=false`
+  );
 }
 
-function listArchiveMembersWithTar(archivePath) {
+function listArchiveMembersWithTar(archivePath, archiveLabel) {
   const names = runTool("tar", ["-tf", archivePath]);
   if (names.status !== 0) {
     return null;
@@ -111,7 +114,9 @@ function listArchiveMembersWithTar(archivePath) {
 
   const verbose = runTool("tar", ["-tvf", archivePath]);
   if (verbose.status !== 0) {
-    throw new Error(`could not inspect archive member types before extraction: ${archivePath}`);
+    throw new Error(
+      `could not inspect archive member types before extraction: ${archiveLabel}; pathDisplayed=false`
+    );
   }
 
   const nameLines = splitToolLines(names.stdout);
@@ -139,7 +144,7 @@ function parseTarMemberType(line) {
   return marker ? "other" : "unknown";
 }
 
-function listZipMembersWithPowerShell(archivePath) {
+function listZipMembersWithPowerShell(archivePath, archiveLabel) {
   const script = [
     "Add-Type -AssemblyName System.IO.Compression.FileSystem",
     "$zip = [System.IO.Compression.ZipFile]::OpenRead($args[0])",
@@ -163,7 +168,9 @@ function listZipMembersWithPowerShell(archivePath) {
     archivePath
   ]);
   if (result.status !== 0) {
-    throw new Error(`could not inspect zip archive members before extraction: ${archivePath}`);
+    throw new Error(
+      `could not inspect zip archive members before extraction: ${archiveLabel}; pathDisplayed=false`
+    );
   }
 
   const output = result.stdout.trim();
@@ -172,6 +179,11 @@ function listZipMembersWithPowerShell(archivePath) {
   }
   const parsed = JSON.parse(output);
   return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+function displayArchiveLabel(archivePath) {
+  const baseName = path.basename(String(archivePath || ""));
+  return baseName || "archive";
 }
 
 function runTool(command, args) {
