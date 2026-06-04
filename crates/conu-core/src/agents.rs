@@ -355,11 +355,11 @@ pub fn parse_signed_agent_card_metadata(contents: &str) -> Result<SignedAgentCar
         node_id: validate_identifier(required(&values, "node_id")?, "node id")?,
         kind: validate_kind(required(&values, "kind")?)?,
         capabilities: AgentCapabilities {
-            messages: parse_bool(values.get("cap_messages")).unwrap_or(true),
-            streams: parse_bool(values.get("cap_streams")).unwrap_or(false),
-            rooms: parse_bool(values.get("cap_rooms")).unwrap_or(false),
-            files: parse_bool(values.get("cap_files")).unwrap_or(false),
-            presence: parse_bool(values.get("cap_presence")).unwrap_or(true),
+            messages: parse_capability_bool(&values, "cap_messages", true)?,
+            streams: parse_capability_bool(&values, "cap_streams", false)?,
+            rooms: parse_capability_bool(&values, "cap_rooms", false)?,
+            files: parse_capability_bool(&values, "cap_files", false)?,
+            presence: parse_capability_bool(&values, "cap_presence", true)?,
         },
         signature_algorithm: validate_identifier(
             required(&values, "signature_algorithm")?,
@@ -760,11 +760,11 @@ fn record_from_values(values: &HashMap<String, String>) -> Result<LocalAgentReco
         presence,
         last_seen_unix,
         capabilities: AgentCapabilities {
-            messages: parse_bool(values.get("cap_messages")).unwrap_or(true),
-            streams: parse_bool(values.get("cap_streams")).unwrap_or(false),
-            rooms: parse_bool(values.get("cap_rooms")).unwrap_or(false),
-            files: parse_bool(values.get("cap_files")).unwrap_or(false),
-            presence: parse_bool(values.get("cap_presence")).unwrap_or(true),
+            messages: parse_capability_bool(values, "cap_messages", true)?,
+            streams: parse_capability_bool(values, "cap_streams", false)?,
+            rooms: parse_capability_bool(values, "cap_rooms", false)?,
+            files: parse_capability_bool(values, "cap_files", false)?,
+            presence: parse_capability_bool(values, "cap_presence", true)?,
         },
         signature_algorithm: optional_clean(values.get("signature_algorithm")),
         signature_key_id: optional_clean(values.get("signature_key_id")),
@@ -785,11 +785,11 @@ fn registration_from_values(
             .unwrap_or_else(|| "local-agent".to_string()),
     )?;
     registration.capabilities = AgentCapabilities {
-        messages: parse_bool(values.get("cap_messages")).unwrap_or(true),
-        streams: parse_bool(values.get("cap_streams")).unwrap_or(false),
-        rooms: parse_bool(values.get("cap_rooms")).unwrap_or(false),
-        files: parse_bool(values.get("cap_files")).unwrap_or(false),
-        presence: parse_bool(values.get("cap_presence")).unwrap_or(true),
+        messages: parse_capability_bool(values, "cap_messages", true)?,
+        streams: parse_capability_bool(values, "cap_streams", false)?,
+        rooms: parse_capability_bool(values, "cap_rooms", false)?,
+        files: parse_capability_bool(values, "cap_files", false)?,
+        presence: parse_capability_bool(values, "cap_presence", true)?,
     };
     Ok(registration)
 }
@@ -1135,12 +1135,21 @@ fn value_or_empty<'a>(values: &'a HashMap<String, String>, key: &str) -> &'a str
     values.get(key).map(String::as_str).unwrap_or("")
 }
 
-fn parse_bool(value: Option<&String>) -> Option<bool> {
-    value.and_then(|value| match value.as_str() {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
-    })
+fn parse_capability_bool(
+    values: &HashMap<String, String>,
+    key: &'static str,
+    default: bool,
+) -> Result<bool, AgentError> {
+    let Some(value) = values.get(key) else {
+        return Ok(default);
+    };
+    match value.as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(AgentError::InvalidRequest {
+            reason: format!("{key} must be true or false"),
+        }),
+    }
 }
 
 fn optional_clean(value: Option<&String>) -> Option<String> {
@@ -1256,6 +1265,71 @@ mod tests {
         );
         assert!(verify_signed_agent_card(&card).expect("signature verifies"));
         assert!(!format!("{card:?}").contains("private message contents"));
+    }
+
+    #[test]
+    fn malformed_registration_capability_is_rejected() {
+        let values = parse_key_values(
+            "agent_id = \"agent.codex\"\n\
+display_name = \"Codex Desktop\"\n\
+kind = \"coding-agent\"\n\
+cap_messages = maybe\n",
+        );
+
+        let error = registration_from_values(&values)
+            .expect_err("malformed registration capability should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("cap_messages must be true or false"));
+        assert!(!rendered.contains("maybe"));
+    }
+
+    #[test]
+    fn malformed_local_agent_record_capability_is_rejected() {
+        let values = parse_key_values(
+            "agent_id = \"agent.codex\"\n\
+display_name = \"Codex Desktop\"\n\
+node_id = \"node.local\"\n\
+kind = \"coding-agent\"\n\
+presence = \"ready\"\n\
+last_seen_unix = 1\n\
+cap_messages = true\n\
+cap_streams = maybe\n",
+        );
+
+        let error =
+            record_from_values(&values).expect_err("malformed local capability should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("cap_streams must be true or false"));
+        assert!(!rendered.contains("maybe"));
+    }
+
+    #[test]
+    fn malformed_signed_agent_card_capability_is_rejected() {
+        let metadata = "version = \"1\"\n\
+type = \"signed_agent_card\"\n\
+agent_id = \"agent.codex\"\n\
+display_name = \"Codex Desktop\"\n\
+node_id = \"node.local\"\n\
+kind = \"coding-agent\"\n\
+cap_messages = maybe\n\
+cap_streams = false\n\
+cap_rooms = false\n\
+cap_files = false\n\
+cap_presence = true\n\
+signature_algorithm = \"ed25519\"\n\
+signature_key_id = \"key.1\"\n\
+signing_public_key_hex = \"aa\"\n\
+signature_hex = \"bb\"\n\
+payload_displayed = false\n";
+
+        let error = parse_signed_agent_card_metadata(metadata)
+            .expect_err("malformed signed card capability should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("cap_messages must be true or false"));
+        assert!(!rendered.contains("maybe"));
     }
 
     #[test]

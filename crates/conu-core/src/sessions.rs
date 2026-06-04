@@ -699,11 +699,11 @@ fn remote_agent_from_values(
         presence,
         last_seen_unix: parse_u64(&required(values, "last_seen_unix")?)?,
         capabilities: AgentCapabilities {
-            messages: parse_bool(values.get("cap_messages")).unwrap_or(true),
-            streams: parse_bool(values.get("cap_streams")).unwrap_or(false),
-            rooms: parse_bool(values.get("cap_rooms")).unwrap_or(false),
-            files: parse_bool(values.get("cap_files")).unwrap_or(false),
-            presence: parse_bool(values.get("cap_presence")).unwrap_or(true),
+            messages: parse_capability_bool(values, "cap_messages", true)?,
+            streams: parse_capability_bool(values, "cap_streams", false)?,
+            rooms: parse_capability_bool(values, "cap_rooms", false)?,
+            files: parse_capability_bool(values, "cap_files", false)?,
+            presence: parse_capability_bool(values, "cap_presence", true)?,
         },
         signature_algorithm: optional_clean(values.get("signature_algorithm")),
         signature_key_id: optional_clean(values.get("signature_key_id")),
@@ -995,11 +995,20 @@ fn parse_usize(value: &str) -> Result<usize, SessionError> {
         })
 }
 
-fn parse_bool(value: Option<&String>) -> Option<bool> {
-    match value?.as_str() {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
+fn parse_capability_bool(
+    values: &HashMap<String, String>,
+    key: &'static str,
+    default: bool,
+) -> Result<bool, SessionError> {
+    let Some(value) = values.get(key) else {
+        return Ok(default);
+    };
+    match value.as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(SessionError::InvalidRecord {
+            reason: format!("{key} must be true or false"),
+        }),
     }
 }
 
@@ -1343,6 +1352,27 @@ mod tests {
 
         assert!(error.to_string().contains("signing key"));
         assert!(!error.to_string().contains("private message contents"));
+    }
+
+    #[test]
+    fn malformed_remote_agent_capability_is_rejected() {
+        let values = parse_key_values(
+            "agent_id = \"agent.bob\"\n\
+display_name = \"Bob\"\n\
+peer_node_id = \"node.bob\"\n\
+node_id = \"node.bob\"\n\
+kind = \"test-agent\"\n\
+presence = \"ready\"\n\
+last_seen_unix = 1\n\
+cap_messages = maybe\n",
+        );
+
+        let error = remote_agent_from_values(&values)
+            .expect_err("malformed remote capability should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("cap_messages must be true or false"));
+        assert!(!rendered.contains("maybe"));
     }
 
     fn register_agent(home: &Path, agent_id: &str, streams: bool, rooms: bool) {
