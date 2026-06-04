@@ -290,7 +290,7 @@ pub fn read_message_payload(
         "inspect local message",
         "read local message",
     )?;
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
     let payload =
         payload_from_values(&paths, &values, &message_envelope_aad_from_values(&values)?)?;
 
@@ -439,7 +439,7 @@ fn process_one_message_request(
         "inspect message IPC request",
         "read message IPC request",
     )?;
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
 
     if value_or_empty(&values, "version") != REQUEST_VERSION {
         return Err(MessageError::InvalidRequest {
@@ -874,7 +874,7 @@ fn read_inbox_entry(path: &Path) -> Result<InboxEntry, MessageError> {
         "inspect inbox metadata",
         "read inbox metadata",
     )?;
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
 
     Ok(InboxEntry {
         envelope_id: validate_identifier(required(&values, "envelope_id")?, "envelope id")?,
@@ -903,7 +903,7 @@ fn read_receipt(path: &Path) -> Result<DeliveryReceipt, MessageError> {
         "inspect message receipt",
         "read message receipt",
     )?;
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
 
     Ok(DeliveryReceipt {
         receipt_id: validate_identifier(required(&values, "receipt_id")?, "receipt id")?,
@@ -1198,7 +1198,7 @@ fn validate_payload_size(bytes: usize) -> Result<(), MessageError> {
     Ok(())
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, MessageError> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -1210,10 +1210,28 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
             continue;
         };
 
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_message_value(&mut values, key, value)?;
     }
 
-    values
+    Ok(values)
+}
+
+fn insert_message_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), MessageError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty message key".to_string()
+        } else {
+            format!("duplicate message key {key}")
+        };
+        return Err(MessageError::InvalidRequest { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn clean_value(value: &str) -> String {
@@ -1470,6 +1488,78 @@ mod tests {
 
         assert_eq!(report.delivered, 1);
         assert_eq!(report.rejected, 1);
+    }
+
+    #[test]
+    fn message_request_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("request-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let request = init.paths.message_ipc_inbox_dir.join("duplicate.msg");
+        fs::write(
+            &request,
+            "version = \"1\"\ntype = \"send_message\"\ntype = \"secret private message contents\"\nrequest_id = \"duplicate\"\nfrom_agent_id = \"agent.sender\"\nto_agent_id = \"agent.receiver\"\npayload_len = 31\npayload_hex = \"7365637265742070726976617465206d65737361676520636f6e74656e7473\"\n",
+        )
+        .expect("duplicate request writes");
+
+        let report = process_message_requests(Some(home.clone())).expect("request rejects safely");
+        let error_text =
+            fs::read_to_string(init.paths.message_ipc_rejected_dir.join("duplicate.error"))
+                .expect("rejection reason reads");
+
+        assert_eq!(report.delivered, 0);
+        assert_eq!(report.rejected, 1);
+        assert!(error_text.contains("duplicate message key type"));
+        assert!(!error_text.contains("secret private message contents"));
+        assert!(!error_text.contains("736563726574"));
+        assert!(!request.exists());
+    }
+
+    #[test]
+    fn inbox_envelope_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("inbox-envelope-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        let inbox = init.paths.message_inbox_dir.join("agent.receiver");
+        fs::create_dir_all(&inbox).expect("agent inbox creates");
+        fs::write(
+            inbox.join("duplicate.env"),
+            "version = \"1\"\nenvelope_id = \"env.safe\"\nenvelope_id = \"secret private message contents\"\nfrom_agent_id = \"agent.sender\"\nto_agent_id = \"agent.receiver\"\nreceipt_id = \"rcpt.safe\"\ndelivered_at_unix = 1\npayload_len = 31\npayload_hex = \"7365637265742070726976617465206d65737361676520636f6e74656e7473\"\n",
+        )
+        .expect("duplicate envelope writes");
+
+        let error = list_agent_inbox(Some(home), "agent.receiver")
+            .expect_err("duplicate inbox key fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate message key envelope_id")
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("secret private message contents")
+        );
+        assert!(!error.to_string().contains("736563726574"));
+    }
+
+    #[test]
+    fn delivery_receipt_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("delivery-receipt-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            init.paths.message_receipts_dir.join("duplicate.receipt"),
+            "version = \"1\"\nreceipt_id = \"rcpt.safe\"\nenvelope_id = \"env.safe\"\nfrom_agent_id = \"agent.sender\"\nto_agent_id = \"agent.receiver\"\nstatus = \"delivered_local\"\nstatus = \"secret private message contents\"\ndelivered_at_unix = 1\npayload_len = 31\npayload_displayed = false\n",
+        )
+        .expect("duplicate receipt writes");
+
+        let error = list_receipts(Some(home)).expect_err("duplicate receipt key fails closed");
+
+        assert!(error.to_string().contains("duplicate message key status"));
+        assert!(
+            !error
+                .to_string()
+                .contains("secret private message contents")
+        );
     }
 
     #[test]
