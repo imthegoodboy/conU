@@ -1,16 +1,29 @@
 "use strict";
 
 const WRAPPER_ONLY_ENV = new Set(["CONU_BIN_NAME"]);
+const PACKAGE_MANAGER_SECRET_ENV = new Set(["NODE_AUTH_TOKEN", "NPM_TOKEN"]);
 
 function buildChildEnv(sourceEnv = process.env) {
-  const childEnv = { ...sourceEnv };
-  for (const name of WRAPPER_ONLY_ENV) {
-    delete childEnv[name];
+  const childEnv = {};
+  for (const [name, value] of Object.entries(sourceEnv)) {
+    if (!shouldScrubChildEnvName(name)) {
+      childEnv[name] = value;
+    }
   }
   return childEnv;
 }
 
+function shouldScrubChildEnvName(name) {
+  const normalized = String(name).toUpperCase();
+  if (WRAPPER_ONLY_ENV.has(normalized) || PACKAGE_MANAGER_SECRET_ENV.has(normalized)) {
+    return true;
+  }
+  return normalized.startsWith("NPM_");
+}
+
 module.exports = {
   buildChildEnv,
-  WRAPPER_ONLY_ENV
+  PACKAGE_MANAGER_SECRET_ENV,
+  WRAPPER_ONLY_ENV,
+  shouldScrubChildEnvName
 };

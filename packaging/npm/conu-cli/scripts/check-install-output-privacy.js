@@ -96,11 +96,33 @@ function expectChildEnvScrubsWrapperSelector() {
   const sourceEnv = {
     CONU_BIN_NAME: "conu",
     CONU_HOME: "runtime-state",
-    CONU_RELAY_TOKEN: "relay-token"
+    CONU_RELAY_TOKEN: "relay-token",
+    NODE_AUTH_TOKEN: "node-auth-token",
+    NPM_CONFIG_USERCONFIG: "npm-user-config",
+    NPM_PACKAGE_NAME: "@conu/cli",
+    NPM_TOKEN: "npm-token",
+    npm_command: "exec",
+    npm_config_cache: "npm-cache",
+    "npm_config_//registry.npmjs.org/:_authToken": "registry-auth-token",
+    npm_lifecycle_event: "start"
   };
   const childEnv = buildChildEnv(sourceEnv);
   if ("CONU_BIN_NAME" in childEnv) {
     throw new Error("launcher child env included wrapper-only CONU_BIN_NAME");
+  }
+  for (const name of [
+    "NODE_AUTH_TOKEN",
+    "NPM_CONFIG_USERCONFIG",
+    "NPM_PACKAGE_NAME",
+    "NPM_TOKEN",
+    "npm_command",
+    "npm_config_cache",
+    "npm_config_//registry.npmjs.org/:_authToken",
+    "npm_lifecycle_event"
+  ]) {
+    if (name in childEnv) {
+      throw new Error(`launcher child env included package-manager env ${name}`);
+    }
   }
   expectEqual(childEnv.CONU_HOME, "runtime-state", "child env keeps conU runtime env");
   expectEqual(childEnv.CONU_RELAY_TOKEN, "relay-token", "child env keeps conU relay env");
