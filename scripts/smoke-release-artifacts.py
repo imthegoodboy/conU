@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
@@ -45,6 +46,23 @@ def archive_member_failure(archive_name: str, reason: str) -> SystemExit:
 
 def has_windows_drive_prefix(path: str) -> bool:
     return len(path) >= 2 and path[1] == ":" and path[0].isalpha()
+
+
+def read_zip_member(archive_name: str, package: zipfile.ZipFile, member: zipfile.ZipInfo) -> bytes:
+    try:
+        return package.read(member)
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise archive_member_failure(archive_name, "could not read zip member") from exc
+
+
+def read_tar_member(archive_name: str, package: tarfile.TarFile, member: tarfile.TarInfo) -> bytes:
+    try:
+        file_object = package.extractfile(member)
+        if file_object is None:
+            raise archive_member_failure(archive_name, "could not read member")
+        return file_object.read()
+    except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
+        raise archive_member_failure(archive_name, "could not read member") from exc
 
 
 def main() -> int:
@@ -154,7 +172,7 @@ def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:
                                 archive.name,
                                 "contains duplicate archive path",
                             )
-                        found = package.read(member)
+                        found = read_zip_member(archive.name, package, member)
                 return found
 
     if archive.name.endswith(".tar.gz"):
@@ -183,8 +201,7 @@ def read_archive_member(archive: Path, normalized_name: str) -> bytes | None:
                                 archive.name,
                                 "contains duplicate archive path",
                             )
-                        file_object = package.extractfile(member)
-                        found = file_object.read() if file_object is not None else None
+                        found = read_tar_member(archive.name, package, member)
                 return found
 
     raise SystemExit(f"unsupported release archive {archive.name}")
@@ -411,7 +428,7 @@ def extract_archive(archive: Path, destination: Path) -> None:
                         state,
                     )
                     output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_bytes(package.read(member))
+                    output_path.write_bytes(read_zip_member(archive.name, package, member))
                     unix_mode = (member.external_attr >> 16) & 0o777
                     if unix_mode:
                         output_path.chmod(unix_mode)
@@ -453,10 +470,7 @@ def extract_archive(archive: Path, destination: Path) -> None:
                         state,
                     )
                     output_path.parent.mkdir(parents=True, exist_ok=True)
-                    file_object = package.extractfile(member)
-                    if file_object is None:
-                        raise archive_member_failure(archive.name, "could not read member")
-                    output_path.write_bytes(file_object.read())
+                    output_path.write_bytes(read_tar_member(archive.name, package, member))
                     output_path.chmod(member.mode & 0o777)
         return
 
