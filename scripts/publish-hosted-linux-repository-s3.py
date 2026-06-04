@@ -22,6 +22,7 @@ from typing import Any, BinaryIO
 from urllib.parse import unquote, urlparse, urlunparse
 
 from command_output_redaction import redact_command_output
+from json_safety import loads_json
 from public_host_validation import is_loopback_host, validate_public_host
 
 
@@ -489,8 +490,8 @@ def read_json_file(path: Path, label: str) -> dict[str, Any]:
     text = read_bounded_ascii_file(path, label, max_bytes=MAX_METADATA_BYTES)
     assert_no_forbidden_text(text, label)
     try:
-        value = json.loads(text)
-    except json.JSONDecodeError as exc:
+        value = loads_json(text)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise PublicationError(f"{label} is not valid JSON") from exc
     if not isinstance(value, dict):
         raise PublicationError(f"{label} must be a JSON object")
@@ -705,7 +706,7 @@ def collect_files(
 ) -> list[PublishFile]:
     files: list[PublishFile] = []
     total_size = 0
-    for path in sorted(site_dir.rglob("*")):
+    for path in iter_site_entries(site_dir):
         relative_path = relative_name(site_dir, path)
         if path.is_symlink():
             raise PublicationError(f"site entry must not be a symlink: {relative_path}")
@@ -742,6 +743,20 @@ def collect_files(
             )
         )
     return files
+
+
+def iter_site_entries(site_dir: Path) -> list[Path]:
+    entries: list[Path] = []
+    pending: list[Path] = [site_dir]
+    while pending:
+        current = pending.pop(0)
+        for entry in sorted(current.iterdir(), key=lambda path: relative_name(site_dir, path)):
+            entries.append(entry)
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                pending.append(entry)
+    return sorted(entries, key=lambda path: relative_name(site_dir, path))
 
 
 def relative_name(site_dir: Path, path: Path) -> str:

@@ -16,6 +16,8 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 from urllib.parse import unquote, urlparse, urlunparse
 
+from json_safety import loads_json
+
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
 SITE_RE = re.compile(
@@ -435,8 +437,8 @@ def validate_allowed_path(site_name: str, version: str, name: str) -> None:
 
 def validate_repository_json(version: str, data: bytes) -> str:
     try:
-        repository = json.loads(data.decode("ascii"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        repository = loads_json(data.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise SystemExit("repository.json is not ASCII JSON") from exc
     if repository.get("schema") != "conu.hostedLinuxRepository.site.v1":
         raise SystemExit("repository.json has unexpected schema")
@@ -621,8 +623,8 @@ def has_url_path_control(value: str) -> bool:
 
 def validate_cache_policy_json(version: str, base_url: str, data: bytes) -> None:
     try:
-        policy = json.loads(data.decode("ascii"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        policy = loads_json(data.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise SystemExit("cache-policy.json is not ASCII JSON") from exc
     if policy.get("schema") != CACHE_POLICY_SCHEMA:
         raise SystemExit("cache-policy.json has unexpected schema")
