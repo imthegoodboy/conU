@@ -69,6 +69,25 @@ def main() -> int:
             raise SystemExit(f"rooted manifest target: expected host, got {target}")
 
     with fixture_dir() as root:
+        archive = root / "conu-0.1.0-duplicate-key.zip"
+        secret_target = "secret-release-target-should-not-print"
+        write_zip(
+            archive,
+            {
+                "manifest.toml": (
+                    f'target = "host"\ntarget = "{secret_target}"\n'
+                    "payload_contents_included = false\n"
+                )
+            },
+        )
+        expect_action_failure(
+            lambda: smoke.read_manifest_target(archive),
+            "duplicate key target",
+            "duplicate manifest target key",
+            forbidden=secret_target,
+        )
+
+    with fixture_dir() as root:
         archive = root / "conu-0.1.0-test.zip"
         write_zip(archive, {"conu-9.9.9-test/manifest.toml": 'target = "host"\n'})
         expect_action_failure(
@@ -385,11 +404,19 @@ def expect_failure(smoke, bin_dir: Path, expected: str, label: str) -> None:
     )
 
 
-def expect_action_failure(action, expected: str, label: str) -> None:
+def expect_action_failure(
+    action,
+    expected: str,
+    label: str,
+    *,
+    forbidden: str | None = None,
+) -> None:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
+        if forbidden is not None and forbidden in message:
+            raise SystemExit(f"{label}: error leaked forbidden value: {message}") from exc
         if expected in message:
             return
         raise SystemExit(f"{label}: expected {expected}, got: {message}") from exc
