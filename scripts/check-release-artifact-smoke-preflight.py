@@ -13,6 +13,7 @@ from unittest import mock
 
 def main() -> int:
     smoke = load_smoke_helpers()
+    assert_safe_snippet_redacts(smoke)
 
     with fixture_dir() as root:
         with mock.patch.object(Path, "is_symlink", return_value=True):
@@ -343,6 +344,37 @@ def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
             continue
         offset += 1
     path.write_bytes(data)
+
+
+def assert_safe_snippet_redacts(smoke) -> None:
+    sensitive_values = (
+        "npm_fakeSmokeOutputToken1234567890",
+        "ghp_fakeSmokeOutputToken1234567890",
+        "fake-bearer-token-1234567890",
+        "fake-basic-token-1234567890",
+        "fake-node-auth-token-1234567890",
+        "fake-url-password-1234567890",
+        "fake-query-token-1234567890",
+        "fake-private-key-1234567890",
+    )
+    raw = "\n".join(
+        [
+            f"npm ERR! auth token {sensitive_values[0]}",
+            f"gh token {sensitive_values[1]}",
+            f"Authorization: Bearer {sensitive_values[2]}",
+            f"Authorization: Basic {sensitive_values[3]}",
+            f"NODE_AUTH_TOKEN={sensitive_values[4]}",
+            f"https://user:{sensitive_values[5]}@example.invalid/conu",
+            f"https://example.invalid/conu?token={sensitive_values[6]}",
+            f"PRIVATE_KEY={sensitive_values[7]}",
+        ]
+    )
+    rendered = smoke.safe_snippet(raw)
+    if "[redacted]" not in rendered:
+        raise SystemExit("release smoke safe snippet did not mark redacted output")
+    for value in sensitive_values:
+        if value in rendered:
+            raise SystemExit("release smoke safe snippet leaked sensitive command output")
 
 
 def expect_failure(smoke, bin_dir: Path, expected: str, label: str) -> None:
