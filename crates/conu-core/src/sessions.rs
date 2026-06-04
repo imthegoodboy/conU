@@ -620,7 +620,7 @@ fn parse_sessions(contents: &str) -> Result<Vec<RemoteSession>, SessionError> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_session_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -648,7 +648,7 @@ fn parse_remote_agents(contents: &str) -> Result<Vec<RemoteAgentRecord>, Session
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_session_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -888,6 +888,24 @@ fn required(values: &HashMap<String, String>, key: &'static str) -> Result<Strin
         .ok_or_else(|| SessionError::InvalidRecord {
             reason: format!("missing {key}"),
         })
+}
+
+fn insert_session_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), SessionError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty session key".to_string()
+        } else {
+            format!("duplicate session key {key}")
+        };
+        return Err(SessionError::InvalidRecord { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn validate_identifier(value: String, field: &'static str) -> Result<String, SessionError> {
@@ -1165,6 +1183,52 @@ mod tests {
         assert_eq!(report.connected, 1);
         assert_eq!(sessions[0].peer_node_id, joined.peer.peer_node_id);
         assert!(session_log.is_dir());
+    }
+
+    #[test]
+    fn session_registry_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("session-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            &init.paths.session_registry,
+            "# conU remote session registry\nversion = \"1\"\n\n[[session]]\npeer_node_id = \"node.safe\"\npeer_node_id = \"secret private session contents\"\ndisplay_name = \"Safe Peer\"\nstate = \"connected\"\nroute = \"relay-websocket\"\nrelay_endpoint = \"wss://relay.example.com\"\nreconnect_attempts = 0\nremote_agent_count = 1\nlast_seen_unix = 1\nupdated_at_unix = 1\npayload_displayed = false\n",
+        )
+        .expect("duplicate session registry writes");
+
+        let error =
+            list_remote_sessions(Some(home)).expect_err("duplicate session key fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate session key peer_node_id")
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("secret private session contents")
+        );
+    }
+
+    #[test]
+    fn remote_agent_registry_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("remote-agent-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            &init.paths.remote_agent_registry,
+            "# conU remote agent registry\nversion = \"1\"\n\n[[remote_agent]]\nagent_id = \"agent.safe\"\ndisplay_name = \"Safe Agent\"\npeer_node_id = \"node.safe\"\nnode_id = \"node.safe\"\nkind = \"test-agent\"\npresence = \"ready\"\nlast_seen_unix = 1\ncap_messages = true\ncap_messages = \"secret private agent contents\"\ncap_streams = false\ncap_rooms = false\ncap_files = false\ncap_presence = true\npayload_displayed = false\n",
+        )
+        .expect("duplicate remote agent registry writes");
+
+        let error =
+            list_remote_agents(Some(home)).expect_err("duplicate remote agent key fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate session key cap_messages")
+        );
+        assert!(!error.to_string().contains("secret private agent contents"));
     }
 
     #[cfg(unix)]
