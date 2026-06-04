@@ -100,10 +100,13 @@ def run_common_output_redaction_tests() -> None:
             pass
 
     original_run_gpg_text = linux_gpg_common.run_gpg_text
+    original_subprocess_run = linux_gpg_common.subprocess.run
     actual = "A" * 40
     other = "B" * 40
     expected = WRONG_FINGERPRINT
     try:
+        assert_common_command_output_redacts(linux_gpg_common)
+
         linux_gpg_common.run_gpg_text = (
             lambda *_args, **_kwargs: f"sec:::::::::\nfpr:::::::::{actual}:\n"
         )
@@ -128,6 +131,59 @@ def run_common_output_redaction_tests() -> None:
         )
     finally:
         linux_gpg_common.run_gpg_text = original_run_gpg_text
+        linux_gpg_common.subprocess.run = original_subprocess_run
+
+
+def assert_common_command_output_redacts(linux_gpg_common) -> None:
+    sensitive_values = (
+        "npm_fakeLinuxSigningToken1234567890",
+        "ghp_fakeLinuxSigningToken1234567890",
+        "fake-bearer-token-1234567890",
+        "fake-basic-token-1234567890",
+        "fake-node-auth-token-1234567890",
+        "fake-url-password-1234567890",
+        "fake-query-token-1234567890",
+        "fake-private-key-1234567890",
+    )
+    raw = "\n".join(
+        [
+            f"npm ERR! auth token {sensitive_values[0]}",
+            f"gh token {sensitive_values[1]}",
+            f"Authorization: Bearer {sensitive_values[2]}",
+            f"Authorization: Basic {sensitive_values[3]}",
+            f"NODE_AUTH_TOKEN={sensitive_values[4]}",
+            f"https://user:{sensitive_values[5]}@example.invalid/conu",
+            f"https://example.invalid/conu?token={sensitive_values[6]}",
+            f"PRIVATE_KEY={sensitive_values[7]}",
+        ]
+    )
+    redacted = linux_gpg_common.redact_command_output(raw)
+    if "[redacted]" not in redacted:
+        raise AssertionError("Linux GPG command output redaction did not mark redacted output")
+    for value in sensitive_values:
+        if value in redacted:
+            raise AssertionError("Linux GPG command output redaction leaked a sensitive value")
+
+    def failed_run(*args, **_kwargs):
+        command = args[0] if args else "gpg"
+        raise subprocess.CalledProcessError(
+            returncode=1,
+            cmd=command,
+            output=raw.encode("utf-8"),
+        )
+
+    linux_gpg_common.subprocess.run = failed_run
+    try:
+        linux_gpg_common.run_gpg_text("gpg", {}, ["--fixture"])
+    except SystemExit as exc:
+        rendered = str(exc)
+    else:
+        raise AssertionError("Linux GPG command output redaction unexpectedly passed")
+    if "gpg failed with output:" not in rendered:
+        raise AssertionError("Linux GPG failure output omitted the command failure label")
+    for value in sensitive_values:
+        if value in rendered:
+            raise AssertionError("Linux GPG failure output leaked a sensitive value")
 
 
 def assert_common_failed(
