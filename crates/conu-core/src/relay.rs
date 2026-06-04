@@ -1776,10 +1776,28 @@ fn parse_frame_values(line: &str) -> Result<(&str, HashMap<String, String>), Rel
         let Some((key, value)) = part.split_once('=') else {
             continue;
         };
-        values.insert(key.trim().to_string(), value.trim().to_string());
+        insert_frame_value(&mut values, key, value)?;
     }
 
     Ok((kind, values))
+}
+
+fn insert_frame_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), RelayFrameError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty frame key".to_string()
+        } else {
+            format!("duplicate frame key {key}")
+        };
+        return Err(RelayFrameError::new(reason));
+    }
+    values.insert(key.to_string(), value.trim().to_string());
+    Ok(())
 }
 
 fn required(
@@ -2800,6 +2818,40 @@ mod tests {
 
         assert!(error.to_string().contains("must not include"));
         assert!(!error.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn client_frame_duplicate_key_fails_closed_without_values() {
+        let error = parse_client_frame(
+            "FORWARD to=node.a to=private.message.contents envelope=env.1 bytes=24 payload=opaque",
+        )
+        .expect_err("duplicate client key should fail");
+
+        assert!(error.to_string().contains("duplicate frame key to"));
+        assert!(!error.to_string().contains("private.message.contents"));
+    }
+
+    #[test]
+    fn server_frame_duplicate_key_fails_closed_without_values() {
+        let error = parse_server_frame(
+            "WELCOME session=relay.session.1 resumed=false resumed=true payload=not_observed",
+        )
+        .expect_err("duplicate server key should fail");
+
+        assert!(error.to_string().contains("duplicate frame key resumed"));
+        assert!(!error.to_string().contains("true"));
+    }
+
+    #[test]
+    fn encrypted_forward_duplicate_body_fails_closed_without_values() {
+        let error = parse_server_frame(
+            "ENVELOPE from=node.a to=node.b envelope=env.1 kind=message bytes=24 from_agent=agent.a to_agent=agent.b cipher=xchacha20poly1305 key=key.1 sender_key=abcdef nonce=001122 body=privateciphertext body=private_message_contents payload=peer_encrypted",
+        )
+        .expect_err("duplicate body key should fail");
+
+        assert!(error.to_string().contains("duplicate frame key body"));
+        assert!(!error.to_string().contains("privateciphertext"));
+        assert!(!error.to_string().contains("private_message_contents"));
     }
 
     #[test]
