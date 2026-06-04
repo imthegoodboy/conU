@@ -15,6 +15,7 @@ from urllib.error import HTTPError
 
 
 SCRIPT = Path(__file__).with_name("check-npm-publish-preflight.py")
+SENSITIVE_SENTINEL = "sensitive-json-shadow-value"
 
 
 def load_module():
@@ -33,6 +34,19 @@ def assert_raises(func, pattern: str) -> None:
     except ValueError as exc:
         if pattern not in str(exc):
             raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
+        return
+    raise AssertionError(f"expected ValueError containing {pattern!r}")
+
+
+def assert_raises_without_leak(func, pattern: str) -> None:
+    try:
+        func()
+    except ValueError as exc:
+        rendered = str(exc)
+        if pattern not in rendered:
+            raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
+        if SENSITIVE_SENTINEL in rendered:
+            raise AssertionError("validation error leaked a shadow JSON value") from exc
         return
     raise AssertionError(f"expected ValueError containing {pattern!r}")
 
@@ -56,6 +70,24 @@ def run_registry_tests(module) -> None:
     assert_raises(
         lambda: module.check_registry_availability("npm", packages),
         "already exists",
+    )
+
+    def duplicate_registry_json_run(args, **_kwargs):
+        package_id = args[2]
+        version = package_id.rsplit("@", 1)[1]
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                f'{{"version":"{version}",'
+                f'"version":"{SENSITIVE_SENTINEL}"}}\n'
+            ),
+            stderr="",
+        )
+
+    module.subprocess.run = duplicate_registry_json_run
+    assert_raises_without_leak(
+        lambda: module.check_registry_availability("npm", packages),
+        "invalid JSON",
     )
 
     def network_error_run(*_args, **_kwargs):
@@ -105,6 +137,22 @@ def run_manifest_version_tests(module) -> None:
                 module.PackageRule("@conu/cli", Path("packaging/npm/conu-cli")),
             ),
             "version is not semver-like",
+        )
+
+        (package_dir / "package.json").write_text(
+            (
+                '{"name":"@conu/cli","version":"0.1.0",'
+                f'"version":"{SENSITIVE_SENTINEL}"}}\n'
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        assert_raises_without_leak(
+            lambda: module.validate_manifest(
+                repo,
+                module.PackageRule("@conu/cli", Path("packaging/npm/conu-cli")),
+            ),
+            "duplicate JSON key",
         )
 
 
@@ -180,6 +228,22 @@ def run_token_auth_tests(module) -> None:
 
         module.urlopen = successful_urlopen
         module.validate_token_authentication(env_name)
+
+        def duplicate_username_urlopen(*_args, **_kwargs):
+            return FakeResponse(
+                200,
+                (
+                    b'{"username":"imthegoodboy",'
+                    + f'"username":"{SENSITIVE_SENTINEL}"'.encode("utf-8")
+                    + b"}"
+                ),
+            )
+
+        module.urlopen = duplicate_username_urlopen
+        assert_raises_without_leak(
+            lambda: module.validate_token_authentication(env_name),
+            "returned invalid JSON",
+        )
 
         def unauthorized_urlopen(*_args, **_kwargs):
             raise HTTPError(module.NPM_WHOAMI_URL, 401, "Unauthorized", {}, None)
