@@ -1,10 +1,16 @@
 "use strict";
 
+const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const MAX_ARCHIVE_LIST_BYTES = 2 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBERS = 10000;
+const MAX_ZIP_EOCD_SEARCH_BYTES = 22 + 65535;
+const ZIP_EOCD_SIGNATURE = 0x06054b50;
+const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
+const ZIP64_ENTRY_COUNT = 0xffff;
+const ZIP64_FIELD = 0xffffffff;
 const SUPPORTED_MEMBER_TYPES = new Set(["file", "directory"]);
 const FORBIDDEN_PARTS = new Set([
   ".conu",
@@ -92,13 +98,13 @@ function rejectForbiddenArchivePath(normalized, archiveLabel) {
 }
 
 function listArchiveMembers(archivePath, archiveLabel) {
+  if (archivePath.endsWith(".zip")) {
+    return listZipMembersWithNode(archivePath, archiveLabel);
+  }
+
   const tarMembers = listArchiveMembersWithTar(archivePath, archiveLabel);
   if (tarMembers) {
     return tarMembers;
-  }
-
-  if (process.platform === "win32" && archivePath.endsWith(".zip")) {
-    return listZipMembersWithPowerShell(archivePath, archiveLabel);
   }
 
   throw new Error(
@@ -144,41 +150,141 @@ function parseTarMemberType(line) {
   return marker ? "other" : "unknown";
 }
 
-function listZipMembersWithPowerShell(archivePath, archiveLabel) {
-  const script = [
-    "Add-Type -AssemblyName System.IO.Compression.FileSystem",
-    "$zip = [System.IO.Compression.ZipFile]::OpenRead($args[0])",
-    "try {",
-    "  $zip.Entries | ForEach-Object {",
-    "    $mode = ($_.ExternalAttributes -shr 16) -band 61440",
-    "    $type = if ($_.FullName.EndsWith('/') -or $_.FullName.EndsWith('\\')) { 'directory' } elseif ($mode -eq 40960) { 'symlink' } elseif ($mode -eq 32768 -or $mode -eq 0) { 'file' } else { 'other' }",
-    "    [pscustomobject]@{ name = $_.FullName; type = $type }",
-    "  } | ConvertTo-Json -Compress",
-    "} finally {",
-    "  $zip.Dispose()",
-    "}"
-  ].join("; ");
+function listZipMembersWithNode(archivePath, archiveLabel) {
+  let fd = null;
+  try {
+    fd = fs.openSync(archivePath, "r");
+    const size = fs.fstatSync(fd).size;
+    const { centralDirectory, entryCount } = readZipCentralDirectory(fd, size, archiveLabel);
+    return parseZipCentralDirectory(centralDirectory, entryCount, archiveLabel);
+  } catch (error) {
+    if (error && error.zipInspectionError) {
+      throw error;
+    }
+    throw zipInspectionError(archiveLabel);
+  } finally {
+    if (fd !== null) {
+      fs.closeSync(fd);
+    }
+  }
+}
 
-  const result = runTool("powershell", [
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-    archivePath
-  ]);
-  if (result.status !== 0) {
-    throw new Error(
-      `could not inspect zip archive members before extraction: ${archiveLabel}; pathDisplayed=false`
-    );
+function readZipCentralDirectory(fd, size, archiveLabel) {
+  if (!Number.isSafeInteger(size) || size < 22) {
+    throw zipInspectionError(archiveLabel);
   }
 
-  const output = result.stdout.trim();
-  if (!output) {
-    return [];
+  const searchLength = Math.min(size, MAX_ZIP_EOCD_SEARCH_BYTES);
+  const searchStart = size - searchLength;
+  const eocd = Buffer.alloc(searchLength);
+  if (fs.readSync(fd, eocd, 0, searchLength, searchStart) !== searchLength) {
+    throw zipInspectionError(archiveLabel);
   }
-  const parsed = JSON.parse(output);
-  return Array.isArray(parsed) ? parsed : [parsed];
+
+  for (let offset = searchLength - 22; offset >= 0; offset -= 1) {
+    if (eocd.readUInt32LE(offset) !== ZIP_EOCD_SIGNATURE) {
+      continue;
+    }
+
+    const commentLength = eocd.readUInt16LE(offset + 20);
+    if (offset + 22 + commentLength !== searchLength) {
+      continue;
+    }
+
+    const diskNumber = eocd.readUInt16LE(offset + 4);
+    const centralDisk = eocd.readUInt16LE(offset + 6);
+    const diskEntries = eocd.readUInt16LE(offset + 8);
+    const entryCount = eocd.readUInt16LE(offset + 10);
+    const centralSize = eocd.readUInt32LE(offset + 12);
+    const centralOffset = eocd.readUInt32LE(offset + 16);
+
+    if (diskNumber !== 0 || centralDisk !== 0 || diskEntries !== entryCount) {
+      throw zipInspectionError(archiveLabel);
+    }
+    if (
+      entryCount === ZIP64_ENTRY_COUNT ||
+      centralSize === ZIP64_FIELD ||
+      centralOffset === ZIP64_FIELD
+    ) {
+      throw zipInspectionError(archiveLabel);
+    }
+    if (entryCount > MAX_ARCHIVE_MEMBERS) {
+      throw new Error(`${archiveLabel} contains more than ${MAX_ARCHIVE_MEMBERS} entries`);
+    }
+    if (centralSize > MAX_ARCHIVE_LIST_BYTES) {
+      throw zipInspectionError(archiveLabel);
+    }
+    if (centralOffset + centralSize > size) {
+      throw zipInspectionError(archiveLabel);
+    }
+
+    const centralDirectory = Buffer.alloc(centralSize);
+    if (fs.readSync(fd, centralDirectory, 0, centralSize, centralOffset) !== centralSize) {
+      throw zipInspectionError(archiveLabel);
+    }
+    return { centralDirectory, entryCount };
+  }
+
+  throw zipInspectionError(archiveLabel);
+}
+
+function parseZipCentralDirectory(centralDirectory, entryCount, archiveLabel) {
+  const members = [];
+  let offset = 0;
+  while (offset < centralDirectory.length) {
+    if (
+      offset + 46 > centralDirectory.length ||
+      centralDirectory.readUInt32LE(offset) !== ZIP_CENTRAL_DIRECTORY_SIGNATURE
+    ) {
+      throw zipInspectionError(archiveLabel);
+    }
+
+    const flags = centralDirectory.readUInt16LE(offset + 8);
+    const nameLength = centralDirectory.readUInt16LE(offset + 28);
+    const extraLength = centralDirectory.readUInt16LE(offset + 30);
+    const commentLength = centralDirectory.readUInt16LE(offset + 32);
+    const externalAttributes = centralDirectory.readUInt32LE(offset + 38);
+    const entryLength = 46 + nameLength + extraLength + commentLength;
+    if (offset + entryLength > centralDirectory.length) {
+      throw zipInspectionError(archiveLabel);
+    }
+
+    const name = centralDirectory.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
+    members.push({
+      name,
+      type: zipMemberType(name, flags, externalAttributes)
+    });
+    offset += entryLength;
+  }
+  if (members.length !== entryCount) {
+    throw zipInspectionError(archiveLabel);
+  }
+  return members;
+}
+
+function zipMemberType(name, flags, externalAttributes) {
+  if (name.endsWith("/") || name.endsWith("\\")) {
+    return "directory";
+  }
+  if ((flags & 1) !== 0) {
+    return "encrypted";
+  }
+  const mode = (externalAttributes >>> 16) & 0xf000;
+  if (mode === 0xa000) {
+    return "symlink";
+  }
+  if (mode === 0x8000 || mode === 0) {
+    return "file";
+  }
+  return "other";
+}
+
+function zipInspectionError(archiveLabel) {
+  const error = new Error(
+    `could not inspect zip archive members before extraction: ${archiveLabel}; pathDisplayed=false`
+  );
+  error.zipInspectionError = true;
+  return error;
 }
 
 function displayArchiveLabel(archivePath) {
