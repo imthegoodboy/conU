@@ -37,6 +37,7 @@ function main() {
     expectIncludes(output, "sourcePathDisplayed=false", "local install source path guard");
   });
 
+  expectLocalBinaryDirFailureIsRedacted();
   expectLauncherMissingBinaryIsRedacted();
   expectLauncherInvalidBinaryIsRedacted();
   expectLauncherNonFileBinaryIsRedacted();
@@ -86,6 +87,25 @@ function buildEnv(envOverrides = {}) {
     }
   }
   return env;
+}
+
+function expectLocalBinaryDirFailureIsRedacted() {
+  withFixture((root) => {
+    const packageCopy = path.join(root, "package");
+    const missingBinaryDir = path.join(root, "secret-local-binary-dir");
+    copyPackage(packageRoot, packageCopy);
+
+    const output = runNodeFailure([path.join(packageCopy, "scripts", "install.js")], {
+      CONU_NPM_BINARY_DIR: missingBinaryDir,
+      CONU_NPM_SKIP_DOWNLOAD: "",
+      CONU_NPM_DIST_BASE: "",
+      CONU_NPM_ALLOW_UNVERIFIED: ""
+    }, packageCopy);
+
+    expectNoLocalPath(output, root, "local binary dir failure temp root");
+    expectNotIncludes(output, missingBinaryDir, "local binary dir failure override path guard");
+    expectIncludes(output, "CONU_NPM_BINARY_DIR must point to an existing directory", "local binary dir failure reason");
+  });
 }
 
 function expectLauncherMissingBinaryIsRedacted() {

@@ -28,6 +28,16 @@ function main() {
   });
 
   withFixture((root) => {
+    const realDir = path.join(root, "real-binaries");
+    const linkDir = path.join(root, "linked-binaries");
+    fs.mkdirSync(realDir);
+    if (!trySymlink(linkDir, realDir, "dir")) {
+      return;
+    }
+    expectFailure(linkDir, "must not be a symlink", "symlink source directory");
+  });
+
+  withFixture((root) => {
     writeBinaries(root, { skip: "conud" });
     expectFailure(root, "missing required binary: conud", "missing binary");
   });
@@ -62,6 +72,21 @@ function writeBinaries(root, options = {}) {
       continue;
     }
     fs.writeFileSync(path.join(root, name), name);
+  }
+}
+
+function trySymlink(link, target, type) {
+  try {
+    fs.symlinkSync(target, link, type);
+    return true;
+  } catch (error) {
+    if (
+      error &&
+      ["EPERM", "EACCES", "ENOSYS", "EINVAL"].includes(error.code)
+    ) {
+      return false;
+    }
+    throw error;
   }
 }
 

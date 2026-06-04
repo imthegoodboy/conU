@@ -10,8 +10,14 @@ function resolveLocalBinaries(sourceDir, { binaryNames, binarySuffix }) {
 
   const resolvedDir = path.resolve(sourceDir);
   const dirStat = lstatMaybe(resolvedDir);
-  if (!dirStat || !dirStat.isDirectory()) {
-    throw new Error(`CONU_NPM_BINARY_DIR must point to an existing directory: ${sourceDir}`);
+  if (!dirStat) {
+    throw new Error("CONU_NPM_BINARY_DIR must point to an existing directory");
+  }
+  if (dirStat.isSymbolicLink()) {
+    throw new Error("CONU_NPM_BINARY_DIR must not be a symlink");
+  }
+  if (!dirStat.isDirectory()) {
+    throw new Error("CONU_NPM_BINARY_DIR must point to an existing directory");
   }
 
   const binaries = {};
