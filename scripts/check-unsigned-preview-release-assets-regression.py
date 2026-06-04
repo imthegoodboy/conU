@@ -49,6 +49,15 @@ def assert_safe_report(report) -> dict:
     return payload
 
 
+def github_asset(name: str, index: int) -> dict[str, object]:
+    return {
+        "name": name,
+        "size": 12 + index,
+        "state": "uploaded",
+        "digest": f"sha256:{index:064x}",
+    }
+
+
 def assert_issue(report, expected: str, label: str) -> None:
     if report.ready:
         raise AssertionError(f"{label} should fail")
@@ -98,7 +107,7 @@ def run_metadata_tests(module) -> None:
         "tag_name": TAG,
         "draft": False,
         "prerelease": True,
-        "assets": [{"name": name, "size": 12, "state": "uploaded"} for name in names],
+        "assets": [github_asset(name, index) for index, name in enumerate(names)],
     }
     report = module.audit_preview_assets("local/release", TAG, payload)
     if not report.ready:
@@ -128,6 +137,18 @@ def run_metadata_tests(module) -> None:
             raise AssertionError("unexpected bad tag error") from exc
     else:
         raise AssertionError("tag mismatch should fail")
+
+    missing_digest_payload = dict(payload)
+    missing_digest_payload["assets"] = [dict(asset) for asset in payload["assets"]]
+    del missing_digest_payload["assets"][0]["digest"]
+    report = module.audit_preview_assets("local/release", TAG, missing_digest_payload)
+    assert_issue(report, "digest must be sha256 metadata", "missing preview asset digest")
+
+    bad_digest_payload = dict(payload)
+    bad_digest_payload["assets"] = [dict(asset) for asset in payload["assets"]]
+    bad_digest_payload["assets"][0]["digest"] = "do-not-print-this-token-or-payload"
+    report = module.audit_preview_assets("local/release", TAG, bad_digest_payload)
+    assert_issue(report, "digest must be sha256 metadata", "invalid preview asset digest")
 
 
 def main() -> int:

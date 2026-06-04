@@ -40,6 +40,7 @@ def ready_payload(
             "name": name,
             "size": 128 + index,
             "state": "uploaded",
+            "digest": f"sha256:{index:064x}",
             "browser_download_url": f"https://example.invalid/{SENSITIVE_SENTINEL}/{name}",
         }
         for index, name in enumerate(module.expected_release_asset_names(version))
@@ -70,6 +71,8 @@ def assert_not_ready(report, pattern: str) -> None:
     if report.ready:
         raise AssertionError("expected release asset report to fail")
     rendered = json.dumps(report.as_json())
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("release asset report leaked a sensitive fixture value")
     if pattern not in rendered:
         raise AssertionError(f"expected {pattern!r} in report: {rendered}")
 
@@ -189,9 +192,28 @@ def run_audit_tests(module) -> None:
         "state must be uploaded",
     )
 
+    missing_digest_payload = ready_payload(module)
+    del missing_digest_payload["assets"][0]["digest"]
+    assert_not_ready(
+        module.audit_release_assets("owner/repo", TEST_TAG, missing_digest_payload),
+        "digest must be sha256 metadata",
+    )
+
+    bad_digest_payload = ready_payload(module)
+    bad_digest_payload["assets"][0]["digest"] = SENSITIVE_SENTINEL
+    assert_not_ready(
+        module.audit_release_assets("owner/repo", TEST_TAG, bad_digest_payload),
+        "digest must be sha256 metadata",
+    )
+
     forbidden_payload = ready_payload(module)
     forbidden_payload["assets"].append(
-        {"name": "conu-0.1.0-runtime-secret.zip", "size": 100, "state": "uploaded"}
+        {
+            "name": "conu-0.1.0-runtime-secret.zip",
+            "size": 100,
+            "state": "uploaded",
+            "digest": f"sha256:{999:064x}",
+        }
     )
     assert_not_ready(
         module.audit_release_assets("owner/repo", TEST_TAG, forbidden_payload),
@@ -207,7 +229,12 @@ def run_audit_tests(module) -> None:
 
     unexpected_payload = ready_payload(module)
     unexpected_payload["assets"].append(
-        {"name": "conu-0.1.0-extra-notes.txt", "size": 100, "state": "uploaded"}
+        {
+            "name": "conu-0.1.0-extra-notes.txt",
+            "size": 100,
+            "state": "uploaded",
+            "digest": f"sha256:{1000:064x}",
+        }
     )
     assert_not_ready(
         module.audit_release_assets("owner/repo", TEST_TAG, unexpected_payload),
