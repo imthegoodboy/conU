@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{self, Read};
@@ -7040,6 +7041,7 @@ fn parse_abuse_threshold_policy_file(contents: &str) -> Result<AbuseThresholds, 
     let mut version = None::<String>;
     let mut thresholds = AbuseThresholds::default();
     let mut guards = AbuseThresholdPolicyGuards::default();
+    let mut keys = ConfigKeyTracker::default();
 
     for (line_index, raw_line) in contents.lines().enumerate() {
         let line_number = line_index + 1;
@@ -7057,6 +7059,7 @@ fn parse_abuse_threshold_policy_file(contents: &str) -> Result<AbuseThresholds, 
                 "abuse threshold policy file line {line_number} must include a key"
             ));
         }
+        keys.record(key, "abuse threshold policy file", line_number)?;
 
         if key == "version" {
             version = Some(value);
@@ -7521,6 +7524,7 @@ fn parse_mailbox_retention_policy_file(contents: &str) -> Result<MailboxRetentio
     let mut version = None::<String>;
     let mut policy = MailboxRetentionPolicy::default();
     let mut guards = MailboxRetentionPolicyGuards::default();
+    let mut keys = ConfigKeyTracker::default();
 
     for (line_index, raw_line) in contents.lines().enumerate() {
         let line_number = line_index + 1;
@@ -7538,6 +7542,7 @@ fn parse_mailbox_retention_policy_file(contents: &str) -> Result<MailboxRetentio
                 "mailbox retention policy file line {line_number} must include a key"
             ));
         }
+        keys.record(key, "mailbox retention policy file", line_number)?;
 
         match key {
             "version" => version = Some(value),
@@ -8412,6 +8417,20 @@ fn hosted_fleet_abuse_response_plan_exit(
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct ConfigKeyTracker {
+    seen: HashSet<String>,
+}
+
+impl ConfigKeyTracker {
+    fn record(&mut self, key: &str, label: &str, line: usize) -> Result<(), String> {
+        if !self.seen.insert(key.to_string()) {
+            return Err(format!("{label} line {line} contains duplicate key {key}"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct HostedFleetDashboardArgs {
     fleet_file: PathBuf,
@@ -8460,10 +8479,12 @@ struct HostedFleetRelayConfigBuilder {
     mailbox_ttl_seconds: Option<u64>,
     accounting_dir: Option<PathBuf>,
     abuse_dir: Option<PathBuf>,
+    keys: ConfigKeyTracker,
 }
 
 impl HostedFleetRelayConfigBuilder {
     fn set(&mut self, base_dir: &Path, key: &str, value: &str, line: usize) -> Result<(), String> {
+        self.keys.record(key, "hosted fleet dashboard file", line)?;
         match key {
             "name" => {
                 self.name = Some(validate_dashboard_filter_id(
@@ -9150,6 +9171,7 @@ fn parse_hosted_fleet_dashboard_file(path: &Path) -> Result<Vec<HostedFleetRelay
         .unwrap_or_else(|| Path::new("."));
     let mut version_seen = false;
     let mut guards = HostedFleetDashboardFileGuards::default();
+    let mut top_level_keys = ConfigKeyTracker::default();
     let mut relays = Vec::<HostedFleetRelayConfig>::new();
     let mut current = None::<HostedFleetRelayConfigBuilder>;
 
@@ -9173,12 +9195,18 @@ fn parse_hosted_fleet_dashboard_file(path: &Path) -> Result<Vec<HostedFleetRelay
         };
         let key = key.trim();
         let value = clean_config_value(value);
+        if key.is_empty() {
+            return Err(format!(
+                "hosted fleet dashboard file line {line_number} must include a key"
+            ));
+        }
 
         if let Some(builder) = current.as_mut() {
             builder.set(base_dir, key, &value, line_number)?;
             continue;
         }
 
+        top_level_keys.record(key, "hosted fleet dashboard file", line_number)?;
         if key == "version" {
             if value != HOSTED_FLEET_DASHBOARD_FILE_VERSION {
                 return Err(format!(
@@ -15597,6 +15625,21 @@ token_displayed = false\n",
         .expect_err("secret-bearing unknown key should fail");
         assert!(unknown_secret.contains("unsupported key token"));
         assert!(!unknown_secret.contains(secret_value));
+
+        let duplicate_secret = "relay-duplicate-secret";
+        let duplicate_threshold =
+            parse_abuse_threshold_policy_file(&abuse_threshold_policy_contents(&format!(
+                "max_admin_unauthorized = 5\nmax_admin_unauthorized = \"{duplicate_secret}\"\n"
+            )))
+            .expect_err("duplicate threshold key should fail closed");
+        assert!(duplicate_threshold.contains("duplicate key max_admin_unauthorized"));
+        assert!(!duplicate_threshold.contains(duplicate_secret));
+
+        let duplicate_guard = parse_abuse_threshold_policy_file(&abuse_threshold_policy_contents(
+            "payload_displayed = false\n",
+        ))
+        .expect_err("duplicate display guard should fail closed");
+        assert!(duplicate_guard.contains("duplicate key payload_displayed"));
     }
 
     #[test]
@@ -15794,6 +15837,21 @@ token_displayed = false\n",
         .expect_err("invalid node id should fail");
         assert!(invalid_node.contains("node id"));
         assert!(!invalid_node.contains(secret_value));
+
+        let duplicate_secret = "relay-duplicate-secret";
+        let duplicate_ttl =
+            parse_mailbox_retention_policy_file(&mailbox_retention_policy_contents(&format!(
+                "ttl_seconds = 3600\nttl_seconds = \"{duplicate_secret}\"\n"
+            )))
+            .expect_err("duplicate ttl key should fail closed");
+        assert!(duplicate_ttl.contains("duplicate key ttl_seconds"));
+        assert!(!duplicate_ttl.contains(duplicate_secret));
+
+        let duplicate_guard = parse_mailbox_retention_policy_file(
+            &mailbox_retention_policy_contents("contents_displayed = false\n"),
+        )
+        .expect_err("duplicate display guard should fail closed");
+        assert!(duplicate_guard.contains("duplicate key contents_displayed"));
     }
 
     #[test]
@@ -17410,6 +17468,27 @@ abuse_dir = "abuse"
             .expect_err("missing guards should fail closed");
         assert!(error.contains("requires"));
         assert!(!error.contains("relay-secret-token"));
+
+        let duplicate_secret = "relay-duplicate-secret";
+        let duplicate_top_level = write_hosted_fleet_dashboard_file(
+            &hosted_fleet_dashboard_file_contents(&format!(
+                "version = \"{duplicate_secret}\"\n[[relay]]\nname = \"relay-east\"\nabuse_dir = \"abuse\"\n"
+            )),
+        );
+        let duplicate_top_error = parse_hosted_fleet_dashboard_file(&duplicate_top_level)
+            .expect_err("duplicate top-level fleet key should fail closed");
+        assert!(duplicate_top_error.contains("duplicate key version"));
+        assert!(!duplicate_top_error.contains(duplicate_secret));
+
+        let duplicate_relay = write_hosted_fleet_dashboard_file(
+            &hosted_fleet_dashboard_file_contents(&format!(
+                "[[relay]]\nname = \"relay-east\"\nname = \"{duplicate_secret}\"\nabuse_dir = \"abuse\"\n"
+            )),
+        );
+        let duplicate_relay_error = parse_hosted_fleet_dashboard_file(&duplicate_relay)
+            .expect_err("duplicate relay fleet key should fail closed");
+        assert!(duplicate_relay_error.contains("duplicate key name"));
+        assert!(!duplicate_relay_error.contains(duplicate_secret));
 
         let relay = HostedFleetRelaySnapshot {
             config: HostedFleetRelayConfig {
