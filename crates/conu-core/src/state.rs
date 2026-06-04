@@ -495,7 +495,7 @@ fn write_new_file_with_actions(
 
 fn read_node_identity(path: &Path) -> Result<NodeIdentity, StateError> {
     let contents = read_existing_state_file(path, "inspect node identity", "read node identity")?;
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(path, &contents)?;
 
     let node_id = required_field(path, &values, "node_id")?;
     let display_name = required_field(path, &values, "display_name")?;
@@ -1202,7 +1202,7 @@ fn required_field(
         })
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(path: &Path, contents: &str) -> Result<HashMap<String, String>, StateError> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -1214,10 +1214,32 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
             continue;
         };
 
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_node_identity_value(path, &mut values, key, value)?;
     }
 
-    values
+    Ok(values)
+}
+
+fn insert_node_identity_value(
+    path: &Path,
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), StateError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty node identity key".to_string()
+        } else {
+            format!("duplicate node identity key {key}")
+        };
+        return Err(StateError::InvalidNodeIdentity {
+            path: path.to_path_buf(),
+            reason,
+        });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn clean_value(value: &str) -> String {
@@ -1820,6 +1842,26 @@ mod tests {
             fs::read_to_string(&outside).expect("outside reads"),
             outside_contents
         );
+    }
+
+    #[test]
+    fn read_state_rejects_duplicate_node_identity_key_without_values() {
+        let home = test_home("node-identity-duplicate-key");
+        fs::create_dir_all(&home).expect("home creates");
+        let paths = StatePaths::from_home(home.clone());
+        fs::write(
+            &paths.node_identity,
+            "# conU node identity\nversion = \"1\"\nnode_id = \"node_private_old\"\nnode_id = \"node_shadowed_new\"\ndisplay_name = \"local node\"\ncreated_at_unix = 1\nprotocol_version = \"1\"\n",
+        )
+        .expect("node identity writes");
+
+        let error =
+            read_state(Some(home)).expect_err("duplicate node identity key should fail closed");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("duplicate node identity key node_id"));
+        assert!(!rendered.contains("node_private_old"));
+        assert!(!rendered.contains("node_shadowed_new"));
     }
 
     #[cfg(unix)]
