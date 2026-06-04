@@ -453,7 +453,7 @@ fn read_pairing_invite(paths: &StatePaths, code: &str) -> Result<PairingInvite, 
             reason: "pairing code is not available locally until relay pairing arrives".to_string(),
         });
     };
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
 
     Ok(PairingInvite {
         code: validate_pairing_code(&required(&values, "code")?)?,
@@ -1064,7 +1064,7 @@ fn parse_trust_store(contents: &str) -> Result<Vec<TrustedPeer>, TrustError> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        current.insert(key.trim().to_string(), clean_value(value));
+        insert_trust_value(&mut current, key, value)?;
     }
 
     if !current.is_empty() {
@@ -1072,6 +1072,24 @@ fn parse_trust_store(contents: &str) -> Result<Vec<TrustedPeer>, TrustError> {
     }
 
     Ok(peers)
+}
+
+fn insert_trust_value(
+    values: &mut HashMap<String, String>,
+    key: &str,
+    value: &str,
+) -> Result<(), TrustError> {
+    let key = key.trim();
+    if values.contains_key(key) {
+        let reason = if key.is_empty() {
+            "duplicate empty trust key".to_string()
+        } else {
+            format!("duplicate trust key {key}")
+        };
+        return Err(TrustError::InvalidRequest { reason });
+    }
+    values.insert(key.to_string(), clean_value(value));
+    Ok(())
 }
 
 fn peer_from_values(values: &HashMap<String, String>) -> Result<TrustedPeer, TrustError> {
@@ -1393,7 +1411,7 @@ fn configured_relay_endpoint(paths: &StatePaths) -> Result<String, TrustError> {
         Some(contents) => contents,
         None => return Ok(DEFAULT_RELAY_ENDPOINT.to_string()),
     };
-    let values = parse_key_values(&contents);
+    let values = parse_key_values(&contents)?;
     let endpoint = values
         .get("default_relay")
         .filter(|value| !value.trim().is_empty())
@@ -1410,7 +1428,7 @@ fn configured_direct_quic_endpoint(paths: &StatePaths) -> Result<Option<String>,
     )
 }
 
-fn parse_key_values(contents: &str) -> HashMap<String, String> {
+fn parse_key_values(contents: &str) -> Result<HashMap<String, String>, TrustError> {
     let mut values = HashMap::new();
 
     for line in contents.lines().map(str::trim) {
@@ -1422,10 +1440,10 @@ fn parse_key_values(contents: &str) -> HashMap<String, String> {
             continue;
         };
 
-        values.insert(key.trim().to_string(), clean_value(value));
+        insert_trust_value(&mut values, key, value)?;
     }
 
-    values
+    Ok(values)
 }
 
 fn clean_value(value: &str) -> String {
@@ -1585,6 +1603,52 @@ mod tests {
         assert!(report.changed);
         assert_eq!(report.peer.status, TrustStatus::Revoked);
         assert_eq!(peers[0].status, TrustStatus::Revoked);
+    }
+
+    #[test]
+    fn trust_store_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("trust-duplicate-key");
+        let init = state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            &init.paths.trust_store,
+            "# conU trust store\nversion = \"1\"\n\n[[peer]]\npeer_node_id = \"peer.safe\"\npeer_node_id = \"private.message.contents\"\ndisplay_name = \"Peer Safe\"\nstatus = \"trusted\"\nsource = \"test\"\npairing_code_hash = \"pair_test\"\nexchange_public_key_hex = \"\"\nrelay_endpoint = \"\"\ndirect_quic_endpoint = \"\"\nsigning_public_key_hex = \"\"\nsignature_algorithm = \"\"\nsignature_key_id = \"\"\nsignature_hex = \"\"\ncreated_at_unix = 1\nupdated_at_unix = 1\npayload_displayed = false\n",
+        )
+        .expect("trust store writes");
+
+        let error = list_peers(Some(home)).expect_err("duplicate trust key fails closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate trust key peer_node_id")
+        );
+        assert!(!error.to_string().contains("private.message.contents"));
+    }
+
+    #[test]
+    fn pairing_invite_duplicate_key_fails_closed_without_payloads() {
+        let home = test_home("invite-duplicate-key");
+        let invite = create_pairing_invite(Some(home.clone())).expect("invite creates");
+        let paths = StatePaths::from_home(home.clone());
+        let invite_path = paths
+            .pairing_invites_dir
+            .join(format!("{}.pair", invite.code));
+        fs::write(
+            invite_path,
+            format!(
+                "version = \"1\"\ncode = \"{}\"\nlocal_node_id = \"node_local\"\npeer_node_id = \"peer_safe\"\ndisplay_name = \"paired-peer-safe\"\ncreated_at_unix = 1\nexpires_at_unix = 601\nstatus = \"pending\"\nstatus = \"private message contents\"\npayload_displayed = false\n",
+                invite.code
+            ),
+        )
+        .expect("invite writes");
+
+        let error = join_pairing_code(Some(home.clone()), &invite.code)
+            .expect_err("duplicate invite key fails closed");
+        let peers = list_peers(Some(home)).expect("peers read");
+
+        assert!(error.to_string().contains("duplicate trust key status"));
+        assert!(!error.to_string().contains("private message contents"));
+        assert!(peers.is_empty());
     }
 
     #[test]
