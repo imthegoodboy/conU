@@ -49,11 +49,14 @@ function assertSafeArchiveMemberList(members, archiveLabel = "archive") {
     const name = typeof member === "string" ? member : member.name;
     const type = typeof member === "string" ? "file" : member.type || "unknown";
     if (!SUPPORTED_MEMBER_TYPES.has(type)) {
-      throw new Error(`${archiveLabel} contains unsupported ${type} member: ${name}`);
+      throw archiveMemberPathError(
+        archiveLabel,
+        `contains unsupported ${formatMemberTypeForError(type)} member`
+      );
     }
     const normalized = validateArchiveMemberName(name, archiveLabel);
     if (paths.has(normalized)) {
-      throw new Error(`${archiveLabel} contains duplicate archive path: ${normalized}`);
+      throw archiveMemberPathError(archiveLabel, "contains duplicate archive path");
     }
     paths.add(normalized);
     rejectForbiddenArchivePath(normalized, archiveLabel);
@@ -62,24 +65,24 @@ function assertSafeArchiveMemberList(members, archiveLabel = "archive") {
 
 function validateArchiveMemberName(name, archiveLabel) {
   if (typeof name !== "string" || name.length === 0) {
-    throw new Error(`${archiveLabel} contains an empty archive member path`);
+    throw archiveMemberPathError(archiveLabel, "contains an empty archive member path");
   }
   if (name.includes("\0") || name.includes("\r") || name.includes("\n")) {
-    throw new Error(`${archiveLabel} contains an unsafe archive path: ${name}`);
+    throw archiveMemberPathError(archiveLabel, "contains an unsafe archive path");
   }
 
   const normalized = name.replace(/\\/g, "/");
   const hasWindowsDrive = /^[A-Za-z]:/.test(normalized);
   if (path.posix.isAbsolute(normalized) || hasWindowsDrive || normalized.startsWith("//")) {
-    throw new Error(`${archiveLabel} contains an absolute archive path: ${name}`);
+    throw archiveMemberPathError(archiveLabel, "contains an absolute archive path");
   }
 
   const parts = normalized.split("/").filter((part) => part !== "" && part !== ".");
   if (parts.length === 0) {
-    throw new Error(`${archiveLabel} contains an empty archive member path`);
+    throw archiveMemberPathError(archiveLabel, "contains an empty archive member path");
   }
   if (parts.includes("..")) {
-    throw new Error(`${archiveLabel} contains a parent-traversal archive path: ${name}`);
+    throw archiveMemberPathError(archiveLabel, "contains a parent-traversal archive path");
   }
   return parts.join("/");
 }
@@ -89,14 +92,27 @@ function rejectForbiddenArchivePath(normalized, archiveLabel) {
   const lowerParts = new Set(parts.map((part) => part.toLowerCase()));
   for (const forbidden of FORBIDDEN_PARTS) {
     if (lowerParts.has(forbidden)) {
-      throw new Error(`${archiveLabel} contains forbidden state path: ${normalized}`);
+      throw archiveMemberPathError(archiveLabel, "contains forbidden state path");
     }
   }
 
   const fileName = parts[parts.length - 1].toLowerCase();
   if (FORBIDDEN_NAMES.has(fileName)) {
-    throw new Error(`${archiveLabel} contains forbidden state path: ${normalized}`);
+    throw archiveMemberPathError(archiveLabel, "contains forbidden state path");
   }
+}
+
+function archiveMemberPathError(archiveLabel, reason) {
+  return new Error(
+    `${archiveLabel} ${reason}; pathDisplayed=false contentsDisplayed=false`
+  );
+}
+
+function formatMemberTypeForError(type) {
+  if (["symlink", "hardlink", "encrypted", "other", "unknown"].includes(type)) {
+    return type;
+  }
+  return "unsupported";
 }
 
 function listArchiveMembers(archivePath, archiveLabel) {

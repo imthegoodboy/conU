@@ -37,6 +37,7 @@ function main() {
   expectFail([{ name: "conu-0.1.0/.conu/state.toml", type: "file" }], "forbidden state path");
   expectFail([{ name: "conu-0.1.0/security/identity.key", type: "file" }], "forbidden state path");
   expectFail([{ name: "conu-0.1.0/runtime/node.toml", type: "file" }], "forbidden state path");
+  expectArchiveMemberFailurePathsAreRedacted();
   expectFail(makeMemberList(MAX_ARCHIVE_MEMBERS + 1), `more than ${MAX_ARCHIVE_MEMBERS} entries`);
   expectNativeZipInspection();
   expectArchiveInspectionPathRedacted();
@@ -58,6 +59,55 @@ function expectFail(members, expectedMessage) {
     throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`expected archive preflight failure: ${expectedMessage}`);
+}
+
+function expectFailWithoutArchiveMember(members, expectedMessage, forbiddenValues, label) {
+  try {
+    assertSafeArchiveMemberList(members, "fixture");
+  } catch (error) {
+    if (!error.message.includes(expectedMessage)) {
+      throw new Error(`${label}: expected ${expectedMessage}, got: ${error.message}`);
+    }
+    expectRedactedMemberFailure(error.message, forbiddenValues, label);
+    return;
+  }
+  throw new Error(`${label}: expected archive preflight failure`);
+}
+
+function expectArchiveMemberFailurePathsAreRedacted() {
+  expectFailWithoutArchiveMember(
+    [{ name: "conu-0.1.0/.conu/secret-node-state.toml", type: "file" }],
+    "forbidden state path",
+    [".conu", "secret-node-state.toml"],
+    "forbidden state member path"
+  );
+  expectFailWithoutArchiveMember(
+    [{ name: "conu-0.1.0/bin/conu\nsecret-token-fragment", type: "file" }],
+    "unsafe archive path",
+    ["secret-token-fragment"],
+    "unsafe member path"
+  );
+  expectFailWithoutArchiveMember(
+    [{ name: "C:\\Users\\parth\\AppData\\Local\\Temp\\conu.exe", type: "file" }],
+    "absolute archive path",
+    ["C:\\Users\\parth", "AppData", "conu.exe"],
+    "absolute member path"
+  );
+  expectFailWithoutArchiveMember(
+    [{ name: "conu-0.1.0/secret-bin/conu", type: "symlink" }],
+    "unsupported symlink member",
+    ["secret-bin", "conu"],
+    "unsupported member path"
+  );
+  expectFailWithoutArchiveMember(
+    [
+      { name: "conu-0.1.0/bin/secret-conu", type: "file" },
+      { name: "conu-0.1.0/bin/./secret-conu", type: "file" }
+    ],
+    "duplicate archive path",
+    ["secret-conu"],
+    "duplicate member path"
+  );
 }
 
 function makeMemberList(count) {
@@ -219,6 +269,20 @@ function expectArchiveInspectionFailurePathGuard() {
     throw new Error("expected archive inspection failure");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function expectRedactedMemberFailure(message, forbiddenValues, label) {
+  if (!message.includes("pathDisplayed=false")) {
+    throw new Error(`${label}: missing path display guard: ${message}`);
+  }
+  if (!message.includes("contentsDisplayed=false")) {
+    throw new Error(`${label}: missing contents display guard: ${message}`);
+  }
+  for (const value of forbiddenValues) {
+    if (message.includes(value)) {
+      throw new Error(`${label}: displayed archive member value ${value}: ${message}`);
+    }
   }
 }
 
