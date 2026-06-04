@@ -924,6 +924,7 @@ def run_custom_repository_tests(module) -> None:
         "https://[fc00::1]/conu",
         "https://[fec0::1]/conu",
         "https://[2001:db8::1]/conu",
+        "https://[2001:db8:1::1]/conu",
         "https://[::ffff:127.0.0.1]/conu",
         "https://packages.local/conu",
     ):
