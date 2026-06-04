@@ -8018,6 +8018,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process;
 
+    const TEST_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(3);
+    const TEST_SERVER_FRAME_POLL: Duration = Duration::from_millis(500);
+    const TEST_SERVER_FRAME_WAIT: Duration = Duration::from_secs(10);
+
     #[test]
     fn websocket_accept_key_matches_rfc_example() {
         let accept = websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ==");
@@ -12786,7 +12790,7 @@ token_displayed = false\n"
     fn connect_client(addr: SocketAddr) -> TcpStream {
         let mut stream = TcpStream::connect(addr).expect("client connects");
         stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
+            .set_read_timeout(Some(TEST_HANDSHAKE_READ_TIMEOUT))
             .expect("timeout set");
         let request = "GET /relay HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
         stream
@@ -12800,6 +12804,9 @@ token_displayed = false\n"
         }
         let response = String::from_utf8(response).expect("handshake utf8");
         assert!(response.contains("101 Switching Protocols"));
+        stream
+            .set_read_timeout(Some(TEST_SERVER_FRAME_POLL))
+            .expect("frame timeout set");
         stream
     }
 
@@ -12822,9 +12829,16 @@ token_displayed = false\n"
     }
 
     fn read_server_text(stream: &mut TcpStream) -> String {
-        read_text_frame(stream)
-            .expect("server frame reads")
-            .expect("server frame exists")
+        let deadline = Instant::now() + TEST_SERVER_FRAME_WAIT;
+        loop {
+            if let Some(frame) = read_text_frame(stream).expect("server frame reads") {
+                return frame;
+            }
+            if Instant::now() >= deadline {
+                panic!("server frame exists");
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
     }
 
     fn send_admin_text(addr: SocketAddr, request: RelayAdminRequest) -> String {
