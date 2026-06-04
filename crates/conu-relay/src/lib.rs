@@ -7666,7 +7666,8 @@ fn bind_addr_is_public(bind_addr: &str) -> bool {
     if host.is_empty() || host == "*" {
         return true;
     }
-    if host.eq_ignore_ascii_case("localhost") {
+    if host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("localhost.localdomain")
+    {
         return false;
     }
 
@@ -8035,6 +8036,21 @@ mod tests {
             RelayConfig::new("127.0.0.1:0", "local-dev-token").expect("loopback dev token ok");
 
         assert!(config.auth.authorize("node.local", "local-dev-token"));
+    }
+
+    #[test]
+    fn loopback_hostname_aliases_allow_dev_token() {
+        for bind_addr in [
+            "localhost:0",
+            "LOCALHOST:0",
+            "localhost.localdomain:0",
+            "LOCALHOST.LOCALDOMAIN:0",
+        ] {
+            let config =
+                RelayConfig::new(bind_addr, "local-dev-token").expect("loopback dev token ok");
+
+            assert!(config.auth.authorize("node.local", "local-dev-token"));
+        }
     }
 
     #[test]
@@ -12349,7 +12365,7 @@ token_displayed = true\n",
                 .expect("alice relay sync");
         let bob_report = bob_sync.join().expect("bob thread joins");
         let inbox =
-            messages::list_agent_inbox(Some(bob_home.clone()), "agent.bob").expect("inbox reads");
+            wait_for_agent_inbox_count(bob_home.clone(), "agent.bob", 1, Duration::from_secs(2));
         let receipts = messages::list_receipts(Some(bob_home.clone())).expect("receipts read");
         let received =
             messages::read_message_payload(Some(bob_home), "agent.bob", &inbox[0].envelope_id)
@@ -12419,7 +12435,7 @@ token_displayed = true\n",
                 .expect("alice relay sync");
         let bob_report = bob_sync.join().expect("bob thread joins");
         let inbox =
-            messages::list_agent_inbox(Some(bob_home.clone()), "agent.bob").expect("inbox reads");
+            wait_for_agent_inbox_count(bob_home.clone(), "agent.bob", 1, Duration::from_secs(2));
         let room_events = rooms::list_room_events(Some(bob_home.clone())).expect("events read");
         let received = messages::read_message_payload(
             Some(bob_home.clone()),
@@ -12904,6 +12920,29 @@ token_displayed = false\n"
         .expect("remote message valid");
         relay_delivery::submit_remote_message(Some(alice_home.to_path_buf()), remote)
             .expect("remote message queues");
+    }
+
+    fn wait_for_agent_inbox_count(
+        home: PathBuf,
+        agent_id: &str,
+        count: usize,
+        timeout: Duration,
+    ) -> Vec<messages::InboxEntry> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let inbox =
+                messages::list_agent_inbox(Some(home.clone()), agent_id).expect("inbox reads");
+            if inbox.len() >= count {
+                return inbox;
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "agent inbox did not reach expected metadata count: expected={count} actual={}",
+                    inbox.len()
+                );
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
     }
 
     fn write_remote_agent(home: &Path, agent_id: &str, peer_node_id: &str) {

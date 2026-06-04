@@ -1329,7 +1329,8 @@ impl HostedReadinessReport {
 
 fn readiness_bind_addr_is_public(bind_addr: &str) -> bool {
     let host = readiness_bind_host(bind_addr);
-    if host == "localhost" || host.eq_ignore_ascii_case("localhost.localdomain") {
+    if host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("localhost.localdomain")
+    {
         return false;
     }
     if host == "*" {
@@ -1347,12 +1348,14 @@ fn readiness_bind_host(bind_addr: &str) -> String {
             .split_once(']')
             .map(|(host, _)| host)
             .unwrap_or(rest)
+            .trim()
             .to_string();
     }
     bind_addr
         .rsplit_once(':')
         .map(|(host, _)| host)
         .unwrap_or(bind_addr)
+        .trim()
         .to_string()
 }
 
@@ -13411,6 +13414,29 @@ mod tests {
         assert!(error.contains("unknown option"));
         assert!(error.contains("contentsDisplayed=false"));
         assert!(!error.contains(secret_marker));
+    }
+
+    #[test]
+    fn readiness_bind_classifies_loopback_hostname_aliases() {
+        for bind_addr in [
+            "localhost:8787",
+            "LOCALHOST:8787",
+            "localhost.localdomain:8787",
+            "LOCALHOST.LOCALDOMAIN:8787",
+            " [::1]:8787 ",
+        ] {
+            assert!(
+                !readiness_bind_addr_is_public(bind_addr),
+                "{bind_addr} should be treated as loopback"
+            );
+        }
+
+        for bind_addr in ["*:8787", "0.0.0.0:8787", "localhost.evil.test:8787"] {
+            assert!(
+                readiness_bind_addr_is_public(bind_addr),
+                "{bind_addr} should require public-bind credentials"
+            );
+        }
     }
 
     fn abuse_threshold_policy_contents(thresholds: &str) -> String {
