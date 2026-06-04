@@ -931,6 +931,16 @@ PACKAGES_REQUIRED_STEPS: tuple[
         ),
     ),
     (
+        "Unsigned preview release asset regression",
+        "run unsigned preview release asset regression",
+        (
+            (
+                "unsigned preview release asset command",
+                "python scripts/check-unsigned-preview-release-assets-regression.py",
+            ),
+        ),
+    ),
+    (
         "Tagged release readiness regression",
         "run tagged release readiness regression",
         (
@@ -1400,6 +1410,71 @@ GITHUB_RELEASE_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("release artifact digest mismatch policy", "digest-mismatch: error"),
     ("merged artifact download flag", "merge-multiple: true"),
 )
+UNSIGNED_PREVIEW_RELEASE_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
+    (
+        "manual preview dispatch gate",
+        "if: github.event_name == 'workflow_dispatch' && "
+        "inputs.publish_preview_release == 'true'",
+    ),
+    ("Ubuntu runner", "runs-on: ubuntu-latest"),
+    ("contents write permission", "contents: write"),
+    ("checkout action", "uses: actions/checkout@v6"),
+    ("artifact download action", "uses: actions/download-artifact@v8.0.1"),
+    ("merged artifact download path", "path: dist"),
+    ("release artifact download pattern", "pattern: conu-*"),
+    ("release artifact digest mismatch policy", "digest-mismatch: error"),
+    ("merged artifact download flag", "merge-multiple: true"),
+)
+UNSIGNED_PREVIEW_RELEASE_REQUIRED_STEPS: tuple[
+    tuple[str, str, tuple[tuple[str, str], ...]],
+    ...,
+] = (
+    (
+        "Verify unsigned preview artifacts",
+        "verify unsigned preview artifacts",
+        (("release artifact verifier command", "python scripts/verify-release-artifacts.py dist"),),
+    ),
+    (
+        "Check unsigned preview asset set before publication",
+        "check unsigned preview asset set before publication",
+        (
+            (
+                "preview asset checker command",
+                "python scripts/check-unsigned-preview-release-assets.py --dist-dir dist --json",
+            ),
+        ),
+    ),
+    (
+        "Publish unsigned preview prerelease",
+        "publish unsigned preview prerelease without clobber",
+        (
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            ("release repository env", "GH_REPO: ${{ github.repository }}"),
+            ("preview tag derivation", 'PREVIEW_TAG="preview-${GITHUB_RUN_ID}"'),
+            ("existing preview guard", 'gh release view "$PREVIEW_TAG"'),
+            (
+                "preview release create command",
+                'gh release create "$PREVIEW_TAG" dist/* --target "$GITHUB_SHA" '
+                '--prerelease --title "conU unsigned preview ${GITHUB_RUN_ID}" '
+                "--notes-file release-notes.md",
+            ),
+        ),
+    ),
+    (
+        "Verify published unsigned preview prerelease",
+        "verify published unsigned preview prerelease",
+        (
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            ("release repository env", "GH_REPO: ${{ github.repository }}"),
+            ("preview tag derivation", 'PREVIEW_TAG="preview-${GITHUB_RUN_ID}"'),
+            (
+                "published preview asset checker command",
+                'python scripts/check-unsigned-preview-release-assets.py --repo "$GH_REPO" '
+                '--tag "$PREVIEW_TAG" --json',
+            ),
+        ),
+    ),
+)
 GITHUB_RELEASE_LINUX_GPG_ENV_SNIPPETS: tuple[tuple[str, str], ...] = (
     (
         "Linux GPG private key env",
@@ -1863,6 +1938,9 @@ EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
         "id-token": "write",
         "attestations": "write",
     },
+    ("release.yml", "manual-preview-release"): {
+        "contents": "write",
+    },
     ("release.yml", "github-release"): {
         "contents": "write",
     },
@@ -1883,6 +1961,7 @@ EXPECTED_RELEASE_JOB_NEEDS: dict[tuple[str, str], tuple[str, ...]] = {
     ("release.yml", "packages"): ("release-preflight",),
     ("release.yml", "production-readiness"): ("release-preflight",),
     ("release.yml", "build"): ("packages", "production-readiness"),
+    ("release.yml", "manual-preview-release"): ("build",),
     ("release.yml", "github-release"): ("build",),
     ("release.yml", "linux-repository-pages"): ("github-release",),
     ("release.yml", "custom-linux-repository-publish"): ("github-release",),
@@ -2593,6 +2672,42 @@ def audit_required_github_release_gate(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def audit_required_unsigned_preview_release_gate(path: Path) -> tuple[str, ...]:
+    if path.name != "release.yml":
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"failed to read workflow {path.name}: {exc}") from exc
+
+    block = extract_job_block(text, "manual-preview-release")
+    issues: list[str] = []
+    if not block:
+        return ("release.yml must define manual-preview-release job",)
+
+    for label, snippet in UNSIGNED_PREVIEW_RELEASE_JOB_SNIPPETS:
+        if snippet not in block:
+            issues.append(f"release.yml:manual-preview-release is missing {label}")
+
+    for step_name, description, required_snippets in UNSIGNED_PREVIEW_RELEASE_REQUIRED_STEPS:
+        step = extract_named_step_block(block, step_name)
+        if not step:
+            issues.append(f"release.yml:manual-preview-release must {description}")
+            continue
+        if step_name == "Publish unsigned preview prerelease" and "--clobber" in step:
+            issues.append(
+                "release.yml:manual-preview-release publish unsigned preview "
+                "prerelease must not use gh release upload/create clobber"
+            )
+        for label, snippet in required_snippets:
+            if snippet not in step:
+                issues.append(
+                    "release.yml:manual-preview-release "
+                    f"{description} is missing {label}"
+                )
+    return tuple(issues)
+
+
 def audit_required_linux_repository_publication_jobs(path: Path) -> tuple[str, ...]:
     if path.name != "release.yml":
         return ()
@@ -2817,6 +2932,7 @@ def audit_workflows(workflow_paths: tuple[Path, ...]) -> WorkflowPermissionsRead
         issues.extend(audit_required_ci_rust_job(path))
         issues.extend(audit_required_production_readiness_job(path))
         issues.extend(audit_required_build_job(path))
+        issues.extend(audit_required_unsigned_preview_release_gate(path))
         issues.extend(audit_required_github_release_gate(path))
         issues.extend(audit_required_linux_repository_publication_jobs(path))
         issues.extend(audit_required_release_publication_gate(path))

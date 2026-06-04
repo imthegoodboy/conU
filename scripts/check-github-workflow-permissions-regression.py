@@ -94,6 +94,8 @@ jobs:
         run: python scripts/check-github-release-assets-published-regression.py
       - name: GitHub Release clobber preflight regression
         run: python scripts/check-github-release-clobber-preflight-regression.py
+      - name: Unsigned preview release asset regression
+        run: python scripts/check-unsigned-preview-release-assets-regression.py
       - name: Tagged release readiness regression
         run: python scripts/check-tagged-release-readiness-regression.py
       - name: RPM package signing regression
@@ -173,6 +175,15 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish_preview_release:
+        description: "Publish unsigned preview prerelease artifacts for manual testing"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 permissions:
   contents: read
 jobs:
@@ -340,6 +351,8 @@ jobs:
         run: python scripts/check-github-release-assets-published-regression.py
       - name: GitHub Release clobber preflight regression
         run: python scripts/check-github-release-clobber-preflight-regression.py
+      - name: Unsigned preview release asset regression
+        run: python scripts/check-unsigned-preview-release-assets-regression.py
       - name: Tagged release readiness regression
         run: python scripts/check-tagged-release-readiness-regression.py
       - name: RPM package signing regression
@@ -486,6 +499,46 @@ jobs:
           name: conu-${{ matrix.name }}
           path: ${{ matrix.artifact }}
           if-no-files-found: error
+  manual-preview-release:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_preview_release == 'true'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          path: dist
+          pattern: conu-*
+          digest-mismatch: error
+          merge-multiple: true
+      - name: Verify unsigned preview artifacts
+        run: python scripts/verify-release-artifacts.py dist
+      - name: Check unsigned preview asset set before publication
+        run: python scripts/check-unsigned-preview-release-assets.py --dist-dir dist --json
+      - name: Publish unsigned preview prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          PREVIEW_TAG="preview-${GITHUB_RUN_ID}"
+          if gh release view "$PREVIEW_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "::error::Unsigned preview release $PREVIEW_TAG already exists; refusing to overwrite assets."
+            exit 1
+          fi
+          gh release create "$PREVIEW_TAG" dist/* --target "$GITHUB_SHA" --prerelease --title "conU unsigned preview ${GITHUB_RUN_ID}" --notes-file release-notes.md
+      - name: Verify published unsigned preview prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          PREVIEW_TAG="preview-${GITHUB_RUN_ID}"
+          python scripts/check-unsigned-preview-release-assets.py --repo "$GH_REPO" --tag "$PREVIEW_TAG" --json
   github-release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -2197,7 +2250,12 @@ def run_expected_job_permission_tests(module) -> None:
     report = with_fixture(
         module,
         None,
-        ready_release().replace("      contents: write\n    runs-on", "      contents: write\n      actions: read\n    runs-on"),
+        replace_job_text(
+            ready_release(),
+            "github-release",
+            "      contents: write\n",
+            "      contents: write\n      actions: read\n",
+        ),
     )
     if report.ready:
         raise AssertionError("extra release job permission should fail")
@@ -2788,10 +2846,11 @@ def run_required_github_release_gate_tests(module) -> None:
 
     assert_release_gate_issue(
         module,
-        ready_release().replace(
+        replace_job_text(
+            ready_release(),
+            "github-release",
             "      - uses: actions/download-artifact@v8.0.1\n",
             "      - uses: actions/upload-artifact@v7.0.1\n",
-            1,
         ),
         "release.yml:github-release is missing artifact download action",
         "missing GitHub Release artifact download should fail",
@@ -2799,10 +2858,11 @@ def run_required_github_release_gate_tests(module) -> None:
 
     assert_release_gate_issue(
         module,
-        ready_release().replace(
+        replace_job_text(
+            ready_release(),
+            "github-release",
             "          pattern: conu-*\n",
             "",
-            1,
         ),
         "release.yml:github-release is missing release artifact download pattern",
         "missing GitHub Release artifact download pattern should fail",
@@ -2810,10 +2870,11 @@ def run_required_github_release_gate_tests(module) -> None:
 
     assert_release_gate_issue(
         module,
-        ready_release().replace(
+        replace_job_text(
+            ready_release(),
+            "github-release",
             "          digest-mismatch: error\n",
             "",
-            1,
         ),
         "release.yml:github-release is missing release artifact digest mismatch policy",
         "missing GitHub Release artifact digest mismatch policy should fail",
@@ -3117,6 +3178,97 @@ def run_required_github_release_gate_tests(module) -> None:
         raise AssertionError(
             "missing published GPG public-key checksum verification was not reported"
         )
+
+
+def run_required_unsigned_preview_release_gate_tests(module) -> None:
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "manual-preview-release",
+            "    if: github.event_name == 'workflow_dispatch' && inputs.publish_preview_release == 'true'\n",
+            "",
+        ),
+        "release.yml:manual-preview-release is missing manual preview dispatch gate",
+        "missing unsigned preview dispatch gate should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_job_text(
+            ready_release(),
+            "manual-preview-release",
+            "          pattern: conu-*\n",
+            "",
+        ),
+        "release.yml:manual-preview-release is missing release artifact download pattern",
+        "missing unsigned preview artifact pattern should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Check unsigned preview asset set before publication",
+            "python scripts/check-unsigned-preview-release-assets.py --dist-dir dist --json",
+            "echo skipped-preview-asset-check",
+        ),
+        "release.yml:manual-preview-release check unsigned preview asset set "
+        "before publication is missing preview asset checker command",
+        "missing unsigned preview local asset check should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Publish unsigned preview prerelease",
+            'gh release view "$PREVIEW_TAG"',
+            'echo "skip existing preview guard"',
+        ),
+        "release.yml:manual-preview-release publish unsigned preview prerelease "
+        "without clobber is missing existing preview guard",
+        "missing unsigned preview clobber guard should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Publish unsigned preview prerelease",
+            "--prerelease",
+            "",
+        ),
+        "release.yml:manual-preview-release publish unsigned preview prerelease "
+        "without clobber is missing preview release create command",
+        "missing unsigned preview prerelease flag should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Publish unsigned preview prerelease",
+            "--notes-file release-notes.md",
+            "--notes-file release-notes.md --clobber",
+        ),
+        "release.yml:manual-preview-release publish unsigned preview "
+        "prerelease must not use gh release upload/create clobber",
+        "unsigned preview clobber use should fail",
+    )
+
+    assert_release_gate_issue(
+        module,
+        replace_named_step_text(
+            ready_release(),
+            "Verify published unsigned preview prerelease",
+            'python scripts/check-unsigned-preview-release-assets.py --repo "$GH_REPO" --tag "$PREVIEW_TAG" --json',
+            "echo skipped-published-preview-check",
+        ),
+        "release.yml:manual-preview-release verify published unsigned preview "
+        "prerelease is missing published preview asset checker command",
+        "missing unsigned preview published asset check should fail",
+    )
 
 
 def run_required_linux_repository_publication_job_tests(module) -> None:
@@ -3539,6 +3691,7 @@ def main() -> int:
     run_required_package_checks_job_tests(module)
     run_required_production_readiness_job_tests(module)
     run_required_build_job_tests(module)
+    run_required_unsigned_preview_release_gate_tests(module)
     run_required_github_release_gate_tests(module)
     run_required_linux_repository_publication_job_tests(module)
     run_required_npm_publication_gate_tests(module)
