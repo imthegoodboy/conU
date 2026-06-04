@@ -7064,21 +7064,34 @@ fn read_mailbox_file(path: &Path) -> Result<Option<QueuedRelayEnvelope>, RelayEr
         "inspect relay mailbox file",
         "read relay mailbox file",
     )?;
-    let version = mailbox_value(&contents, "version").unwrap_or_default();
+    let version = relay_metadata_value(&contents, "version", "relay mailbox entry is invalid")?
+        .unwrap_or_default();
     if version != RELAY_MAILBOX_FILE_VERSION {
         return Ok(None);
     }
-    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false") {
+    if !relay_metadata_false_guard(
+        &contents,
+        "payload_displayed",
+        "relay mailbox entry is invalid",
+    )? {
         return Ok(None);
     }
-    let queued_at_millis = mailbox_value(&contents, "queued_at_millis")
-        .and_then(|value| value.parse::<u128>().ok())
-        .ok_or_else(|| RelayError::Protocol("relay mailbox entry is invalid".to_string()))?;
-    let queued_at_nanos = mailbox_value(&contents, "queued_at_nanos")
-        .and_then(|value| value.parse::<u128>().ok())
-        .or_else(|| mailbox_file_sequence(path))
-        .unwrap_or_else(|| queued_at_millis.saturating_mul(1_000_000));
-    let frame = mailbox_value(&contents, "frame")
+    let queued_at_millis = relay_metadata_value(
+        &contents,
+        "queued_at_millis",
+        "relay mailbox entry is invalid",
+    )?
+    .and_then(|value| value.parse::<u128>().ok())
+    .ok_or_else(|| RelayError::Protocol("relay mailbox entry is invalid".to_string()))?;
+    let queued_at_nanos = relay_metadata_value(
+        &contents,
+        "queued_at_nanos",
+        "relay mailbox entry is invalid",
+    )?
+    .and_then(|value| value.parse::<u128>().ok())
+    .or_else(|| mailbox_file_sequence(path))
+    .unwrap_or_else(|| queued_at_millis.saturating_mul(1_000_000));
+    let frame = relay_metadata_value(&contents, "frame", "relay mailbox entry is invalid")?
         .ok_or_else(|| RelayError::Protocol("relay mailbox entry is invalid".to_string()))?;
     let forwarded = match parse_server_frame(&frame) {
         Ok(RelayServerFrame::Forwarded(forwarded)) => *forwarded,
@@ -7125,9 +7138,13 @@ fn audit_mailbox_node_dir(
         let byte_len = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         audit.bytes = audit.bytes.saturating_add(byte_len);
 
-        let Some(queued_at_millis) = read_mailbox_audit_timestamp(&path)? else {
-            audit.invalid_records = audit.invalid_records.saturating_add(1);
-            continue;
+        let queued_at_millis = match read_mailbox_audit_timestamp(&path) {
+            Ok(Some(queued_at_millis)) => queued_at_millis,
+            Ok(None) | Err(RelayError::Protocol(_)) => {
+                audit.invalid_records = audit.invalid_records.saturating_add(1);
+                continue;
+            }
+            Err(error) => return Err(error),
         };
 
         let queued_at_u64 = queued_at_millis.min(u64::MAX as u128) as u64;
@@ -7169,16 +7186,24 @@ fn read_mailbox_audit_timestamp(path: &Path) -> Result<Option<u128>, RelayError>
         "inspect relay mailbox file",
         "read relay mailbox file",
     )?;
-    let version = mailbox_value(&contents, "version").unwrap_or_default();
+    let version = relay_metadata_value(&contents, "version", "relay mailbox entry is invalid")?
+        .unwrap_or_default();
     if version != RELAY_MAILBOX_FILE_VERSION {
         return Ok(None);
     }
-    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false") {
+    if !relay_metadata_false_guard(
+        &contents,
+        "payload_displayed",
+        "relay mailbox entry is invalid",
+    )? {
         return Ok(None);
     }
-    let Some(queued_at_millis) =
-        mailbox_value(&contents, "queued_at_millis").and_then(|value| value.parse::<u128>().ok())
-    else {
+    let Some(queued_at_millis) = relay_metadata_value(
+        &contents,
+        "queued_at_millis",
+        "relay mailbox entry is invalid",
+    )?
+    .and_then(|value| value.parse::<u128>().ok()) else {
         return Ok(None);
     };
     Ok(Some(queued_at_millis))
@@ -7326,23 +7351,41 @@ fn read_session_file(path: &Path) -> Result<Option<RelaySessionRecord>, RelayErr
         "inspect relay session state file",
         "read relay session state file",
     )?;
-    let version = mailbox_value(&contents, "version").unwrap_or_default();
+    let version =
+        relay_metadata_value(&contents, "version", "relay session state entry is invalid")?
+            .unwrap_or_default();
     if version != RELAY_SESSION_FILE_VERSION {
         return Ok(None);
     }
-    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "token_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "contents_displayed").as_deref() != Some("false")
-    {
+    if !relay_metadata_false_guard(
+        &contents,
+        "payload_displayed",
+        "relay session state entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "token_displayed",
+        "relay session state entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "contents_displayed",
+        "relay session state entry is invalid",
+    )? {
         return Ok(None);
     }
-    let Some(node_id) = mailbox_value(&contents, "node_id") else {
+    let Some(node_id) =
+        relay_metadata_value(&contents, "node_id", "relay session state entry is invalid")?
+    else {
         return Ok(None);
     };
     let Ok(node_id) = validate_node_id(node_id) else {
         return Ok(None);
     };
-    let Some(session_id) = mailbox_value(&contents, "session_id") else {
+    let Some(session_id) = relay_metadata_value(
+        &contents,
+        "session_id",
+        "relay session state entry is invalid",
+    )?
+    else {
         return Ok(None);
     };
     if !session_id_belongs_to_node(&session_id, &node_id) {
@@ -7359,7 +7402,7 @@ fn read_session_file(path: &Path) -> Result<Option<RelaySessionRecord>, RelayErr
 }
 
 fn parse_session_u64(contents: &str, key: &str) -> Result<u64, RelayError> {
-    mailbox_value(contents, key)
+    relay_metadata_value(contents, key, "relay session state entry is invalid")?
         .and_then(|value| value.parse::<u64>().ok())
         .ok_or_else(|| RelayError::Protocol("relay session state entry is invalid".to_string()))
 }
@@ -7411,16 +7454,25 @@ fn read_accounting_file(path: &Path) -> Result<Option<RelayAccountingRecord>, Re
         "inspect relay accounting file",
         "read relay accounting file",
     )?;
-    let version = mailbox_value(&contents, "version").unwrap_or_default();
+    let version = relay_metadata_value(&contents, "version", "relay accounting entry is invalid")?
+        .unwrap_or_default();
     if version != RELAY_ACCOUNTING_FILE_VERSION {
         return Ok(None);
     }
-    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "token_displayed").as_deref() != Some("false")
-    {
+    if !relay_metadata_false_guard(
+        &contents,
+        "payload_displayed",
+        "relay accounting entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "token_displayed",
+        "relay accounting entry is invalid",
+    )? {
         return Ok(None);
     }
-    let Some(node_id) = mailbox_value(&contents, "node_id") else {
+    let Some(node_id) =
+        relay_metadata_value(&contents, "node_id", "relay accounting entry is invalid")?
+    else {
         return Ok(None);
     };
     let Ok(node_id) = validate_node_id(node_id) else {
@@ -7443,13 +7495,13 @@ fn read_accounting_file(path: &Path) -> Result<Option<RelayAccountingRecord>, Re
 }
 
 fn parse_accounting_u64(contents: &str, key: &str) -> Result<u64, RelayError> {
-    mailbox_value(contents, key)
+    relay_metadata_value(contents, key, "relay accounting entry is invalid")?
         .and_then(|value| value.parse::<u64>().ok())
         .ok_or_else(|| RelayError::Protocol("relay accounting entry is invalid".to_string()))
 }
 
 fn parse_optional_accounting_u64(contents: &str, key: &str) -> Result<Option<u64>, RelayError> {
-    mailbox_value(contents, key)
+    relay_metadata_value(contents, key, "relay accounting entry is invalid")?
         .map(|value| {
             value
                 .parse::<u64>()
@@ -7550,25 +7602,50 @@ fn read_abuse_file(path: &Path) -> Result<Option<RelayAbuseRecord>, RelayError> 
         "inspect relay abuse file",
         "read relay abuse file",
     )?;
-    let version = mailbox_value(&contents, "version").unwrap_or_default();
+    let version = relay_metadata_value(&contents, "version", "relay abuse entry is invalid")?
+        .unwrap_or_default();
     if version != RELAY_ABUSE_FILE_VERSION {
         return Ok(None);
     }
-    if mailbox_value(&contents, "payload_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "token_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "token_hash_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "key_material_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "session_id_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "ciphertext_displayed").as_deref() != Some("false")
-        || mailbox_value(&contents, "contents_displayed").as_deref() != Some("false")
-    {
+    if !relay_metadata_false_guard(
+        &contents,
+        "payload_displayed",
+        "relay abuse entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "token_displayed",
+        "relay abuse entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "token_hash_displayed",
+        "relay abuse entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "key_material_displayed",
+        "relay abuse entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "session_id_displayed",
+        "relay abuse entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "ciphertext_displayed",
+        "relay abuse entry is invalid",
+    )? || !relay_metadata_false_guard(
+        &contents,
+        "contents_displayed",
+        "relay abuse entry is invalid",
+    )? {
         return Ok(None);
     }
-    let scope = mailbox_value(&contents, "scope").unwrap_or_else(|| "node".to_string());
+    let scope = relay_metadata_value(&contents, "scope", "relay abuse entry is invalid")?
+        .unwrap_or_else(|| "node".to_string());
     let node_id = match scope.as_str() {
         "global" => None,
         "node" => {
-            let Some(node_id) = mailbox_value(&contents, "node_id") else {
+            let Some(node_id) =
+                relay_metadata_value(&contents, "node_id", "relay abuse entry is invalid")?
+            else {
                 return Ok(None);
             };
             let Ok(node_id) = validate_node_id(node_id) else {
@@ -7598,13 +7675,13 @@ fn read_abuse_file(path: &Path) -> Result<Option<RelayAbuseRecord>, RelayError> 
 }
 
 fn parse_abuse_u64(contents: &str, key: &str) -> Result<u64, RelayError> {
-    mailbox_value(contents, key)
+    relay_metadata_value(contents, key, "relay abuse entry is invalid")?
         .and_then(|value| value.parse::<u64>().ok())
         .ok_or_else(|| RelayError::Protocol("relay abuse entry is invalid".to_string()))
 }
 
 fn parse_optional_abuse_u64(contents: &str, key: &str) -> Result<Option<u64>, RelayError> {
-    mailbox_value(contents, key)
+    relay_metadata_value(contents, key, "relay abuse entry is invalid")?
         .map(|value| {
             value
                 .parse::<u64>()
@@ -7613,12 +7690,31 @@ fn parse_optional_abuse_u64(contents: &str, key: &str) -> Result<Option<u64>, Re
         .transpose()
 }
 
-fn mailbox_value(contents: &str, key: &str) -> Option<String> {
+fn relay_metadata_value(
+    contents: &str,
+    key: &str,
+    invalid_reason: &'static str,
+) -> Result<Option<String>, RelayError> {
     let prefix = format!("{key} = ");
-    contents.lines().find_map(|line| {
-        let value = line.trim().strip_prefix(&prefix)?;
-        Some(value.trim().trim_matches('"').to_string())
-    })
+    let mut found = None;
+    for line in contents.lines() {
+        let Some(value) = line.trim().strip_prefix(&prefix) else {
+            continue;
+        };
+        if found.is_some() {
+            return Err(RelayError::Protocol(invalid_reason.to_string()));
+        }
+        found = Some(value.trim().trim_matches('"').to_string());
+    }
+    Ok(found)
+}
+
+fn relay_metadata_false_guard(
+    contents: &str,
+    key: &str,
+    invalid_reason: &'static str,
+) -> Result<bool, RelayError> {
+    Ok(relay_metadata_value(contents, key, invalid_reason)?.as_deref() == Some("false"))
 }
 
 fn strip_config_comment(line: &str) -> &str {
@@ -11610,6 +11706,122 @@ token_displayed = true\n",
         assert!(!debug.contains("ENVELOPE from=node.a"));
         assert!(!debug.contains("relay_node.hosted_123456789"));
         assert!(!debug.contains("token_sha256_hex"));
+    }
+
+    #[test]
+    fn relay_metadata_duplicate_keys_fail_closed_without_payloads() {
+        let home = test_home("relay-metadata-duplicate-keys");
+        let now_millis = current_unix_millis();
+        let now_unix = current_unix_seconds();
+        let secret_marker = "private message contents";
+
+        let mailbox_dir = home.join("relay-mailbox");
+        let mailbox_node_dir = mailbox_dir.join("node.b");
+        fs::create_dir_all(&mailbox_node_dir).expect("mailbox node dir");
+        let mailbox_entry = QueuedRelayEnvelope {
+            queued_at_millis: now_millis,
+            queued_at_nanos: now_millis.saturating_mul(1_000_000),
+            storage_path: None,
+            forwarded: forwarded_from_client_frame(
+                "node.a",
+                encrypted_forward_frame("node.b", "env.duplicate.mailbox"),
+            ),
+        };
+        let mailbox_path = mailbox_node_dir.join("duplicate.mailbox");
+        fs::write(
+            &mailbox_path,
+            render_mailbox_file(&mailbox_entry)
+                + "payload_displayed = true\nsecret_payload = \"private message contents\"\n",
+        )
+        .expect("duplicate mailbox writes");
+
+        let mailbox_audit =
+            audit_relay_mailbox_dir(&mailbox_dir, None, None).expect("mailbox audit reads");
+        assert_eq!(mailbox_audit.records, 1);
+        assert_eq!(mailbox_audit.invalid_records, 1);
+        assert!(mailbox_audit.oldest_queued_unix_millis.is_none());
+        assert!(!format!("{mailbox_audit:?}").contains(secret_marker));
+
+        let mailbox_storage =
+            RelayMailboxStorage::file_backed(mailbox_dir.clone()).expect("mailbox storage");
+        let mailbox_policy =
+            RelayMailboxPolicy::new(4, Duration::from_secs(60)).expect("mailbox policy");
+        let mut loaded_mailbox =
+            RelayHubState::load(&mailbox_storage, mailbox_policy).expect("mailbox loads");
+        let drained = loaded_mailbox
+            .drain_mailbox("node.b", mailbox_policy, &mailbox_storage)
+            .expect("mailbox drains");
+        assert!(drained.is_empty());
+        assert!(!mailbox_path.exists());
+
+        let session_dir = home.join("sessions");
+        fs::create_dir_all(&session_dir).expect("session dir");
+        let session_record = RelaySessionRecord::new(
+            "node.a",
+            &session_id("node.a"),
+            now_millis.min(u64::MAX as u128) as u64,
+            RelaySessionPolicy::default(),
+        );
+        let session_path = relay_session_record_path(&session_dir, "node.a");
+        fs::write(
+            &session_path,
+            render_session_file(&session_record)
+                + "contents_displayed = true\nsecret_payload = \"private session\"\n",
+        )
+        .expect("duplicate session writes");
+
+        let session_audit =
+            audit_relay_session_state_dir(&session_dir, None).expect("session audit reads");
+        assert_eq!(session_audit.records, 0);
+        assert_eq!(session_audit.invalid_records, 1);
+        assert!(!format!("{session_audit:?}").contains(secret_marker));
+        let loaded_sessions = RelaySessionState::load(
+            &RelaySessionStorage::file_backed(session_dir).expect("session storage"),
+            RelaySessionPolicy::default(),
+        )
+        .expect("session state loads around duplicate record");
+        assert!(loaded_sessions.records.is_empty());
+        assert!(!session_path.exists());
+
+        let accounting_dir = home.join("accounting");
+        fs::create_dir_all(&accounting_dir).expect("accounting dir");
+        let mut accounting_record = RelayAccountingRecord::new("node.a", now_unix);
+        accounting_record.sessions_authenticated = 1;
+        fs::write(
+            accounting_dir.join("node.a.accounting"),
+            render_accounting_file(&accounting_record)
+                + "sessions_authenticated = 2\nsecret_payload = \"private accounting\"\n",
+        )
+        .expect("duplicate accounting writes");
+        let accounting_error = audit_relay_accounting_dir(&accounting_dir, None)
+            .expect_err("duplicate accounting key fails closed");
+        assert!(
+            accounting_error
+                .to_string()
+                .contains("relay accounting entry is invalid")
+        );
+        assert!(!accounting_error.to_string().contains(secret_marker));
+        assert!(!accounting_error.to_string().contains("private accounting"));
+
+        let abuse_dir = home.join("abuse");
+        fs::create_dir_all(&abuse_dir).expect("abuse dir");
+        let mut abuse_record = RelayAbuseRecord::new(Some("node.a".to_string()), now_unix);
+        abuse_record.record(RelayAbuseKind::RateLimitedSession);
+        fs::write(
+            abuse_dir.join("node-node.a.abuse"),
+            render_abuse_file(&abuse_record)
+                + "rate_limited_sessions = 2\nsecret_payload = \"private abuse\"\n",
+        )
+        .expect("duplicate abuse writes");
+        let abuse_error =
+            audit_relay_abuse_dir(&abuse_dir, None).expect_err("duplicate abuse key fails closed");
+        assert!(
+            abuse_error
+                .to_string()
+                .contains("relay abuse entry is invalid")
+        );
+        assert!(!abuse_error.to_string().contains(secret_marker));
+        assert!(!abuse_error.to_string().contains("private abuse"));
     }
 
     #[cfg(unix)]
