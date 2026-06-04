@@ -16,6 +16,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from json_safety import load_json_object, loads_json
+
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 NPM_WHOAMI_URL = "https://registry.npmjs.org/-/whoami"
@@ -51,11 +53,7 @@ def find_npm() -> str:
 
 
 def load_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        value = json.load(handle)
-    if not isinstance(value, dict):
-        raise ValueError(f"{path} must contain a JSON object")
-    return value
+    return load_json_object(path)
 
 
 def require_string(manifest: dict[str, Any], field: str, context: Path) -> str:
@@ -146,10 +144,12 @@ def validate_token_authentication(env_name: str | None) -> None:
         raise ValueError(f"npm token authentication check response was too large for {env_name}")
 
     try:
-        parsed = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        parsed = loads_json(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"npm token authentication check returned invalid JSON for {env_name}") from exc
 
+    if not isinstance(parsed, dict):
+        raise ValueError(f"npm token authentication check did not return an npm username for {env_name}")
     username = parsed.get("username")
     if not isinstance(username, str) or not is_single_line_token_value(username):
         raise ValueError(f"npm token authentication check did not return an npm username for {env_name}")
@@ -166,8 +166,8 @@ def npm_version_exists(npm: str, package: PackageInfo) -> bool:
     )
     if result.returncode == 0:
         try:
-            reported = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
+            reported = loads_json(result.stdout)
+        except (json.JSONDecodeError, ValueError) as exc:
             raise ValueError(
                 f"npm registry returned invalid JSON for {package.name}@{package.version}: {exc}"
             ) from exc
