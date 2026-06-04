@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
+from command_output_redaction import redact_command_output
 from github_release_secrets import normalize_repo
 
 
@@ -1471,7 +1472,8 @@ def build_rpm_packages(
                 )
             except subprocess.CalledProcessError as exc:
                 raise SystemExit(
-                    f"rpmbuild failed for {target} with output:\n{exc.stdout}"
+                    f"rpmbuild failed for {target} with output:\n"
+                    f"{redact_command_output(exc.stdout or '')}"
                 ) from exc
 
             packages = sorted((topdir / "RPMS").rglob("conu-*.rpm"))
@@ -1550,7 +1552,10 @@ def build_rpm_repository_metadata(
                 errors="replace",
             )
         except subprocess.CalledProcessError as exc:
-            raise SystemExit(f"createrepo_c failed with output:\n{exc.stdout}") from exc
+            raise SystemExit(
+                f"createrepo_c failed with output:\n"
+                f"{redact_command_output(exc.stdout or '')}"
+            ) from exc
 
         repodata_dir = repo_dir / "repodata"
         if not repodata_dir.is_dir():
