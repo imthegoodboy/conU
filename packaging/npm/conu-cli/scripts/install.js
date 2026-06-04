@@ -71,7 +71,7 @@ async function main() {
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conu-npm-"));
   try {
-    const archivePath = path.join(tempDir, asset);
+    const archivePath = path.join(tempDir, tempArchiveFileName(asset));
     const checksumPath = `${archivePath}.sha256`;
     await downloadFile(`${releaseBase}/${asset}`, archivePath, downloadLimits.maxArchiveBytes);
 
@@ -97,6 +97,16 @@ async function main() {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+function tempArchiveFileName(publicAssetName) {
+  if (publicAssetName.endsWith(".tar.gz")) {
+    return "conu-native-archive.tar.gz";
+  }
+  if (publicAssetName.endsWith(".zip")) {
+    return "conu-native-archive.zip";
+  }
+  throw new Error(`unsupported conU release asset: ${publicAssetName}`);
 }
 
 function installFromLocalDir(sourceDir) {

@@ -178,7 +178,7 @@ function zipEndOfCentralDirectory(entryCount, centralSize, centralOffset) {
 function expectArchiveInspectionPathRedacted() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "conu-secret-local-path-"));
   try {
-    const archive = path.join(root, "conu-0.1.0-windows-x64.zip");
+    const archive = path.join(root, "conu-invalid-archive-fixture.zip");
     fs.writeFileSync(archive, "not a zip archive\n", "utf8");
     try {
       validateArchiveMembers(archive);

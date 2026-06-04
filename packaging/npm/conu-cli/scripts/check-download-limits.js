@@ -13,6 +13,7 @@ const {
   parseContentLength,
   readPositiveIntegerEnv
 } = require("../lib/download-limits");
+const { assetName } = require("../lib/platform");
 
 const packageRoot = path.resolve(__dirname, "..");
 const installScript = path.join(__dirname, "install.js");
@@ -29,6 +30,7 @@ async function main() {
   await expectArchiveLimitFailure();
   await expectChecksumLimitFailure();
   await expectChecksumArchiveNameFailure();
+  await expectInvalidArchiveUsesNeutralTempLabel();
   await expectTimeoutFailure();
   console.log("download limit check passed");
 }
@@ -150,6 +152,28 @@ async function expectChecksumArchiveNameFailure() {
   });
 }
 
+async function expectInvalidArchiveUsesNeutralTempLabel() {
+  const body = Buffer.from("not a release archive");
+  await withServer((request, response) => {
+    if (request.url.includes(".sha256")) {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    response.writeHead(200, { "Content-Length": String(body.length) });
+    response.end(body);
+  }, async (baseUrl) => {
+    const result = await runInstall({
+      CONU_NPM_ALLOW_UNVERIFIED: "1",
+      CONU_NPM_DIST_BASE: baseUrl,
+      CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
+    });
+    expectFailedWith(result, "conu-native-archive");
+    expectFailedWithout(result, assetName());
+    expectNoSecretDisplay(result);
+  });
+}
+
 async function expectTimeoutFailure() {
   await withServer((_request, _response) => {}, async (baseUrl) => {
     const result = await runInstall({
@@ -207,6 +231,16 @@ function expectFailedWith(result, expectedMessage) {
   }
   if (!output.includes(expectedMessage)) {
     throw new Error(`expected installer output to include ${expectedMessage}, got: ${output}`);
+  }
+}
+
+function expectFailedWithout(result, unexpectedMessage) {
+  const output = `${result.stdout || ""}${result.stderr || ""}`;
+  if (result.status === 0) {
+    throw new Error(`expected installer to fail without ${unexpectedMessage}, but it passed`);
+  }
+  if (output.includes(unexpectedMessage)) {
+    throw new Error(`installer output included ${unexpectedMessage}: ${output}`);
   }
 }
 
