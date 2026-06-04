@@ -264,6 +264,24 @@ def main() -> int:
             release_base_url="https://github.com/imthegoodboy/conU/releases/download/v0.1.0/%00",
         )
 
+        for bad_url in (
+            "https://127.0.0.1/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://10.0.0.1/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://100.64.0.1/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://192.88.99.1/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[fc00::1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[fec0::1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[2001:db8::1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://[::ffff:127.0.0.1]/imthegoodboy/conU/releases/download/v0.1.0",
+            "https://release.local/imthegoodboy/conU/releases/download/v0.1.0",
+        ):
+            expect_failure(
+                "non-public release base URL",
+                dist,
+                "host must be public",
+                release_base_url=bad_url,
+            )
+
         expect_failure(
             "tag mismatch",
             dist,

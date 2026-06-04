@@ -30,6 +30,7 @@ from github_release_secrets import (
     normalize_repo,
     run_gh_json,
 )
+from public_host_validation import is_loopback_host, validate_public_host
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -498,6 +499,7 @@ def normalize_custom_base_url(raw: str) -> str:
     if parsed.params or parsed.query or parsed.fragment:
         raise ValueError("custom repository base URL must not include params, query, or fragment")
     netloc = normalize_url_netloc(parsed, "custom repository base URL")
+    validate_public_host(parsed.hostname or "", "custom repository base URL")
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise ValueError("custom repository base URL path must not contain dot segments")
@@ -550,10 +552,6 @@ def validate_prefix(raw: str) -> str:
     if any(has_url_path_control(part) for part in decoded_parts):
         raise ValueError("custom repository S3 prefix must not contain whitespace or control characters")
     return "/".join(parts)
-
-
-def is_loopback_host(host: str) -> bool:
-    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
 
 
 def validate_endpoint_url(raw: str, *, allow_loopback_http: bool = False) -> str:

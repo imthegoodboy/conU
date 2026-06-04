@@ -7,13 +7,14 @@ import argparse
 import fnmatch
 import json
 import os
-import socket
 import sys
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
+
+from public_host_validation import is_loopback_host, validate_public_host
 
 
 CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
@@ -23,7 +24,6 @@ MAX_JSON_BYTES = 1024 * 1024
 MAX_TEXT_BYTES = 1024 * 1024
 MAX_HEAD_BYTES = 0
 DEFAULT_TIMEOUT_SECONDS = 15.0
-LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 FORBIDDEN_TEXT = (
     "BEGIN PGP PRIVATE KEY BLOCK",
     "BEGIN PRIVATE KEY",
@@ -269,6 +269,12 @@ def normalize_base_url(raw_value: str, *, allow_loopback_http: bool) -> str:
             raise EndpointReadinessError(
                 "hosted Linux repository base URL must be an absolute HTTPS URL"
             )
+    else:
+        validate_public_host(
+            host_lower,
+            "hosted Linux repository base URL",
+            error_factory=EndpointReadinessError,
+        )
     port = validate_url_port(parsed, "hosted Linux repository base URL")
     path_parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in path_parts):
@@ -305,15 +311,6 @@ def normalize_netloc(host: str, port: int | None) -> str:
     if port is None:
         return host
     return f"{host}:{port}"
-
-
-def is_loopback_host(host: str) -> bool:
-    if host in LOOPBACK_HOSTS:
-        return True
-    try:
-        return socket.gethostbyname(host).startswith("127.")
-    except OSError:
-        return False
 
 
 def has_url_authority_control(value: str) -> bool:

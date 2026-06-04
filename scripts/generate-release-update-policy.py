@@ -17,6 +17,7 @@ from typing import Any, BinaryIO
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 from github_release_secrets import normalize_repo
+from public_host_validation import validate_public_host
 
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
@@ -231,6 +232,11 @@ def validate_release_base_url(raw: str, repo: str, tag: str) -> str:
     if parsed.params or parsed.query or parsed.fragment:
         raise SystemExit("release update policy base URL must not include params, query, or fragment")
     netloc = normalize_url_netloc(parsed, "release update policy base URL")
+    validate_public_host(
+        parsed.hostname or "",
+        "release update policy base URL",
+        error_factory=SystemExit,
+    )
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise SystemExit("release update policy base URL path must not contain dot segments")

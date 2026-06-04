@@ -916,6 +916,32 @@ def run_custom_repository_tests(module) -> None:
     else:
         raise AssertionError("custom base URL with encoded control path unexpectedly passed")
 
+    for bad_base_url in (
+        "https://127.0.0.1/conu",
+        "https://10.0.0.1/conu",
+        "https://100.64.0.1/conu",
+        "https://192.88.99.1/conu",
+        "https://[fc00::1]/conu",
+        "https://[fec0::1]/conu",
+        "https://[2001:db8::1]/conu",
+        "https://[::ffff:127.0.0.1]/conu",
+        "https://packages.local/conu",
+    ):
+        try:
+            module.normalize_custom_base_url(bad_base_url)
+        except ValueError as exc:
+            if "custom repository base URL host must be public" not in str(exc):
+                raise AssertionError(f"unexpected custom base URL host failure: {exc}")
+        else:
+            raise AssertionError(f"non-public custom base URL unexpectedly passed: {bad_base_url}")
+
+    for good_base_url in (
+        "https://1.1.1.1/conu",
+        "https://[2606:4700:4700::1111]/conu",
+        "https://[::ffff:8.8.8.8]/conu",
+    ):
+        module.normalize_custom_base_url(good_base_url)
+
     invalid_endpoint_paths = module.audit_tagged_release_readiness(
         repo="owner/repo",
         tag=TAG,

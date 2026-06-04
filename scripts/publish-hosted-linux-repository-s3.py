@@ -22,6 +22,7 @@ from typing import Any, BinaryIO
 from urllib.parse import unquote, urlparse, urlunparse
 
 from command_output_redaction import redact_command_output
+from public_host_validation import is_loopback_host, validate_public_host
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -411,10 +412,6 @@ def validate_endpoint_url(raw: str, *, allow_loopback_http: bool = False) -> str
     return urlunparse((scheme, netloc, path, "", "", ""))
 
 
-def is_loopback_host(host: str) -> bool:
-    return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
-
-
 def validate_base_url(raw: str) -> str:
     value = raw.strip()
     parsed = urlparse(value)
@@ -425,6 +422,11 @@ def validate_base_url(raw: str) -> str:
     if parsed.params or parsed.query or parsed.fragment:
         raise PublicationError("repository base URL must not include params, query, or fragment")
     netloc = normalize_url_netloc(parsed, "repository base URL")
+    validate_public_host(
+        parsed.hostname or "",
+        "repository base URL",
+        error_factory=PublicationError,
+    )
     parts = [part for part in parsed.path.split("/") if part]
     if any(part in {".", ".."} for part in parts):
         raise PublicationError("repository base URL path must not contain dot segments")
