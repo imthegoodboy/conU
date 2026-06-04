@@ -8,6 +8,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const { validateArchiveMembers } = require("../lib/archive-preflight");
+const { buildChildEnv } = require("../lib/child-env");
 const { verifySha256File } = require("../lib/checksum");
 const { resolveExtractedBinaries } = require("../lib/extract-selection");
 const { resolveLocalBinaries } = require("../lib/local-binary-dir");
@@ -136,7 +137,10 @@ function installFromExtractedArchive(root) {
 function extractArchive(archivePath, destination) {
   validateArchiveMembers(archivePath);
 
-  const tar = spawnSync("tar", ["-xf", archivePath, "-C", destination], { stdio: "ignore" });
+  const tar = spawnSync("tar", ["-xf", archivePath, "-C", destination], {
+    env: buildChildEnv(),
+    stdio: "ignore"
+  });
   if (tar.status === 0) {
     return;
   }
@@ -153,7 +157,10 @@ function extractArchive(archivePath, destination) {
         archivePath,
         destination
       ],
-      { stdio: "ignore" }
+      {
+        env: buildChildEnv(),
+        stdio: "ignore"
+      }
     );
     if (ps.status === 0) {
       return;

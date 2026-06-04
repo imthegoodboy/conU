@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { buildChildEnv } = require("./child-env");
 
 const MAX_ARCHIVE_LIST_BYTES = 2 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBERS = 10000;
@@ -295,6 +296,7 @@ function displayArchiveLabel(archivePath) {
 function runTool(command, args) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
+    env: buildChildEnv(),
     maxBuffer: MAX_ARCHIVE_LIST_BYTES
   });
   return {

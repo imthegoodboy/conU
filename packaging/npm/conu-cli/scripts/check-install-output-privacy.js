@@ -12,7 +12,30 @@ const packageRoot = path.resolve(__dirname, "..");
 
 function main() {
   const installScript = fs.readFileSync(path.join(packageRoot, "scripts", "install.js"), "utf8");
+  const archivePreflight = fs.readFileSync(path.join(packageRoot, "lib", "archive-preflight.js"), "utf8");
   expectNotIncludes(installScript, 'stdio: "inherit"', "installer child output privacy guard");
+  expectIncludes(
+    installScript,
+    'const { buildChildEnv } = require("../lib/child-env");',
+    "installer child env scrub import"
+  );
+  expectOccurrenceCount(
+    installScript,
+    "env: buildChildEnv()",
+    2,
+    "installer extraction tool env scrub guard"
+  );
+  expectIncludes(
+    archivePreflight,
+    'const { buildChildEnv } = require("./child-env");',
+    "archive preflight child env scrub import"
+  );
+  expectOccurrenceCount(
+    archivePreflight,
+    "env: buildChildEnv()",
+    1,
+    "archive preflight tool env scrub guard"
+  );
 
   expectChildEnvScrubsWrapperSelector();
 
@@ -281,6 +304,13 @@ function expectIncludes(output, value, label) {
 function expectNotIncludes(output, value, label) {
   if (output.includes(value)) {
     throw new Error(`${label}: expected output not to include ${value}`);
+  }
+}
+
+function expectOccurrenceCount(output, value, expectedCount, label) {
+  const actualCount = output.split(value).length - 1;
+  if (actualCount !== expectedCount) {
+    throw new Error(`${label}: expected ${expectedCount} occurrence(s), got ${actualCount}`);
   }
 }
 
