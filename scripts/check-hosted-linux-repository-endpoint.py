@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from json_safety import loads_json
 from public_host_validation import is_loopback_host, validate_public_host
 
 
@@ -395,8 +396,8 @@ def decode_json(data: bytes, label: str) -> dict[str, Any]:
     text = decode_ascii(data, label)
     assert_no_forbidden_text(text, label)
     try:
-        value = json.loads(text)
-    except json.JSONDecodeError as exc:
+        value = loads_json(text)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise EndpointReadinessError(f"{label} is not valid JSON") from exc
     if not isinstance(value, dict):
         raise EndpointReadinessError(f"{label} must be a JSON object")

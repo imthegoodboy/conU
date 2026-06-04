@@ -33,6 +33,7 @@ RPM_PACKAGES = (
     f"conu-{VERSION}-1.aarch64.rpm",
 )
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
+SENSITIVE_SENTINEL = "do-not-print-this-shadow-value"
 
 
 def main() -> int:
@@ -54,6 +55,21 @@ def main() -> int:
         run_generator(dist, repeat)
         if bundle.read_bytes() != (repeat / HOSTED_BUNDLE).read_bytes():
             raise AssertionError("hosted Linux repository bundle was not deterministic")
+
+        generator = load_generator()
+        message = expect_action_failure(
+            lambda: generator.parse_package_version(
+                Path("package.json"),
+                (
+                    '{"version":"0.1.0",'
+                    f'"version":"{SENSITIVE_SENTINEL}"}}\n'
+                ).encode("utf-8"),
+                "hosted Linux repositories regression",
+            ),
+            "not valid UTF-8 JSON",
+            "duplicate package metadata JSON",
+        )
+        assert_no_sentinel(message, "duplicate package metadata JSON output")
 
         missing_signature = temp / "missing-signature"
         shutil.copytree(dist, missing_signature)
@@ -333,15 +349,20 @@ def expect_zip_bound_failure(
         setattr(generator, constant_name, original)
 
 
-def expect_action_failure(action, expected: str, label: str) -> None:
+def expect_action_failure(action, expected: str, label: str) -> str:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
         if expected in message:
-            return
+            return message
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_no_sentinel(output: str, label: str) -> None:
+    if SENSITIVE_SENTINEL in output:
+        raise AssertionError(f"{label} leaked duplicate-key shadow value")
 
 
 def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:

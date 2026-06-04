@@ -16,6 +16,8 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 from urllib.parse import unquote, urlparse, urlunparse
 
+from json_safety import loads_json
+
 
 CHECKSUM_RE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+([^ \t\r\n]+)(?:\r?\n)?$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
@@ -161,13 +163,17 @@ def read_repo_version() -> str:
         "npm package metadata",
         max_bytes=MAX_PACKAGE_JSON_BYTES,
     )
+    return parse_package_version(package_json, package_data, "hosted Linux repository site")
+
+
+def parse_package_version(package_json: Path, package_data: bytes, context: str) -> str:
     try:
-        package = json.loads(package_data.decode("utf-8"))
-    except UnicodeDecodeError as exc:
-        raise SystemExit(f"{package_json} is not valid UTF-8") from exc
+        package = loads_json(package_data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise SystemExit(f"{package_json} is not valid UTF-8 JSON") from exc
     version = package.get("version")
     if not isinstance(version, str) or not version:
-        raise SystemExit(f"{package_json} does not contain a non-empty version")
+        raise SystemExit(f"{package_json} does not contain a non-empty version for {context}")
     return version
 
 

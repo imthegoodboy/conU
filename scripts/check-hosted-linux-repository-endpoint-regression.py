@@ -26,6 +26,7 @@ PLACEHOLDER_BASE_URL = "https://packages.example.com/conu"
 PUBLIC_KEY = "conu-linux-gpg-key.asc"
 HOSTED_BUNDLE = f"conu-{VERSION}-hosted-linux-repositories.zip"
 SITE_BUNDLE = f"conu-{VERSION}-hosted-linux-repository-site.zip"
+SENSITIVE_SENTINEL = "do-not-print-this-shadow-value"
 
 
 def main() -> int:
@@ -137,6 +138,41 @@ def main() -> int:
         with serve_site(bad_cache_policy, mode="good") as base_url:
             rewrite_base_url(bad_cache_policy, PLACEHOLDER_BASE_URL, base_url)
             run_checker_expect_failure(base_url, "tokenDisplayed=false", "--expected-version", VERSION)
+
+        duplicate_repository = temp / "duplicate-repository-json"
+        shutil.copytree(site_root, duplicate_repository)
+        (duplicate_repository / "repository.json").write_text(
+            '{"schema":"conu.hostedLinuxRepository.site.v1",'
+            f'"version":"{VERSION}","version":"{SENSITIVE_SENTINEL}"}}\n',
+            encoding="ascii",
+            newline="\n",
+        )
+        with serve_site(duplicate_repository, mode="good") as base_url:
+            output = run_checker_expect_failure(
+                base_url,
+                "repository.json is not valid JSON",
+                "--expected-version",
+                VERSION,
+            )
+            assert_no_sentinel(output, "duplicate repository JSON output")
+
+        duplicate_cache_policy = temp / "duplicate-cache-policy-json"
+        shutil.copytree(site_root, duplicate_cache_policy)
+        (duplicate_cache_policy / "cache-policy.json").write_text(
+            '{"schema":"conu.hostedLinuxRepository.cachePolicy.v1",'
+            f'"version":"{VERSION}","version":"{SENSITIVE_SENTINEL}"}}\n',
+            encoding="ascii",
+            newline="\n",
+        )
+        with serve_site(duplicate_cache_policy, mode="good") as base_url:
+            rewrite_base_url(duplicate_cache_policy, PLACEHOLDER_BASE_URL, base_url)
+            output = run_checker_expect_failure(
+                base_url,
+                "cache-policy.json is not valid JSON",
+                "--expected-version",
+                VERSION,
+            )
+            assert_no_sentinel(output, "duplicate cache policy JSON output")
 
         unsafe_cache_path = temp / "unsafe-cache-path"
         shutil.copytree(site_root, unsafe_cache_path)
@@ -405,6 +441,11 @@ def run_checker_expect_failure(
             f"endpoint check failed with {completed.stdout!r}, expected {expected!r}"
         )
     return completed.stdout
+
+
+def assert_no_sentinel(output: str, label: str) -> None:
+    if SENSITIVE_SENTINEL in output:
+        raise AssertionError(f"{label} leaked duplicate-key shadow value")
 
 
 if __name__ == "__main__":

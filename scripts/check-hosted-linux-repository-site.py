@@ -26,6 +26,7 @@ SITE_BUNDLE = f"conu-{VERSION}-hosted-linux-repository-site.zip"
 PUBLIC_KEY = "conu-linux-gpg-key.asc"
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
+SENSITIVE_SENTINEL = "do-not-print-this-shadow-value"
 CACHE_CONTROL_RULES = (
     {
         "kind": "mutable-site-metadata",
@@ -148,6 +149,20 @@ def main() -> int:
         run_generator(dist, repeat, BASE_URL)
         if site.read_bytes() != (repeat / SITE_BUNDLE).read_bytes():
             raise AssertionError("hosted Linux repository site artifact was not deterministic")
+
+        message = expect_action_failure(
+            lambda: site_generator.parse_package_version(
+                Path("package.json"),
+                (
+                    '{"version":"0.1.0",'
+                    f'"version":"{SENSITIVE_SENTINEL}"}}\n'
+                ).encode("utf-8"),
+                "hosted Linux repository site regression",
+            ),
+            "not valid UTF-8 JSON",
+            "duplicate package metadata JSON",
+        )
+        assert_no_sentinel(message, "duplicate package metadata JSON output")
 
         missing_signature = temp / "missing-signature"
         shutil.copytree(dist, missing_signature)
@@ -457,15 +472,20 @@ def expect_zip_bound_failure(
         setattr(site_generator, constant_name, original)
 
 
-def expect_action_failure(action, expected: str, label: str) -> None:
+def expect_action_failure(action, expected: str, label: str) -> str:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
         if expected in message:
-            return
+            return message
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_no_sentinel(output: str, label: str) -> None:
+    if SENSITIVE_SENTINEL in output:
+        raise AssertionError(f"{label} leaked duplicate-key shadow value")
 
 
 def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:

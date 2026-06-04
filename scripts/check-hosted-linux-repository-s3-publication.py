@@ -105,6 +105,38 @@ def main() -> int:
         )
         assert_failure("base URL mismatch", mismatch, "repository.json baseUrl does not match")
 
+        duplicate_repository = temp / "duplicate-repository-json-site"
+        shutil.copytree(site_dir, duplicate_repository)
+        (duplicate_repository / "repository.json").write_text(
+            '{"schema":"conu.hostedLinuxRepository.site.v1",'
+            f'"version":"{VERSION}","version":"{SENSITIVE_SENTINEL}"}}\n',
+            encoding="ascii",
+            newline="\n",
+        )
+        duplicate_repository_result = run_publisher_raw(duplicate_repository, "--dry-run")
+        assert_failure(
+            "duplicate repository JSON",
+            duplicate_repository_result,
+            "repository.json is not valid JSON",
+        )
+        assert_no_sentinel(duplicate_repository_result.stdout, "duplicate repository JSON output")
+
+        duplicate_cache_policy = temp / "duplicate-cache-policy-json-site"
+        shutil.copytree(site_dir, duplicate_cache_policy)
+        (duplicate_cache_policy / "cache-policy.json").write_text(
+            '{"schema":"conu.hostedLinuxRepository.cachePolicy.v1",'
+            f'"version":"{VERSION}","version":"{SENSITIVE_SENTINEL}"}}\n',
+            encoding="ascii",
+            newline="\n",
+        )
+        duplicate_cache_policy_result = run_publisher_raw(duplicate_cache_policy, "--dry-run")
+        assert_failure(
+            "duplicate cache policy JSON",
+            duplicate_cache_policy_result,
+            "cache-policy.json is not valid JSON",
+        )
+        assert_no_sentinel(duplicate_cache_policy_result.stdout, "duplicate cache policy JSON output")
+
         encoded_base_result = run_publisher_raw(
             site_dir,
             "--dry-run",
@@ -669,6 +701,11 @@ def assert_fake_aws_log(log: Path, expected_count: int) -> None:
 def assert_failure(description: str, result: subprocess.CompletedProcess[str], expected: str) -> None:
     if result.returncode == 0 or expected not in result.stdout:
         raise AssertionError(f"{description} failed with {result.stdout!r}, expected {expected!r}")
+
+
+def assert_no_sentinel(output: str, label: str) -> None:
+    if SENSITIVE_SENTINEL in output:
+        raise AssertionError(f"{label} leaked duplicate-key shadow value")
 
 
 def assert_failed_publication_redacts(

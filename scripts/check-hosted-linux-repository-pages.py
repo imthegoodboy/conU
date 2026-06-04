@@ -26,6 +26,7 @@ SITE_BUNDLE = f"conu-{VERSION}-hosted-linux-repository-site.zip"
 PUBLIC_KEY = "conu-linux-gpg-key.asc"
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
+SENSITIVE_SENTINEL = "do-not-print-this-shadow-value"
 
 
 def main() -> int:
@@ -240,6 +241,46 @@ def main() -> int:
             temp / "missing-cache-policy-pages",
             "missing Pages member",
         )
+
+        duplicate_repository = temp / "duplicate-repository"
+        shutil.copytree(dist, duplicate_repository)
+        rewrite_site_zip(
+            duplicate_repository / SITE_BUNDLE,
+            {
+                "repository.json": (
+                    '{"schema":"conu.hostedLinuxRepository.site.v1",'
+                    f'"version":"{VERSION}","version":"{SENSITIVE_SENTINEL}"}}\n'
+                ).encode("ascii")
+            },
+        )
+        sign_site(duplicate_repository / SITE_BUNDLE)
+        output = expect_failure(
+            "duplicate repository JSON",
+            duplicate_repository / SITE_BUNDLE,
+            temp / "duplicate-repository-pages",
+            "repository.json is not ASCII JSON",
+        )
+        assert_no_sentinel(output, "duplicate repository JSON output")
+
+        duplicate_cache_policy = temp / "duplicate-cache-policy"
+        shutil.copytree(dist, duplicate_cache_policy)
+        rewrite_site_zip(
+            duplicate_cache_policy / SITE_BUNDLE,
+            {
+                "cache-policy.json": (
+                    '{"schema":"conu.hostedLinuxRepository.cachePolicy.v1",'
+                    f'"version":"{VERSION}","version":"{SENSITIVE_SENTINEL}"}}\n'
+                ).encode("ascii")
+            },
+        )
+        sign_site(duplicate_cache_policy / SITE_BUNDLE)
+        output = expect_failure(
+            "duplicate cache policy JSON",
+            duplicate_cache_policy / SITE_BUNDLE,
+            temp / "duplicate-cache-policy-pages",
+            "cache-policy.json is not ASCII JSON",
+        )
+        assert_no_sentinel(output, "duplicate cache policy JSON output")
 
         bad_cache_policy = temp / "bad-cache-policy"
         shutil.copytree(dist, bad_cache_policy)
@@ -475,7 +516,7 @@ def run_preparer(site: Path, output_dir: Path) -> str:
     ).stdout
 
 
-def expect_failure(description: str, site: Path, output_dir: Path, expected: str) -> None:
+def expect_failure(description: str, site: Path, output_dir: Path, expected: str) -> str:
     failed = subprocess.run(
         [
             sys.executable,
@@ -494,6 +535,7 @@ def expect_failure(description: str, site: Path, output_dir: Path, expected: str
         raise AssertionError(
             f"{description} failed with {failed.stdout!r}, expected {expected!r}"
         )
+    return failed.stdout
 
 
 def expect_zip_bound_failure(
@@ -525,6 +567,11 @@ def expect_action_failure(action, expected: str, label: str) -> None:
             return
         raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_no_sentinel(output: str, label: str) -> None:
+    if SENSITIVE_SENTINEL in output:
+        raise AssertionError(f"{label} leaked duplicate-key shadow value")
 
 
 def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
