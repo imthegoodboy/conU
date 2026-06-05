@@ -167,20 +167,20 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
     try:
         checksum_text = read_text_file(
             sidecar,
-            f"SHA-256 sidecar for {label} {path.name}",
+            f"SHA-256 sidecar for {label}",
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=False,
             encoding="ascii",
             size_label=f"SHA-256 sidecar for {label}",
         )
     except UnicodeDecodeError as exc:
-        raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
+        raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}") from exc
     match = CHECKSUM_RE.fullmatch(checksum_text)
     if match is None:
-        raise SystemExit(f"SHA-256 sidecar has invalid format for {label}: {path.name}")
+        raise SystemExit(f"SHA-256 sidecar has invalid format for {label}")
     named_path = match.group(2)
     if named_path != path.name:
-        raise SystemExit(f"SHA-256 sidecar for {label} {path.name} names wrong file: {named_path}")
+        raise SystemExit(f"SHA-256 sidecar for {label} names wrong file")
     expected = match.group(1).lower()
     actual = sha256_file(
         path,
@@ -190,7 +190,7 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
         size_label=label,
     )
     if expected != actual:
-        raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
+        raise SystemExit(f"SHA-256 mismatch for {label}")
     return expected
 
 

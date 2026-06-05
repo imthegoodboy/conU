@@ -373,6 +373,76 @@ def run_source_file_preflights() -> None:
                 "RPM signing symlink sidecar output",
             )
 
+        non_ascii_sidecar = temp / "non-ascii-sidecar"
+        non_ascii_sidecar.mkdir()
+        non_ascii_package = non_ascii_sidecar / RPM_PACKAGES[0]
+        non_ascii_package.write_bytes(b"rpm fixture\n")
+        non_ascii_package.with_name(f"{non_ascii_package.name}.sha256").write_bytes(b"\xff\n")
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(
+                non_ascii_package,
+                "generated RPM package",
+            ),
+            "SHA-256 sidecar is not ASCII",
+            "RPM signing non-ASCII sidecar",
+            non_ascii_package.name,
+        )
+
+        invalid_sidecar = temp / "invalid-sidecar"
+        invalid_sidecar.mkdir()
+        invalid_package = invalid_sidecar / RPM_PACKAGES[0]
+        invalid_package.write_bytes(b"rpm fixture\n")
+        invalid_package.with_name(f"{invalid_package.name}.sha256").write_text(
+            "not a strict checksum\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(
+                invalid_package,
+                "generated RPM package",
+            ),
+            "invalid format",
+            "RPM signing invalid sidecar",
+            invalid_package.name,
+        )
+
+        wrong_target_sidecar = temp / "wrong-target-sidecar"
+        wrong_target_sidecar.mkdir()
+        wrong_target_package = wrong_target_sidecar / RPM_PACKAGES[0]
+        wrong_target_package.write_bytes(b"rpm fixture\n")
+        malicious_target = "secret-rpm-signing-sidecar-target.rpm"
+        write_checksum(wrong_target_package, archive_name=malicious_target)
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(
+                wrong_target_package,
+                "generated RPM package",
+            ),
+            "names wrong file",
+            "RPM signing wrong sidecar target",
+            wrong_target_package.name,
+            malicious_target,
+        )
+
+        mismatched_sidecar = temp / "mismatched-sidecar"
+        mismatched_sidecar.mkdir()
+        mismatched_package = mismatched_sidecar / RPM_PACKAGES[0]
+        mismatched_package.write_bytes(b"rpm fixture\n")
+        mismatched_package.with_name(f"{mismatched_package.name}.sha256").write_text(
+            f"{'0' * 64}  {mismatched_package.name}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(
+                mismatched_package,
+                "generated RPM package",
+            ),
+            "SHA-256 mismatch",
+            "RPM signing mismatched sidecar",
+            mismatched_package.name,
+        )
+
 
 def load_signer():
     script_dir = ROOT / "scripts"
