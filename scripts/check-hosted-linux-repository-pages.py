@@ -95,6 +95,20 @@ def main() -> int:
             "Pages site total size bound",
         )
 
+        unreadable_site = temp / "unreadable-site.zip"
+        unreadable_site_payload = "secret-unreadable-pages-site-should-not-print"
+        unreadable_site.write_text(unreadable_site_payload, encoding="ascii")
+        message = expect_action_failure(
+            lambda: preparer.read_site_members(unreadable_site),
+            "not a readable zip archive",
+            "unreadable Pages site",
+        )
+        assert_member_failure_redacted(
+            message,
+            "unreadable Pages site",
+            unreadable_site_payload,
+        )
+
         encrypted_site = temp / "encrypted-site.zip"
         shutil.copy2(site, encrypted_site)
         mark_zip_member_encrypted(encrypted_site, "index.html")

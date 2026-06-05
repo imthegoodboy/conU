@@ -314,8 +314,8 @@ def read_zip_members(bundle: Path) -> dict[str, bytes]:
                 max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
                 allow_empty=False,
             )
-    except zipfile.BadZipFile as exc:
-        raise SystemExit(f"{bundle.name} is not a readable zip archive") from exc
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise zip_member_failure(bundle.name, "is not a readable zip archive") from exc
     return members
 
 

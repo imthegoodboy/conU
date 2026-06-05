@@ -312,8 +312,8 @@ def read_hosted_bundle(bundle: Path) -> dict[str, bytes]:
                     "hosted Linux repository bundle",
                     max_bytes=MAX_HOSTED_BUNDLE_BYTES,
                 )
-    except zipfile.BadZipFile as exc:
-        raise SystemExit(f"{bundle.name} is not a readable zip archive") from exc
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise zip_member_failure(bundle.name, "is not a readable zip archive") from exc
     return members
 
 

@@ -125,6 +125,20 @@ def main() -> int:
             "hosted bundle total size bound",
         )
 
+        unreadable_bundle = temp / "unreadable-hosted-bundle.zip"
+        unreadable_bundle_payload = "secret-unreadable-hosted-bundle-should-not-print"
+        unreadable_bundle.write_text(unreadable_bundle_payload, encoding="ascii")
+        message = expect_action_failure(
+            lambda: site_generator.read_hosted_bundle(unreadable_bundle),
+            "not a readable zip archive",
+            "unreadable hosted bundle",
+        )
+        assert_member_failure_redacted(
+            message,
+            "unreadable hosted bundle",
+            unreadable_bundle_payload,
+        )
+
         encrypted_bundle = temp / "encrypted-hosted-bundle.zip"
         shutil.copy2(hosted_bundle, encrypted_bundle)
         mark_zip_member_encrypted(encrypted_bundle, "apt/Packages")
