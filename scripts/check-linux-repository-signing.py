@@ -464,7 +464,7 @@ def run_source_file_preflights(signer) -> None:
         write_apt_metadata_zip(wrong_target_bundle)
         malicious_target = "secret-repository-signing-sidecar-target.zip"
         write_sha256_sidecar(wrong_target_bundle, archive_name=malicious_target)
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: signer.verify_sha256_sidecar(
                 wrong_target_bundle,
                 "APT repository metadata bundle",
@@ -473,6 +473,12 @@ def run_source_file_preflights(signer) -> None:
             "repository signing wrong sidecar target",
             wrong_target_bundle.name,
             malicious_target,
+        )
+        assert_display_guards(
+            message,
+            "repository signing wrong sidecar target",
+            "checksumTargetDisplayed=false",
+            "contentsDisplayed=false",
         )
 
         mismatched_sidecar = temp / "mismatched-sidecar"
@@ -585,6 +591,12 @@ def expect_action_failure(
                 ) from exc
         return message
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_display_guards(message: str, label: str, *guards: str) -> None:
+    for guard in guards:
+        if guard not in message:
+            raise AssertionError(f"{label}: missing display guard {guard!r}: {message!r}")
 
 
 def assert_member_failure_redacted(message: str, label: str, *forbidden_values: str) -> None:
