@@ -18,7 +18,9 @@ function parseSha256Checksum(checksumText, expectedArchiveName) {
 
   const archiveName = match[2];
   if (archiveName !== expectedArchiveName) {
-    throw new Error(`checksum file for ${expectedArchiveName} names wrong archive: ${archiveName}`);
+    throw new Error(
+      "checksum file names wrong archive; checksumTargetDisplayed=false contentsDisplayed=false"
+    );
   }
 
   return match[1].toLowerCase();

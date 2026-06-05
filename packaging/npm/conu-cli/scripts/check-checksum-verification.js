@@ -33,7 +33,16 @@ function main() {
     expectFailure(`${digest}\n`, "invalid format", "missing archive name");
     expectFailure(`${digest}  ${ARCHIVE_NAME}\nextra\n`, "invalid format", "extra checksum content");
     expectFailure(`${digest}  ${ARCHIVE_NAME} extra\n`, "invalid format", "extra checksum fields");
-    expectFailure(`${digest}  other.zip\n`, "names wrong archive", "wrong archive name");
+    const maliciousChecksumTarget = "secret-npm-checksum-target-should-not-print.zip";
+    expectFailure(
+      `${digest}  ${maliciousChecksumTarget}\n`,
+      "names wrong archive",
+      "wrong archive name",
+      {
+        forbidden: [maliciousChecksumTarget],
+        required: ["checksumTargetDisplayed=false", "contentsDisplayed=false"]
+      }
+    );
     expectFailure(`not-a-sha256  ${ARCHIVE_NAME}\n`, "invalid format", "bad digest");
 
     const originalReadFileSync = fs.readFileSync;
@@ -58,14 +67,24 @@ function main() {
   console.log("checksum verification check passed");
 }
 
-function expectFailure(checksumText, expectedMessage, label) {
+function expectFailure(checksumText, expectedMessage, label, options = {}) {
   try {
     parseSha256Checksum(checksumText, ARCHIVE_NAME);
   } catch (error) {
-    if (error.message.includes(expectedMessage)) {
-      return;
+    if (!error.message.includes(expectedMessage)) {
+      throw new Error(`expected ${label} to fail with ${expectedMessage}, got: ${error.message}`);
     }
-    throw new Error(`expected ${label} to fail with ${expectedMessage}, got: ${error.message}`);
+    for (const value of options.required || []) {
+      if (!error.message.includes(value)) {
+        throw new Error(`expected ${label} failure to include ${value}, got: ${error.message}`);
+      }
+    }
+    for (const value of options.forbidden || []) {
+      if (error.message.includes(value)) {
+        throw new Error(`expected ${label} failure to redact ${value}, got: ${error.message}`);
+      }
+    }
+    return;
   }
   throw new Error(`expected ${label} to fail`);
 }
