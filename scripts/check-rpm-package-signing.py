@@ -251,6 +251,7 @@ def run_source_file_preflights() -> None:
             lambda: signer.rpm_package_assets(oversized_source),
             "is too large",
             "RPM signing source size bound",
+            oversized_package.name,
         )
 
         aggregate_source = temp / "aggregate-source"
@@ -278,6 +279,31 @@ def run_source_file_preflights() -> None:
             "must be a regular file",
             "RPM signing sidecar directory",
         )
+        oversized_sidecar = temp / "oversized-sidecar"
+        oversized_sidecar.mkdir()
+        oversized_sidecar_package = oversized_sidecar / RPM_PACKAGES[0]
+        oversized_sidecar_package.write_bytes(b"rpm fixture\n")
+        oversized_sidecar_path = oversized_sidecar_package.with_name(
+            f"{oversized_sidecar_package.name}.sha256"
+        )
+        oversized_sidecar_path.write_text(
+            "0" * 64 + f"  {oversized_sidecar_package.name}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_constant_failure(
+            signer,
+            "MAX_CHECKSUM_BYTES",
+            max(0, oversized_sidecar_path.stat().st_size - 1),
+            lambda: signer.verify_sha256_sidecar(
+                oversized_sidecar_package,
+                "generated RPM package",
+            ),
+            "is too large",
+            "RPM signing sidecar size bound",
+            oversized_sidecar_path.name,
+            oversized_sidecar_package.name,
+        )
 
         sidecar_output_directory = temp / "sidecar-output-directory"
         sidecar_output_directory.mkdir()
@@ -288,6 +314,24 @@ def run_source_file_preflights() -> None:
             lambda: signer.write_sha256_sidecar(output_package),
             "must be a regular file",
             "RPM signing sidecar output directory",
+        )
+        oversized_sidecar_output = temp / "oversized-sidecar-output"
+        oversized_sidecar_output.mkdir()
+        oversized_output_package = oversized_sidecar_output / RPM_PACKAGES[0]
+        oversized_output_package.write_bytes(b"rpm fixture\n")
+        oversized_output_sidecar = oversized_output_package.with_name(
+            f"{oversized_output_package.name}.sha256"
+        )
+        oversized_output_sidecar.write_bytes(b"existing sidecar\n")
+        expect_constant_failure(
+            signer,
+            "MAX_CHECKSUM_BYTES",
+            max(0, oversized_output_sidecar.stat().st_size - 1),
+            lambda: signer.write_sha256_sidecar(oversized_output_package),
+            "is too large",
+            "RPM signing sidecar output size bound",
+            oversized_output_sidecar.name,
+            oversized_output_package.name,
         )
 
         symlink_source = temp / "symlink-source"
@@ -355,23 +399,34 @@ def expect_constant_failure(
     action,
     expected: str,
     label: str,
+    *forbidden_values: str,
 ) -> None:
     original = getattr(signer, constant_name)
     setattr(signer, constant_name, value)
     try:
-        expect_action_failure(action, expected, label)
+        expect_action_failure(action, expected, label, *forbidden_values)
     finally:
         setattr(signer, constant_name, original)
 
 
-def expect_action_failure(action, expected: str, label: str) -> None:
+def expect_action_failure(
+    action,
+    expected: str,
+    label: str,
+    *forbidden_values: str,
+) -> None:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
-        if expected in message:
-            return
-        raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+        if expected not in message:
+            raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+        for value in forbidden_values:
+            if value in message:
+                raise AssertionError(
+                    f"{label}: leaked forbidden value {value!r}: {message!r}"
+                ) from exc
+        return
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
 
 
