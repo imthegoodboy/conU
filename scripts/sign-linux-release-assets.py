@@ -258,6 +258,7 @@ def validate_signable_asset(path: Path, budget: SignableAssetBudget) -> int:
         f"signable Linux release asset {path.name}",
         max_bytes=MAX_SIGNABLE_ASSET_BYTES,
         allow_empty=False,
+        size_label="signable Linux release asset",
     )
     budget.add(size)
     return size
@@ -282,6 +283,7 @@ def prepare_signature_output(signature: Path) -> None:
         f"detached signature output {signature.name}",
         max_bytes=MAX_DETACHED_SIGNATURE_BYTES,
         allow_empty=True,
+        size_label="detached signature output",
     )
 
 
@@ -291,6 +293,7 @@ def validate_signature_output(signature: Path) -> int:
         f"detached signature output {signature.name}",
         max_bytes=MAX_DETACHED_SIGNATURE_BYTES,
         allow_empty=False,
+        size_label="detached signature output",
     )
 
 
@@ -300,6 +303,7 @@ def validate_regular_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> int:
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
@@ -313,7 +317,8 @@ def validate_regular_file(
     if not allow_empty and size == 0:
         raise SystemExit(f"{label} must not be empty: {path.name}")
     if size > max_bytes:
-        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        display_label = size_label or label
+        raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
     return size
 
 
