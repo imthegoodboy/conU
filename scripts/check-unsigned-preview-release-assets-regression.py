@@ -42,6 +42,8 @@ def assert_safe_report(report) -> dict:
         "do-not-print-this-token-or-payload",
         "BEGIN PGP PRIVATE KEY BLOCK",
         "private message contents",
+        f"conu-{VERSION}-runtime-secret.zip",
+        "runtime",
     )
     for value in forbidden:
         if value in rendered:
@@ -64,6 +66,13 @@ def assert_issue(report, expected: str, label: str) -> None:
     rendered = json.dumps(assert_safe_report(report))
     if expected not in rendered:
         raise AssertionError(f"{label} did not report expected issue: {expected}")
+
+
+def assert_forbidden_asset_guarded(report, label: str) -> None:
+    rendered = json.dumps(assert_safe_report(report))
+    for guard in ("assetNameDisplayed=false", "markerDisplayed=false", "contentsDisplayed=false"):
+        if guard not in rendered:
+            raise AssertionError(f"{label} did not include forbidden asset guard: {guard}")
 
 
 def run_dist_tests(module) -> None:
@@ -99,6 +108,14 @@ def run_dist_tests(module) -> None:
         payload = module.load_dist_metadata(TAG, dist)
         report = module.audit_preview_assets("local/dist", TAG, payload)
         assert_issue(report, "contains forbidden asset names", "preview update policy asset")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dist = Path(tmp) / "dist"
+        write_preview_dist(dist, module, extra=f"conu-{VERSION}-runtime-secret.zip")
+        payload = module.load_dist_metadata(TAG, dist)
+        report = module.audit_preview_assets("local/dist", TAG, payload)
+        assert_issue(report, "contains forbidden asset names", "preview secret runtime asset")
+        assert_forbidden_asset_guarded(report, "preview secret runtime asset")
 
 
 def run_metadata_tests(module) -> None:

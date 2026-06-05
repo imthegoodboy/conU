@@ -77,6 +77,16 @@ def assert_not_ready(report, pattern: str) -> None:
         raise AssertionError(f"expected {pattern!r} in report: {rendered}")
 
 
+def assert_forbidden_asset_guarded(report, forbidden_name: str) -> None:
+    rendered = json.dumps(report.as_json())
+    for value in (SENSITIVE_SENTINEL, forbidden_name, "runtime"):
+        if value in rendered:
+            raise AssertionError(f"release asset report leaked forbidden value: {value}")
+    for guard in ("assetNameDisplayed=false", "markerDisplayed=false", "contentsDisplayed=false"):
+        if guard not in rendered:
+            raise AssertionError(f"release asset report missed forbidden asset guard: {guard}")
+
+
 def run_expected_name_tests(module) -> None:
     names = module.expected_release_asset_names(TEST_VERSION)
     if len(names) != len(set(names)):
@@ -206,19 +216,19 @@ def run_audit_tests(module) -> None:
         "digest must be sha256 metadata",
     )
 
+    forbidden_name = "conu-0.1.0-runtime-secret.zip"
     forbidden_payload = ready_payload(module)
     forbidden_payload["assets"].append(
         {
-            "name": "conu-0.1.0-runtime-secret.zip",
+            "name": forbidden_name,
             "size": 100,
             "state": "uploaded",
             "digest": f"sha256:{999:064x}",
         }
     )
-    assert_not_ready(
-        module.audit_release_assets("owner/repo", TEST_TAG, forbidden_payload),
-        "forbiddenAssets",
-    )
+    forbidden_report = module.audit_release_assets("owner/repo", TEST_TAG, forbidden_payload)
+    assert_not_ready(forbidden_report, "forbiddenAssets")
+    assert_forbidden_asset_guarded(forbidden_report, forbidden_name)
 
     whitespace_payload = ready_payload(module)
     whitespace_payload["assets"][0]["name"] = f"{whitespace_payload['assets'][0]['name']} "

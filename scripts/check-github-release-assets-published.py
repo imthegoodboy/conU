@@ -38,6 +38,7 @@ FORBIDDEN_ASSET_MARKERS = (
     "token",
     "trust.toml",
 )
+FORBIDDEN_ASSET_FAILURE_GUARDS = "assetNameDisplayed=false markerDisplayed=false contentsDisplayed=false"
 DEBIAN_ARCHES = {
     "linux-x64": "amd64",
     "linux-arm64": "arm64",
@@ -90,6 +91,14 @@ class ReleaseAssetReadiness:
             "forbiddenAssets": list(self.forbidden_assets),
             "unexpectedAssets": list(self.unexpected_assets),
             "issues": list(self.issues),
+            "payloadDisplayed": False,
+            "tokenDisplayed": False,
+            "tokenHashDisplayed": False,
+            "keyMaterialDisplayed": False,
+            "contentsDisplayed": False,
+            "secretValuesDisplayed": False,
+            "forbiddenAssetNameDisplayed": False,
+            "forbiddenAssetMarkerDisplayed": False,
         }
 
 
@@ -207,12 +216,14 @@ def asset_state_issue(asset: dict[str, Any], name: str) -> str | None:
     return None
 
 
-def asset_local_issue(asset: dict[str, Any], name: str) -> str | None:
+def asset_local_issue(asset: dict[str, Any], name: str, *, include_detail: bool = True) -> str | None:
     value = asset.get("localInvalidReason")
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
         return f"{name}: local invalid reason must be a non-empty string"
+    if not include_detail:
+        return f"{name}: local invalid reason was provided"
     return f"{name}: {value.strip()}"
 
 
@@ -233,6 +244,16 @@ def forbidden_asset_marker(name: str) -> str | None:
         if marker in lower:
             return marker
     return None
+
+
+def forbidden_asset_issue() -> str:
+    return f"release asset name matched forbidden marker; {FORBIDDEN_ASSET_FAILURE_GUARDS}"
+
+
+def report_asset_name(name: str) -> str:
+    if forbidden_asset_marker(name) is not None:
+        return f"release asset; {FORBIDDEN_ASSET_FAILURE_GUARDS}"
+    return name
 
 
 def audit_release_assets(
@@ -260,31 +281,32 @@ def audit_release_assets(
         if not isinstance(asset, dict):
             raise ValueError("GitHub Release assets must be JSON objects")
         name = asset_name(asset)
+        marker = forbidden_asset_marker(name)
+        display_name = report_asset_name(name)
         names.append(name)
 
-        size_issue = asset_size_issue(asset, name)
+        size_issue = asset_size_issue(asset, display_name)
         if size_issue:
             invalid.append(size_issue)
-        state_issue = asset_state_issue(asset, name)
+        state_issue = asset_state_issue(asset, display_name)
         if state_issue:
             invalid.append(state_issue)
-        local_issue = asset_local_issue(asset, name)
+        local_issue = asset_local_issue(asset, display_name, include_detail=marker is None)
         if local_issue:
             invalid.append(local_issue)
-        digest_issue = asset_digest_issue(repo, asset, name)
+        digest_issue = asset_digest_issue(repo, asset, display_name)
         if digest_issue:
             invalid.append(digest_issue)
 
-        marker = forbidden_asset_marker(name)
         if marker:
-            forbidden.append(f"{name}: matched forbidden marker {marker}")
+            forbidden.append(forbidden_asset_issue())
 
     counts = Counter(names)
     present_set = set(names)
     missing = tuple(name for name in required_assets if name not in present_set)
-    duplicates = tuple(sorted(name for name, count in counts.items() if count > 1))
+    duplicates = tuple(sorted(report_asset_name(name) for name, count in counts.items() if count > 1))
     present = tuple(name for name in required_assets if name in present_set)
-    unexpected = tuple(sorted(name for name in present_set - required_set))
+    unexpected = tuple(sorted(report_asset_name(name) for name in present_set - required_set))
     draft = release_bool(payload, "draft", "isDraft")
     prerelease = release_bool(payload, "prerelease", "isPrerelease")
 
