@@ -413,7 +413,7 @@ def run_source_file_preflights() -> None:
         wrong_target_package.write_bytes(b"rpm fixture\n")
         malicious_target = "secret-rpm-signing-sidecar-target.rpm"
         write_checksum(wrong_target_package, archive_name=malicious_target)
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: signer.verify_sha256_sidecar(
                 wrong_target_package,
                 "generated RPM package",
@@ -422,6 +422,12 @@ def run_source_file_preflights() -> None:
             "RPM signing wrong sidecar target",
             wrong_target_package.name,
             malicious_target,
+        )
+        assert_display_guards(
+            message,
+            "RPM signing wrong sidecar target",
+            "checksumTargetDisplayed=false",
+            "contentsDisplayed=false",
         )
 
         mismatched_sidecar = temp / "mismatched-sidecar"
@@ -484,7 +490,7 @@ def expect_action_failure(
     expected: str,
     label: str,
     *forbidden_values: str,
-) -> None:
+) -> str:
     try:
         action()
     except SystemExit as exc:
@@ -496,8 +502,14 @@ def expect_action_failure(
                 raise AssertionError(
                     f"{label}: leaked forbidden value {value!r}: {message!r}"
                 ) from exc
-        return
+        return message
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
+
+
+def assert_display_guards(message: str, label: str, *guards: str) -> None:
+    for guard in guards:
+        if guard not in message:
+            raise AssertionError(f"{label}: missing display guard {guard!r}: {message!r}")
 
 
 def try_symlink(link: Path, target: Path) -> bool:
