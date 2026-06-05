@@ -306,6 +306,12 @@ def main() -> int:
             HOSTED_BUNDLE,
             malicious_target,
         )
+        assert_display_guards(
+            output,
+            "wrong hosted bundle checksum target",
+            "checksumTargetDisplayed=false",
+            "contentsDisplayed=false",
+        )
 
         mismatched_checksum = temp / "mismatched-checksum"
         shutil.copytree(dist, mismatched_checksum)
@@ -706,6 +712,12 @@ def assert_not_displayed(message: str, label: str, *forbidden_values: str) -> No
     for value in forbidden_values:
         if value and value in message:
             raise AssertionError(f"{label}: displayed forbidden value {value!r}: {message!r}")
+
+
+def assert_display_guards(message: str, label: str, *guards: str) -> None:
+    for guard in guards:
+        if guard not in message:
+            raise AssertionError(f"{label}: missing display guard {guard!r}: {message!r}")
 
 
 def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
