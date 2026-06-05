@@ -1320,14 +1320,6 @@ BUILD_REQUIRED_STEPS: tuple[
         ),
     ),
     (
-        "Attest release artifact provenance",
-        "attest release artifact provenance",
-        (
-            ("artifact attestation action", "uses: actions/attest@v4.1.0"),
-            ("attestation subject path", "subject-path: ${{ matrix.artifact }}"),
-        ),
-    ),
-    (
         "Upload artifact",
         "upload release artifact",
         (
@@ -1335,6 +1327,14 @@ BUILD_REQUIRED_STEPS: tuple[
             ("matrix artifact name", "name: conu-${{ matrix.name }}"),
             ("matrix artifact path", "path: ${{ matrix.artifact }}"),
             ("missing artifact failure", "if-no-files-found: error"),
+        ),
+    ),
+    (
+        "Attest release artifact provenance",
+        "attest release artifact provenance",
+        (
+            ("artifact attestation action", "uses: actions/attest@v4.1.0"),
+            ("attestation subject path", "subject-path: ${{ matrix.artifact }}"),
         ),
     ),
 )
@@ -2254,6 +2254,13 @@ def extract_named_step_block(job_block: str, step_name: str) -> str:
     return "\n".join(block)
 
 
+def find_named_step_line(job_block: str, step_name: str) -> int | None:
+    for index, line in enumerate(job_block.splitlines(), start=1):
+        if line.strip() == f"- name: {step_name}":
+            return index
+    return None
+
+
 def extract_uses_step_blocks(text: str, action: str) -> tuple[tuple[int, str], ...]:
     lines = text.splitlines()
     blocks: list[tuple[int, str]] = []
@@ -2674,6 +2681,13 @@ def audit_required_build_job(path: Path) -> tuple[str, ...]:
         for label, snippet in required_snippets:
             if snippet not in step:
                 issues.append(f"release.yml:build {description} is missing {label}")
+    upload_line = find_named_step_line(block, "Upload artifact")
+    attest_line = find_named_step_line(block, "Attest release artifact provenance")
+    if upload_line is not None and attest_line is not None and upload_line > attest_line:
+        issues.append(
+            "release.yml:build must upload artifacts before attestation to avoid "
+            "Windows artifact file lock races"
+        )
     return tuple(issues)
 
 

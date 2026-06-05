@@ -489,16 +489,16 @@ jobs:
         run: python scripts/smoke-npm-launcher-local.py dist
       - name: Smoke npm launcher download install
         run: python scripts/smoke-npm-launcher-download.py dist
-      - name: Attest release artifact provenance
-        uses: actions/attest@v4.1.0
-        with:
-          subject-path: ${{ matrix.artifact }}
       - name: Upload artifact
         uses: actions/upload-artifact@v7.0.1
         with:
           name: conu-${{ matrix.name }}
           path: ${{ matrix.artifact }}
           if-no-files-found: error
+      - name: Attest release artifact provenance
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ matrix.artifact }}
   manual-preview-release:
     needs: build
     if: github.event_name == 'workflow_dispatch' && inputs.publish_preview_release == 'true'
@@ -2905,6 +2905,41 @@ def run_required_build_job_tests(module) -> None:
         "attestation subject path"
     ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("missing matrix attestation subject was not reported")
+
+    upload_before_attest = """      - name: Upload artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: conu-${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+      - name: Attest release artifact provenance
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ matrix.artifact }}
+"""
+    attest_before_upload = """      - name: Attest release artifact provenance
+        uses: actions/attest@v4.1.0
+        with:
+          subject-path: ${{ matrix.artifact }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: conu-${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+"""
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(upload_before_attest, attest_before_upload, 1),
+    )
+    if report.ready:
+        raise AssertionError("build job that attests before upload should fail")
+    if (
+        "release.yml:build must upload artifacts before attestation"
+        not in json.dumps(assert_safe_report(report))
+    ):
+        raise AssertionError("build upload-before-attest order was not reported")
 
     report = with_fixture(
         module,
