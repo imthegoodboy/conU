@@ -7677,9 +7677,9 @@ fn stage_update_tar_gz_archive(
             entry.map_err(|error| format!("release update tar member is invalid: {error}"))?;
         let raw_name = entry
             .path()
-            .map_err(|error| format!("release update tar member path is invalid: {error}"))?
+            .map_err(|_| release_update_archive_member_failure("member path is invalid"))?
             .to_str()
-            .ok_or_else(|| "release update tar member path is not UTF-8".to_string())?
+            .ok_or_else(|| release_update_archive_member_failure("member path is invalid"))?
             .to_string();
         let entry_type = entry.header().entry_type();
         if entry_type.is_symlink() || entry_type.is_hard_link() {
@@ -13963,6 +13963,24 @@ mod tests {
     }
 
     #[test]
+    fn update_apply_rejects_invalid_tar_member_path_without_path() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let raw_member = b"conu-secret-local-path-\xff/bin/conu";
+        let archive_bytes =
+            update_archive_fixture_bytes_with_raw_member_name(raw_member, b"secret payload");
+        let error = stage_update_archive_binaries(&filename, &archive_bytes, &target)
+            .expect_err("invalid tar member path should fail closed");
+
+        assert_update_archive_member_error_redacted(
+            &error,
+            "member path is invalid",
+            "secret-local-path",
+        );
+        assert!(!error.contains("secret payload"), "{error}");
+    }
+
+    #[test]
     fn update_apply_rejects_duplicate_archive_member_without_path() {
         let target = update_apply_test_target();
         let filename = update_archive_fixture_name(&target);
@@ -15830,6 +15848,27 @@ mod tests {
             &update_archive_binary_bytes("conu"),
             0o755,
         );
+        builder.finish().expect("tar builder finishes");
+        let encoder = builder.into_inner().expect("tar encoder returns");
+        encoder.finish().expect("gzip finishes")
+    }
+
+    fn update_archive_fixture_bytes_with_raw_member_name(raw_name: &[u8], bytes: &[u8]) -> Vec<u8> {
+        assert!(
+            raw_name.len() <= 100,
+            "raw tar fixture member name must fit the ustar name field"
+        );
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.as_mut_bytes()[..raw_name.len()].copy_from_slice(raw_name);
+        header.set_cksum();
+        builder
+            .append(&header, bytes)
+            .expect("raw tar fixture member appends");
         builder.finish().expect("tar builder finishes");
         let encoder = builder.into_inner().expect("tar encoder returns");
         encoder.finish().expect("gzip finishes")
