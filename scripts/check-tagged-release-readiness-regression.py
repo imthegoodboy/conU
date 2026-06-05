@@ -76,7 +76,7 @@ def all_custom_secrets(module) -> set[str]:
     return set(module.REQUIRED_RELEASE_SECRETS) | set(module.CUSTOM_REPOSITORY_REQUIRED_SECRETS)
 
 
-def all_secret_update_times(module, updated_at: str = "2026-06-03T02:00:00Z") -> dict[str, str]:
+def all_secret_update_times(module, updated_at: str = "2026-06-05T02:00:00Z") -> dict[str, str]:
     return {name: updated_at for name in module.REQUIRED_RELEASE_SECRETS}
 
 
@@ -537,14 +537,14 @@ def run_repo_version_json_duplicate_tests(module) -> None:
 def run_secret_rotation_tests(module) -> None:
     requirement = module.SecretRotationRequirement(
         name="NPM_TOKEN",
-        updated_after="2026-06-03T00:00:00Z",
+        updated_after="2026-06-05T00:00:00Z",
     )
     ready = module.audit_tagged_release_readiness(
         repo="owner/repo",
         tag=TAG,
         version=VERSION,
         secret_names=all_release_secrets(module),
-        secret_updated_at=all_secret_update_times(module, "2026-06-03T00:00:01Z"),
+        secret_updated_at=all_secret_update_times(module, "2026-06-05T00:00:01Z"),
         secret_rotation_requirements=(requirement,),
         variable_values={},
         pages_payload=pages_payload(),
@@ -611,14 +611,14 @@ def run_secret_rotation_tests(module) -> None:
         raise AssertionError("invalid secret update timestamp issue was not reported")
 
     parsed = module.parse_secret_rotation_requirement(
-        "NPM_TOKEN=2026-06-03T00:00:00+00:00"
+        "NPM_TOKEN=2026-06-05T00:00:00+00:00"
     )
-    if parsed.updated_after != "2026-06-03T00:00:00Z":
+    if parsed.updated_after != "2026-06-05T00:00:00Z":
         raise AssertionError("secret rotation requirement timestamp was not normalized")
     for raw, expected in (
         ("NPM_TOKEN", "NAME=ISO-8601_TIMESTAMP"),
-        ("UNKNOWN=2026-06-03T00:00:00Z", "unknown required secret"),
-        ("NPM_TOKEN=2026-06-03T00:00:00", "must include a timezone"),
+        ("UNKNOWN=2026-06-05T00:00:00Z", "unknown required secret"),
+        ("NPM_TOKEN=2026-06-05T00:00:00", "must include a timezone"),
     ):
         try:
             module.parse_secret_rotation_requirement(raw)
@@ -637,7 +637,7 @@ def run_secret_rotation_marker_tests(module) -> None:
         version=VERSION,
         secret_names=all_release_secrets(module),
         variable_values={
-            module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-03T00:00:01Z",
+            module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z",
         },
         secret_rotation_marker_requirements=(requirement,),
         pages_payload=pages_payload(),
@@ -653,7 +653,7 @@ def run_secret_rotation_marker_tests(module) -> None:
         raise AssertionError("secret rotation marker readiness should be checked")
     if marker_report["markers"][0]["markerEnv"] != module.NPM_TOKEN_ROTATION_MARKER_VAR:
         raise AssertionError("secret rotation marker report should identify the marker variable")
-    if marker_report["markers"][0]["rotatedAfter"] != "2026-06-03T00:00:01Z":
+    if marker_report["markers"][0]["rotatedAfter"] != "2026-06-05T00:00:01Z":
         raise AssertionError("secret rotation marker timestamp should be reported when valid")
 
     missing = module.audit_tagged_release_readiness(
@@ -684,7 +684,7 @@ def run_secret_rotation_marker_tests(module) -> None:
         version=VERSION,
         secret_names=all_release_secrets(module),
         variable_values={
-            module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-03T00:00:00Z",
+            module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:00Z",
         },
         secret_rotation_marker_requirements=(requirement,),
         pages_payload=pages_payload(),
@@ -1187,7 +1187,7 @@ def run_variable_loader_tests(module) -> None:
         ]:
             payload = {
                 "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
-                "value": "2026-06-03T00:00:01Z",
+                "value": "2026-06-05T00:00:01Z",
             }
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
         if args[1:] == [
@@ -1219,7 +1219,7 @@ def run_variable_loader_tests(module) -> None:
     finally:
         helper.subprocess.run = original_run
 
-    if values[module.NPM_TOKEN_ROTATION_MARKER_VAR] != "2026-06-03T00:00:01Z":
+    if values[module.NPM_TOKEN_ROTATION_MARKER_VAR] != "2026-06-05T00:00:01Z":
         raise AssertionError("variable loader omitted the npm rotation marker")
     if (
         values[module.CUSTOM_REPOSITORY_BASE_URL_VAR]

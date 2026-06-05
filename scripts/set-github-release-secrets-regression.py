@@ -282,13 +282,13 @@ def run_secret_set_tests(module) -> None:
 
 def run_rotation_marker_setup_tests(module) -> None:
     normalized = module.normalize_npm_rotation_marker_timestamp(
-        "2026-06-03T05:30:01+05:30"
+        "2026-06-05T05:30:01+05:30"
     )
-    if normalized != "2026-06-03T00:00:01Z":
+    if normalized != "2026-06-05T00:00:01Z":
         raise AssertionError("rotation marker timestamp was not normalized to UTC")
 
     assert_raises(
-        lambda: module.normalize_npm_rotation_marker_timestamp("2026-06-03T00:00:00Z"),
+        lambda: module.normalize_npm_rotation_marker_timestamp("2026-06-05T00:00:00Z"),
         "timestamp must be after",
     )
     assert_raises(
@@ -299,7 +299,7 @@ def run_rotation_marker_setup_tests(module) -> None:
         lambda: module.configure_npm_rotation_marker(
             "owner/repo",
             "gh",
-            "2026-06-03T00:00:01Z",
+            "2026-06-05T00:00:01Z",
             confirm_rotated=False,
             dry_run=True,
         ),
@@ -310,14 +310,14 @@ def run_rotation_marker_setup_tests(module) -> None:
     try:
         module.load_secret_metadata = lambda _repo, _gh: {
             module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(
-                updated_at="2026-06-03T00:00:04+00:00"
+                updated_at="2026-06-05T00:00:04+00:00"
             )
         }
         metadata_timestamp = module.load_npm_rotation_marker_timestamp_from_secret_metadata(
             "owner/repo",
             "gh",
         )
-        if metadata_timestamp != "2026-06-03T00:00:04Z":
+        if metadata_timestamp != "2026-06-05T00:00:04Z":
             raise AssertionError("metadata-derived marker timestamp was not normalized")
 
         module.load_secret_metadata = lambda _repo, _gh: {}
@@ -331,7 +331,7 @@ def run_rotation_marker_setup_tests(module) -> None:
 
         module.load_secret_metadata = lambda _repo, _gh: {
             module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(
-                updated_at="2026-06-03T00:00:00Z"
+                updated_at="2026-06-05T00:00:00Z"
             )
         }
         assert_raises(
@@ -367,11 +367,11 @@ def run_rotation_marker_setup_tests(module) -> None:
         configured = module.configure_npm_rotation_marker(
             "owner/repo",
             "gh",
-            "2026-06-03T00:00:01+00:00",
+            "2026-06-05T00:00:01+00:00",
             confirm_rotated=True,
             dry_run=True,
         )
-        if configured != "2026-06-03T00:00:01Z":
+        if configured != "2026-06-05T00:00:01Z":
             raise AssertionError("dry-run marker setup returned the wrong timestamp")
         if calls:
             raise AssertionError("dry-run marker setup must not call gh variable set")
@@ -379,14 +379,14 @@ def run_rotation_marker_setup_tests(module) -> None:
         configured = module.configure_npm_rotation_marker(
             "owner/repo",
             "gh",
-            "2026-06-03T00:00:02Z",
+            "2026-06-05T00:00:02Z",
             confirm_rotated=True,
             dry_run=False,
         )
     finally:
         module.subprocess.run = original_run
 
-    if configured != "2026-06-03T00:00:02Z":
+    if configured != "2026-06-05T00:00:02Z":
         raise AssertionError("marker setup returned the wrong configured timestamp")
     if len(calls) != 1:
         raise AssertionError(f"expected one gh variable set call, got {len(calls)}")
@@ -394,7 +394,7 @@ def run_rotation_marker_setup_tests(module) -> None:
     rendered_args = " ".join(args)
     expected = (
         f"variable set {module.NPM_TOKEN_ROTATION_MARKER_VAR} "
-        "--repo owner/repo --body 2026-06-03T00:00:02Z"
+        "--repo owner/repo --body 2026-06-05T00:00:02Z"
     )
     if expected not in rendered_args:
         raise AssertionError(f"unexpected gh variable set arguments: {rendered_args}")
@@ -413,7 +413,7 @@ def run_rotation_marker_setup_tests(module) -> None:
                 "gh",
                 "owner/repo",
                 module.NPM_TOKEN_ROTATION_MARKER_VAR,
-                "2026-06-03T00:00:03Z",
+                "2026-06-05T00:00:03Z",
             ),
             "failed with exit code 9",
         )
@@ -611,7 +611,7 @@ def run_env_file_main_tests(module) -> None:
                     "--env-file-only",
                     "--dry-run",
                     "--set-npm-token-rotation-marker",
-                    "2026-06-03T00:00:01Z",
+                    "2026-06-05T00:00:01Z",
                     "--allow-unverified-npm-token-rotation-marker",
                     "--confirm-npm-token-rotated",
                 ]
@@ -828,7 +828,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "--gh",
                 "gh",
                 "--set-npm-token-rotation-marker",
-                "2026-06-03T00:00:01+00:00",
+                "2026-06-05T00:00:01+00:00",
                 "--confirm-npm-token-rotated",
                 "--dry-run",
             ],
@@ -849,7 +849,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "--gh",
                 "gh",
                 "--set-npm-token-rotation-marker",
-                "2026-06-03T00:00:01+00:00",
+                "2026-06-05T00:00:01+00:00",
                 "--allow-unverified-npm-token-rotation-marker",
                 "--confirm-npm-token-rotated",
                 "--dry-run",
@@ -859,7 +859,7 @@ def run_rotation_marker_main_tests(module) -> None:
             raise AssertionError(f"expected unverified manual marker dry-run to pass: {rendered}")
         if module.NPM_TOKEN_ROTATION_MARKER_VAR not in rendered:
             raise AssertionError("marker dry-run output omitted the marker variable name")
-        if "2026-06-03T00:00:01Z" not in rendered:
+        if "2026-06-05T00:00:01Z" not in rendered:
             raise AssertionError("marker dry-run output omitted the normalized timestamp")
         if "missing local release secret values" in rendered:
             raise AssertionError("marker-only dry-run should not require signing secrets")
@@ -870,7 +870,7 @@ def run_rotation_marker_main_tests(module) -> None:
         try:
             module.load_secret_metadata = lambda _repo, _gh: {
                 module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(
-                    updated_at="2026-06-03T00:00:03+00:00"
+                    updated_at="2026-06-05T00:00:03+00:00"
                 )
             }
             exit_code, rendered = call_main(
@@ -890,7 +890,7 @@ def run_rotation_marker_main_tests(module) -> None:
             module.load_secret_metadata = original_loader
         if exit_code != 0:
             raise AssertionError(f"expected metadata marker dry-run to pass: {rendered}")
-        if "2026-06-03T00:00:03Z" not in rendered:
+        if "2026-06-05T00:00:03Z" not in rendered:
             raise AssertionError("metadata marker dry-run omitted normalized updatedAt")
         if "missing local release secret values" in rendered:
             raise AssertionError("metadata marker dry-run should not require signing secrets")
@@ -906,7 +906,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "--gh",
                 "gh",
                 "--set-npm-token-rotation-marker",
-                "2026-06-03T00:00:01Z",
+                "2026-06-05T00:00:01Z",
                 "--allow-unverified-npm-token-rotation-marker",
                 "--dry-run",
             ],
@@ -1002,7 +1002,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "--gh",
                 "gh",
                 "--set-npm-token-rotation-marker",
-                "2026-06-03T00:00:01Z",
+                "2026-06-05T00:00:01Z",
                 "--allow-unverified-npm-token-rotation-marker",
                 "--set-npm-token-rotation-marker-from-secret-updated-at",
                 "--confirm-npm-token-rotated",
@@ -1023,7 +1023,7 @@ def run_rotation_marker_main_tests(module) -> None:
                 "--gh",
                 "gh",
                 "--set-npm-token-rotation-marker",
-                "2026-06-03T00:00:00Z",
+                "2026-06-05T00:00:00Z",
                 "--allow-unverified-npm-token-rotation-marker",
                 "--confirm-npm-token-rotated",
                 "--dry-run",
@@ -1094,7 +1094,7 @@ def run_rotation_marker_main_tests(module) -> None:
                     str(env_file),
                     "--env-file-only",
                     "--set-npm-token-rotation-marker",
-                    "2026-06-03T00:00:02Z",
+                    "2026-06-05T00:00:02Z",
                     "--allow-unverified-npm-token-rotation-marker",
                     "--confirm-npm-token-rotated",
                     "--dry-run",

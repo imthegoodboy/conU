@@ -244,7 +244,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           CONU_NPM_TOKEN_ROTATED_AFTER: ${{ vars.CONU_NPM_TOKEN_ROTATED_AFTER }}
-        run: python scripts/check-release-secret-rotation-gate.py --secret-name NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER --required-after 2026-06-03T00:00:00Z
+        run: python scripts/check-release-secret-rotation-gate.py --secret-name NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER --required-after 2026-06-05T00:00:00Z
       - name: Validate npm token authentication and registry availability
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -1033,7 +1033,7 @@ def run_forbidden_workflow_command_tests(module) -> None:
             "      - name: Validate NPM token rotation marker\n",
             "      - name: Unsafe unverified NPM marker setup\n"
             "        run: python scripts/set-github-release-secrets.py "
-            "--set-npm-token-rotation-marker 2026-06-03T01:00:00Z "
+            "--set-npm-token-rotation-marker 2026-06-05T01:00:00Z "
             "--allow-unverified-npm-token-rotation-marker "
             "--confirm-npm-token-rotated --dry-run\n"
             "      - name: Validate NPM token rotation marker\n",
@@ -1059,7 +1059,7 @@ def run_forbidden_workflow_command_tests(module) -> None:
             "      - name: Unsafe split unverified NPM marker setup\n"
             "        run: |\n"
             "          python scripts/set-github-release-secrets.py "
-            "--set-npm-token-rotation-marker 2026-06-03T01:00:00Z "
+            "--set-npm-token-rotation-marker 2026-06-05T01:00:00Z "
             "--allow-unverified-npm-token-\\\n"
             "            rotation-marker --confirm-npm-token-rotated --dry-run\n"
             "      - name: Validate NPM token rotation marker\n",
@@ -1086,7 +1086,7 @@ def run_forbidden_workflow_command_tests(module) -> None:
             "      - name: Validate NPM token rotation marker\n",
             "      - name: Unsafe direct NPM marker variable write\n"
             "        run: gh variable set CONU_NPM_TOKEN_ROTATED_AFTER "
-            "--body 2026-06-03T01:00:00Z\n"
+            "--body 2026-06-05T01:00:00Z\n"
             "      - name: Validate NPM token rotation marker\n",
         ),
     )
@@ -1155,7 +1155,7 @@ def run_forbidden_workflow_command_tests(module) -> None:
             "      - name: Unsafe API NPM marker variable write\n"
             "        run: gh api repos/$GITHUB_REPOSITORY/actions/variables/"
             "CONU_NPM_TOKEN_ROTATED_AFTER --method PATCH "
-            "-f value=2026-06-03T01:00:00Z\n"
+            "-f value=2026-06-05T01:00:00Z\n"
             "      - name: Validate NPM token rotation marker\n",
         ),
     )
@@ -1179,7 +1179,7 @@ def run_forbidden_workflow_command_tests(module) -> None:
             "      - name: Unsafe equals-form API NPM marker variable write\n"
             "        run: gh api repos/$GITHUB_REPOSITORY/actions/variables/"
             "CONU_NPM_TOKEN_ROTATED_AFTER --method=PATCH "
-            "-F value=2026-06-03T01:00:00Z\n"
+            "-F value=2026-06-05T01:00:00Z\n"
             "      - name: Validate NPM token rotation marker\n",
         ),
     )
@@ -1203,7 +1203,7 @@ def run_forbidden_workflow_command_tests(module) -> None:
             "      - name: Unsafe field equals-form API NPM marker write\n"
             "        run: gh api repos/$GITHUB_REPOSITORY/actions/variables/"
             "CONU_NPM_TOKEN_ROTATED_AFTER "
-            "--field=value=2026-06-03T01:00:00Z\n"
+            "--field=value=2026-06-05T01:00:00Z\n"
             "      - name: Validate NPM token rotation marker\n",
         ),
     )
@@ -1511,7 +1511,7 @@ def run_forbidden_workflow_command_tests(module) -> None:
             "          import requests\n"
             "          requests.patch('https://api.github.com/repos/"
             "owner/repo/actions/variables/CONU_NPM_TOKEN_ROTATED_AFTER', "
-            "json={'value':'2026-06-03T00:00:00Z'})\n"
+            "json={'value':'2026-06-05T00:00:00Z'})\n"
             "          PY\n"
             "      - name: Validate custom Linux repository publication config\n",
         ),
@@ -2431,7 +2431,7 @@ def run_required_release_preflight_tests(module) -> None:
         module,
         None,
         ready_release().replace(
-            "        run: python scripts/check-release-secret-rotation-gate.py --secret-name NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER --required-after 2026-06-03T00:00:00Z\n",
+            "        run: python scripts/check-release-secret-rotation-gate.py --secret-name NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER --required-after 2026-06-05T00:00:00Z\n",
             "        run: echo skipped-npm-token-rotation-marker\n",
         ),
     )
