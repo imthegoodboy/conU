@@ -283,7 +283,7 @@ def open_regular_file(path: Path, label: str, *, max_bytes: int) -> tuple[Binary
         if not stat.S_ISREG(metadata.st_mode):
             raise SystemExit(f"{label} must be a regular file: {path.name}")
         if metadata.st_size > max_bytes:
-            raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+            raise SystemExit(f"{label} is too large for Pages deployment")
         return os.fdopen(fd, "rb"), metadata.st_size
     except BaseException:
         os.close(fd)
@@ -830,7 +830,7 @@ def open_output_file(path: Path, label: str) -> BinaryIO:
 
 def write_bytes_output(path: Path, label: str, data: bytes, *, max_bytes: int) -> None:
     if len(data) > max_bytes:
-        raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+        raise SystemExit(f"{label} is too large for Pages deployment")
     with open_output_file(path, label) as handle:
         handle.write(data)
         handle.flush()
@@ -848,7 +848,7 @@ def read_regular_file(path: Path, label: str, *, max_bytes: int) -> bytes:
     with handle:
         data = handle.read(max_bytes + 1)
     if len(data) > max_bytes:
-        raise SystemExit(f"{label} is too large for Pages deployment: {path.name}")
+        raise SystemExit(f"{label} is too large for Pages deployment")
     return data
 
 
