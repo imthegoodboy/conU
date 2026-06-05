@@ -385,7 +385,11 @@ function request(url, onError, handler, redirects = 0) {
         redirects < 5
       ) {
         response.resume();
-        const redirectUrl = new URL(response.headers.location, url).toString();
+        const redirectUrl = resolveRedirectUrl(response.headers.location, url);
+        if (redirectUrl === null) {
+          onError(invalidRedirectUrlError());
+          return;
+        }
         try {
           validateDownloadRedirect(url, redirectUrl);
         } catch (error) {
@@ -407,4 +411,18 @@ function request(url, onError, handler, redirects = 0) {
     );
   });
   return requestHandle;
+}
+
+function resolveRedirectUrl(location, baseUrl) {
+  try {
+    return new URL(location, baseUrl).toString();
+  } catch (_error) {
+    return null;
+  }
+}
+
+function invalidRedirectUrlError() {
+  return new Error(
+    "download redirect URL is invalid; urlDisplayed=false contentsDisplayed=false"
+  );
 }

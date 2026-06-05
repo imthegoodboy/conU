@@ -29,6 +29,7 @@ async function main() {
   expectContentLengthParsing();
   await expectUnverifiedPublicBaseFailure();
   await expectLoopbackRedirectToPublicFailure();
+  await expectInvalidRedirectUrlFailure();
   await expectArchiveLimitFailure();
   await expectChecksumLimitFailure();
   await expectChecksumArchiveNameFailure();
@@ -173,6 +174,23 @@ async function expectLoopbackRedirectToPublicFailure() {
       CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
     });
     expectFailedWith(result, "download redirect must not cross public and loopback boundaries");
+    expectNoSecretDisplay(result);
+  });
+}
+
+async function expectInvalidRedirectUrlFailure() {
+  await withServer((_request, response) => {
+    response.writeHead(302, { Location: "https://[::1" });
+    response.end();
+  }, async (baseUrl) => {
+    const result = await runInstall({
+      CONU_NPM_ALLOW_UNVERIFIED: "1",
+      CONU_NPM_DIST_BASE: `${baseUrl}/secret-download-path?token=secret`,
+      CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
+    });
+    expectFailedWith(result, "download redirect URL is invalid");
+    expectFailedWith(result, "urlDisplayed=false");
+    expectFailedWith(result, "contentsDisplayed=false");
     expectNoSecretDisplay(result);
   });
 }
