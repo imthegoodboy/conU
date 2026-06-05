@@ -33,6 +33,8 @@ MAX_SITE_MEMBER_BYTES = 512_000_000
 MAX_SITE_MEMBERS = 10000
 MAX_SITE_TOTAL_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MEMBER_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false"
+SIGNATURE_FAILURE_GUARDS = "signatureContentsDisplayed=false keyMaterialDisplayed=false"
+KEY_FAILURE_GUARDS = "keyContentsDisplayed=false keyMaterialDisplayed=false"
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
 CACHE_CONTROL_RULES = (
@@ -242,11 +244,15 @@ def require_detached_signature(path: Path) -> None:
             max_bytes=MAX_SIGNATURE_BYTES,
         )
     except UnicodeDecodeError as exc:
-        raise SystemExit("detached signature is not ASCII-armored") from exc
+        raise SystemExit(
+            f"detached signature is not ASCII-armored; {SIGNATURE_FAILURE_GUARDS}"
+        ) from exc
     if "BEGIN PGP SIGNATURE" not in signature_text:
-        raise SystemExit("detached signature is not ASCII-armored")
+        raise SystemExit(f"detached signature is not ASCII-armored; {SIGNATURE_FAILURE_GUARDS}")
     if "PRIVATE KEY BLOCK" in signature_text:
-        raise SystemExit("detached signature contains private key material")
+        raise SystemExit(
+            f"detached signature contains private key material; {SIGNATURE_FAILURE_GUARDS}"
+        )
 
 
 def prepare_output_dir(output_dir: Path) -> None:
@@ -740,12 +746,20 @@ def parse_headers_file(text: str) -> dict[str, dict[str, str]]:
 def validate_key_and_signature_material(site_name: str, members: dict[str, bytes]) -> None:
     for name in (PUBLIC_KEY_NAME, f"apt/{PUBLIC_KEY_NAME}", f"rpm/{PUBLIC_KEY_NAME}"):
         if b"BEGIN PGP PUBLIC KEY BLOCK" not in members[name]:
-            raise SystemExit(f"{site_name}:{name} is not armored public key material")
+            raise SystemExit(
+                f"{site_name}:{name} is not armored public key material; {KEY_FAILURE_GUARDS}"
+            )
     for name in ("apt/Release.gpg", "rpm/repodata/repomd.xml.asc"):
         if b"BEGIN PGP SIGNATURE" not in members[name]:
-            raise SystemExit(f"{site_name}:{name} is not armored signature material")
+            raise SystemExit(
+                f"{site_name}:{name} is not armored signature material; "
+                f"{SIGNATURE_FAILURE_GUARDS}"
+            )
     if b"BEGIN PGP SIGNED MESSAGE" not in members["apt/InRelease"]:
-        raise SystemExit(f"{site_name}:apt/InRelease is not armored signed metadata")
+        raise SystemExit(
+            f"{site_name}:apt/InRelease is not armored signed metadata; "
+            f"{SIGNATURE_FAILURE_GUARDS}"
+        )
 
 
 def validate_downloaded_bundle(version: str, members: dict[str, bytes]) -> None:
@@ -769,7 +783,9 @@ def validate_downloaded_bundle(version: str, members: dict[str, bytes]) -> None:
     if match.group(1).lower() != actual:
         raise SystemExit("downloaded hosted repository bundle checksum mismatch")
     if b"BEGIN PGP SIGNATURE" not in members[signature_path]:
-        raise SystemExit("downloaded hosted repository bundle signature is not armored")
+        raise SystemExit(
+            f"downloaded hosted repository bundle signature is not armored; {SIGNATURE_FAILURE_GUARDS}"
+        )
 
 
 def extract_members(output_dir: Path, members: dict[str, bytes]) -> None:

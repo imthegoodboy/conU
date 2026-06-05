@@ -35,6 +35,8 @@ MAX_ZIP_MEMBER_BYTES = 512_000_000
 MAX_ZIP_MEMBERS = 10_000
 MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
 MEMBER_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false"
+SIGNATURE_FAILURE_GUARDS = "signatureContentsDisplayed=false keyMaterialDisplayed=false"
+KEY_FAILURE_GUARDS = "keyContentsDisplayed=false keyMaterialDisplayed=false"
 ZIP_SOURCE_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 DEBIAN_ARCHES = {
     "linux-x64": "amd64",
@@ -204,11 +206,15 @@ def require_detached_signature(path: Path) -> Path:
             max_bytes=MAX_SIGNATURE_BYTES,
         )
     except UnicodeDecodeError as exc:
-        raise SystemExit("detached signature is not ASCII-armored") from exc
+        raise SystemExit(
+            f"detached signature is not ASCII-armored; {SIGNATURE_FAILURE_GUARDS}"
+        ) from exc
     if "BEGIN PGP SIGNATURE" not in signature_text:
-        raise SystemExit("detached signature is not ASCII-armored")
+        raise SystemExit(f"detached signature is not ASCII-armored; {SIGNATURE_FAILURE_GUARDS}")
     if "PRIVATE KEY BLOCK" in signature_text:
-        raise SystemExit("detached signature contains private key material")
+        raise SystemExit(
+            f"detached signature contains private key material; {SIGNATURE_FAILURE_GUARDS}"
+        )
     return signature
 
 
@@ -217,11 +223,13 @@ def verify_public_key(path: Path) -> None:
     try:
         text = read_ascii_file(path, "Linux public key asset", max_bytes=MAX_PUBLIC_KEY_BYTES)
     except UnicodeDecodeError as exc:
-        raise SystemExit("Linux public key asset is not ASCII-armored") from exc
+        raise SystemExit(
+            f"Linux public key asset is not ASCII-armored; {KEY_FAILURE_GUARDS}"
+        ) from exc
     if "BEGIN PGP PUBLIC KEY BLOCK" not in text:
-        raise SystemExit("Linux public key asset is not an armored public key")
+        raise SystemExit(f"Linux public key asset is not an armored public key; {KEY_FAILURE_GUARDS}")
     if "PRIVATE KEY BLOCK" in text:
-        raise SystemExit("refusing to bundle private key material")
+        raise SystemExit(f"refusing to bundle private key material; {KEY_FAILURE_GUARDS}")
 
 
 def build_hosted_repository_members(assets: HostedLinuxAssets) -> dict[str, bytes]:
@@ -329,9 +337,13 @@ def validate_apt_metadata(
             if f" {digest} {len(content)} {name}" not in release_text:
                 raise SystemExit(f"{bundle.name} Release metadata does not hash {name}")
     if b"BEGIN PGP SIGNED MESSAGE" not in members["InRelease"]:
-        raise SystemExit(f"{bundle.name} is missing an armored InRelease signature")
+        raise SystemExit(
+            f"{bundle.name} is missing an armored InRelease signature; {SIGNATURE_FAILURE_GUARDS}"
+        )
     if b"BEGIN PGP SIGNATURE" not in members["Release.gpg"]:
-        raise SystemExit(f"{bundle.name} is missing an armored Release.gpg signature")
+        raise SystemExit(
+            f"{bundle.name} is missing an armored Release.gpg signature; {SIGNATURE_FAILURE_GUARDS}"
+        )
 
 
 def validate_rpm_metadata(
@@ -343,7 +355,10 @@ def validate_rpm_metadata(
         if name not in members:
             raise SystemExit(f"{bundle.name} is missing signed RPM member: {name}")
     if b"BEGIN PGP SIGNATURE" not in members["repodata/repomd.xml.asc"]:
-        raise SystemExit(f"{bundle.name} is missing an armored repomd.xml.asc signature")
+        raise SystemExit(
+            f"{bundle.name} is missing an armored repomd.xml.asc signature; "
+            f"{SIGNATURE_FAILURE_GUARDS}"
+        )
     primary_member = find_primary_metadata_member(bundle, members)
     try:
         primary_text = gzip.decompress(members[primary_member]).decode("utf-8")

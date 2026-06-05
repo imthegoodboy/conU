@@ -284,6 +284,12 @@ def main() -> int:
             "detached signature is not ASCII-armored",
         )
         assert_not_displayed(output, "non-ASCII site signature", f"{SITE_BUNDLE}.asc")
+        assert_display_guards(
+            output,
+            "non-ASCII site signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
 
         non_armored_signature = temp / "non-armored-signature"
         shutil.copytree(dist, non_armored_signature)
@@ -299,6 +305,12 @@ def main() -> int:
             "detached signature is not ASCII-armored",
         )
         assert_not_displayed(output, "non-armored site signature", f"{SITE_BUNDLE}.asc")
+        assert_display_guards(
+            output,
+            "non-armored site signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
 
         private_key_signature = temp / "private-key-signature"
         shutil.copytree(dist, private_key_signature)
@@ -319,6 +331,12 @@ def main() -> int:
             "private key material",
         )
         assert_not_displayed(output, "private key site signature", f"{SITE_BUNDLE}.asc")
+        assert_display_guards(
+            output,
+            "private key site signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
 
         symlink_site = temp / "symlink-site"
         shutil.copytree(dist, symlink_site)
@@ -492,6 +510,12 @@ def main() -> int:
             output,
             "non-armored embedded download signature",
             f"downloads/{HOSTED_BUNDLE}.asc",
+        )
+        assert_display_guards(
+            output,
+            "non-armored embedded download signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         missing_cache_policy = temp / "missing-cache-policy"

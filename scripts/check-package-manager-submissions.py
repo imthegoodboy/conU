@@ -772,7 +772,7 @@ def main() -> int:
             "# NPM_TOKEN\n",
             encoding="ascii",
         )
-        expect_failure(
+        output = expect_failure(
             "forbidden manifest text",
             lambda: preparer.prepare_submission_bundle(
                 forbidden,
@@ -783,6 +783,13 @@ def main() -> int:
                 require_linux_signatures=True,
             ),
             "forbidden literal",
+        )
+        assert_not_displayed(output, "forbidden manifest text", "NPM_TOKEN")
+        assert_display_guards(
+            output,
+            "forbidden manifest text",
+            "contentsDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         private_key_signature = temp / "private-key-signature"
@@ -803,7 +810,7 @@ def main() -> int:
             encoding="ascii",
             newline="\n",
         )
-        expect_failure(
+        output = expect_failure(
             "private key material in signature sidecar",
             lambda: preparer.prepare_submission_bundle(
                 private_key_signature,
@@ -814,6 +821,17 @@ def main() -> int:
                 require_linux_signatures=True,
             ),
             "forbidden literal",
+        )
+        assert_not_displayed(
+            output,
+            "private key material in signature sidecar",
+            "BEGIN PGP PRIVATE KEY BLOCK",
+        )
+        assert_display_guards(
+            output,
+            "private key material in signature sidecar",
+            "contentsDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         private_key_public_asset = temp / "private-key-public-asset"
@@ -836,7 +854,7 @@ def main() -> int:
             newline="\n",
         )
         write_sha256(public_key)
-        expect_failure(
+        output = expect_failure(
             "private key material in public-key asset",
             lambda: preparer.prepare_submission_bundle(
                 private_key_public_asset,
@@ -847,6 +865,17 @@ def main() -> int:
                 require_linux_signatures=True,
             ),
             "private key material",
+        )
+        assert_not_displayed(
+            output,
+            "private key material in public-key asset",
+            "BEGIN PGP PRIVATE KEY BLOCK",
+        )
+        assert_display_guards(
+            output,
+            "private key material in public-key asset",
+            "keyContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         no_optional = temp / "no-optional"

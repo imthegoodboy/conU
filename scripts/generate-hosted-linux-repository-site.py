@@ -31,6 +31,8 @@ MAX_ZIP_MEMBER_BYTES = 512_000_000
 MAX_ZIP_MEMBERS = 10_000
 MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
 MEMBER_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false"
+SIGNATURE_FAILURE_GUARDS = "signatureContentsDisplayed=false keyMaterialDisplayed=false"
+KEY_FAILURE_GUARDS = "keyContentsDisplayed=false keyMaterialDisplayed=false"
 ZIP_SOURCE_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 PUBLIC_KEY_NAME = "conu-linux-gpg-key.asc"
 CACHE_POLICY_SCHEMA = "conu.hostedLinuxRepository.cachePolicy.v1"
@@ -272,11 +274,15 @@ def require_detached_signature(path: Path) -> Path:
             max_bytes=MAX_SIGNATURE_BYTES,
         )
     except UnicodeDecodeError as exc:
-        raise SystemExit("detached signature is not ASCII-armored") from exc
+        raise SystemExit(
+            f"detached signature is not ASCII-armored; {SIGNATURE_FAILURE_GUARDS}"
+        ) from exc
     if "BEGIN PGP SIGNATURE" not in signature_text:
-        raise SystemExit("detached signature is not ASCII-armored")
+        raise SystemExit(f"detached signature is not ASCII-armored; {SIGNATURE_FAILURE_GUARDS}")
     if "PRIVATE KEY BLOCK" in signature_text:
-        raise SystemExit("detached signature contains private key material")
+        raise SystemExit(
+            f"detached signature contains private key material; {SIGNATURE_FAILURE_GUARDS}"
+        )
     return signature
 
 
@@ -404,17 +410,31 @@ def validate_hosted_bundle_members(bundle_name: str, members: dict[str, bytes]) 
             assert_no_forbidden_text(data, f"{bundle_name}:{name}")
     public_key = members[PUBLIC_KEY_NAME]
     if b"BEGIN PGP PUBLIC KEY BLOCK" not in public_key:
-        raise SystemExit(f"{bundle_name} root public key is not armored public key material")
+        raise SystemExit(
+            f"{bundle_name} root public key is not armored public key material; {KEY_FAILURE_GUARDS}"
+        )
     if b"BEGIN PGP PUBLIC KEY BLOCK" not in members[f"apt/{PUBLIC_KEY_NAME}"]:
-        raise SystemExit(f"{bundle_name} APT public key is not armored public key material")
+        raise SystemExit(
+            f"{bundle_name} APT public key is not armored public key material; {KEY_FAILURE_GUARDS}"
+        )
     if b"BEGIN PGP PUBLIC KEY BLOCK" not in members[f"rpm/{PUBLIC_KEY_NAME}"]:
-        raise SystemExit(f"{bundle_name} RPM public key is not armored public key material")
+        raise SystemExit(
+            f"{bundle_name} RPM public key is not armored public key material; {KEY_FAILURE_GUARDS}"
+        )
     if b"BEGIN PGP SIGNED MESSAGE" not in members["apt/InRelease"]:
-        raise SystemExit(f"{bundle_name} APT InRelease is not armored signed metadata")
+        raise SystemExit(
+            f"{bundle_name} APT InRelease is not armored signed metadata; {SIGNATURE_FAILURE_GUARDS}"
+        )
     if b"BEGIN PGP SIGNATURE" not in members["apt/Release.gpg"]:
-        raise SystemExit(f"{bundle_name} APT Release.gpg is not armored signature material")
+        raise SystemExit(
+            f"{bundle_name} APT Release.gpg is not armored signature material; "
+            f"{SIGNATURE_FAILURE_GUARDS}"
+        )
     if b"BEGIN PGP SIGNATURE" not in members["rpm/repodata/repomd.xml.asc"]:
-        raise SystemExit(f"{bundle_name} RPM repomd.xml.asc is not armored signature material")
+        raise SystemExit(
+            f"{bundle_name} RPM repomd.xml.asc is not armored signature material; "
+            f"{SIGNATURE_FAILURE_GUARDS}"
+        )
 
 
 def build_site_members(

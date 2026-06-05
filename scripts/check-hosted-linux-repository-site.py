@@ -352,6 +352,12 @@ def main() -> int:
             "non-ASCII hosted bundle signature",
             f"{HOSTED_BUNDLE}.asc",
         )
+        assert_display_guards(
+            output,
+            "non-ASCII hosted bundle signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
 
         non_armored_signature = temp / "non-armored-signature"
         shutil.copytree(dist, non_armored_signature)
@@ -370,6 +376,12 @@ def main() -> int:
             output,
             "non-armored hosted bundle signature",
             f"{HOSTED_BUNDLE}.asc",
+        )
+        assert_display_guards(
+            output,
+            "non-armored hosted bundle signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         private_key_signature = temp / "private-key-signature"
@@ -394,6 +406,12 @@ def main() -> int:
             output,
             "private key hosted bundle signature",
             f"{HOSTED_BUNDLE}.asc",
+        )
+        assert_display_guards(
+            output,
+            "private key hosted bundle signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         symlink_dist = temp / "symlink-dist"
