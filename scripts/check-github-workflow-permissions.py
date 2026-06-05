@@ -309,6 +309,10 @@ WORKFLOW_COMMAND_DIAGNOSTIC_GUARD = (
     "workflowCommandDisplayed=false contentsDisplayed=false "
     "tokenDisplayed=false secretValuesDisplayed=false"
 )
+PERMISSION_DIAGNOSTIC_GUARD = (
+    "unexpectedPermissionKeyDisplayed=false rawPermissionValueDisplayed=false "
+    "contentsDisplayed=false tokenDisplayed=false secretValuesDisplayed=false"
+)
 ALLOWED_PERMISSION_KEYS = (
     "actions",
     "attestations",
@@ -317,6 +321,7 @@ ALLOWED_PERMISSION_KEYS = (
     "pages",
     "security-events",
 )
+ALLOWED_PERMISSION_VALUES = {"read", "write", "none"}
 TOP_LEVEL_PERMISSIONS = {
     "contents": "read",
 }
@@ -2010,6 +2015,8 @@ class WorkflowPermissionsReadiness:
             "contentsDisplayed": False,
             "workflowCommandDisplayed": False,
             "secretValuesDisplayed": False,
+            "unexpectedPermissionKeyDisplayed": False,
+            "rawPermissionValueDisplayed": False,
         }
 
 
@@ -2889,6 +2896,24 @@ def mapping_contains_write(permissions: dict[str, str]) -> bool:
     return any(value == "write" for value in permissions.values())
 
 
+def format_permission_diagnostic_suffix() -> str:
+    return f"; {PERMISSION_DIAGNOSTIC_GUARD}"
+
+
+def describe_permission_key(key: str) -> str:
+    if key in ALLOWED_PERMISSION_KEYS:
+        return key
+    return "unrecognized key"
+
+
+def describe_actual_permission_value(value: str | None) -> str:
+    if value is None:
+        return "unset"
+    if value in ALLOWED_PERMISSION_VALUES:
+        return "nonmatching value"
+    return "invalid value"
+
+
 def audit_mapping(
     *,
     permissions: dict[str, str],
@@ -2897,23 +2922,33 @@ def audit_mapping(
     allow_write: bool,
 ) -> list[str]:
     issues: list[str] = []
-    allowed_values = {"read", "write", "none"}
     for key, value in permissions.items():
         if key not in ALLOWED_PERMISSION_KEYS:
-            issues.append(f"{scope} uses unexpected permission key: {key}")
-        if value not in allowed_values:
-            issues.append(f"{scope} uses unexpected permission value for {key}: {value}")
+            issues.append(
+                f"{scope} uses unexpected permission key"
+                f"{format_permission_diagnostic_suffix()}"
+            )
+        if value not in ALLOWED_PERMISSION_VALUES:
+            issues.append(
+                f"{scope} uses unexpected permission value for "
+                f"{describe_permission_key(key)}{format_permission_diagnostic_suffix()}"
+            )
         if value == "write" and not allow_write:
             issues.append(f"{scope} must not request write permission for {key}")
     for key, expected_value in expected.items():
         actual_value = permissions.get(key)
         if actual_value != expected_value:
             issues.append(
-                f"{scope} must set {key}={expected_value}; found {actual_value or 'unset'}"
+                f"{scope} must set {key}={expected_value}; found "
+                f"{describe_actual_permission_value(actual_value)}"
+                f"{format_permission_diagnostic_suffix()}"
             )
     for key, value in permissions.items():
         if key not in expected:
-            issues.append(f"{scope} has extra permission {key}={value}")
+            issues.append(
+                f"{scope} has extra permission {describe_permission_key(key)}"
+                f"{format_permission_diagnostic_suffix()}"
+            )
     return issues
 
 

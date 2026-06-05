@@ -897,6 +897,8 @@ def assert_safe_report(report) -> dict[str, object]:
         "contentsDisplayed",
         "workflowCommandDisplayed",
         "secretValuesDisplayed",
+        "unexpectedPermissionKeyDisplayed",
+        "rawPermissionValueDisplayed",
     ):
         if parsed.get(field) is not False:
             raise AssertionError(f"expected {field}=false")
@@ -2283,8 +2285,52 @@ def run_expected_job_permission_tests(module) -> None:
     )
     if report.ready:
         raise AssertionError("extra release job permission should fail")
-    if "release.yml:github-release has extra permission actions=read" not in json.dumps(assert_safe_report(report)):
+    if "release.yml:github-release has extra permission actions;" not in json.dumps(
+        assert_safe_report(report)
+    ):
         raise AssertionError("extra expected permission issue was not reported")
+
+    sensitive_value_report = with_fixture(
+        module,
+        None,
+        replace_job_text(
+            ready_release(),
+            "github-release",
+            "      contents: write\n",
+            f"      contents: {SENSITIVE_SENTINEL}\n",
+        ),
+    )
+    if sensitive_value_report.ready:
+        raise AssertionError("sensitive permission value should fail")
+    sensitive_value_rendered = json.dumps(assert_safe_report(sensitive_value_report))
+    if (
+        "release.yml:github-release uses unexpected permission value for contents;"
+        not in sensitive_value_rendered
+    ):
+        raise AssertionError("sensitive permission value issue was not reported")
+    if module.PERMISSION_DIAGNOSTIC_GUARD not in sensitive_value_rendered:
+        raise AssertionError("permission diagnostic guard was not reported")
+
+    sensitive_key_report = with_fixture(
+        module,
+        None,
+        replace_job_text(
+            ready_release(),
+            "github-release",
+            "      contents: write\n",
+            f"      contents: write\n      {SENSITIVE_SENTINEL}: read\n",
+        ),
+    )
+    if sensitive_key_report.ready:
+        raise AssertionError("sensitive permission key should fail")
+    sensitive_key_rendered = json.dumps(assert_safe_report(sensitive_key_report))
+    if (
+        "release.yml:github-release uses unexpected permission key;"
+        not in sensitive_key_rendered
+    ):
+        raise AssertionError("sensitive permission key issue was not reported")
+    if module.PERMISSION_DIAGNOSTIC_GUARD not in sensitive_key_rendered:
+        raise AssertionError("permission diagnostic guard was not reported")
 
 
 def run_required_release_preflight_tests(module) -> None:
