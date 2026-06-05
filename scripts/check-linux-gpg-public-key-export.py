@@ -188,6 +188,7 @@ def run_output_file_preflights() -> None:
             lambda: exporter.write_public_key_asset(temp / "oversized.asc", PUBLIC_KEY_FIXTURE),
             "exceeds",
             "public-key size bound",
+            "oversized.asc",
         )
 
         output_directory = temp / "output-directory.asc"
@@ -222,6 +223,40 @@ def run_output_file_preflights() -> None:
             lambda: exporter.write_sha256_sidecar(output),
             "exceeds",
             "public-key hash source size bound",
+            output.name,
+        )
+
+        oversized_sidecar_existing = temp / "oversized-sidecar-existing.asc"
+        exporter.write_public_key_asset(oversized_sidecar_existing, PUBLIC_KEY_FIXTURE)
+        oversized_existing_sidecar = oversized_sidecar_existing.with_name(
+            f"{oversized_sidecar_existing.name}.sha256"
+        )
+        oversized_existing_sidecar.write_bytes(b"existing sidecar\n")
+        expect_constant_failure(
+            exporter,
+            "MAX_CHECKSUM_BYTES",
+            max(0, oversized_existing_sidecar.stat().st_size - 1),
+            lambda: exporter.write_sha256_sidecar(oversized_sidecar_existing),
+            "is too large",
+            "public-key existing sidecar size bound",
+            oversized_existing_sidecar.name,
+            oversized_sidecar_existing.name,
+        )
+
+        oversized_sidecar_write = temp / "oversized-sidecar-write.asc"
+        exporter.write_public_key_asset(oversized_sidecar_write, PUBLIC_KEY_FIXTURE)
+        oversized_write_sidecar = oversized_sidecar_write.with_name(
+            f"{oversized_sidecar_write.name}.sha256"
+        )
+        expect_constant_failure(
+            exporter,
+            "MAX_CHECKSUM_BYTES",
+            1,
+            lambda: exporter.write_sha256_sidecar(oversized_sidecar_write),
+            "is too large",
+            "public-key sidecar write size bound",
+            oversized_write_sidecar.name,
+            oversized_sidecar_write.name,
         )
 
         symlink_output_target = temp / "real-output.asc"
@@ -331,23 +366,34 @@ def expect_constant_failure(
     action,
     expected: str,
     label: str,
+    *forbidden_values: str,
 ) -> None:
     original = getattr(module, constant_name)
     setattr(module, constant_name, value)
     try:
-        expect_action_failure(action, expected, label)
+        expect_action_failure(action, expected, label, *forbidden_values)
     finally:
         setattr(module, constant_name, original)
 
 
-def expect_action_failure(action, expected: str, label: str) -> None:
+def expect_action_failure(
+    action,
+    expected: str,
+    label: str,
+    *forbidden_values: str,
+) -> None:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
-        if expected in message:
-            return
-        raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+        if expected not in message:
+            raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+        for value in forbidden_values:
+            if value in message:
+                raise AssertionError(
+                    f"{label}: displayed forbidden value {value!r}: {message!r}"
+                ) from exc
+        return
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
 
 

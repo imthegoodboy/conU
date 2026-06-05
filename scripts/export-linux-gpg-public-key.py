@@ -149,6 +149,7 @@ def prepare_public_key_output(path: Path) -> None:
             f"Linux public-key output {path.name}",
             max_bytes=MAX_PUBLIC_KEY_BYTES,
             allow_empty=True,
+            size_label="Linux public-key output",
         )
 
 
@@ -162,12 +163,14 @@ def write_public_key_asset(path: Path, public_key: bytes) -> None:
             public_key,
             f"temporary Linux public-key output {path.name}",
             max_bytes=MAX_PUBLIC_KEY_BYTES,
+            size_label="temporary Linux public-key output",
         )
         validate_regular_file(
             temp_path,
             f"temporary Linux public-key output {path.name}",
             max_bytes=MAX_PUBLIC_KEY_BYTES,
             allow_empty=False,
+            size_label="temporary Linux public-key output",
         )
         os.replace(temp_path, path)
         validate_regular_file(
@@ -175,6 +178,7 @@ def write_public_key_asset(path: Path, public_key: bytes) -> None:
             f"Linux public-key output {path.name}",
             max_bytes=MAX_PUBLIC_KEY_BYTES,
             allow_empty=False,
+            size_label="Linux public-key output",
         )
     finally:
         try:
@@ -191,8 +195,12 @@ def write_sha256_sidecar(path: Path) -> None:
             f"SHA-256 sidecar output {sidecar.name}",
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=True,
+            size_label="SHA-256 sidecar output",
         )
-    text = f"{sha256_file(path, f'Linux public-key output {path.name}')}  {path.name}\n"
+    text = (
+        f"{sha256_file(path, f'Linux public-key output {path.name}', size_label='Linux public-key output')}"
+        f"  {path.name}\n"
+    )
     temp_path = temporary_sibling_path(sidecar)
     try:
         write_output_bytes(
@@ -200,12 +208,14 @@ def write_sha256_sidecar(path: Path) -> None:
             text.encode("ascii"),
             f"temporary SHA-256 sidecar output {sidecar.name}",
             max_bytes=MAX_CHECKSUM_BYTES,
+            size_label="temporary SHA-256 sidecar output",
         )
         validate_regular_file(
             temp_path,
             f"temporary SHA-256 sidecar output {sidecar.name}",
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=False,
+            size_label="temporary SHA-256 sidecar output",
         )
         os.replace(temp_path, sidecar)
         validate_regular_file(
@@ -213,6 +223,7 @@ def write_sha256_sidecar(path: Path) -> None:
             f"SHA-256 sidecar output {sidecar.name}",
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=False,
+            size_label="SHA-256 sidecar output",
         )
     finally:
         try:
@@ -227,12 +238,14 @@ def validate_regular_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> int:
     handle, size = open_regular_file(
         path,
         label,
         max_bytes=max_bytes,
         allow_empty=allow_empty,
+        size_label=size_label,
     )
     handle.close()
     return size
@@ -244,6 +257,7 @@ def open_regular_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> tuple[BinaryIO, int]:
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
@@ -268,7 +282,8 @@ def open_regular_file(
         if not allow_empty and size == 0:
             raise SystemExit(f"{label} must not be empty: {path.name}")
         if size > max_bytes:
-            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+            display_label = size_label or label
+            raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
         return os.fdopen(fd, "rb"), size
     except BaseException:
         os.close(fd)
@@ -281,6 +296,7 @@ def validate_open_regular_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> int:
     metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
@@ -289,13 +305,22 @@ def validate_open_regular_file(
     if not allow_empty and size == 0:
         raise SystemExit(f"{label} must not be empty")
     if size > max_bytes:
-        raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
+        display_label = size_label or label
+        raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
     return size
 
 
-def write_output_bytes(path: Path, data: bytes, label: str, *, max_bytes: int) -> None:
+def write_output_bytes(
+    path: Path,
+    data: bytes,
+    label: str,
+    *,
+    max_bytes: int,
+    size_label: str | None = None,
+) -> None:
     if len(data) > max_bytes:
-        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        display_label = size_label or label
+        raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
     flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | OPEN_BINARY | OPEN_NOFOLLOW
@@ -319,6 +344,7 @@ def write_output_bytes(path: Path, data: bytes, label: str, *, max_bytes: int) -
                 label,
                 max_bytes=max_bytes,
                 allow_empty=False,
+                size_label=size_label,
             )
         path.chmod(0o644)
     except BaseException:
@@ -343,6 +369,7 @@ def sha256_file(
     *,
     max_bytes: int | None = None,
     allow_empty: bool = False,
+    size_label: str | None = None,
 ) -> str:
     effective_max_bytes = MAX_PUBLIC_KEY_BYTES if max_bytes is None else max_bytes
     handle, _size = open_regular_file(
@@ -350,6 +377,7 @@ def sha256_file(
         label,
         max_bytes=effective_max_bytes,
         allow_empty=allow_empty,
+        size_label=size_label,
     )
     with handle:
         return sha256_open_file(
@@ -357,6 +385,7 @@ def sha256_file(
             label,
             max_bytes=effective_max_bytes,
             allow_empty=allow_empty,
+            size_label=size_label,
         )
 
 
@@ -366,6 +395,7 @@ def sha256_open_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> str:
     digest = hashlib.sha256()
     handle.seek(0)
@@ -376,13 +406,15 @@ def sha256_open_file(
             break
         total += len(chunk)
         if total > max_bytes:
-            raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
+            display_label = size_label or label
+            raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
         digest.update(chunk)
     validate_open_regular_file(
         handle,
         label,
         max_bytes=max_bytes,
         allow_empty=allow_empty,
+        size_label=size_label,
     )
     return digest.hexdigest()
 
