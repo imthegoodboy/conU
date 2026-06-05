@@ -433,7 +433,7 @@ def read_zip_member(
     limit: int,
 ) -> bytes:
     if member.file_size > limit:
-        raise SystemExit(f"{archive_name} manifest.toml is larger than {limit} bytes")
+        raise archive_member_path_error(archive_name, f"member is larger than {limit} bytes")
     try:
         with package.open(member, "r") as handle:
             return read_limited(archive_name, "manifest.toml", handle, limit)
@@ -472,7 +472,7 @@ def read_tar_member(
 def read_limited(archive_name: str, member_name: str, handle, limit: int) -> bytes:
     content = handle.read(limit + 1)
     if len(content) > limit:
-        raise SystemExit(f"{archive_name} {member_name} is larger than {limit} bytes")
+        raise archive_member_path_error(archive_name, f"member is larger than {limit} bytes")
     return content
 
 
