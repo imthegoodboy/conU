@@ -632,8 +632,8 @@ def detect_windows_extract_dir(archive: Path, version: str) -> str | None:
                     )
                     if is_file:
                         file_paths.add(normalized)
-    except zipfile.BadZipFile as exc:
-        raise SystemExit(f"windows release asset is not a readable zip: {archive.name}") from exc
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise release_member_failure(archive.name, "is not a readable zip") from exc
 
     if rootless_bins <= file_paths:
         if root_style == "rooted":
@@ -820,17 +820,14 @@ def extract_linux_binaries(archive: Path, version: str, target: str) -> dict[str
                     file_paths.add(normalized)
                     if normalized not in rootless_bins:
                         continue
-                    handle = package.extractfile(member)
-                    if handle is None:
-                        raise release_member_failure(archive.name, "could not read binary")
-                    extracted[normalized] = read_limited_release_member(
+                    extracted[normalized] = read_tar_release_member(
                         archive.name,
-                        member.name,
-                        handle,
+                        package,
+                        member,
                         MAX_PACKAGE_BINARY_BYTES,
                     )
     except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
-        raise SystemExit(f"linux release asset is not a readable tar.gz: {archive.name}") from exc
+        raise release_member_failure(archive.name, "is not a readable tar.gz") from exc
 
     if not rootless_bins <= file_paths:
         raise SystemExit(
@@ -852,10 +849,28 @@ def read_limited_release_member(
     handle,
     limit: int,
 ) -> bytes:
-    content = handle.read(limit + 1)
+    try:
+        content = handle.read(limit + 1)
+    except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
+        raise release_member_failure(archive_name, "could not read binary") from exc
     if len(content) > limit:
         raise release_member_failure(archive_name, "member is too large")
     return content
+
+
+def read_tar_release_member(
+    archive_name: str,
+    package: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    limit: int,
+) -> bytes:
+    try:
+        handle = package.extractfile(member)
+    except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
+        raise release_member_failure(archive_name, "could not read binary") from exc
+    if handle is None:
+        raise release_member_failure(archive_name, "could not read binary")
+    return read_limited_release_member(archive_name, member.name, handle, limit)
 
 
 def render_homebrew_formula(version: str, repo: str, assets: dict[str, ReleaseAsset]) -> str:

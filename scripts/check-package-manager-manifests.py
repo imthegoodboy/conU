@@ -1360,6 +1360,18 @@ def main() -> int:
             "checksum mismatch",
         )
 
+        unreadable_windows = temp / "unreadable-windows"
+        unreadable_windows.mkdir()
+        write_dist(unreadable_windows)
+        unreadable_windows_archive = unreadable_windows / TARGETS["windows-x64"]
+        unreadable_windows_archive.write_bytes(b"not a zip archive\n")
+        expect_member_redacted_failure(
+            "unreadable windows zip",
+            lambda: generator.detect_windows_extract_dir(unreadable_windows_archive, VERSION),
+            "not a readable zip",
+            "not a zip archive",
+        )
+
         corrupt_linux = temp / "corrupt-linux"
         corrupt_linux.mkdir()
         write_dist(corrupt_linux)
@@ -1372,14 +1384,33 @@ def main() -> int:
             "imthegoodboy/conU",
             f"v{VERSION}",
         )
-        expect_failure(
+        expect_member_redacted_failure(
             "corrupt linux tarball",
             lambda: generator.extract_linux_binaries(
                 corrupt_linux / corrupt_assets["linux-x64"].filename,
                 VERSION,
                 "linux-x64",
             ),
-            "linux release asset is not a readable tar.gz",
+            "not a readable tar.gz",
+            "bad",
+        )
+
+        secret_tar_member = "secret-package-manager-binary-should-not-print"
+
+        class BrokenTar:
+            def extractfile(self, _member):
+                raise tarfile.ReadError(secret_tar_member)
+
+        expect_member_redacted_failure(
+            "linux tar binary read error",
+            lambda: generator.read_tar_release_member(
+                TARGETS["linux-x64"],
+                BrokenTar(),
+                tarfile.TarInfo(secret_tar_member),
+                generator.MAX_PACKAGE_BINARY_BYTES,
+            ),
+            "could not read binary",
+            secret_tar_member,
         )
 
         encrypted_windows = temp / "encrypted-windows"
