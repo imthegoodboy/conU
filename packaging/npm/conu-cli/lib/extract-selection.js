@@ -43,10 +43,7 @@ function resolveExtractedBinaries(
     const unexpected = matches.get(fileName).filter((candidate) => !samePath(candidate, expectedPath));
     if (unexpected.length > 0) {
       throw new Error(
-        `archive ${archiveName} contains unexpected ${fileName} path: ${relativePath(
-          extractDir,
-          unexpected[0]
-        )}`
+        `archive ${archiveName} contains unexpected ${fileName} path; pathDisplayed=false contentsDisplayed=false`
       );
     }
 
@@ -165,10 +162,6 @@ function samePath(left, right) {
     return leftResolved.toLowerCase() === rightResolved.toLowerCase();
   }
   return leftResolved === rightResolved;
-}
-
-function relativePath(root, target) {
-  return path.relative(root, target).replace(/\\/g, "/");
 }
 
 module.exports = {
