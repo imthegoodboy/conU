@@ -260,6 +260,68 @@ def main() -> int:
         )
         assert_no_sentinel(message, "duplicate package metadata JSON output")
 
+        non_ascii_checksum = temp / "non-ascii-checksum"
+        shutil.copytree(dist, non_ascii_checksum)
+        (non_ascii_checksum / f"{HOSTED_BUNDLE}.sha256").write_bytes(b"\xff\n")
+        output = expect_failure(
+            "non-ASCII hosted bundle checksum",
+            non_ascii_checksum,
+            BASE_URL,
+            "SHA-256 sidecar is not ASCII",
+        )
+        assert_not_displayed(output, "non-ASCII hosted bundle checksum", HOSTED_BUNDLE)
+
+        invalid_checksum = temp / "invalid-checksum"
+        shutil.copytree(dist, invalid_checksum)
+        (invalid_checksum / f"{HOSTED_BUNDLE}.sha256").write_text(
+            "not a strict checksum\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "invalid hosted bundle checksum",
+            invalid_checksum,
+            BASE_URL,
+            "invalid format",
+        )
+        assert_not_displayed(output, "invalid hosted bundle checksum", HOSTED_BUNDLE)
+
+        wrong_checksum_target = temp / "wrong-checksum-target"
+        shutil.copytree(dist, wrong_checksum_target)
+        malicious_target = "secret-hosted-site-sidecar-target.zip"
+        (wrong_checksum_target / f"{HOSTED_BUNDLE}.sha256").write_text(
+            f"{hashlib.sha256(hosted_bundle.read_bytes()).hexdigest()}  {malicious_target}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "wrong hosted bundle checksum target",
+            wrong_checksum_target,
+            BASE_URL,
+            "names wrong file",
+        )
+        assert_not_displayed(
+            output,
+            "wrong hosted bundle checksum target",
+            HOSTED_BUNDLE,
+            malicious_target,
+        )
+
+        mismatched_checksum = temp / "mismatched-checksum"
+        shutil.copytree(dist, mismatched_checksum)
+        (mismatched_checksum / f"{HOSTED_BUNDLE}.sha256").write_text(
+            f"{'0' * 64}  {HOSTED_BUNDLE}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "mismatched hosted bundle checksum",
+            mismatched_checksum,
+            BASE_URL,
+            "SHA-256 mismatch",
+        )
+        assert_not_displayed(output, "mismatched hosted bundle checksum", HOSTED_BUNDLE)
+
         missing_signature = temp / "missing-signature"
         shutil.copytree(dist, missing_signature)
         (missing_signature / f"{HOSTED_BUNDLE}.asc").unlink()
@@ -268,6 +330,40 @@ def main() -> int:
             missing_signature,
             BASE_URL,
             "missing detached signature",
+        )
+
+        non_ascii_signature = temp / "non-ascii-signature"
+        shutil.copytree(dist, non_ascii_signature)
+        (non_ascii_signature / f"{HOSTED_BUNDLE}.asc").write_bytes(b"\xff\n")
+        output = expect_failure(
+            "non-ASCII hosted bundle signature",
+            non_ascii_signature,
+            BASE_URL,
+            "detached signature is not ASCII-armored",
+        )
+        assert_not_displayed(
+            output,
+            "non-ASCII hosted bundle signature",
+            f"{HOSTED_BUNDLE}.asc",
+        )
+
+        non_armored_signature = temp / "non-armored-signature"
+        shutil.copytree(dist, non_armored_signature)
+        (non_armored_signature / f"{HOSTED_BUNDLE}.asc").write_text(
+            "not a signature\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "non-armored hosted bundle signature",
+            non_armored_signature,
+            BASE_URL,
+            "detached signature is not ASCII-armored",
+        )
+        assert_not_displayed(
+            output,
+            "non-armored hosted bundle signature",
+            f"{HOSTED_BUNDLE}.asc",
         )
 
         private_key_signature = temp / "private-key-signature"
@@ -282,11 +378,16 @@ def main() -> int:
             encoding="ascii",
             newline="\n",
         )
-        expect_failure(
+        output = expect_failure(
             "private key hosted bundle signature",
             private_key_signature,
             BASE_URL,
             "private key material",
+        )
+        assert_not_displayed(
+            output,
+            "private key hosted bundle signature",
+            f"{HOSTED_BUNDLE}.asc",
         )
 
         symlink_dist = temp / "symlink-dist"
