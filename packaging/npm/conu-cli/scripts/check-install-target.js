@@ -138,6 +138,34 @@ function main() {
   withFixture((root) => {
     const source = writeSource(root, "conu");
     const target = path.join(root, "vendor", "linux-x64", "conu");
+    const originalLstatSync = fs.lstatSync;
+    withPatchedFs(
+      {
+        lstatSync: (candidate) => {
+          if (path.basename(String(candidate)).startsWith(".conu.")) {
+            return {
+              isDirectory: () => false,
+              isFile: () => true,
+              isSymbolicLink: () => false
+            };
+          }
+          return originalLstatSync(candidate);
+        }
+      },
+      () => {
+        expectRedactedFailure(
+          () => install(root, source, target),
+          "temporary install target could not be allocated",
+          root,
+          "redacted temporary target allocation failure"
+        );
+      }
+    );
+  });
+
+  withFixture((root) => {
+    const source = writeSource(root, "conu");
+    const target = path.join(root, "vendor", "linux-x64", "conu");
     withPatchedFs(
       {
         renameSync: () => failWithPath(root),

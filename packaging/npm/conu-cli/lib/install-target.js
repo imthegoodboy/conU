@@ -194,7 +194,9 @@ function temporarySiblingPath(target) {
       return candidate;
     }
   }
-  throw new Error(`${base} temporary install target could not be allocated`);
+  throw new Error(
+    `${base} temporary install target could not be allocated; pathDisplayed=false contentsDisplayed=false`
+  );
 }
 
 function lstatRequired(target, label) {
