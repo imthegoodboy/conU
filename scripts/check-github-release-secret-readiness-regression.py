@@ -78,12 +78,12 @@ def run_rotation_marker_tests(module) -> None:
     ready = module.audit_release_secret_readiness(
         "owner/repo",
         configured,
-        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-03T00:00:01Z"},
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
     )
     if not ready.ready:
         raise AssertionError(f"expected ready marker report: {ready.npm_rotation_marker.issues!r}")
     parsed_ready = assert_safe_report(ready)
-    if parsed_ready["npmTokenRotationMarker"]["rotatedAfter"] != "2026-06-03T00:00:01Z":
+    if parsed_ready["npmTokenRotationMarker"]["rotatedAfter"] != "2026-06-05T00:00:01Z":
         raise AssertionError("valid marker timestamp was not included in normalized form")
 
     missing = module.audit_release_secret_readiness("owner/repo", configured, {})
@@ -96,7 +96,7 @@ def run_rotation_marker_tests(module) -> None:
     stale = module.audit_release_secret_readiness(
         "owner/repo",
         configured,
-        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-03T00:00:00Z"},
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:00Z"},
     )
     if stale.ready:
         raise AssertionError("stale npm rotation marker should fail readiness")
@@ -182,7 +182,7 @@ def run_gh_payload_tests(module) -> None:
         ]:
             payload = {
                 "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
-                "value": "2026-06-03T00:00:01Z",
+                "value": "2026-06-05T00:00:01Z",
             }
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
         if args[1:3] == ["variable", "get"]:
@@ -209,7 +209,7 @@ def run_gh_payload_tests(module) -> None:
     for record in metadata.values():
         if record.updated_at != "":
             raise AssertionError("unexpected updatedAt value in fake metadata payload")
-    if variables[module.NPM_TOKEN_ROTATION_MARKER_VAR] != "2026-06-03T00:00:01Z":
+    if variables[module.NPM_TOKEN_ROTATION_MARKER_VAR] != "2026-06-05T00:00:01Z":
         raise AssertionError("loaded variable values did not include the rotation marker")
     if "UNRELATED_VARIABLE" in variables:
         raise AssertionError("loaded variable values included an unrelated variable")
@@ -312,7 +312,7 @@ def run_main_tests(module) -> None:
         ]:
             payload = {
                 "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
-                "value": "2026-06-03T00:00:01Z",
+                "value": "2026-06-05T00:00:01Z",
             }
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
         if args[1:3] == ["variable", "get"]:

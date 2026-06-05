@@ -496,7 +496,7 @@ RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
                 "rotation marker command",
                 "python scripts/check-release-secret-rotation-gate.py --secret-name "
                 "NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER "
-                "--required-after 2026-06-03T00:00:00Z",
+                "--required-after 2026-06-05T00:00:00Z",
             ),
         ),
     ),

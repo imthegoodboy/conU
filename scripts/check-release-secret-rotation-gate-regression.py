@@ -48,20 +48,20 @@ def run_audit_tests(module) -> None:
     ready = module.audit_rotation_marker(
         secret_name="NPM_TOKEN",
         marker_env="CONU_NPM_TOKEN_ROTATED_AFTER",
-        required_after="2026-06-03T00:00:00Z",
-        rotated_after="2026-06-03T00:00:01+00:00",
+        required_after="2026-06-05T00:00:00Z",
+        rotated_after="2026-06-05T00:00:01+00:00",
     )
     if not ready.ready:
         raise AssertionError(f"expected fresh rotation marker to pass: {ready.issues!r}")
     parsed_ready = assert_safe_report(ready)
-    if parsed_ready["rotatedAfter"] != "2026-06-03T00:00:01Z":
+    if parsed_ready["rotatedAfter"] != "2026-06-05T00:00:01Z":
         raise AssertionError("rotation marker timestamp was not normalized")
 
     stale = module.audit_rotation_marker(
         secret_name="NPM_TOKEN",
         marker_env="CONU_NPM_TOKEN_ROTATED_AFTER",
-        required_after="2026-06-03T00:00:00Z",
-        rotated_after="2026-06-03T00:00:00Z",
+        required_after="2026-06-05T00:00:00Z",
+        rotated_after="2026-06-05T00:00:00Z",
     )
     if stale.ready:
         raise AssertionError("stale rotation marker should fail")
@@ -72,7 +72,7 @@ def run_audit_tests(module) -> None:
     missing = module.audit_rotation_marker(
         secret_name="NPM_TOKEN",
         marker_env="CONU_NPM_TOKEN_ROTATED_AFTER",
-        required_after="2026-06-03T00:00:00Z",
+        required_after="2026-06-05T00:00:00Z",
         rotated_after="",
     )
     if missing.ready:
@@ -84,7 +84,7 @@ def run_audit_tests(module) -> None:
     invalid = module.audit_rotation_marker(
         secret_name="NPM_TOKEN",
         marker_env="CONU_NPM_TOKEN_ROTATED_AFTER",
-        required_after="2026-06-03T00:00:00Z",
+        required_after="2026-06-05T00:00:00Z",
         rotated_after=SENSITIVE_SENTINEL,
     )
     if invalid.ready:
@@ -102,8 +102,8 @@ def run_parse_tests(module) -> None:
             {
                 "secret_name": "UNKNOWN",
                 "marker_env": "CONU_NPM_TOKEN_ROTATED_AFTER",
-                "required_after": "2026-06-03T00:00:00Z",
-                "rotated_after": "2026-06-03T00:00:01Z",
+                "required_after": "2026-06-05T00:00:00Z",
+                "rotated_after": "2026-06-05T00:00:01Z",
             },
             "unknown required secret",
         ),
@@ -111,8 +111,8 @@ def run_parse_tests(module) -> None:
             {
                 "secret_name": "NPM_TOKEN",
                 "marker_env": "CONU_NPM_TOKEN_ROTATED_AFTER",
-                "required_after": "2026-06-03T00:00:00",
-                "rotated_after": "2026-06-03T00:00:01Z",
+                "required_after": "2026-06-05T00:00:00",
+                "rotated_after": "2026-06-05T00:00:01Z",
             },
             "must include a timezone",
         ),
@@ -138,7 +138,7 @@ def run_cli_tests(module) -> None:
             "--rotated-after-env",
             "CONU_NPM_TOKEN_ROTATED_AFTER",
             "--required-after",
-            "2026-06-03T00:00:00Z",
+            "2026-06-05T00:00:00Z",
             "--json",
         ]
         stdout = io.StringIO()
@@ -151,7 +151,7 @@ def run_cli_tests(module) -> None:
         if SENSITIVE_SENTINEL in rendered:
             raise AssertionError("invalid CLI marker leaked the marker value")
 
-        os.environ["CONU_NPM_TOKEN_ROTATED_AFTER"] = "2026-06-03T00:00:01Z"
+        os.environ["CONU_NPM_TOKEN_ROTATED_AFTER"] = "2026-06-05T00:00:01Z"
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
