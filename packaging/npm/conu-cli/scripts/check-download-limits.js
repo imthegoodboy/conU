@@ -145,7 +145,7 @@ async function expectArchiveLimitFailure() {
   }, async (baseUrl) => {
     const result = await runInstall({
       CONU_NPM_ALLOW_UNVERIFIED: "1",
-      CONU_NPM_DIST_BASE: `${baseUrl}/release?token=secret`,
+      CONU_NPM_DIST_BASE: `${baseUrl}/secret-download-path?token=secret`,
       CONU_NPM_MAX_ARCHIVE_BYTES: "8"
     });
     expectFailedWith(result, "archive download exceeded maximum size");
@@ -156,7 +156,7 @@ async function expectArchiveLimitFailure() {
 async function expectUnverifiedPublicBaseFailure() {
   const result = await runInstall({
     CONU_NPM_ALLOW_UNVERIFIED: "1",
-    CONU_NPM_DIST_BASE: "https://example.com/conu?token=secret"
+    CONU_NPM_DIST_BASE: "https://example.com/secret-download-path?token=secret"
   });
   expectFailedWith(result, "only allowed for loopback testing downloads");
   expectNoSecretDisplay(result);
@@ -169,7 +169,7 @@ async function expectLoopbackRedirectToPublicFailure() {
   }, async (baseUrl) => {
     const result = await runInstall({
       CONU_NPM_ALLOW_UNVERIFIED: "1",
-      CONU_NPM_DIST_BASE: `${baseUrl}/release?token=secret`,
+      CONU_NPM_DIST_BASE: `${baseUrl}/secret-download-path?token=secret`,
       CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
     });
     expectFailedWith(result, "download redirect must not cross public and loopback boundaries");
@@ -188,7 +188,7 @@ async function expectChecksumLimitFailure() {
     response.end("tiny");
   }, async (baseUrl) => {
     const result = await runInstall({
-      CONU_NPM_DIST_BASE: `${baseUrl}/release?token=secret`,
+      CONU_NPM_DIST_BASE: `${baseUrl}/secret-download-path?token=secret`,
       CONU_NPM_MAX_ARCHIVE_BYTES: "1024",
       CONU_NPM_MAX_CHECKSUM_BYTES: "8"
     });
@@ -210,7 +210,7 @@ async function expectChecksumArchiveNameFailure() {
     response.end(body);
   }, async (baseUrl) => {
     const result = await runInstall({
-      CONU_NPM_DIST_BASE: `${baseUrl}/release?token=secret`,
+      CONU_NPM_DIST_BASE: `${baseUrl}/secret-download-path?token=secret`,
       CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
     });
     expectFailedWith(result, "names wrong archive");
@@ -244,7 +244,7 @@ async function expectTimeoutFailure() {
   await withServer((_request, _response) => {}, async (baseUrl) => {
     const result = await runInstall({
       CONU_NPM_ALLOW_UNVERIFIED: "1",
-      CONU_NPM_DIST_BASE: `${baseUrl}/release?token=secret`,
+      CONU_NPM_DIST_BASE: `${baseUrl}/secret-download-path?token=secret`,
       CONU_NPM_DOWNLOAD_TIMEOUT_MS: "100",
       CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
     });
@@ -314,6 +314,9 @@ function expectNoSecretDisplay(result) {
   const output = `${result.stdout || ""}${result.stderr || ""}`;
   if (output.includes("token=secret")) {
     throw new Error(`installer output displayed URL query material: ${output}`);
+  }
+  if (output.includes("secret-download-path")) {
+    throw new Error(`installer output displayed URL path material: ${output}`);
   }
 }
 

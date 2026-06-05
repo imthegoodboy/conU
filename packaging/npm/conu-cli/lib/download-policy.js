@@ -113,7 +113,7 @@ function validateResolvedDownloadAddress(rawUrl, address) {
 function formatDownloadUrlForError(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+    return `${parsed.protocol}//${parsed.host}/[path redacted]; urlPathDisplayed=false queryDisplayed=false fragmentDisplayed=false`;
   } catch (_error) {
     return "<invalid download URL>";
   }
