@@ -17,6 +17,13 @@ function main() {
   expectPass("http://[::1]:50123/conu.zip");
   expectFail("http://example.com/conu.zip", "download URL must use HTTPS");
   expectFail("ftp://example.com/conu.zip", "unsupported download URL protocol");
+  expectRedactedDownloadUrlFailure(
+    "npmsecretprotocolvalue://example.com/secret-download-path?token=secret",
+    "unsupported download URL protocol",
+    ["npmsecretprotocolvalue", "secret-download-path", "token=secret"],
+    ["protocolDisplayed=false", "contentsDisplayed=false"],
+    "unsupported protocol redaction"
+  );
   expectFail("https://user:pass@example.com/conu.zip", "embedded credentials");
   expectFail("https://10.0.0.1/conu.zip", "host must be public or loopback");
   expectFail("https://169.254.169.254/conu.zip", "host must be public or loopback");
@@ -31,6 +38,13 @@ function main() {
   expectFail("https://release.local/conu.zip", "host must be public or loopback");
   expectFail("http://localhost.evil.test/conu.zip", "download URL must use HTTPS");
   expectFail("not a url", "invalid download URL");
+  expectRedactedDownloadUrlFailure(
+    "https://[::1/secret-download-path?token=secret",
+    "invalid download URL",
+    ["secret-download-path", "token=secret"],
+    ["urlDisplayed=false", "contentsDisplayed=false"],
+    "invalid URL redaction"
+  );
   expectResolvedPass("https://example.com/conu.zip", "93.184.216.34");
   expectResolvedPass("https://example.com/conu.zip", "2001:4860:4860::8888");
   expectResolvedPass("http://localhost:50123/conu.zip", "127.0.0.1");
@@ -105,6 +119,34 @@ function expectFail(url, expectedMessage) {
     throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`expected download URL policy failure: ${expectedMessage}`);
+}
+
+function expectRedactedDownloadUrlFailure(
+  url,
+  expectedMessage,
+  forbiddenValues,
+  requiredValues,
+  label
+) {
+  try {
+    validateDownloadUrl(url);
+  } catch (error) {
+    if (!error.message.includes(expectedMessage)) {
+      throw new Error(`${label}: expected ${expectedMessage}, got: ${error.message}`);
+    }
+    for (const value of requiredValues) {
+      if (!error.message.includes(value)) {
+        throw new Error(`${label}: expected ${value}, got: ${error.message}`);
+      }
+    }
+    for (const value of forbiddenValues) {
+      if (error.message.includes(value)) {
+        throw new Error(`${label}: leaked ${value}: ${error.message}`);
+      }
+    }
+    return;
+  }
+  throw new Error(`${label}: expected download URL policy failure`);
 }
 
 function expectResolvedPass(url, address) {
