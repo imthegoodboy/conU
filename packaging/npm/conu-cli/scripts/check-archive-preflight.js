@@ -38,7 +38,12 @@ function main() {
   expectFail([{ name: "conu-0.1.0/security/identity.key", type: "file" }], "forbidden state path");
   expectFail([{ name: "conu-0.1.0/runtime/node.toml", type: "file" }], "forbidden state path");
   expectArchiveMemberFailurePathsAreRedacted();
-  expectFail(makeMemberList(MAX_ARCHIVE_MEMBERS + 1), `more than ${MAX_ARCHIVE_MEMBERS} entries`);
+  expectFailWithoutArchiveMember(
+    makeMemberList(MAX_ARCHIVE_MEMBERS + 1, "secret-count-bound"),
+    `more than ${MAX_ARCHIVE_MEMBERS} entries`,
+    ["secret-count-bound"],
+    "archive member count bound"
+  );
   expectNativeZipInspection();
   expectArchiveInspectionPathRedacted();
   expectArchiveInspectionFailurePathGuard();
@@ -110,9 +115,9 @@ function expectArchiveMemberFailurePathsAreRedacted() {
   );
 }
 
-function makeMemberList(count) {
+function makeMemberList(count, prefix = "file") {
   return Array.from({ length: count }, (_value, index) => ({
-    name: `conu-0.1.0/docs/file-${index}.txt`,
+    name: `conu-0.1.0/docs/${prefix}-${index}.txt`,
     type: "file"
   }));
 }
@@ -138,6 +143,21 @@ function expectNativeZipInspection() {
       { name: "conu-0.1.0-windows-x64/bin/conu.exe", mode: 0o120777 }
     ]);
     expectValidateArchiveFail(symlinkArchive, "unsupported symlink member");
+
+    const tooManyArchive = path.join(root, "conu-0.1.0-windows-x64-too-many.zip");
+    writeZipFixture(
+      tooManyArchive,
+      Array.from({ length: MAX_ARCHIVE_MEMBERS + 1 }, (_value, index) => ({
+        name: `z/s${index}`,
+        mode: 0o100644
+      }))
+    );
+    expectValidateArchiveFailRedacted(
+      tooManyArchive,
+      `more than ${MAX_ARCHIVE_MEMBERS} entries`,
+      ["z/s"],
+      "native ZIP member count bound"
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -153,6 +173,19 @@ function expectValidateArchiveFail(archive, expectedMessage) {
     throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
   }
   throw new Error(`expected archive inspection failure: ${expectedMessage}`);
+}
+
+function expectValidateArchiveFailRedacted(archive, expectedMessage, forbiddenValues, label) {
+  try {
+    validateArchiveMembers(archive);
+  } catch (error) {
+    if (!error.message.includes(expectedMessage)) {
+      throw new Error(`${label}: expected ${expectedMessage}, got: ${error.message}`);
+    }
+    expectRedactedMemberFailure(error.message, forbiddenValues, label);
+    return;
+  }
+  throw new Error(`${label}: expected archive inspection failure`);
 }
 
 function writeZipFixture(archive, entries) {

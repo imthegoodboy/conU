@@ -7773,8 +7773,9 @@ impl UpdateArchiveScan {
     ) -> Result<String, String> {
         self.entries_scanned += 1;
         if self.entries_scanned > MAX_UPDATE_ARCHIVE_ENTRIES {
-            return Err(format!(
-                "release update archive {archive_name} contains more than {MAX_UPDATE_ARCHIVE_ENTRIES} entries"
+            return Err(release_update_archive_named_member_failure(
+                archive_name,
+                &format!("contains more than {MAX_UPDATE_ARCHIVE_ENTRIES} entries"),
             ));
         }
         if size > MAX_UPDATE_ARCHIVE_MEMBER_BYTES {
@@ -7797,9 +7798,9 @@ impl UpdateArchiveScan {
                 .checked_add(size)
                 .ok_or_else(|| "release update archive unpacked size overflowed".to_string())?;
             if self.unpacked_bytes > MAX_UPDATE_ARCHIVE_UNPACKED_BYTES {
-                return Err(format!(
-                    "release update archive uncompressed contents exceed {MAX_UPDATE_ARCHIVE_UNPACKED_BYTES} bytes"
-                ));
+                return Err(release_update_archive_member_failure(&format!(
+                    "uncompressed contents exceed {MAX_UPDATE_ARCHIVE_UNPACKED_BYTES} bytes"
+                )));
             }
             self.reject_unexpected_binary_path(&normalized)?;
         }
@@ -14090,6 +14091,58 @@ mod tests {
         assert!(!output.stderr.contains(&mixed_member));
         assert!(!output.stderr.contains("fixture binary bytes"));
         assert!(!install_dir.exists());
+    }
+
+    #[test]
+    fn update_apply_archive_bound_failures_are_redacted() {
+        let target = update_apply_test_target();
+        let filename = update_archive_fixture_name(&target);
+        let root = format!("conu-0.1.0-{target}");
+
+        let mut count_scan =
+            UpdateArchiveScan::new(&target, &filename).expect("count scan creates");
+        let mut count_error = None;
+        for index in 0..=MAX_UPDATE_ARCHIVE_ENTRIES {
+            let raw_name = format!("{root}/docs/secret-count-bound-{index}.txt");
+            match count_scan.record_member(&filename, &raw_name, 0, false) {
+                Ok(_) => {}
+                Err(error) => {
+                    count_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let count_error = count_error.expect("member count bound fails");
+        assert_update_archive_member_error_redacted(
+            &count_error,
+            "contains more than",
+            "secret-count-bound",
+        );
+
+        let mut total_scan =
+            UpdateArchiveScan::new(&target, &filename).expect("total scan creates");
+        let mut total_error = None;
+        for index in 0..5 {
+            let raw_name = format!("{root}/docs/secret-total-bound-{index}.bin");
+            match total_scan.record_member(
+                &filename,
+                &raw_name,
+                MAX_UPDATE_ARCHIVE_MEMBER_BYTES,
+                false,
+            ) {
+                Ok(_) => {}
+                Err(error) => {
+                    total_error = Some(error);
+                    break;
+                }
+            }
+        }
+        let total_error = total_error.expect("uncompressed total bound fails");
+        assert_update_archive_member_error_redacted(
+            &total_error,
+            "uncompressed contents exceed",
+            "secret-total-bound",
+        );
     }
 
     #[test]
