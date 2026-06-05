@@ -355,6 +355,12 @@ def main() -> int:
             "forbidden generated text",
             forbidden_text,
             "forbidden text",
+            forbidden=("do-not-print-this-secret-value",),
+            required=(
+                "contentsDisplayed=false",
+                "tokenDisplayed=false",
+                "keyMaterialDisplayed=false",
+            ),
         )
 
     print("Release update policy regression checks passed")

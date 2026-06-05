@@ -520,6 +520,29 @@ def main() -> int:
             "apt/Packages",
         )
 
+        forbidden_bundle = temp / "forbidden-bundle"
+        shutil.copytree(dist, forbidden_bundle)
+        rewrite_hosted_bundle(
+            forbidden_bundle / HOSTED_BUNDLE,
+            {"apt/README.txt": b"NPM_TOKEN\n"},
+        )
+        write_checksum(forbidden_bundle / HOSTED_BUNDLE)
+        write_signature(forbidden_bundle / HOSTED_BUNDLE)
+        output = expect_failure(
+            "forbidden hosted bundle text",
+            forbidden_bundle,
+            BASE_URL,
+            "forbidden release-site text",
+        )
+        assert_not_displayed(output, "forbidden hosted bundle text", "NPM_TOKEN")
+        assert_display_guards(
+            output,
+            "forbidden hosted bundle text",
+            "contentsDisplayed=false",
+            "tokenDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
+
         expect_failure(
             "insecure base URL",
             dist,
@@ -926,6 +949,14 @@ def is_text_member(name: str) -> bool:
 def read_zip_members(path: Path) -> dict[str, bytes]:
     with zipfile.ZipFile(path) as archive:
         return {name: archive.read(name) for name in archive.namelist()}
+
+
+def rewrite_hosted_bundle(path: Path, replacements: dict[str, bytes]) -> None:
+    members = read_zip_members(path)
+    members.update(replacements)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name in sorted(members):
+            write_zip_bytes(archive, name, members[name])
 
 
 def write_signature(path: Path) -> None:
