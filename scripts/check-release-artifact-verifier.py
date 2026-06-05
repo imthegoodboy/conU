@@ -332,6 +332,37 @@ def main() -> int:
             (secret_tar_member,),
         )
 
+        oversized_manifest = root / "conu-0.1.0-oversized-manifest.zip"
+        write_zip(oversized_manifest)
+        original_max_manifest_bytes = verifier.MAX_MANIFEST_BYTES
+        verifier.MAX_MANIFEST_BYTES = 1
+        try:
+            expect_redacted_member_failure(
+                "oversized manifest zip member",
+                lambda: verifier.archive_members(oversized_manifest),
+                "member is larger than 1 bytes",
+                ("manifest.toml",),
+            )
+        finally:
+            verifier.MAX_MANIFEST_BYTES = original_max_manifest_bytes
+
+        class OversizedMemberReader:
+            def read(self, _limit):
+                return b"secret payload should not print"
+
+        oversized_member_name = "secret-local-path/manifest.toml"
+        expect_redacted_member_failure(
+            "oversized streaming member read",
+            lambda: verifier.read_limited(
+                "conu-0.1.0-oversized.tar.gz",
+                oversized_member_name,
+                OversizedMemberReader(),
+                1,
+            ),
+            "member is larger than 1 bytes",
+            (oversized_member_name, "secret-local-path", "secret payload should not print"),
+        )
+
         wrong_name = root / "conu-0.1.0-wrong-name.zip"
         write_zip(wrong_name)
         write_checksum(wrong_name, archive_name="other.zip")
