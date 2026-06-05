@@ -6,17 +6,20 @@ import re
 
 
 REDACTED = "[redacted]"
+SECRET_NAME_PATTERN = (
+    r"TOKEN|SECRET|PASSWORD|PASSWD|AUTH|"
+    r"PRIVATE[_-]?KEY|ACCESS[_-]?KEY|SECRET[_-]?KEY|API[_-]?KEY|"
+    r"SECURITY[_-]?TOKEN|SESSION[_-]?TOKEN"
+)
 SECRET_ASSIGNMENT_RE = re.compile(
-    r"\b([A-Z0-9_.-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|AUTH)"
-    r"[A-Z0-9_.-]*)\s*([=:])\s*([^\s;&|]+)",
+    rf"\b([A-Z0-9_.-]*(?:{SECRET_NAME_PATTERN})"
+    rf"[A-Z0-9_.-]*)\s*([=:])\s*([^\s;&|]+)",
     re.IGNORECASE,
 )
 AUTH_HEADER_RE = re.compile(r"\b(Bearer|Basic)\s+([A-Za-z0-9._~+/\-=]{8,})", re.IGNORECASE)
 SECRET_FLAG_RE = re.compile(
-    r"(?<!\w)(-{1,2}[A-Z0-9_.-]*(?:"
-    r"TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE[_-]?KEY|AUTH|"
-    r"ACCESS[_-]?KEY|SECRET[_-]?KEY|SECURITY[_-]?TOKEN|SESSION[_-]?TOKEN"
-    r")[A-Z0-9_.-]*)(\s*=\s*|\s+)"
+    rf"(?<!\w)(-{{1,2}}[A-Z0-9_.-]*(?:{SECRET_NAME_PATTERN})"
+    r"[A-Z0-9_.-]*)(\s*=\s*|\s+)"
     r"(\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s;&|]+)",
     re.IGNORECASE,
 )

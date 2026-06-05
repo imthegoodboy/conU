@@ -67,7 +67,11 @@ AWS_CLI_RESERVED_OPTIONS = {
     "--region",
 }
 AWS_CLI_SECRET_ARGUMENT_RE = re.compile(
-    r"(token|secret|password|passwd|private[_-]?key|auth)",
+    r"("
+    r"token|secret|password|passwd|auth|private[_-]?key|"
+    r"access[_-]?key|secret[_-]?key|api[_-]?key|"
+    r"security[_-]?token|session[_-]?token"
+    r")",
     re.IGNORECASE,
 )
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
