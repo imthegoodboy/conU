@@ -180,121 +180,128 @@ def archive_members(archive: Path) -> ArchiveMembers:
     expected_root = expected_archive_root(archive.name)
 
     if archive.suffix == ".zip":
-        with archive_file:
-            with zipfile.ZipFile(archive_file) as package:
-                paths: set[str] = set()
-                manifest: bytes | None = None
-                total_uncompressed = 0
-                entry_count = 0
-                root_style: str | None = None
-                for member in package.infolist():
-                    if member.is_dir():
-                        if member.file_size != 0:
-                            raise archive_member_path_error(
-                                archive.name, "contains directory member with data"
+        try:
+            with archive_file:
+                with zipfile.ZipFile(archive_file) as package:
+                    paths: set[str] = set()
+                    manifest: bytes | None = None
+                    total_uncompressed = 0
+                    entry_count = 0
+                    root_style: str | None = None
+                    for member in package.infolist():
+                        if member.is_dir():
+                            if member.file_size != 0:
+                                raise archive_member_path_error(
+                                    archive.name, "contains directory member with data"
+                                )
+                            _, total_uncompressed, entry_count, root_style = record_entry(
+                                archive.name,
+                                paths,
+                                member.filename,
+                                expected_root,
+                                root_style,
+                                0,
+                                total_uncompressed,
+                                entry_count,
+                                allow_empty=True,
                             )
-                        _, total_uncompressed, entry_count, root_style = record_entry(
+                            continue
+                        if member.flag_bits & 0x1:
+                            raise archive_member_path_error(
+                                archive.name, "contains encrypted zip member"
+                            )
+                        file_type = (member.external_attr >> 16) & 0o170000
+                        if file_type == stat.S_IFLNK:
+                            raise archive_member_path_error(
+                                archive.name, "contains unsupported link member"
+                            )
+                        if file_type not in {0, stat.S_IFREG}:
+                            raise archive_member_path_error(
+                                archive.name, "contains unsupported zip member"
+                            )
+                        normalized, total_uncompressed, entry_count, root_style = record_entry(
                             archive.name,
                             paths,
                             member.filename,
                             expected_root,
                             root_style,
-                            0,
+                            member.file_size,
                             total_uncompressed,
                             entry_count,
-                            allow_empty=True,
                         )
-                        continue
-                    if member.flag_bits & 0x1:
-                        raise archive_member_path_error(
-                            archive.name, "contains encrypted zip member"
-                        )
-                    file_type = (member.external_attr >> 16) & 0o170000
-                    if file_type == stat.S_IFLNK:
-                        raise archive_member_path_error(
-                            archive.name, "contains unsupported link member"
-                        )
-                    if file_type not in {0, stat.S_IFREG}:
-                        raise archive_member_path_error(
-                            archive.name, "contains unsupported zip member"
-                        )
-                    normalized, total_uncompressed, entry_count, root_style = record_entry(
-                        archive.name,
-                        paths,
-                        member.filename,
-                        expected_root,
-                        root_style,
-                        member.file_size,
-                        total_uncompressed,
-                        entry_count,
+                        if normalized == "manifest.toml":
+                            manifest = read_zip_member(
+                                archive.name,
+                                package,
+                                member,
+                                MAX_MANIFEST_BYTES,
+                            )
+                        else:
+                            drain_zip_member(archive.name, package, member)
+                    validate_open_regular_file(
+                        archive_file,
+                        "release archive",
+                        max_bytes=MAX_ARCHIVE_BYTES,
                     )
-                    if normalized == "manifest.toml":
-                        manifest = read_zip_member(
-                            archive.name,
-                            package,
-                            member,
-                            MAX_MANIFEST_BYTES,
-                        )
-                    else:
-                        drain_zip_member(archive.name, package, member)
-                validate_open_regular_file(
-                    archive_file,
-                    "release archive",
-                    max_bytes=MAX_ARCHIVE_BYTES,
-                )
-                return ArchiveMembers(paths=paths, manifest=manifest)
+                    return ArchiveMembers(paths=paths, manifest=manifest)
+        except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+            raise archive_member_path_error(
+                archive.name, "is not a readable zip archive"
+            ) from exc
     if archive.name.endswith(".tar.gz"):
-        with archive_file:
-            with tarfile.open(fileobj=archive_file, mode="r|gz") as package:
-                paths: set[str] = set()
-                manifest: bytes | None = None
-                total_uncompressed = 0
-                entry_count = 0
-                root_style: str | None = None
-                for member in package:
-                    if member.isdir():
-                        _, total_uncompressed, entry_count, root_style = record_entry(
+        try:
+            with archive_file:
+                with tarfile.open(fileobj=archive_file, mode="r|gz") as package:
+                    paths: set[str] = set()
+                    manifest: bytes | None = None
+                    total_uncompressed = 0
+                    entry_count = 0
+                    root_style: str | None = None
+                    for member in package:
+                        if member.isdir():
+                            _, total_uncompressed, entry_count, root_style = record_entry(
+                                archive.name,
+                                paths,
+                                member.name,
+                                expected_root,
+                                root_style,
+                                0,
+                                total_uncompressed,
+                                entry_count,
+                                allow_empty=True,
+                            )
+                            continue
+                        if not member.isfile():
+                            raise archive_member_path_error(
+                                archive.name, "contains unsupported non-file member"
+                            )
+                        normalized, total_uncompressed, entry_count, root_style = record_entry(
                             archive.name,
                             paths,
                             member.name,
                             expected_root,
                             root_style,
-                            0,
+                            member.size,
                             total_uncompressed,
                             entry_count,
-                            allow_empty=True,
                         )
-                        continue
-                    if not member.isfile():
-                        raise archive_member_path_error(
-                            archive.name, "contains unsupported non-file member"
-                        )
-                    normalized, total_uncompressed, entry_count, root_style = record_entry(
-                        archive.name,
-                        paths,
-                        member.name,
-                        expected_root,
-                        root_style,
-                        member.size,
-                        total_uncompressed,
-                        entry_count,
+                        if normalized == "manifest.toml":
+                            manifest = read_tar_member(
+                                archive.name,
+                                package,
+                                member,
+                                MAX_MANIFEST_BYTES,
+                            )
+                    validate_open_regular_file(
+                        archive_file,
+                        "release archive",
+                        max_bytes=MAX_ARCHIVE_BYTES,
                     )
-                    if normalized == "manifest.toml":
-                        file_object = package.extractfile(member)
-                        if file_object is None:
-                            raise SystemExit(f"{archive.name} could not read manifest.toml")
-                        manifest = read_limited(
-                            archive.name,
-                            "manifest.toml",
-                            file_object,
-                            MAX_MANIFEST_BYTES,
-                        )
-                validate_open_regular_file(
-                    archive_file,
-                    "release archive",
-                    max_bytes=MAX_ARCHIVE_BYTES,
-                )
-                return ArchiveMembers(paths=paths, manifest=manifest)
+                    return ArchiveMembers(paths=paths, manifest=manifest)
+        except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
+            raise archive_member_path_error(
+                archive.name, "is not a readable tar.gz archive"
+            ) from exc
     raise SystemExit(f"unsupported release archive {archive.name}")
 
 
@@ -445,6 +452,21 @@ def drain_zip_member(
                 pass
     except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
         raise archive_member_path_error(archive_name, "could not read zip member") from exc
+
+
+def read_tar_member(
+    archive_name: str,
+    package: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    limit: int,
+) -> bytes:
+    try:
+        file_object = package.extractfile(member)
+        if file_object is None:
+            raise archive_member_path_error(archive_name, "could not read tar member")
+        return read_limited(archive_name, "manifest.toml", file_object, limit)
+    except (tarfile.TarError, EOFError, OSError, zlib.error) as exc:
+        raise archive_member_path_error(archive_name, "could not read tar member") from exc
 
 
 def read_limited(archive_name: str, member_name: str, handle, limit: int) -> bytes:

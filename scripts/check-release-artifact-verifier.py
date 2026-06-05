@@ -294,6 +294,44 @@ def main() -> int:
         write_tar(valid_tar)
         verify_archive(verifier, valid_tar)
 
+        unreadable_zip = root / "conu-0.1.0-unreadable.zip"
+        unreadable_zip.write_bytes(b"not a zip archive\n")
+        write_checksum(unreadable_zip)
+        expect_redacted_member_failure(
+            "unreadable zip archive",
+            lambda: verifier.archive_members(unreadable_zip),
+            "not a readable zip archive",
+            ("not a zip archive",),
+        )
+
+        unreadable_tar = root / "conu-0.1.0-unreadable.tar.gz"
+        unreadable_tar.write_bytes(b"not a tar archive\n")
+        write_checksum(unreadable_tar)
+        expect_redacted_member_failure(
+            "unreadable tar archive",
+            lambda: verifier.archive_members(unreadable_tar),
+            "not a readable tar.gz archive",
+            ("not a tar archive",),
+        )
+
+        secret_tar_member = "secret-tar-member-should-not-print"
+
+        class BrokenTar:
+            def extractfile(self, _member):
+                raise tarfile.ReadError(secret_tar_member)
+
+        expect_redacted_member_failure(
+            "tar member read error",
+            lambda: verifier.read_tar_member(
+                "conu-0.1.0-broken.tar.gz",
+                BrokenTar(),
+                tarfile.TarInfo(secret_tar_member),
+                verifier.MAX_MANIFEST_BYTES,
+            ),
+            "could not read tar member",
+            (secret_tar_member,),
+        )
+
         wrong_name = root / "conu-0.1.0-wrong-name.zip"
         write_zip(wrong_name)
         write_checksum(wrong_name, archive_name="other.zip")
