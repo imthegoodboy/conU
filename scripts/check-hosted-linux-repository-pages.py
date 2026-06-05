@@ -593,11 +593,12 @@ def expect_zip_bound_failure(
     original = getattr(preparer, constant_name)
     setattr(preparer, constant_name, value)
     try:
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: preparer.read_site_members(site),
             expected,
             label,
         )
+        assert_member_failure_redacted(message, label)
     finally:
         setattr(preparer, constant_name, original)
 

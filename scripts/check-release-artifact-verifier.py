@@ -222,6 +222,30 @@ def main() -> int:
         write_zip(valid_zip)
         verify_archive(verifier, valid_zip)
 
+        original_max_member_count = verifier.MAX_MEMBER_COUNT
+        verifier.MAX_MEMBER_COUNT = 0
+        try:
+            expect_redacted_member_failure(
+                "release archive member count bound",
+                lambda: verifier.archive_members(valid_zip),
+                "contains more than",
+                (),
+            )
+        finally:
+            verifier.MAX_MEMBER_COUNT = original_max_member_count
+
+        original_max_total_uncompressed = verifier.MAX_TOTAL_UNCOMPRESSED_BYTES
+        verifier.MAX_TOTAL_UNCOMPRESSED_BYTES = 1
+        try:
+            expect_redacted_member_failure(
+                "release archive total uncompressed bound",
+                lambda: verifier.archive_members(valid_zip),
+                "uncompressed contents exceed",
+                (),
+            )
+        finally:
+            verifier.MAX_TOTAL_UNCOMPRESSED_BYTES = original_max_total_uncompressed
+
         symlink_dist = root / "symlink-dist"
         if try_symlink(root, symlink_dist, target_is_directory=True):
             expect_failure(
