@@ -65,6 +65,9 @@ FORBIDDEN_TEXT = (
     "ciphertext_body",
     "do-not-print-this-secret-value",
 )
+TEXT_FAILURE_GUARDS = (
+    "contentsDisplayed=false tokenDisplayed=false keyMaterialDisplayed=false"
+)
 
 
 @dataclass(frozen=True)
@@ -799,7 +802,9 @@ def assert_output_safe(text: str) -> None:
         raise SystemExit("release update policy must be ASCII JSON") from exc
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise SystemExit(f"release update policy contains forbidden text: {forbidden}")
+            raise SystemExit(
+                f"release update policy contains forbidden text; {TEXT_FAILURE_GUARDS}"
+            )
     if "\\" in text:
         raise SystemExit("release update policy must not contain local path separators")
 
@@ -825,7 +830,7 @@ def assert_open_file_text_safe(
         raise SystemExit(f"{label} is not UTF-8 text") from exc
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise SystemExit(f"{label} contains forbidden text: {forbidden}")
+            raise SystemExit(f"{label} contains forbidden text; {TEXT_FAILURE_GUARDS}")
     validate_open_regular_file(handle, label, max_bytes=max_bytes)
     handle.seek(0)
 

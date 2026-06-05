@@ -108,6 +108,9 @@ FORBIDDEN_TEXT = (
     "payload_hex",
     "ciphertext_body",
 )
+TEXT_FAILURE_GUARDS = (
+    "contentsDisplayed=false tokenDisplayed=false keyMaterialDisplayed=false"
+)
 TEXT_SUFFIXES = (".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256")
 TEXT_MEMBER_NAMES = {"_headers"}
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -811,7 +814,9 @@ def assert_no_forbidden_text(data: bytes, label: str) -> None:
         raise SystemExit(f"{label} is not UTF-8 text") from exc
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise SystemExit(f"{label} contains forbidden Pages deployment text: {forbidden}")
+            raise SystemExit(
+                f"{label} contains forbidden Pages deployment text; {TEXT_FAILURE_GUARDS}"
+            )
 
 
 def is_text_member(name: str) -> bool:

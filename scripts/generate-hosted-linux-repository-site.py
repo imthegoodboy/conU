@@ -98,6 +98,9 @@ FORBIDDEN_TEXT = (
     "payloadHex",
     "ciphertext_body",
 )
+TEXT_FAILURE_GUARDS = (
+    "contentsDisplayed=false tokenDisplayed=false keyMaterialDisplayed=false"
+)
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 
@@ -726,7 +729,9 @@ def assert_no_forbidden_text(data: bytes, label: str) -> None:
         raise SystemExit(f"{label} is not UTF-8 text") from exc
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise SystemExit(f"{label} contains forbidden release-site text: {forbidden}")
+            raise SystemExit(
+                f"{label} contains forbidden release-site text; {TEXT_FAILURE_GUARDS}"
+            )
 
 
 def is_text_member(name: str) -> bool:

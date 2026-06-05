@@ -398,11 +398,19 @@ def main() -> int:
         shutil.copytree(dist, forbidden)
         rewrite_site_zip(forbidden / SITE_BUNDLE, {"install/README.txt": b"NPM_TOKEN\n"})
         sign_site(forbidden / SITE_BUNDLE)
-        expect_failure(
+        output = expect_failure(
             "forbidden site text",
             forbidden / SITE_BUNDLE,
             temp / "forbidden-pages",
             "forbidden Pages deployment text",
+        )
+        assert_not_displayed(output, "forbidden site text", "NPM_TOKEN")
+        assert_display_guards(
+            output,
+            "forbidden site text",
+            "contentsDisplayed=false",
+            "tokenDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         unexpected_download = temp / "unexpected-download"
