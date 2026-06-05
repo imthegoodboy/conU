@@ -6,10 +6,12 @@ Do not paste tokens, passwords, certificates, private keys, or secret values int
 
 For simple testing and launch prep, you do not need paid Windows or Apple signing certificates.
 
-The only release/publish value needed right now is already set:
+For local/manual testing, no new secret is required right now.
+
+The npm publish secret exists in GitHub Actions:
 
 ```txt
-REQUIRED  NPM_TOKEN  GitHub Actions secret
+SET  NPM_TOKEN  GitHub Actions secret
 ```
 
 You already ran:
@@ -18,7 +20,40 @@ You already ran:
 gh secret set NPM_TOKEN --repo imthegoodboy/conU
 ```
 
-For simple testing, there is nothing else you need to paste or configure for npm right now. Before any real npm publish, rotate the token because a token value was pasted in chat.
+For simple testing, there is nothing else you need to paste or configure for npm right now.
+
+Before any real npm publish, rotate `NPM_TOKEN` because a token value was pasted in chat. After rotating it, set the non-secret rotation marker:
+
+```powershell
+$rotatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+gh variable set CONU_NPM_TOKEN_ROTATED_AFTER --repo imthegoodboy/conU --body $rotatedAt
+```
+
+Only run the marker command after the new rotated token has been uploaded to GitHub Secrets.
+
+## Where To Get A Fresh NPM Token
+
+Use the npm website, not chat:
+
+1. Open `https://www.npmjs.com/`.
+2. Sign in to the npm account that owns or can publish the conU packages.
+3. Go to account access tokens.
+4. Create a new granular access token for publishing.
+5. Copy it once, then immediately upload it with:
+
+```powershell
+gh secret set NPM_TOKEN --repo imthegoodboy/conU
+```
+
+Paste the token only into the GitHub CLI secret prompt. Do not paste it into chat, issues, commit messages, shell history, or docs.
+
+Official npm token guide: `https://docs.npmjs.com/creating-and-viewing-access-tokens`
+
+After the secret and marker are set, validate:
+
+```powershell
+python scripts\check-github-release-secret-readiness.py --repo imthegoodboy/conU --json
+```
 
 ## What You Can Skip For Now
 
