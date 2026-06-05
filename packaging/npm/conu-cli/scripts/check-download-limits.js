@@ -35,6 +35,7 @@ async function main() {
   await expectChecksumLimitFailure();
   await expectChecksumArchiveNameFailure();
   await expectInvalidArchiveUsesNeutralTempLabel();
+  await expectNetworkFailureIsRedacted();
   await expectTimeoutFailure();
   console.log("download limit check passed");
 }
@@ -267,6 +268,24 @@ async function expectInvalidArchiveUsesNeutralTempLabel() {
     });
     expectFailedWith(result, "conu-native-archive");
     expectFailedWithout(result, assetName());
+    expectNoSecretDisplay(result);
+  });
+}
+
+async function expectNetworkFailureIsRedacted() {
+  await withServer((request, _response) => {
+    request.socket.destroy();
+  }, async (baseUrl) => {
+    const result = await runInstall({
+      CONU_NPM_ALLOW_UNVERIFIED: "1",
+      CONU_NPM_DIST_BASE: `${baseUrl}/secret-download-path?token=secret`,
+      CONU_NPM_MAX_ARCHIVE_BYTES: "1024"
+    });
+    expectFailedWith(result, "download request failed");
+    expectFailedWith(result, "errorCode=");
+    expectFailedWith(result, "pathDisplayed=false");
+    expectFailedWith(result, "contentsDisplayed=false");
+    expectFailedWithout(result, "socket hang up");
     expectNoSecretDisplay(result);
   });
 }

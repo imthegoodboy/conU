@@ -262,7 +262,7 @@ function downloadOptionalText(url, maxBytes, timeoutMs) {
         }
       });
       response.on("error", fail);
-    }, 0, timeoutMs).on("error", reject);
+    }, 0, timeoutMs);
   });
 }
 
@@ -331,7 +331,6 @@ function downloadFile(url, target, maxBytes, timeoutMs) {
       response.on("error", fail);
       file.on("drain", () => response.resume());
     }, 0, timeoutMs);
-    activeRequest.on("error", fail);
   });
 }
 
@@ -426,21 +425,47 @@ function request(url, onError, handler, redirects, timeoutMs) {
           onError(error);
           return;
         }
-        request(redirectUrl, onError, handler, redirects + 1, timeoutMs).on("error", onError);
+        request(redirectUrl, onError, handler, redirects + 1, timeoutMs);
         return;
       }
 
       handler(response);
     }
   );
+  requestHandle.on("error", (error) => {
+    onError(downloadRequestError(url, error));
+  });
   requestHandle.setTimeout(timeoutMs, () => {
     requestHandle.destroy(
-      new Error(
+      taggedDownloadError(
         `download timed out after ${timeoutMs} ms: ${formatDownloadUrlForError(url)}`
       )
     );
   });
   return requestHandle;
+}
+
+function downloadRequestError(url, error) {
+  if (error && error.conuDownloadError === true) {
+    return error;
+  }
+  return taggedDownloadError(
+    `download request failed ${formatDownloadUrlForError(url)}; errorCode=${runtimeErrorCode(error)} pathDisplayed=false contentsDisplayed=false`
+  );
+}
+
+function taggedDownloadError(message) {
+  const error = new Error(message);
+  error.conuDownloadError = true;
+  return error;
+}
+
+function runtimeErrorCode(error) {
+  const code = error && typeof error.code === "string" ? error.code : "";
+  if (/^[A-Z0-9_]+$/.test(code)) {
+    return code;
+  }
+  return "UNKNOWN";
 }
 
 function resolveRedirectUrl(location, baseUrl) {
