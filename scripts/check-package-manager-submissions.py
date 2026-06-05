@@ -192,6 +192,12 @@ def expect_failure_without_leak(
     raise AssertionError(f"{description} unexpectedly passed")
 
 
+def assert_not_displayed(message: str, description: str, *forbidden_values: str) -> None:
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{description} leaked forbidden value {value!r}: {message!r}")
+
+
 def expect_member_redacted_failure(
     description: str,
     action,
@@ -499,7 +505,7 @@ def main() -> int:
         write_signed_release_extras(wrong_checksum)
         sidecar = wrong_checksum / "conu_0.1.0_amd64.deb.sha256"
         sidecar.write_text("0" * 64 + "  conu_0.1.0_amd64.deb\n", encoding="ascii")
-        expect_failure(
+        output = expect_failure(
             "wrong package checksum",
             lambda: preparer.prepare_submission_bundle(
                 wrong_checksum,
@@ -511,6 +517,72 @@ def main() -> int:
             ),
             "SHA-256 mismatch",
         )
+        assert_not_displayed(
+            output,
+            "wrong package checksum",
+            sidecar.name,
+            "conu_0.1.0_amd64.deb",
+        )
+
+        wrong_checksum_target = temp / "wrong-checksum-target"
+        manifest_check.generate(
+            generator,
+            dist,
+            wrong_checksum_target,
+            build_apt_repository_metadata=True,
+        )
+        write_signed_release_extras(wrong_checksum_target)
+        sidecar = wrong_checksum_target / "conu_0.1.0_amd64.deb.sha256"
+        malicious_target = "secret-package-submission-checksum-target.deb"
+        package_digest = hashlib.sha256(
+            (wrong_checksum_target / "conu_0.1.0_amd64.deb").read_bytes()
+        ).hexdigest()
+        sidecar.write_text(
+            f"{package_digest}  {malicious_target}\n",
+            encoding="ascii",
+        )
+        output = expect_failure(
+            "wrong package checksum target",
+            lambda: preparer.prepare_submission_bundle(
+                wrong_checksum_target,
+                temp / "wrong-checksum-target-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "names wrong target",
+        )
+        assert_not_displayed(
+            output,
+            "wrong package checksum target",
+            sidecar.name,
+            malicious_target,
+        )
+
+        invalid_checksum = temp / "invalid-checksum"
+        manifest_check.generate(
+            generator,
+            dist,
+            invalid_checksum,
+            build_apt_repository_metadata=True,
+        )
+        write_signed_release_extras(invalid_checksum)
+        sidecar = invalid_checksum / "conu_0.1.0_amd64.deb.sha256"
+        sidecar.write_text("not a strict checksum\n", encoding="ascii")
+        output = expect_failure(
+            "invalid package checksum",
+            lambda: preparer.prepare_submission_bundle(
+                invalid_checksum,
+                temp / "invalid-checksum-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "not a strict SHA-256 sidecar",
+        )
+        assert_not_displayed(output, "invalid package checksum", sidecar.name)
 
         orphan_signature = temp / "orphan-signature"
         manifest_check.generate(
