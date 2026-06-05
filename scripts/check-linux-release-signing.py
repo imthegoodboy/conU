@@ -263,6 +263,7 @@ def run_source_selection_checks() -> None:
             1,
             lambda: signer.signable_linux_assets(dist),
             "is too large",
+            asset.name,
         )
 
         expect_module_failure_with_limit(
@@ -295,6 +296,15 @@ def run_source_selection_checks() -> None:
         signature = dist / f"{asset.name}.asc"
         signature.write_bytes(b"existing signature\n")
         signer.prepare_signature_output(signature)
+        expect_module_failure_with_limit(
+            signer,
+            "detached signature output size bound",
+            "MAX_DETACHED_SIGNATURE_BYTES",
+            1,
+            lambda: signer.prepare_signature_output(signature),
+            "is too large",
+            signature.name,
+        )
 
         empty_signature = dist / f"{asset.name}.empty.asc"
         empty_signature.write_bytes(b"")
@@ -322,7 +332,12 @@ def load_signer_module():
     return module
 
 
-def expect_module_failure(description: str, action, expected: str) -> None:
+def expect_module_failure(
+    description: str,
+    action,
+    expected: str,
+    *forbidden_values: str,
+) -> None:
     try:
         action()
     except SystemExit as exc:
@@ -331,6 +346,11 @@ def expect_module_failure(description: str, action, expected: str) -> None:
             raise AssertionError(
                 f"{description} failed with {rendered!r}, expected {expected!r}"
             ) from exc
+        for value in forbidden_values:
+            if value in rendered:
+                raise AssertionError(
+                    f"{description} leaked forbidden value {value!r}: {rendered!r}"
+                ) from exc
         return
     raise AssertionError(f"{description} unexpectedly passed")
 
@@ -342,11 +362,12 @@ def expect_module_failure_with_limit(
     value: int,
     action,
     expected: str,
+    *forbidden_values: str,
 ) -> None:
     original = getattr(signer, attr)
     setattr(signer, attr, value)
     try:
-        expect_module_failure(description, action, expected)
+        expect_module_failure(description, action, expected, *forbidden_values)
     finally:
         setattr(signer, attr, original)
 
