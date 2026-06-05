@@ -24,7 +24,9 @@ function validateDownloadUrl(rawUrl) {
     throw new Error("download URL must use HTTPS unless it points at a loopback test server");
   }
 
-  throw new Error(`unsupported download URL protocol: ${parsed.protocol}`);
+  throw new Error(
+    "unsupported download URL protocol; protocolDisplayed=false contentsDisplayed=false"
+  );
 }
 
 function validateUnverifiedDownloadBase(rawUrl) {
@@ -122,8 +124,8 @@ function formatDownloadUrlForError(rawUrl) {
 function parseDownloadUrl(rawUrl) {
   try {
     return new URL(rawUrl);
-  } catch (error) {
-    throw new Error(`invalid download URL: ${error.message}`);
+  } catch (_error) {
+    throw new Error("invalid download URL; urlDisplayed=false contentsDisplayed=false");
   }
 }
 
