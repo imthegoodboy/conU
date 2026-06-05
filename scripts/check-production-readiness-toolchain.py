@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from command_output_redaction import redact_command_output
+
 
 HELPER = Path(__file__).with_name("production-readiness-toolchain.ps1")
 
@@ -34,13 +36,35 @@ def run_powershell(script: str) -> None:
         stderr=subprocess.PIPE,
     )
     if completed.returncode != 0:
-        raise AssertionError(
-            "production-readiness toolchain regression failed: "
-            f"exit={completed.returncode}\nstdout={completed.stdout}\nstderr={completed.stderr}"
-        )
+        raise AssertionError(format_powershell_failure(completed))
+
+
+def format_powershell_failure(completed: subprocess.CompletedProcess) -> str:
+    stdout = redact_command_output(completed.stdout)
+    stderr = redact_command_output(completed.stderr)
+    return (
+        "production-readiness toolchain regression failed: "
+        f"exit={completed.returncode}\nstdout={stdout}\nstderr={stderr}"
+    )
+
+
+def assert_failure_output_redacts() -> None:
+    sentinel = "do-not-print-this-secret-value"
+    completed = subprocess.CompletedProcess(
+        args=["powershell"],
+        returncode=1,
+        stdout=f"NPM_TOKEN={sentinel}\n",
+        stderr=f"AWS_SESSION_TOKEN='{sentinel} with spaces'\n",
+    )
+    message = format_powershell_failure(completed)
+    if sentinel in message or "with spaces" in message:
+        raise AssertionError("toolchain failure formatter leaked a secret value")
+    if message.count("[redacted]") < 2:
+        raise AssertionError("toolchain failure formatter did not mark redacted output")
 
 
 def main() -> int:
+    assert_failure_output_redacts()
     helper = str(HELPER.resolve()).replace("'", "''")
     script = f"""
 $ErrorActionPreference = "Stop"
