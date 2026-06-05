@@ -204,11 +204,11 @@ def require_detached_signature(path: Path) -> Path:
             max_bytes=MAX_SIGNATURE_BYTES,
         )
     except UnicodeDecodeError as exc:
-        raise SystemExit(f"detached signature is not ASCII-armored: {signature.name}") from exc
+        raise SystemExit("detached signature is not ASCII-armored") from exc
     if "BEGIN PGP SIGNATURE" not in signature_text:
-        raise SystemExit(f"detached signature is not ASCII-armored: {signature.name}")
+        raise SystemExit("detached signature is not ASCII-armored")
     if "PRIVATE KEY BLOCK" in signature_text:
-        raise SystemExit(f"detached signature contains private key material: {signature.name}")
+        raise SystemExit("detached signature contains private key material")
     return signature
 
 
@@ -217,11 +217,11 @@ def verify_public_key(path: Path) -> None:
     try:
         text = read_ascii_file(path, "Linux public key asset", max_bytes=MAX_PUBLIC_KEY_BYTES)
     except UnicodeDecodeError as exc:
-        raise SystemExit(f"Linux public key asset is not ASCII-armored: {path.name}") from exc
+        raise SystemExit("Linux public key asset is not ASCII-armored") from exc
     if "BEGIN PGP PUBLIC KEY BLOCK" not in text:
-        raise SystemExit(f"Linux public key asset is not an armored public key: {path.name}")
+        raise SystemExit("Linux public key asset is not an armored public key")
     if "PRIVATE KEY BLOCK" in text:
-        raise SystemExit(f"refusing to bundle private key material from {path.name}")
+        raise SystemExit("refusing to bundle private key material")
 
 
 def build_hosted_repository_members(assets: HostedLinuxAssets) -> dict[str, bytes]:
@@ -559,18 +559,16 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
             max_bytes=MAX_CHECKSUM_BYTES,
         )
     except UnicodeDecodeError as exc:
-        raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
+        raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}") from exc
     match = CHECKSUM_RE.fullmatch(checksum_text)
     if match is None:
-        raise SystemExit(f"SHA-256 sidecar has invalid format for {label}: {path.name}")
+        raise SystemExit(f"SHA-256 sidecar has invalid format for {label}")
     if match.group(2) != path.name:
-        raise SystemExit(
-            f"SHA-256 sidecar for {label} {path.name} names wrong file: {match.group(2)}"
-        )
+        raise SystemExit(f"SHA-256 sidecar for {label} names wrong file")
     expected = match.group(1).lower()
     actual = sha256_file(path, label, max_bytes=MAX_RELEASE_ASSET_BYTES)
     if expected != actual:
-        raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
+        raise SystemExit(f"SHA-256 mismatch for {label}")
     return expected
 
 

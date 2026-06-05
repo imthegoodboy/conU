@@ -128,6 +128,65 @@ def main() -> int:
         )
         assert_no_sentinel(message, "duplicate package metadata JSON output")
 
+        non_ascii_checksum = temp / "non-ascii-checksum"
+        shutil.copytree(dist, non_ascii_checksum)
+        (non_ascii_checksum / f"{DEBIAN_PACKAGES[0]}.sha256").write_bytes(b"\xff\n")
+        output = expect_failure(
+            "non-ASCII package checksum",
+            non_ascii_checksum,
+            "SHA-256 sidecar is not ASCII",
+        )
+        assert_not_displayed(output, "non-ASCII package checksum", DEBIAN_PACKAGES[0])
+
+        invalid_checksum = temp / "invalid-checksum"
+        shutil.copytree(dist, invalid_checksum)
+        (invalid_checksum / f"{DEBIAN_PACKAGES[0]}.sha256").write_text(
+            "not a strict checksum\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "invalid package checksum",
+            invalid_checksum,
+            "invalid format",
+        )
+        assert_not_displayed(output, "invalid package checksum", DEBIAN_PACKAGES[0])
+
+        wrong_checksum_target = temp / "wrong-checksum-target"
+        shutil.copytree(dist, wrong_checksum_target)
+        malicious_target = "secret-hosted-bundle-sidecar-target.deb"
+        package_asset = dist / DEBIAN_PACKAGES[0]
+        (wrong_checksum_target / f"{DEBIAN_PACKAGES[0]}.sha256").write_text(
+            f"{hashlib.sha256(package_asset.read_bytes()).hexdigest()}  {malicious_target}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "wrong package checksum target",
+            wrong_checksum_target,
+            "names wrong file",
+        )
+        assert_not_displayed(
+            output,
+            "wrong package checksum target",
+            DEBIAN_PACKAGES[0],
+            malicious_target,
+        )
+
+        mismatched_checksum = temp / "mismatched-checksum"
+        shutil.copytree(dist, mismatched_checksum)
+        (mismatched_checksum / f"{DEBIAN_PACKAGES[0]}.sha256").write_text(
+            f"{'0' * 64}  {DEBIAN_PACKAGES[0]}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "mismatched package checksum",
+            mismatched_checksum,
+            "SHA-256 mismatch",
+        )
+        assert_not_displayed(output, "mismatched package checksum", DEBIAN_PACKAGES[0])
+
         missing_signature = temp / "missing-signature"
         shutil.copytree(dist, missing_signature)
         (missing_signature / f"{DEBIAN_PACKAGES[0]}.asc").unlink()
@@ -135,6 +194,38 @@ def main() -> int:
             "missing package signature",
             missing_signature,
             "missing detached signature",
+        )
+
+        non_ascii_signature = temp / "non-ascii-signature"
+        shutil.copytree(dist, non_ascii_signature)
+        (non_ascii_signature / f"{DEBIAN_PACKAGES[0]}.asc").write_bytes(b"\xff\n")
+        output = expect_failure(
+            "non-ASCII package signature",
+            non_ascii_signature,
+            "detached signature is not ASCII-armored",
+        )
+        assert_not_displayed(
+            output,
+            "non-ASCII package signature",
+            f"{DEBIAN_PACKAGES[0]}.asc",
+        )
+
+        non_armored_signature = temp / "non-armored-signature"
+        shutil.copytree(dist, non_armored_signature)
+        (non_armored_signature / f"{DEBIAN_PACKAGES[0]}.asc").write_text(
+            "not a signature\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "non-armored package signature",
+            non_armored_signature,
+            "detached signature is not ASCII-armored",
+        )
+        assert_not_displayed(
+            output,
+            "non-armored package signature",
+            f"{DEBIAN_PACKAGES[0]}.asc",
         )
 
         private_key_signature = temp / "private-key-signature"
@@ -147,10 +238,15 @@ def main() -> int:
             encoding="ascii",
             newline="\n",
         )
-        expect_failure(
+        output = expect_failure(
             "private key signature sidecar",
             private_key_signature,
             "private key material",
+        )
+        assert_not_displayed(
+            output,
+            "private key signature sidecar",
+            f"{DEBIAN_PACKAGES[0]}.asc",
         )
 
         symlink_dist = temp / "symlink-dist"
@@ -246,6 +342,32 @@ def main() -> int:
             "missing signed APT member",
         )
 
+        non_ascii_public_key = temp / "non-ascii-public-key"
+        shutil.copytree(dist, non_ascii_public_key)
+        (non_ascii_public_key / PUBLIC_KEY).write_bytes(b"\xff\n")
+        write_checksum(non_ascii_public_key / PUBLIC_KEY)
+        output = expect_failure(
+            "non-ASCII public key asset",
+            non_ascii_public_key,
+            "Linux public key asset is not ASCII-armored",
+        )
+        assert_not_displayed(output, "non-ASCII public key asset", PUBLIC_KEY)
+
+        non_armored_public_key = temp / "non-armored-public-key"
+        shutil.copytree(dist, non_armored_public_key)
+        (non_armored_public_key / PUBLIC_KEY).write_text(
+            "not a public key\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        write_checksum(non_armored_public_key / PUBLIC_KEY)
+        output = expect_failure(
+            "non-armored public key asset",
+            non_armored_public_key,
+            "not an armored public key",
+        )
+        assert_not_displayed(output, "non-armored public key asset", PUBLIC_KEY)
+
         private_key_asset = temp / "private-key-asset"
         shutil.copytree(dist, private_key_asset)
         (private_key_asset / PUBLIC_KEY).write_text(
@@ -257,11 +379,12 @@ def main() -> int:
             newline="\n",
         )
         write_checksum(private_key_asset / PUBLIC_KEY)
-        expect_failure(
+        output = expect_failure(
             "private key asset",
             private_key_asset,
             "private key material",
         )
+        assert_not_displayed(output, "private key asset", PUBLIC_KEY)
 
         unsafe_zip = temp / "unsafe-zip"
         shutil.copytree(dist, unsafe_zip)
