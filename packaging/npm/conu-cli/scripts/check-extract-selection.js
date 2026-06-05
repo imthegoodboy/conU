@@ -59,8 +59,14 @@ function main() {
 
   withFixture((root) => {
     writeReleaseLayout(root);
-    writeFile(path.join(root, "docs", "conu"), "duplicate");
-    expectFailure(root, "unexpected conu path", "duplicate binary outside expected bin");
+    const secretPath = path.join(root, "docs", "secret-token-fragment", "conu");
+    writeFile(secretPath, "duplicate");
+    expectRedactedFailure(
+      root,
+      "unexpected conu path",
+      "docs/secret-token-fragment/conu",
+      "duplicate binary outside expected bin"
+    );
   });
 
   withFixture((root) => {
