@@ -1014,14 +1014,25 @@ def main() -> int:
         finally:
             generator.open_regular_file = original_open_regular_file
 
-        for literal in ("PRIVATE KEY BLOCK", "BEGIN OPENSSH PRIVATE KEY"):
-            expect_failure(
+        for literal in ("NPM_TOKEN", "PRIVATE KEY BLOCK", "BEGIN OPENSSH PRIVATE KEY"):
+            message = expect_failure(
                 f"forbidden package-manager manifest literal {literal}",
                 lambda literal=literal: generator.assert_output_safe(
                     f"public manifest text\n{literal}\n",
                     rootless_dist,
                 ),
-                f"forbidden literal: {literal}",
+                "generated package-manager manifests contain forbidden literal",
+            )
+            assert_not_displayed(
+                message,
+                f"forbidden package-manager manifest literal {literal}",
+                literal,
+            )
+            assert_display_guards(
+                message,
+                f"forbidden package-manager manifest literal {literal}",
+                "contentsDisplayed=false",
+                "keyMaterialDisplayed=false",
             )
 
         expect_failure_with_limit(
