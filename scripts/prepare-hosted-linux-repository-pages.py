@@ -750,17 +750,20 @@ def validate_downloaded_bundle(version: str, members: dict[str, bytes]) -> None:
     bundle_path = f"downloads/{hosted_bundle}"
     checksum_path = f"{bundle_path}.sha256"
     signature_path = f"{bundle_path}.asc"
-    checksum = members[checksum_path].decode("ascii")
+    try:
+        checksum = members[checksum_path].decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise SystemExit("downloaded hosted repository bundle checksum is not ASCII") from exc
     match = CHECKSUM_RE.fullmatch(checksum)
     if match is None:
-        raise SystemExit(f"{checksum_path} has invalid SHA-256 sidecar format")
+        raise SystemExit("downloaded hosted repository bundle checksum has invalid format")
     if match.group(2) != hosted_bundle:
-        raise SystemExit(f"{checksum_path} names wrong file: {match.group(2)}")
+        raise SystemExit("downloaded hosted repository bundle checksum names wrong file")
     actual = hashlib.sha256(members[bundle_path]).hexdigest()
     if match.group(1).lower() != actual:
-        raise SystemExit(f"{checksum_path} does not match embedded hosted repository bundle")
+        raise SystemExit("downloaded hosted repository bundle checksum mismatch")
     if b"BEGIN PGP SIGNATURE" not in members[signature_path]:
-        raise SystemExit(f"{signature_path} is not armored signature material")
+        raise SystemExit("downloaded hosted repository bundle signature is not armored")
 
 
 def extract_members(output_dir: Path, members: dict[str, bytes]) -> None:

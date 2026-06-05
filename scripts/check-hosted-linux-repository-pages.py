@@ -392,6 +392,96 @@ def main() -> int:
             "unexpected Pages member",
         )
 
+        invalid_download_checksum = temp / "invalid-download-checksum"
+        shutil.copytree(dist, invalid_download_checksum)
+        rewrite_site_zip(
+            invalid_download_checksum / SITE_BUNDLE,
+            {f"downloads/{HOSTED_BUNDLE}.sha256": b"not a strict checksum\n"},
+        )
+        sign_site(invalid_download_checksum / SITE_BUNDLE)
+        output = expect_failure(
+            "invalid embedded download checksum",
+            invalid_download_checksum / SITE_BUNDLE,
+            temp / "invalid-download-checksum-pages",
+            "downloaded hosted repository bundle checksum has invalid format",
+        )
+        assert_not_displayed(
+            output,
+            "invalid embedded download checksum",
+            f"downloads/{HOSTED_BUNDLE}.sha256",
+        )
+
+        wrong_download_checksum_target = temp / "wrong-download-checksum-target"
+        shutil.copytree(dist, wrong_download_checksum_target)
+        malicious_download_target = "secret-pages-download-sidecar-target.zip"
+        hosted_bundle_digest = hashlib.sha256(
+            read_site_member(dist / SITE_BUNDLE, f"downloads/{HOSTED_BUNDLE}")
+        ).hexdigest()
+        rewrite_site_zip(
+            wrong_download_checksum_target / SITE_BUNDLE,
+            {
+                f"downloads/{HOSTED_BUNDLE}.sha256": (
+                    f"{hosted_bundle_digest}  {malicious_download_target}\n".encode("ascii")
+                )
+            },
+        )
+        sign_site(wrong_download_checksum_target / SITE_BUNDLE)
+        output = expect_failure(
+            "wrong embedded download checksum target",
+            wrong_download_checksum_target / SITE_BUNDLE,
+            temp / "wrong-download-checksum-target-pages",
+            "downloaded hosted repository bundle checksum names wrong file",
+        )
+        assert_not_displayed(
+            output,
+            "wrong embedded download checksum target",
+            f"downloads/{HOSTED_BUNDLE}.sha256",
+            malicious_download_target,
+        )
+
+        mismatched_download_checksum = temp / "mismatched-download-checksum"
+        shutil.copytree(dist, mismatched_download_checksum)
+        rewrite_site_zip(
+            mismatched_download_checksum / SITE_BUNDLE,
+            {
+                f"downloads/{HOSTED_BUNDLE}.sha256": (
+                    f"{'0' * 64}  {HOSTED_BUNDLE}\n".encode("ascii")
+                )
+            },
+        )
+        sign_site(mismatched_download_checksum / SITE_BUNDLE)
+        output = expect_failure(
+            "mismatched embedded download checksum",
+            mismatched_download_checksum / SITE_BUNDLE,
+            temp / "mismatched-download-checksum-pages",
+            "downloaded hosted repository bundle checksum mismatch",
+        )
+        assert_not_displayed(
+            output,
+            "mismatched embedded download checksum",
+            f"downloads/{HOSTED_BUNDLE}.sha256",
+            HOSTED_BUNDLE,
+        )
+
+        non_armored_download_signature = temp / "non-armored-download-signature"
+        shutil.copytree(dist, non_armored_download_signature)
+        rewrite_site_zip(
+            non_armored_download_signature / SITE_BUNDLE,
+            {f"downloads/{HOSTED_BUNDLE}.asc": b"not a signature\n"},
+        )
+        sign_site(non_armored_download_signature / SITE_BUNDLE)
+        output = expect_failure(
+            "non-armored embedded download signature",
+            non_armored_download_signature / SITE_BUNDLE,
+            temp / "non-armored-download-signature-pages",
+            "downloaded hosted repository bundle signature is not armored",
+        )
+        assert_not_displayed(
+            output,
+            "non-armored embedded download signature",
+            f"downloads/{HOSTED_BUNDLE}.asc",
+        )
+
         missing_cache_policy = temp / "missing-cache-policy"
         shutil.copytree(dist, missing_cache_policy)
         rewrite_site_zip(
@@ -892,6 +982,11 @@ def read_site_json(path: Path) -> dict:
 def read_site_json_member(path: Path, name: str) -> dict:
     with zipfile.ZipFile(path) as archive:
         return json.loads(archive.read(name).decode("ascii"))
+
+
+def read_site_member(path: Path, name: str) -> bytes:
+    with zipfile.ZipFile(path) as archive:
+        return archive.read(name)
 
 
 def rewrite_repository_base_url(repository: dict, base_url: str) -> None:
