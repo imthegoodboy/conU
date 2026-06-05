@@ -293,7 +293,10 @@ def read_hosted_bundle(bundle: Path) -> dict[str, bytes]:
             with zipfile.ZipFile(bundle_file) as archive:
                 infos = archive.infolist()
                 if len(infos) > MAX_ZIP_MEMBERS:
-                    raise SystemExit(f"{bundle.name} contains more than {MAX_ZIP_MEMBERS} members")
+                    raise zip_member_failure(
+                        bundle.name,
+                        f"contains more than {MAX_ZIP_MEMBERS} members",
+                    )
                 for member in infos:
                     name = normalize_zip_path(bundle.name, member.filename)
                     if not validate_zip_member_for_read(bundle.name, member, name):
@@ -302,9 +305,10 @@ def read_hosted_bundle(bundle: Path) -> dict[str, bytes]:
                         raise zip_member_failure(bundle.name, "contains duplicate zip member")
                     total_uncompressed += member.file_size
                     if total_uncompressed > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES:
-                        raise SystemExit(
-                            f"{bundle.name} uncompressed ZIP contents exceed "
-                            f"{MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} bytes"
+                        raise zip_member_failure(
+                            bundle.name,
+                            "uncompressed ZIP contents exceed "
+                            f"{MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} bytes",
                         )
                     members[name] = read_zip_member(bundle.name, archive, member)
                 validate_open_regular_file(

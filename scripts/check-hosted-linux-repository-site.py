@@ -508,11 +508,12 @@ def expect_zip_bound_failure(
     original = getattr(site_generator, constant_name)
     setattr(site_generator, constant_name, value)
     try:
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: site_generator.read_hosted_bundle(archive),
             expected,
             label,
         )
+        assert_member_failure_redacted(message, label)
     finally:
         setattr(site_generator, constant_name, original)
 

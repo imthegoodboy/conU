@@ -389,11 +389,12 @@ def expect_zip_bound_failure(
     original = getattr(generator, constant_name)
     setattr(generator, constant_name, value)
     try:
-        expect_action_failure(
+        message = expect_action_failure(
             lambda: generator.read_zip_members(archive),
             expected,
             label,
         )
+        assert_member_failure_redacted(message, label)
     finally:
         setattr(generator, constant_name, original)
 

@@ -312,7 +312,10 @@ def read_site_members(site_zip: Path) -> dict[str, bytes]:
             with zipfile.ZipFile(site_file) as archive:
                 infos = archive.infolist()
                 if len(infos) > MAX_SITE_MEMBERS:
-                    raise SystemExit(f"{site_zip.name} has too many members for Pages deployment")
+                    raise zip_member_failure(
+                        site_zip.name,
+                        "has too many members for Pages deployment",
+                    )
                 for info in infos:
                     name = normalize_zip_path(site_zip.name, info.filename)
                     if not validate_zip_member_for_read(site_zip.name, info, name):
@@ -321,9 +324,10 @@ def read_site_members(site_zip: Path) -> dict[str, bytes]:
                         raise zip_member_failure(site_zip.name, "contains duplicate zip member")
                     total_uncompressed += info.file_size
                     if total_uncompressed > MAX_SITE_TOTAL_UNCOMPRESSED_BYTES:
-                        raise SystemExit(
-                            f"{site_zip.name} uncompressed contents exceed "
-                            f"{MAX_SITE_TOTAL_UNCOMPRESSED_BYTES} bytes"
+                        raise zip_member_failure(
+                            site_zip.name,
+                            "uncompressed contents exceed "
+                            f"{MAX_SITE_TOTAL_UNCOMPRESSED_BYTES} bytes",
                         )
                     members[name] = read_zip_member(site_zip.name, archive, info)
                 validate_open_regular_file(

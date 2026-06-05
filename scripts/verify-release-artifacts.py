@@ -403,7 +403,10 @@ def record_entry(
 
     entry_count += 1
     if entry_count > MAX_MEMBER_COUNT:
-        raise SystemExit(f"{archive_name} contains more than {MAX_MEMBER_COUNT} entries")
+        raise archive_member_path_error(
+            archive_name,
+            f"contains more than {MAX_MEMBER_COUNT} entries",
+        )
 
     normalized, member_root_style = normalize_member(raw_name, archive_name, expected_root)
     root_style = update_archive_root_style(
@@ -420,8 +423,9 @@ def record_entry(
 
     total_uncompressed += size
     if total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
-        raise SystemExit(
-            f"{archive_name} uncompressed contents exceed {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes"
+        raise archive_member_path_error(
+            archive_name,
+            f"uncompressed contents exceed {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes",
         )
     return normalized, total_uncompressed, entry_count, root_style
 
