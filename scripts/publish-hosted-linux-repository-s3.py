@@ -93,6 +93,9 @@ FORBIDDEN_TEXT = (
     "payload_hex",
     "ciphertext_body",
 )
+TEXT_FAILURE_GUARDS = (
+    "contentsDisplayed=false tokenDisplayed=false keyMaterialDisplayed=false"
+)
 TEXT_SUFFIXES = (".txt", ".json", ".html", ".list", ".repo", ".asc", ".sha256")
 TEXT_MEMBER_NAMES = {"_headers", ".nojekyll"}
 
@@ -139,6 +142,7 @@ class PublishPlan:
             "totalBytes": sum(file.size for file in self.files),
             "cacheClasses": cache_classes,
             "payloadDisplayed": False,
+            "contentsDisplayed": False,
             "tokenDisplayed": False,
             "keyMaterialDisplayed": False,
         }
@@ -167,6 +171,7 @@ def main() -> int:
                         "endpointChecked": False,
                         "issues": [error_message],
                         "payloadDisplayed": False,
+                        "contentsDisplayed": False,
                         "tokenDisplayed": False,
                         "keyMaterialDisplayed": False,
                     },
@@ -782,7 +787,9 @@ def is_text_member(relative_path: str) -> bool:
 def assert_no_forbidden_text(text: str, label: str) -> None:
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise PublicationError(f"{label} contains forbidden repository publication text: {forbidden}")
+            raise PublicationError(
+                f"{label} contains forbidden repository publication text; {TEXT_FAILURE_GUARDS}"
+            )
 
 
 def validate_cache_control_value(value: str, label: str) -> None:

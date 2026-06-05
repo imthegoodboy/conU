@@ -259,8 +259,23 @@ def main() -> int:
         forbidden = temp / "forbidden-site"
         shutil.copytree(site_dir, forbidden)
         (forbidden / "README.txt").write_text("NPM_TOKEN\n", encoding="ascii")
-        forbidden_result = run_publisher_raw(forbidden, "--dry-run")
+        forbidden_result = run_publisher_raw(forbidden, "--dry-run", "--json")
         assert_failure("forbidden text", forbidden_result, "forbidden repository publication text")
+        assert_no_forbidden_literal(
+            forbidden_result.stdout,
+            "forbidden repository publication text",
+            "NPM_TOKEN",
+        )
+        forbidden_report = json.loads(forbidden_result.stdout)
+        assert_publication_display_guards(forbidden_report, "forbidden repository publication text")
+        rendered_forbidden_report = json.dumps(forbidden_report)
+        for guard in (
+            "contentsDisplayed=false",
+            "tokenDisplayed=false",
+            "keyMaterialDisplayed=false",
+        ):
+            if guard not in rendered_forbidden_report:
+                raise AssertionError(f"forbidden repository publication text missed {guard}")
 
         uncovered = temp / "uncovered-site"
         shutil.copytree(site_dir, uncovered)
@@ -589,9 +604,7 @@ def assert_publication_report(report: dict, *, published: bool) -> None:
         raise AssertionError("publication report file count was too low")
     if report["totalBytes"] <= 0:
         raise AssertionError("publication report total bytes was empty")
-    for guard in ("payloadDisplayed", "tokenDisplayed", "keyMaterialDisplayed"):
-        if report[guard] is not False:
-            raise AssertionError(f"publication report expected {guard}=false")
+    assert_publication_display_guards(report, "publication report")
     cache_classes = set(report["cacheClasses"])
     expected_classes = {
         "no-cache",
@@ -708,6 +721,11 @@ def assert_no_sentinel(output: str, label: str) -> None:
         raise AssertionError(f"{label} leaked duplicate-key shadow value")
 
 
+def assert_no_forbidden_literal(output: str, label: str, literal: str) -> None:
+    if literal in output:
+        raise AssertionError(f"{label} leaked forbidden literal {literal!r}")
+
+
 def assert_failed_publication_redacts(
     result: subprocess.CompletedProcess[str],
     fake_aws: str,
@@ -721,11 +739,20 @@ def assert_failed_publication_redacts(
     report = json.loads(result.stdout)
     if report["published"] is not False or report["endpointChecked"] is not False:
         raise AssertionError("failed publication report claimed work completed")
-    for guard in ("payloadDisplayed", "tokenDisplayed", "keyMaterialDisplayed"):
-        if report[guard] is not False:
-            raise AssertionError(f"failed publication report expected {guard}=false")
+    assert_publication_display_guards(report, "failed publication report")
     if "[redacted]" not in json.dumps(report):
         raise AssertionError("failed publication report did not include redacted command output")
+
+
+def assert_publication_display_guards(report: dict, label: str) -> None:
+    for guard in (
+        "payloadDisplayed",
+        "contentsDisplayed",
+        "tokenDisplayed",
+        "keyMaterialDisplayed",
+    ):
+        if report[guard] is not False:
+            raise AssertionError(f"{label} expected {guard}=false")
 
 
 def assert_aws_cli_wrapper_guard(publisher, fake_aws: str) -> None:

@@ -33,14 +33,59 @@ URL_SECRET_QUERY_RE = re.compile(
     r")=)([^&#\s]+)",
     re.IGNORECASE,
 )
+SAFE_BOOLEAN_GUARD_ASSIGNMENTS = (
+    "alertBodiesDisplayed=false",
+    "checksumTargetDisplayed=false",
+    "ciphertextDisplayed=false",
+    "commandOutputDisplayed=false",
+    "contentsDisplayed=false",
+    "endpointDisplayed=false",
+    "keyContentsDisplayed=false",
+    "keyMaterialDisplayed=false",
+    "pathDisplayed=false",
+    "payloadDisplayed=false",
+    "secretValuesDisplayed=false",
+    "sessionIdDisplayed=false",
+    "signatureContentsDisplayed=false",
+    "statePathDisplayed=false",
+    "tokenDisplayed=false",
+    "tokenHashDisplayed=false",
+)
+DISPLAY_GUARD_NAMES = tuple(
+    assignment.removesuffix("=false") for assignment in SAFE_BOOLEAN_GUARD_ASSIGNMENTS
+)
+DISPLAY_GUARD_ASSIGNMENT_RE = re.compile(
+    r"\b("
+    + "|".join(re.escape(name) for name in DISPLAY_GUARD_NAMES)
+    + r")\s*([=:])\s*([^\s;&|]+)"
+)
 
 
 def redact_command_output(value: str) -> str:
+    value, protected_guards = protect_safe_boolean_guards(value)
     value = URL_CREDENTIAL_RE.sub(r"\1\2:[redacted]@", value)
     value = URL_SECRET_QUERY_RE.sub(r"\1[redacted]", value)
     value = AUTH_HEADER_RE.sub(r"\1 [redacted]", value)
     value = SECRET_FLAG_RE.sub(r"\1\2[redacted]", value)
     value = NPM_TOKEN_RE.sub(REDACTED, value)
     value = GITHUB_TOKEN_RE.sub(REDACTED, value)
+    value = DISPLAY_GUARD_ASSIGNMENT_RE.sub(r"\1\2[redacted]", value)
     value = SECRET_ASSIGNMENT_RE.sub(r"\1\2[redacted]", value)
+    value = restore_safe_boolean_guards(value, protected_guards)
+    return value
+
+
+def protect_safe_boolean_guards(value: str) -> tuple[str, dict[str, str]]:
+    replacements: dict[str, str] = {}
+    for index, assignment in enumerate(SAFE_BOOLEAN_GUARD_ASSIGNMENTS):
+        placeholder = f"__CONU_SAFE_GUARD_{index}__"
+        if assignment in value:
+            value = value.replace(assignment, placeholder)
+            replacements[placeholder] = assignment
+    return value, replacements
+
+
+def restore_safe_boolean_guards(value: str, replacements: dict[str, str]) -> str:
+    for placeholder, assignment in replacements.items():
+        value = value.replace(placeholder, assignment)
     return value
