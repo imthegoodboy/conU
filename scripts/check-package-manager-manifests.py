@@ -419,6 +419,12 @@ def assert_not_displayed(message: str, label: str, *forbidden_values: str) -> No
             raise AssertionError(f"{label}: displayed forbidden value {value!r}: {message!r}")
 
 
+def assert_display_guards(message: str, label: str, *guards: str) -> None:
+    for guard in guards:
+        if guard not in message:
+            raise AssertionError(f"{label}: missing display guard {guard!r}: {message!r}")
+
+
 def assert_external_tool_output_redacts(generator) -> None:
     original_which = generator.shutil.which
     original_run = generator.subprocess.run
@@ -1194,6 +1200,12 @@ def main() -> int:
             rpm_package.name,
             malicious_rpm_target,
         )
+        assert_display_guards(
+            message,
+            "wrong existing RPM sidecar target",
+            "checksumTargetDisplayed=false",
+            "contentsDisplayed=false",
+        )
 
         mismatched_existing_rpm_sidecar = temp / "mismatched-existing-rpm-sidecar"
         mismatched_existing_rpm_sidecar.mkdir()
@@ -1491,6 +1503,12 @@ def main() -> int:
             "checksum names wrong archive",
             windows_archive.name,
             malicious_archive_name,
+        )
+        assert_display_guards(
+            message,
+            "checksum names wrong archive",
+            "checksumTargetDisplayed=false",
+            "contentsDisplayed=false",
         )
 
         wrong_digest = temp / "wrong-digest"

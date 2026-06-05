@@ -428,7 +428,10 @@ def read_verified_checksum(archive: Path) -> str:
         raise SystemExit("checksum file has invalid format for package-manager asset")
     named_archive = match.group(2)
     if named_archive != archive.name:
-        raise SystemExit("checksum file for package-manager asset names wrong archive")
+        raise SystemExit(
+            "checksum file for package-manager asset names wrong archive; "
+            "checksumTargetDisplayed=false contentsDisplayed=false"
+        )
     expected = match.group(1).lower()
     actual = sha256_file(
         archive,
@@ -1468,7 +1471,10 @@ def verify_sha256_sidecar(path: Path, label: str) -> str:
         raise SystemExit(f"SHA-256 sidecar has invalid format for {label}")
     named_path = match.group(2)
     if named_path != path.name:
-        raise SystemExit(f"SHA-256 sidecar for {label} names wrong file")
+        raise SystemExit(
+            f"SHA-256 sidecar for {label} names wrong file; "
+            "checksumTargetDisplayed=false contentsDisplayed=false"
+        )
     expected = match.group(1).lower()
     actual = sha256_file(path, label, max_bytes=MAX_GENERATED_OUTPUT_BYTES)
     if expected != actual:
