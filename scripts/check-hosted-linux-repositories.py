@@ -215,6 +215,12 @@ def main() -> int:
             "non-ASCII package signature",
             f"{DEBIAN_PACKAGES[0]}.asc",
         )
+        assert_display_guards(
+            output,
+            "non-ASCII package signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
 
         non_armored_signature = temp / "non-armored-signature"
         shutil.copytree(dist, non_armored_signature)
@@ -232,6 +238,12 @@ def main() -> int:
             output,
             "non-armored package signature",
             f"{DEBIAN_PACKAGES[0]}.asc",
+        )
+        assert_display_guards(
+            output,
+            "non-armored package signature",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         private_key_signature = temp / "private-key-signature"
@@ -253,6 +265,12 @@ def main() -> int:
             output,
             "private key signature sidecar",
             f"{DEBIAN_PACKAGES[0]}.asc",
+        )
+        assert_display_guards(
+            output,
+            "private key signature sidecar",
+            "signatureContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
         )
 
         symlink_dist = temp / "symlink-dist"
@@ -358,6 +376,12 @@ def main() -> int:
             "Linux public key asset is not ASCII-armored",
         )
         assert_not_displayed(output, "non-ASCII public key asset", PUBLIC_KEY)
+        assert_display_guards(
+            output,
+            "non-ASCII public key asset",
+            "keyContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
 
         non_armored_public_key = temp / "non-armored-public-key"
         shutil.copytree(dist, non_armored_public_key)
@@ -373,6 +397,12 @@ def main() -> int:
             "not an armored public key",
         )
         assert_not_displayed(output, "non-armored public key asset", PUBLIC_KEY)
+        assert_display_guards(
+            output,
+            "non-armored public key asset",
+            "keyContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
 
         private_key_asset = temp / "private-key-asset"
         shutil.copytree(dist, private_key_asset)
@@ -391,6 +421,12 @@ def main() -> int:
             "private key material",
         )
         assert_not_displayed(output, "private key asset", PUBLIC_KEY)
+        assert_display_guards(
+            output,
+            "private key asset",
+            "keyContentsDisplayed=false",
+            "keyMaterialDisplayed=false",
+        )
 
         unsafe_zip = temp / "unsafe-zip"
         shutil.copytree(dist, unsafe_zip)

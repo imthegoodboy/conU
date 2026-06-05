@@ -32,6 +32,9 @@ MAX_CHECKSUM_BYTES = 4096
 OPEN_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 OPEN_BINARY = getattr(os, "O_BINARY", 0)
 MEMBER_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false"
+SIGNATURE_FAILURE_GUARDS = "signatureContentsDisplayed=false keyMaterialDisplayed=false"
+KEY_FAILURE_GUARDS = "keyContentsDisplayed=false keyMaterialDisplayed=false"
+TEXT_FAILURE_GUARDS = "contentsDisplayed=false keyMaterialDisplayed=false"
 ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
 DEBIAN_ARCHES = ("amd64", "arm64")
 RPM_ARCHES = ("x86_64", "aarch64")
@@ -535,16 +538,18 @@ def validate_signature_source(source: Path, label: str, dist: Path) -> None:
     )
     text = read_ascii_text(source, label)
     if "BEGIN PGP SIGNATURE" not in text or "END PGP SIGNATURE" not in text:
-        raise SystemExit(f"{label} is not an armored detached PGP signature")
+        raise SystemExit(
+            f"{label} is not an armored detached PGP signature; {SIGNATURE_FAILURE_GUARDS}"
+        )
     assert_safe_text(text, label, Path())
 
 
 def validate_public_key_source(source: Path, label: str) -> None:
     text = read_ascii_text(source, label)
     if "BEGIN PGP PUBLIC KEY BLOCK" not in text or "END PGP PUBLIC KEY BLOCK" not in text:
-        raise SystemExit(f"{label} is not an armored PGP public key")
+        raise SystemExit(f"{label} is not an armored PGP public key; {KEY_FAILURE_GUARDS}")
     if "PRIVATE KEY BLOCK" in text:
-        raise SystemExit(f"{label} contains private key material")
+        raise SystemExit(f"{label} contains private key material; {KEY_FAILURE_GUARDS}")
     assert_safe_text(text, label, Path())
 
 
@@ -552,7 +557,7 @@ def assert_safe_text(text: str, label: str, dist: Path) -> None:
     normalized = text.replace("\\", "/")
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise SystemExit(f"{label} contains forbidden literal: {forbidden}")
+            raise SystemExit(f"{label} contains forbidden literal; {TEXT_FAILURE_GUARDS}")
     if dist != Path():
         resolved_dist = str(dist.resolve()).replace("\\", "/")
         if resolved_dist and resolved_dist in normalized:
