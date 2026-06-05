@@ -218,8 +218,9 @@ def main() -> int:
         bad_checksum_name = temp / "bad-checksum-name"
         shutil.copytree(dist, bad_checksum_name)
         archive = bad_checksum_name / f"conu-{VERSION}-windows-x64.zip"
+        malicious_checksum_target = "secret-update-policy-checksum-target.zip"
         archive.with_name(f"{archive.name}.sha256").write_text(
-            f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  wrong.zip\n",
+            f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {malicious_checksum_target}\n",
             encoding="ascii",
             newline="\n",
         )
@@ -227,6 +228,8 @@ def main() -> int:
             "checksum names wrong asset",
             bad_checksum_name,
             "names wrong file",
+            forbidden=(malicious_checksum_target,),
+            required=("checksumTargetDisplayed=false", "contentsDisplayed=false"),
         )
 
         expect_failure(
@@ -453,6 +456,8 @@ def expect_failure(
     release_base_url: str = BASE_URL,
     repo: str = REPO,
     tag: str = TAG,
+    forbidden: tuple[str, ...] = (),
+    required: tuple[str, ...] = (),
 ) -> None:
     failed = subprocess.run(
         [
@@ -480,6 +485,16 @@ def expect_failure(
         raise AssertionError(
             f"{description} failed with {failed.stdout!r}, expected {expected!r}"
         )
+    for value in forbidden:
+        if value in failed.stdout:
+            raise AssertionError(
+                f"{description} leaked forbidden value {value!r}: {failed.stdout!r}"
+            )
+    for value in required:
+        if value not in failed.stdout:
+            raise AssertionError(
+                f"{description} omitted required value {value!r}: {failed.stdout!r}"
+            )
 
 
 def write_dist(dist: Path) -> None:

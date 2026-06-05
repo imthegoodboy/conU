@@ -541,7 +541,10 @@ def verify_sha256_sidecar(
     if match is None:
         raise SystemExit(f"SHA-256 sidecar has invalid format for {label}")
     if match.group(2) != path.name:
-        raise SystemExit(f"SHA-256 sidecar for {label} names wrong file")
+        raise SystemExit(
+            f"SHA-256 sidecar for {label} names wrong file; "
+            "checksumTargetDisplayed=false contentsDisplayed=false"
+        )
     expected = match.group(1).lower()
     if expected != actual:
         raise SystemExit(f"SHA-256 mismatch for {label}")
