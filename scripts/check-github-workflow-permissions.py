@@ -2934,7 +2934,10 @@ def audit_mapping(
                 f"{describe_permission_key(key)}{format_permission_diagnostic_suffix()}"
             )
         if value == "write" and not allow_write:
-            issues.append(f"{scope} must not request write permission for {key}")
+            issues.append(
+                f"{scope} must not request write permission for "
+                f"{describe_permission_key(key)}{format_permission_diagnostic_suffix()}"
+            )
     for key, expected_value in expected.items():
         actual_value = permissions.get(key)
         if actual_value != expected_value:
