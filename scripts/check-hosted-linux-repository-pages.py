@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -94,6 +95,37 @@ def main() -> int:
             "uncompressed contents exceed",
             "Pages site total size bound",
         )
+        expect_preparer_constant_failure(
+            preparer,
+            "MAX_SITE_ZIP_BYTES",
+            max(0, site.stat().st_size - 1),
+            lambda: preparer.validate_regular_file(
+                site,
+                "hosted Linux repository site ZIP",
+                max_bytes=preparer.MAX_SITE_ZIP_BYTES,
+            ),
+            "too large for Pages deployment",
+            "Pages site ZIP size bound",
+            site.name,
+        )
+        oversized_output = temp / "oversized-pages-output.html"
+        output_message = expect_action_failure(
+            lambda: preparer.write_bytes_output(
+                oversized_output,
+                "hosted repository Pages file",
+                b"fixture\n",
+                max_bytes=1,
+            ),
+            "too large for Pages deployment",
+            "Pages output size bound",
+        )
+        assert_not_displayed(output_message, "Pages output size bound", oversized_output.name)
+        oversized_read = temp / "oversized-pages-read.txt"
+        read_message = expect_read_regular_file_size_failure(
+            preparer,
+            oversized_read,
+        )
+        assert_not_displayed(read_message, "Pages read size bound", oversized_read.name)
 
         unreadable_site = temp / "unreadable-site.zip"
         unreadable_site_payload = "secret-unreadable-pages-site-should-not-print"
@@ -603,6 +635,45 @@ def expect_zip_bound_failure(
         setattr(preparer, constant_name, original)
 
 
+def expect_preparer_constant_failure(
+    preparer,
+    constant_name: str,
+    value: int,
+    action,
+    expected: str,
+    label: str,
+    *forbidden_values: str,
+) -> None:
+    original = getattr(preparer, constant_name)
+    setattr(preparer, constant_name, value)
+    try:
+        message = expect_action_failure(action, expected, label)
+        assert_not_displayed(message, label, *forbidden_values)
+    finally:
+        setattr(preparer, constant_name, original)
+
+
+def expect_read_regular_file_size_failure(preparer, path: Path) -> str:
+    original_open_regular_file = preparer.open_regular_file
+    try:
+
+        def oversized_open_regular_file(_path, _label, *, max_bytes):
+            return io.BytesIO(b"oversized\n"), 0
+
+        preparer.open_regular_file = oversized_open_regular_file
+        return expect_action_failure(
+            lambda: preparer.read_regular_file(
+                path,
+                "hosted repository Pages file",
+                max_bytes=1,
+            ),
+            "too large for Pages deployment",
+            "Pages read size bound",
+        )
+    finally:
+        preparer.open_regular_file = original_open_regular_file
+
+
 def expect_action_failure(action, expected: str, label: str) -> str:
     try:
         action()
@@ -621,6 +692,12 @@ def assert_member_failure_redacted(message: str, label: str, *forbidden_values: 
     for value in forbidden_values:
         if value and value in message:
             raise AssertionError(f"{label}: displayed archive member value {value!r}: {message!r}")
+
+
+def assert_not_displayed(message: str, label: str, *forbidden_values: str) -> None:
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{label}: displayed forbidden value {value!r}: {message!r}")
 
 
 def assert_no_sentinel(output: str, label: str) -> None:
