@@ -895,6 +895,8 @@ def assert_safe_report(report) -> dict[str, object]:
         "tokenHashDisplayed",
         "keyMaterialDisplayed",
         "contentsDisplayed",
+        "workflowCommandDisplayed",
+        "secretValuesDisplayed",
     ):
         if parsed.get(field) is not False:
             raise AssertionError(f"expected {field}=false")
@@ -1101,6 +1103,28 @@ def run_forbidden_workflow_command_tests(module) -> None:
         raise AssertionError("direct NPM marker workflow write was not reported")
     if not marker_write_parsed["forbiddenWorkflowCommands"]:
         raise AssertionError("direct marker write finding was not listed")
+
+    sensitive_marker_write_report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "      - name: Validate NPM token rotation marker\n",
+            "      - name: Unsafe direct NPM marker variable write with secret value\n"
+            "        run: gh variable set CONU_NPM_TOKEN_ROTATED_AFTER "
+            f"--body {SENSITIVE_SENTINEL}\n"
+            "      - name: Validate NPM token rotation marker\n",
+        ),
+    )
+    if sensitive_marker_write_report.ready:
+        raise AssertionError(
+            "direct NPM marker workflow write with secret value should fail"
+        )
+    sensitive_marker_write_parsed = assert_safe_report(sensitive_marker_write_report)
+    sensitive_marker_write_rendered = json.dumps(sensitive_marker_write_parsed)
+    if module.WORKFLOW_COMMAND_DIAGNOSTIC_GUARD not in sensitive_marker_write_rendered:
+        raise AssertionError("forbidden workflow command guard was not reported")
+    if not sensitive_marker_write_parsed["forbiddenWorkflowCommands"]:
+        raise AssertionError("direct marker write secret-value finding was not listed")
 
     dynamic_variable_write_report = with_fixture(
         module,

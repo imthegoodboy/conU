@@ -305,6 +305,10 @@ FORBIDDEN_WORKFLOW_BLOCK_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] 
         "scripted GitHub Actions secret workflow write",
     ),
 )
+WORKFLOW_COMMAND_DIAGNOSTIC_GUARD = (
+    "workflowCommandDisplayed=false contentsDisplayed=false "
+    "tokenDisplayed=false secretValuesDisplayed=false"
+)
 ALLOWED_PERMISSION_KEYS = (
     "actions",
     "attestations",
@@ -2004,6 +2008,8 @@ class WorkflowPermissionsReadiness:
             "tokenHashDisplayed": False,
             "keyMaterialDisplayed": False,
             "contentsDisplayed": False,
+            "workflowCommandDisplayed": False,
+            "secretValuesDisplayed": False,
         }
 
 
@@ -2355,6 +2361,15 @@ def audit_checkout_credential_persistence(path: Path) -> tuple[str, ...]:
     return tuple(issues)
 
 
+def format_forbidden_workflow_command_issue(
+    path: Path, location: str, description: str, command_signature: str
+) -> str:
+    return (
+        f"{path.name}{location} must not use {description}: {command_signature}; "
+        f"{WORKFLOW_COMMAND_DIAGNOSTIC_GUARD}"
+    )
+
+
 def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -2367,17 +2382,15 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
     for line_number, line in enumerate(text.splitlines(), start=1):
         for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
             if fragment in line:
-                issue = (
-                    f"{path.name}:line {line_number} must not use {description}: "
-                    f"{fragment}"
+                issue = format_forbidden_workflow_command_issue(
+                    path, f":line {line_number}", description, fragment
                 )
                 seen_fragments.add(fragment)
                 issues.append(issue)
         for command, pattern, description in FORBIDDEN_WORKFLOW_COMMAND_PATTERNS:
             if pattern.search(line):
-                issue = (
-                    f"{path.name}:line {line_number} must not use {description}: "
-                    f"{command}"
+                issue = format_forbidden_workflow_command_issue(
+                    path, f":line {line_number}", description, command
                 )
                 seen_patterns.add(command)
                 issues.append(issue)
@@ -2385,35 +2398,51 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
     for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
         if fragment in seen_fragments or fragment not in continuation_normalized:
             continue
-        issues.append(f"{path.name} must not use {description}: {fragment}")
+        issues.append(
+            format_forbidden_workflow_command_issue(path, "", description, fragment)
+        )
     for command, pattern, description in FORBIDDEN_WORKFLOW_COMMAND_PATTERNS:
         if command in seen_patterns or not pattern.search(continuation_normalized):
             continue
-        issues.append(f"{path.name} must not use {description}: {command}")
+        issues.append(
+            format_forbidden_workflow_command_issue(path, "", description, command)
+        )
     for line_number, block in extract_folded_run_blocks(text):
         for fragment, description in FORBIDDEN_WORKFLOW_COMMAND_FRAGMENTS:
             if fragment in seen_fragments or fragment not in block:
                 continue
             seen_fragments.add(fragment)
             issues.append(
-                f"{path.name}:folded run block at line {line_number} must not use "
-                f"{description}: {fragment}"
+                format_forbidden_workflow_command_issue(
+                    path,
+                    f":folded run block at line {line_number}",
+                    description,
+                    fragment,
+                )
             )
         for command, pattern, description in FORBIDDEN_WORKFLOW_COMMAND_PATTERNS:
             if command in seen_patterns or not pattern.search(block):
                 continue
             seen_patterns.add(command)
             issues.append(
-                f"{path.name}:folded run block at line {line_number} must not use "
-                f"{description}: {command}"
+                format_forbidden_workflow_command_issue(
+                    path,
+                    f":folded run block at line {line_number}",
+                    description,
+                    command,
+                )
             )
         for command, pattern, description in FORBIDDEN_WORKFLOW_BLOCK_PATTERNS:
             if command in seen_patterns or not pattern.search(block):
                 continue
             seen_patterns.add(command)
             issues.append(
-                f"{path.name}:folded run block at line {line_number} must not use "
-                f"{description}: {command}"
+                format_forbidden_workflow_command_issue(
+                    path,
+                    f":folded run block at line {line_number}",
+                    description,
+                    command,
+                )
             )
     for line_number, block in extract_literal_run_blocks(text):
         for command, pattern, description in FORBIDDEN_WORKFLOW_BLOCK_PATTERNS:
@@ -2421,8 +2450,12 @@ def audit_forbidden_workflow_commands(path: Path) -> tuple[str, ...]:
                 continue
             seen_patterns.add(command)
             issues.append(
-                f"{path.name}:literal run block at line {line_number} must not use "
-                f"{description}: {command}"
+                format_forbidden_workflow_command_issue(
+                    path,
+                    f":literal run block at line {line_number}",
+                    description,
+                    command,
+                )
             )
     return tuple(issues)
 
