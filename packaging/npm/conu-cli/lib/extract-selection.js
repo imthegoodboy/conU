@@ -86,6 +86,7 @@ function collectBinaryMatches(root, fileNames, archiveName, limits) {
 
 function visit(root, archiveName, limits, onEntry, depth = 0, state = { entries: 0 }) {
   const dir = openExtractedTreeDirectory(root, archiveName);
+  let visitFailed = false;
   try {
     let entry = readExtractedTreeDirectory(dir, archiveName);
     while (entry !== null) {
@@ -110,8 +111,17 @@ function visit(root, archiveName, limits, onEntry, depth = 0, state = { entries:
       }
       entry = readExtractedTreeDirectory(dir, archiveName);
     }
+  } catch (error) {
+    visitFailed = true;
+    throw error;
   } finally {
-    dir.closeSync();
+    try {
+      dir.closeSync();
+    } catch (_error) {
+      if (!visitFailed) {
+        throw extractedTreeInspectionError(archiveName);
+      }
+    }
   }
 }
 
