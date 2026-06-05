@@ -303,16 +303,39 @@ def main() -> int:
             "checksum file for conu-0.1.0-directory-checksum.zip must be a regular file",
         )
 
+        oversized_archive = root / "secret-release-verifier-archive-name-should-not-print.zip"
+        write_zip(oversized_archive)
         original_max_archive_bytes = verifier.MAX_ARCHIVE_BYTES
         verifier.MAX_ARCHIVE_BYTES = 1
         try:
             expect_failure(
                 "oversized archive before checksum hashing",
-                lambda: verifier.verify_checksum(valid_zip),
-                "is larger than",
+                lambda: verifier.verify_checksum(oversized_archive),
+                "release archive is larger than",
+                forbidden=oversized_archive.name,
+            )
+            expect_failure(
+                "oversized archive before member scan",
+                lambda: verifier.archive_members(oversized_archive),
+                "release archive is larger than",
+                forbidden=oversized_archive.name,
             )
         finally:
             verifier.MAX_ARCHIVE_BYTES = original_max_archive_bytes
+
+        oversized_checksum = root / "secret-release-verifier-checksum-name-should-not-print.zip"
+        write_zip(oversized_checksum)
+        original_max_checksum_bytes = verifier.MAX_CHECKSUM_BYTES
+        verifier.MAX_CHECKSUM_BYTES = 1
+        try:
+            expect_failure(
+                "oversized checksum sidecar",
+                lambda: verifier.verify_checksum(oversized_checksum),
+                "checksum file is too large",
+                forbidden=oversized_checksum.name,
+            )
+        finally:
+            verifier.MAX_CHECKSUM_BYTES = original_max_checksum_bytes
 
         valid_tar = root / "conu-0.1.0-test.tar.gz"
         write_tar(valid_tar)
