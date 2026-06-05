@@ -106,11 +106,17 @@ def check_command_output_redaction(issues: list[str]) -> None:
         f"tool --target conu --secret {sentinel} --mode dry-run",
         f"AWS_ACCESS_KEY_ID={sentinel}",
         f"CONU_API_KEY:{sentinel}",
+        f"AWS_SESSION_TOKEN='{sentinel} with spaces'",
+        f'CONU_SIGNING_PASSWORD="{sentinel} with spaces"',
     )
     for value in cases:
         redacted = redact_command_output(value)
         if sentinel in redacted:
             issues.append(f"command output redaction leaked secret flag value from {value!r}")
+        if "with spaces" in redacted:
+            issues.append(
+                f"command output redaction leaked quoted secret suffix from {value!r}"
+            )
         if "[redacted]" not in redacted:
             issues.append(f"command output redaction did not mark secret flag value from {value!r}")
 
