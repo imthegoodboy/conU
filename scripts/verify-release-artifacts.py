@@ -104,7 +104,7 @@ def verify_checksum(archive: Path) -> None:
         archive,
         "release archive",
         max_bytes=MAX_ARCHIVE_BYTES,
-        too_large_message=f"{archive.name} is larger than {MAX_ARCHIVE_BYTES} bytes",
+        too_large_message=f"release archive is larger than {MAX_ARCHIVE_BYTES} bytes",
     )
 
     checksum_path = archive.with_name(f"{archive.name}.sha256")
@@ -113,7 +113,7 @@ def verify_checksum(archive: Path) -> None:
         f"checksum file for {archive.name}",
         max_bytes=MAX_CHECKSUM_BYTES,
         missing_message=f"missing checksum file for {archive.name}",
-        too_large_message=f"checksum file is too large for {archive.name}",
+        too_large_message="checksum file is too large",
     )
 
     with archive_file:
@@ -175,7 +175,7 @@ def archive_members(archive: Path) -> ArchiveMembers:
         archive,
         "release archive",
         max_bytes=MAX_ARCHIVE_BYTES,
-        too_large_message=f"{archive.name} is larger than {MAX_ARCHIVE_BYTES} bytes",
+        too_large_message=f"release archive is larger than {MAX_ARCHIVE_BYTES} bytes",
     )
     expected_root = expected_archive_root(archive.name)
 
@@ -359,7 +359,7 @@ def open_regular_file(
         if not stat.S_ISREG(metadata.st_mode):
             raise SystemExit(f"{label} must be a regular file: {path.name}")
         if metadata.st_size > max_bytes:
-            raise SystemExit(too_large_message or f"{label} is too large: {path.name}")
+            raise SystemExit(too_large_message or f"{label} is too large")
         return os.fdopen(fd, "rb"), metadata.st_size
     except BaseException:
         os.close(fd)
