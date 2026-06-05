@@ -63,6 +63,21 @@ def main() -> int:
             )
 
     with fixture_dir() as root:
+        archive = root / "secret-npm-archive-name-should-not-print.zip"
+        write_zip(archive, {"manifest.toml": 'target = "host"\n'})
+        original_limit = smoke.MAX_ARCHIVE_BYTES
+        smoke.MAX_ARCHIVE_BYTES = 1
+        try:
+            expect_action_failure(
+                lambda: smoke.read_manifest_target(archive),
+                "release archive is too large",
+                "oversized npm smoke archive",
+                forbidden=archive.name,
+            )
+        finally:
+            smoke.MAX_ARCHIVE_BYTES = original_limit
+
+    with fixture_dir() as root:
         dist = root / "dist"
         dist.mkdir()
         dist.joinpath("conu-0.1.0-host.zip.sha256").write_text("checksum\n", encoding="utf-8")
