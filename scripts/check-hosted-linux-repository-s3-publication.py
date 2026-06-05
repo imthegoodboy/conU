@@ -661,6 +661,8 @@ def write_failing_fake_aws(temp: Path) -> str:
             [
                 "import sys",
                 f"print('NODE_AUTH_TOKEN={SENSITIVE_SENTINEL}', file=sys.stderr)",
+                f"print('AWS_ACCESS_KEY_ID={SENSITIVE_SENTINEL}', file=sys.stderr)",
+                f"print('CONU_API_KEY={SENSITIVE_SENTINEL}', file=sys.stderr)",
                 f"print('Authorization: Bearer {SENSITIVE_SENTINEL}', file=sys.stderr)",
                 f"print('https://user:{SENSITIVE_SENTINEL}@example.invalid/conu', file=sys.stderr)",
                 "print('https://s3.example.invalid/conu?"
@@ -774,7 +776,13 @@ def assert_aws_cli_wrapper_guard(publisher, fake_aws: str) -> None:
             f"env AWS_SECRET_ACCESS_KEY={SENSITIVE_SENTINEL} aws",
             "inline credentials or secrets",
         ),
+        (
+            f"env AWS_ACCESS_KEY_ID={SENSITIVE_SENTINEL} aws",
+            "inline credentials or secrets",
+        ),
         (f"aws --password {SENSITIVE_SENTINEL}", "inline credentials or secrets"),
+        (f"aws --access-key-id {SENSITIVE_SENTINEL}", "inline credentials or secrets"),
+        (f"aws --api-key={SENSITIVE_SENTINEL}", "inline credentials or secrets"),
         (
             f"aws https://user:{SENSITIVE_SENTINEL}@example.invalid",
             "inline credentials or secrets",

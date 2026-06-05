@@ -100,8 +100,12 @@ def check_command_output_redaction(issues: list[str]) -> None:
         f"tool --token {sentinel}",
         f"tool --password='{sentinel} with spaces'",
         f"tool --security-token \"{sentinel} with spaces\"",
+        f"tool --access-key-id {sentinel}",
+        f"tool --api-key={sentinel}",
         f"tool -auth {sentinel}",
         f"tool --target conu --secret {sentinel} --mode dry-run",
+        f"AWS_ACCESS_KEY_ID={sentinel}",
+        f"CONU_API_KEY:{sentinel}",
     )
     for value in cases:
         redacted = redact_command_output(value)
