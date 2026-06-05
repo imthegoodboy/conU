@@ -2160,6 +2160,28 @@ def run_unexpected_job_write_tests(module) -> None:
     if "ci.yml:packages must not request write permission for contents" not in rendered:
         raise AssertionError("unexpected write issue was not reported")
 
+    sensitive_key_report = with_fixture(
+        module,
+        ready_ci().replace(
+            "    runs-on: ubuntu-latest\n",
+            "    permissions:\n"
+            f"      {SENSITIVE_SENTINEL}: write\n"
+            "    runs-on: ubuntu-latest\n",
+            1,
+        ),
+        None,
+    )
+    if sensitive_key_report.ready:
+        raise AssertionError("sensitive write permission key should fail")
+    sensitive_key_rendered = json.dumps(assert_safe_report(sensitive_key_report))
+    if (
+        "ci.yml:packages must not request write permission for unrecognized key;"
+        not in sensitive_key_rendered
+    ):
+        raise AssertionError("sensitive write permission key issue was not reported")
+    if module.PERMISSION_DIAGNOSTIC_GUARD not in sensitive_key_rendered:
+        raise AssertionError("permission diagnostic guard was not reported")
+
 
 def run_required_ci_package_checks_job_tests(module) -> None:
     report = with_fixture(
