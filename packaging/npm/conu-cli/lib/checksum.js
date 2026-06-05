@@ -29,8 +29,10 @@ function parseSha256Checksum(checksumText, expectedArchiveName) {
 function sha256File(filePath) {
   const digest = crypto.createHash("sha256");
   const buffer = Buffer.allocUnsafe(HASH_CHUNK_BYTES);
-  const fd = fs.openSync(filePath, "r");
+  let fd = null;
+  let readFailed = false;
   try {
+    fd = fs.openSync(filePath, "r");
     while (true) {
       const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
       if (bytesRead === 0) {
@@ -38,8 +40,19 @@ function sha256File(filePath) {
       }
       digest.update(buffer.subarray(0, bytesRead));
     }
+  } catch (error) {
+    readFailed = true;
+    throw checksumTargetReadError(error);
   } finally {
-    fs.closeSync(fd);
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch (error) {
+        if (!readFailed) {
+          throw checksumTargetReadError(error);
+        }
+      }
+    }
   }
   return digest.digest("hex");
 }
@@ -50,6 +63,20 @@ function verifySha256File(filePath, checksumText, expectedArchiveName = path.bas
   if (actual !== expected) {
     throw new Error(`checksum mismatch for ${expectedArchiveName}`);
   }
+}
+
+function checksumTargetReadError(error) {
+  return new Error(
+    `checksum target could not be read; errorCode=${runtimeErrorCode(error)} pathDisplayed=false contentsDisplayed=false`
+  );
+}
+
+function runtimeErrorCode(error) {
+  const code = error && typeof error.code === "string" ? error.code : "";
+  if (/^[A-Z0-9_]+$/.test(code)) {
+    return code;
+  }
+  return "UNKNOWN";
 }
 
 module.exports = {
