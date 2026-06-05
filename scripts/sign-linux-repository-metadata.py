@@ -288,6 +288,7 @@ def read_zip_members(bundle: Path) -> dict[str, bytes]:
         f"repository metadata bundle {bundle.name}",
         max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
         allow_empty=False,
+        size_label="repository metadata bundle",
     )
     try:
         with bundle_file:
@@ -317,6 +318,7 @@ def read_zip_members(bundle: Path) -> dict[str, bytes]:
                 f"repository metadata bundle {bundle.name}",
                 max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
                 allow_empty=False,
+                size_label="repository metadata bundle",
             )
     except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
         raise zip_member_failure(bundle.name, "is not a readable zip archive") from exc
@@ -378,6 +380,7 @@ def write_zip_members(bundle: Path, members: dict[str, bytes]) -> None:
         f"repository metadata bundle output {bundle.name}",
         max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
         allow_empty=False,
+        size_label="repository metadata bundle output",
     )
     order = [name for name in members if not signature_member(name)]
     for signature in ("InRelease", "Release.gpg", "repodata/repomd.xml.asc"):
@@ -395,6 +398,7 @@ def write_zip_members(bundle: Path, members: dict[str, bytes]) -> None:
             f"rewritten repository metadata bundle {bundle.name}",
             max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
             allow_empty=False,
+            size_label="rewritten repository metadata bundle",
         )
         os.replace(temp_path, bundle)
         validate_regular_file(
@@ -402,6 +406,7 @@ def write_zip_members(bundle: Path, members: dict[str, bytes]) -> None:
             f"repository metadata bundle output {bundle.name}",
             max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
             allow_empty=False,
+            size_label="repository metadata bundle output",
         )
     finally:
         try:
@@ -439,6 +444,7 @@ def verify_sha256_sidecar(path: Path, label: str) -> None:
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=False,
             encoding="ascii",
+            size_label=f"SHA-256 sidecar for {label}",
         )
     except UnicodeDecodeError as exc:
         raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
@@ -453,6 +459,7 @@ def verify_sha256_sidecar(path: Path, label: str) -> None:
         path,
         f"{label} {path.name}",
         max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
+        size_label=label,
     ):
         raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
 
@@ -465,11 +472,13 @@ def write_sha256_sidecar(path: Path) -> None:
             f"SHA-256 sidecar output {sidecar.name}",
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=True,
+            size_label="SHA-256 sidecar output",
         )
     digest = sha256_file(
         path,
         f"repository metadata bundle {path.name}",
         max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
+        size_label="repository metadata bundle",
     )
     text = f"{digest}  {path.name}\n"
     temp_path = temporary_sibling_path(sidecar)
@@ -481,6 +490,7 @@ def write_sha256_sidecar(path: Path) -> None:
             f"temporary SHA-256 sidecar output {sidecar.name}",
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=False,
+            size_label="temporary SHA-256 sidecar output",
         )
         os.replace(temp_path, sidecar)
         validate_regular_file(
@@ -488,6 +498,7 @@ def write_sha256_sidecar(path: Path) -> None:
             f"SHA-256 sidecar output {sidecar.name}",
             max_bytes=MAX_CHECKSUM_BYTES,
             allow_empty=False,
+            size_label="SHA-256 sidecar output",
         )
     finally:
         try:
@@ -505,6 +516,7 @@ def validate_repository_metadata_bundle(
         f"repository metadata bundle {path.name}",
         max_bytes=MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
         allow_empty=False,
+        size_label="repository metadata bundle",
     )
     if budget is not None:
         budget.add(size)
@@ -517,6 +529,7 @@ def read_generated_signature(path: Path, label: str) -> bytes:
         label,
         max_bytes=MAX_GENERATED_SIGNATURE_BYTES,
         allow_empty=False,
+        size_label="generated repository metadata signature",
     )
 
 
@@ -526,12 +539,14 @@ def validate_regular_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> int:
     handle, size = open_regular_file(
         path,
         label,
         max_bytes=max_bytes,
         allow_empty=allow_empty,
+        size_label=size_label,
     )
     handle.close()
     return size
@@ -543,6 +558,7 @@ def open_regular_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> tuple[BinaryIO, int]:
     if path.is_symlink():
         raise SystemExit(f"{label} must not be a symlink: {path.name}")
@@ -567,7 +583,8 @@ def open_regular_file(
         if not allow_empty and size == 0:
             raise SystemExit(f"{label} must not be empty: {path.name}")
         if size > max_bytes:
-            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+            display_label = size_label or label
+            raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
         return os.fdopen(fd, "rb"), size
     except BaseException:
         os.close(fd)
@@ -580,6 +597,7 @@ def validate_open_regular_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> int:
     metadata = os.fstat(handle.fileno())
     if not stat.S_ISREG(metadata.st_mode):
@@ -588,26 +606,37 @@ def validate_open_regular_file(
     if not allow_empty and size == 0:
         raise SystemExit(f"{label} must not be empty")
     if size > max_bytes:
-        raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
+        display_label = size_label or label
+        raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
     return size
 
 
-def read_binary_file(path: Path, label: str, *, max_bytes: int, allow_empty: bool) -> bytes:
+def read_binary_file(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int,
+    allow_empty: bool,
+    size_label: str | None = None,
+) -> bytes:
     handle, _size = open_regular_file(
         path,
         label,
         max_bytes=max_bytes,
         allow_empty=allow_empty,
+        size_label=size_label,
     )
     with handle:
         data = handle.read(max_bytes + 1)
         if len(data) > max_bytes:
-            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+            display_label = size_label or label
+            raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
         validate_open_regular_file(
             handle,
             label,
             max_bytes=max_bytes,
             allow_empty=allow_empty,
+            size_label=size_label,
         )
     return data
 
@@ -619,12 +648,14 @@ def read_text_file(
     max_bytes: int,
     allow_empty: bool,
     encoding: str,
+    size_label: str | None = None,
 ) -> str:
     return read_binary_file(
         path,
         label,
         max_bytes=max_bytes,
         allow_empty=allow_empty,
+        size_label=size_label,
     ).decode(encoding)
 
 
@@ -644,12 +675,14 @@ def sha256_file(
     *,
     max_bytes: int = MAX_REPOSITORY_METADATA_BUNDLE_BYTES,
     allow_empty: bool = False,
+    size_label: str | None = None,
 ) -> str:
     handle, _size = open_regular_file(
         path,
         label,
         max_bytes=max_bytes,
         allow_empty=allow_empty,
+        size_label=size_label,
     )
     with handle:
         return sha256_open_file(
@@ -657,6 +690,7 @@ def sha256_file(
             label,
             max_bytes=max_bytes,
             allow_empty=allow_empty,
+            size_label=size_label,
         )
 
 
@@ -666,6 +700,7 @@ def sha256_open_file(
     *,
     max_bytes: int,
     allow_empty: bool,
+    size_label: str | None = None,
 ) -> str:
     digest = hashlib.sha256()
     handle.seek(0)
@@ -676,13 +711,15 @@ def sha256_open_file(
             break
         total += len(chunk)
         if total > max_bytes:
-            raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
+            display_label = size_label or label
+            raise SystemExit(f"{display_label} is too large: exceeds {max_bytes} bytes")
         digest.update(chunk)
     validate_open_regular_file(
         handle,
         label,
         max_bytes=max_bytes,
         allow_empty=allow_empty,
+        size_label=size_label,
     )
     return digest.hexdigest()
 
