@@ -41,7 +41,10 @@ function assertSafeArchiveMemberList(members, archiveLabel = "archive") {
     throw new Error(`${archiveLabel} did not contain any extractable members`);
   }
   if (members.length > MAX_ARCHIVE_MEMBERS) {
-    throw new Error(`${archiveLabel} contains more than ${MAX_ARCHIVE_MEMBERS} entries`);
+    throw archiveMemberPathError(
+      archiveLabel,
+      `contains more than ${MAX_ARCHIVE_MEMBERS} entries`
+    );
   }
 
   const paths = new Set();
@@ -103,9 +106,11 @@ function rejectForbiddenArchivePath(normalized, archiveLabel) {
 }
 
 function archiveMemberPathError(archiveLabel, reason) {
-  return new Error(
+  const error = new Error(
     `${archiveLabel} ${reason}; pathDisplayed=false contentsDisplayed=false`
   );
+  error.archiveMemberPathError = true;
+  return error;
 }
 
 function formatMemberTypeForError(type) {
@@ -176,7 +181,7 @@ function listZipMembersWithNode(archivePath, archiveLabel) {
     const { centralDirectory, entryCount } = readZipCentralDirectory(fd, size, archiveLabel);
     return parseZipCentralDirectory(centralDirectory, entryCount, archiveLabel);
   } catch (error) {
-    if (error && error.zipInspectionError) {
+    if (error && (error.zipInspectionError || error.archiveMemberPathError)) {
       throw error;
     }
     throw zipInspectionError(archiveLabel);
@@ -227,7 +232,10 @@ function readZipCentralDirectory(fd, size, archiveLabel) {
       throw zipInspectionError(archiveLabel);
     }
     if (entryCount > MAX_ARCHIVE_MEMBERS) {
-      throw new Error(`${archiveLabel} contains more than ${MAX_ARCHIVE_MEMBERS} entries`);
+      throw archiveMemberPathError(
+        archiveLabel,
+        `contains more than ${MAX_ARCHIVE_MEMBERS} entries`
+      );
     }
     if (centralSize > MAX_ARCHIVE_LIST_BYTES) {
       throw zipInspectionError(archiveLabel);
