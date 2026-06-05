@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const {
   parseSha256Checksum,
+  sha256File,
   verifySha256File
 } = require("../lib/checksum");
 
@@ -58,6 +59,25 @@ function main() {
         "checksum mismatch",
         "mismatched digest"
       );
+      const missingSecretPath = path.join(tempDir, "secret-checksum-target-path.zip");
+      expectHashFailure(
+        () => sha256File(missingSecretPath),
+        "checksum target could not be read",
+        "direct checksum target read failure",
+        {
+          forbidden: [tempDir, missingSecretPath, "secret-checksum-target-path"],
+          required: ["errorCode=ENOENT", "pathDisplayed=false", "contentsDisplayed=false"]
+        }
+      );
+      expectHashFailure(
+        () => verifySha256File(missingSecretPath, `${digest}  ${ARCHIVE_NAME}\n`, ARCHIVE_NAME),
+        "checksum target could not be read",
+        "verify checksum target read failure",
+        {
+          forbidden: [tempDir, missingSecretPath, "secret-checksum-target-path"],
+          required: ["errorCode=ENOENT", "pathDisplayed=false", "contentsDisplayed=false"]
+        }
+      );
     } finally {
       fs.readFileSync = originalReadFileSync;
     }
@@ -70,6 +90,28 @@ function main() {
 function expectFailure(checksumText, expectedMessage, label, options = {}) {
   try {
     parseSha256Checksum(checksumText, ARCHIVE_NAME);
+  } catch (error) {
+    if (!error.message.includes(expectedMessage)) {
+      throw new Error(`expected ${label} to fail with ${expectedMessage}, got: ${error.message}`);
+    }
+    for (const value of options.required || []) {
+      if (!error.message.includes(value)) {
+        throw new Error(`expected ${label} failure to include ${value}, got: ${error.message}`);
+      }
+    }
+    for (const value of options.forbidden || []) {
+      if (error.message.includes(value)) {
+        throw new Error(`expected ${label} failure to redact ${value}, got: ${error.message}`);
+      }
+    }
+    return;
+  }
+  throw new Error(`expected ${label} to fail`);
+}
+
+function expectHashFailure(callback, expectedMessage, label, options = {}) {
+  try {
+    callback();
   } catch (error) {
     if (!error.message.includes(expectedMessage)) {
       throw new Error(`expected ${label} to fail with ${expectedMessage}, got: ${error.message}`);
