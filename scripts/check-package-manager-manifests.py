@@ -1103,7 +1103,7 @@ def main() -> int:
                 "SHA-256 sidecar for generated RPM package must not be a symlink",
             )
 
-        expect_failure_with_limit(
+        expect_member_redacted_failure_with_limit(
             generator,
             "MAX_RELEASE_MEMBER_COUNT",
             1,
@@ -1497,7 +1497,7 @@ def main() -> int:
             "bin/conu",
         )
 
-        expect_failure_with_limit(
+        expect_member_redacted_failure_with_limit(
             generator,
             "MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES",
             1,

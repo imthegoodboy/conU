@@ -619,8 +619,9 @@ def detect_windows_extract_dir(archive: Path, version: str) -> str | None:
             with zipfile.ZipFile(archive_file) as package:
                 infos = package.infolist()
                 if len(infos) > MAX_RELEASE_MEMBER_COUNT:
-                    raise SystemExit(
-                        f"{archive.name} contains more than {MAX_RELEASE_MEMBER_COUNT} entries"
+                    raise release_member_failure(
+                        archive.name,
+                        f"contains more than {MAX_RELEASE_MEMBER_COUNT} entries",
                     )
                 for member in infos:
                     normalized, root_style, is_file = validate_zip_release_member_for_scan(
@@ -701,7 +702,10 @@ def record_release_archive_member(
 
     state.entry_count += 1
     if state.entry_count > MAX_RELEASE_MEMBER_COUNT:
-        raise SystemExit(f"{archive_name} contains more than {MAX_RELEASE_MEMBER_COUNT} entries")
+        raise release_member_failure(
+            archive_name,
+            f"contains more than {MAX_RELEASE_MEMBER_COUNT} entries",
+        )
 
     normalized, member_style = normalize_release_member_path(
         archive_name,
@@ -720,9 +724,9 @@ def record_release_archive_member(
 
     state.total_uncompressed += size
     if state.total_uncompressed > MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES:
-        raise SystemExit(
-            f"{archive_name} uncompressed contents exceed "
-            f"{MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES} bytes"
+        raise release_member_failure(
+            archive_name,
+            f"uncompressed contents exceed {MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES} bytes",
         )
     return normalized, root_style
 
