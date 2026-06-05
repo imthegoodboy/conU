@@ -159,6 +159,7 @@ def main() -> int:
                 lambda: smoke.read_manifest_target(archive),
                 "contains more than",
                 "manifest read member count bound",
+                require_member_redaction=True,
             )
         finally:
             smoke.MAX_MEMBER_COUNT = original_limit
@@ -173,6 +174,7 @@ def main() -> int:
                 lambda: smoke.read_manifest_target(archive),
                 "uncompressed contents exceed",
                 "manifest read total size bound",
+                require_member_redaction=True,
             )
         finally:
             smoke.MAX_TOTAL_UNCOMPRESSED_BYTES = original_limit
@@ -297,6 +299,7 @@ def main() -> int:
                 lambda: smoke.extract_archive(archive, root / "extract-many"),
                 "contains more than",
                 "extracted entry count bound",
+                require_member_redaction=True,
             )
         finally:
             smoke.MAX_MEMBER_COUNT = original_limit
@@ -311,6 +314,7 @@ def main() -> int:
                 lambda: smoke.extract_archive(archive, root / "extract-total"),
                 "uncompressed contents exceed",
                 "extracted total size bound",
+                require_member_redaction=True,
             )
         finally:
             smoke.MAX_TOTAL_UNCOMPRESSED_BYTES = original_limit
