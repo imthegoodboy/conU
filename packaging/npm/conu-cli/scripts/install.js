@@ -39,7 +39,6 @@ const checkOnly = process.argv.includes("--check-only");
 const skipDownload = process.env.CONU_NPM_SKIP_DOWNLOAD === "1";
 const allowUnverified = process.env.CONU_NPM_ALLOW_UNVERIFIED === "1";
 const localBinaryDir = process.env.CONU_NPM_BINARY_DIR;
-const downloadLimits = getDownloadLimits();
 const version = packageVersion();
 const asset = assetName(version);
 const releaseBase =
@@ -73,16 +72,23 @@ async function main() {
     validateUnverifiedDownloadBase(releaseBase);
   }
 
+  const downloadLimits = getDownloadLimits();
   const tempDir = createTempInstallDir();
   let installFailed = false;
   try {
     const archivePath = path.join(tempDir, tempArchiveFileName(asset));
     const checksumPath = `${archivePath}.sha256`;
-    await downloadFile(`${releaseBase}/${asset}`, archivePath, downloadLimits.maxArchiveBytes);
+    await downloadFile(
+      `${releaseBase}/${asset}`,
+      archivePath,
+      downloadLimits.maxArchiveBytes,
+      downloadLimits.timeoutMs
+    );
 
     const checksum = await downloadOptionalText(
       `${releaseBase}/${asset}.sha256`,
-      downloadLimits.maxChecksumBytes
+      downloadLimits.maxChecksumBytes,
+      downloadLimits.timeoutMs
     );
     if (checksum) {
       writeChecksumArtifact(checksumPath, checksum);
@@ -178,7 +184,7 @@ function extractArchive(archivePath, destination) {
   throw new Error(`failed to extract ${asset}; pathDisplayed=false`);
 }
 
-function downloadOptionalText(url, maxBytes) {
+function downloadOptionalText(url, maxBytes, timeoutMs) {
   return new Promise((resolve, reject) => {
     request(url, reject, (response) => {
       if (response.statusCode === 404) {
@@ -232,11 +238,11 @@ function downloadOptionalText(url, maxBytes) {
         }
       });
       response.on("error", fail);
-    }).on("error", reject);
+    }, 0, timeoutMs).on("error", reject);
   });
 }
 
-function downloadFile(url, target, maxBytes) {
+function downloadFile(url, target, maxBytes, timeoutMs) {
   return new Promise((resolve, reject) => {
     let file = null;
     let activeRequest = null;
@@ -300,7 +306,7 @@ function downloadFile(url, target, maxBytes) {
       });
       response.on("error", fail);
       file.on("drain", () => response.resume());
-    });
+    }, 0, timeoutMs);
     activeRequest.on("error", fail);
   });
 }
@@ -371,7 +377,7 @@ function downloadArtifactWriteError(kind) {
   );
 }
 
-function request(url, onError, handler, redirects = 0) {
+function request(url, onError, handler, redirects, timeoutMs) {
   const parsedUrl = validateDownloadUrl(url);
   const client = parsedUrl.protocol === "https:" ? https : http;
   const requestHandle = client.get(
@@ -396,17 +402,17 @@ function request(url, onError, handler, redirects = 0) {
           onError(error);
           return;
         }
-        request(redirectUrl, onError, handler, redirects + 1).on("error", onError);
+        request(redirectUrl, onError, handler, redirects + 1, timeoutMs).on("error", onError);
         return;
       }
 
       handler(response);
     }
   );
-  requestHandle.setTimeout(downloadLimits.timeoutMs, () => {
+  requestHandle.setTimeout(timeoutMs, () => {
     requestHandle.destroy(
       new Error(
-        `download timed out after ${downloadLimits.timeoutMs} ms: ${formatDownloadUrlForError(url)}`
+        `download timed out after ${timeoutMs} ms: ${formatDownloadUrlForError(url)}`
       )
     );
   });
