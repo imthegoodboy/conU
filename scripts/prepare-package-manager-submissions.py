@@ -489,32 +489,34 @@ def read_chocolatey_text_member(
 
 
 def validate_checksum_source(path: Path, dist: Path) -> None:
-    text = read_ascii_text(path, path.name)
+    sidecar_label = "package-manager submission checksum sidecar"
+    target_label = "package-manager submission checksum target"
+    text = read_ascii_text(path, sidecar_label)
     match = CHECKSUM_RE.fullmatch(text)
     if match is None:
-        raise SystemExit(f"{path.name} is not a strict SHA-256 sidecar")
+        raise SystemExit(f"{sidecar_label} is not a strict SHA-256 sidecar")
     target_name = match.group(2)
     expected_target = path.name[: -len(".sha256")]
     if target_name != expected_target:
-        raise SystemExit(f"{path.name} names wrong target: {target_name}")
+        raise SystemExit(f"{sidecar_label} names wrong target")
     target = dist / target_name
     validate_regular_file(
         target,
-        f"{path.name} target",
-        display_name=target_name,
+        target_label,
+        display_name="checksum target",
         max_bytes=MAX_BINARY_BYTES,
-        missing_message=f"{path.name} target is missing: {target_name}",
-        non_regular_message=f"{path.name} target is not a regular file: {target_name}",
+        missing_message=f"{target_label} is missing",
+        non_regular_message=f"{target_label} is not a regular file",
     )
     expected = match.group(1).lower()
     actual = sha256_file(
         target,
-        f"{path.name} target",
+        target_label,
         max_bytes=MAX_BINARY_BYTES,
-        display_name=target_name,
+        display_name="checksum target",
     )
     if expected != actual:
-        raise SystemExit(f"{path.name} SHA-256 mismatch for {target_name}")
+        raise SystemExit(f"SHA-256 mismatch for {target_label}")
 
 
 def validate_signature_source(source: Path, label: str, dist: Path) -> None:
