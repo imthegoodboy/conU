@@ -39,11 +39,6 @@ const checkOnly = process.argv.includes("--check-only");
 const skipDownload = process.env.CONU_NPM_SKIP_DOWNLOAD === "1";
 const allowUnverified = process.env.CONU_NPM_ALLOW_UNVERIFIED === "1";
 const localBinaryDir = process.env.CONU_NPM_BINARY_DIR;
-const version = packageVersion();
-const asset = assetName(version);
-const releaseBase =
-  process.env.CONU_NPM_DIST_BASE ||
-  `https://github.com/imthegoodboy/conU/releases/download/v${version}`;
 
 main().catch((error) => {
   console.error(`conU install failed: ${error.message}`);
@@ -51,6 +46,8 @@ main().catch((error) => {
 });
 
 async function main() {
+  const { version, asset, releaseBase } = loadInstallContext();
+
   if (checkOnly) {
     console.log(`conU npm package ${version}`);
     console.log(`platform asset: ${asset}`);
@@ -103,13 +100,38 @@ async function main() {
 
     const extractDir = path.join(tempDir, "extract");
     createExtractDir(extractDir);
-    extractArchive(archivePath, extractDir);
-    installFromExtractedArchive(extractDir);
+    extractArchive(archivePath, extractDir, asset);
+    installFromExtractedArchive(extractDir, asset);
   } catch (error) {
     installFailed = true;
     throw error;
   } finally {
     removeTempInstallDir(tempDir, { preserveFailure: installFailed });
+  }
+}
+
+function loadInstallContext() {
+  const version = readPackageVersionForInstall();
+  return {
+    version,
+    asset: assetName(version),
+    releaseBase:
+      process.env.CONU_NPM_DIST_BASE ||
+      `https://github.com/imthegoodboy/conU/releases/download/v${version}`
+  };
+}
+
+function readPackageVersionForInstall() {
+  try {
+    const version = packageVersion();
+    if (typeof version !== "string" || !version.trim()) {
+      throw new Error("missing package version");
+    }
+    return version;
+  } catch (_error) {
+    throw new Error(
+      "failed to read conU npm package metadata; pathDisplayed=false contentsDisplayed=false"
+    );
   }
 }
 
@@ -134,19 +156,19 @@ function installFromLocalDir(sourceDir) {
   console.log("installed conU binaries from local override; sourcePathDisplayed=false");
 }
 
-function installFromExtractedArchive(root) {
+function installFromExtractedArchive(root, publicAssetName) {
   const binaries = resolveExtractedBinaries(root, {
-    archiveName: asset,
+    archiveName: publicAssetName,
     binaryNames: BINARIES,
     binarySuffix: binarySuffix()
   });
   for (const name of BINARIES) {
     installBinary(binaries[name], name);
   }
-  console.log(`installed conU native binaries for ${asset}`);
+  console.log(`installed conU native binaries for ${publicAssetName}`);
 }
 
-function extractArchive(archivePath, destination) {
+function extractArchive(archivePath, destination, publicAssetName) {
   validateArchiveMembers(archivePath);
 
   const tar = spawnSync("tar", ["-xf", archivePath, "-C", destination], {
@@ -181,7 +203,7 @@ function extractArchive(archivePath, destination) {
     }
   }
 
-  throw new Error(`failed to extract ${asset}; pathDisplayed=false`);
+  throw new Error(`failed to extract ${publicAssetName}; pathDisplayed=false`);
 }
 
 function downloadOptionalText(url, maxBytes, timeoutMs) {

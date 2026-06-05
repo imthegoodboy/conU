@@ -66,6 +66,8 @@ function main() {
   expectNoLocalPath(checkOnly, vendorDir(), "check-only vendor dir");
   expectIncludes(checkOnly, "pathDisplayed=false", "check-only path display guard");
 
+  expectInstallMetadataFailureIsRedacted();
+
   withFixture((root) => {
     const packageCopy = path.join(root, "package");
     const binaryDir = path.join(root, "override-binaries");
@@ -189,6 +191,32 @@ function expectChildEnvScrubsWrapperSelector() {
   if (!("CONU_NPM_BINARY_DIR" in sourceEnv)) {
     throw new Error("launcher child env builder mutated installer env source");
   }
+}
+
+function expectInstallMetadataFailureIsRedacted() {
+  withFixture((root) => {
+    const packageCopy = path.join(root, "package");
+    copyPackage(packageRoot, packageCopy);
+    fs.rmSync(path.join(packageCopy, "package.json"), { force: true });
+
+    const output = runNodeFailure([path.join(packageCopy, "scripts", "install.js")], {
+      CONU_NPM_BINARY_DIR: "",
+      CONU_NPM_SKIP_DOWNLOAD: "",
+      CONU_NPM_DIST_BASE: "",
+      CONU_NPM_ALLOW_UNVERIFIED: ""
+    }, packageCopy);
+
+    expectNoLocalPath(output, root, "installer metadata failure temp root");
+    expectNoLocalPath(output, packageCopy, "installer metadata failure package root");
+    expectIncludes(
+      output,
+      "failed to read conU npm package metadata",
+      "installer metadata failure reason"
+    );
+    expectIncludes(output, "pathDisplayed=false", "installer metadata path display guard");
+    expectIncludes(output, "contentsDisplayed=false", "installer metadata content display guard");
+    expectNotIncludes(output, " at ", "installer metadata stack frame guard");
+  });
 }
 
 function expectLocalBinaryDirFailureIsRedacted() {
