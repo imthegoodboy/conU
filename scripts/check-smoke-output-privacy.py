@@ -126,6 +126,27 @@ def check_command_output_redaction(issues: list[str]) -> None:
     if redact_command_output(safe_guards) != safe_guards:
         issues.append("command output redaction changed safe display guard booleans")
 
+    private_key_blocks = (
+        (
+            "PEM private key",
+            "-----BEGIN PRIVATE KEY-----\n"
+            f"{sentinel}\n"
+            "-----END PRIVATE KEY-----",
+        ),
+        (
+            "PGP private key",
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+            f"{sentinel}\n"
+            "-----END PGP PRIVATE KEY BLOCK-----",
+        ),
+    )
+    for label, value in private_key_blocks:
+        redacted = redact_command_output(value)
+        if sentinel in redacted or "PRIVATE KEY" in redacted:
+            issues.append(f"command output redaction leaked {label}")
+        if redacted != "[redacted]":
+            issues.append(f"command output redaction did not collapse {label}")
+
     unsafe_guard_assignments = (
         f"tokenDisplayed={sentinel}",
         f"keyMaterialDisplayed={sentinel}",

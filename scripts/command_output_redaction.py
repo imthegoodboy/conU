@@ -18,6 +18,12 @@ SECRET_ASSIGNMENT_RE = re.compile(
     re.IGNORECASE,
 )
 AUTH_HEADER_RE = re.compile(r"\b(Bearer|Basic)\s+([A-Za-z0-9._~+/\-=]{8,})", re.IGNORECASE)
+PRIVATE_KEY_BLOCK_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 _-]*PRIVATE KEY(?: BLOCK)?-----"
+    r".*?"
+    r"-----END [A-Z0-9 _-]*PRIVATE KEY(?: BLOCK)?-----",
+    re.IGNORECASE | re.DOTALL,
+)
 SECRET_FLAG_RE = re.compile(
     rf"(?<!\w)(-{{1,2}}[A-Z0-9_.-]*(?:{SECRET_NAME_PATTERN})"
     r"[A-Z0-9_.-]*)(\s*=\s*|\s+)"
@@ -67,6 +73,7 @@ DISPLAY_GUARD_ASSIGNMENT_RE = re.compile(
 
 def redact_command_output(value: str) -> str:
     value, protected_guards = protect_safe_boolean_guards(value)
+    value = PRIVATE_KEY_BLOCK_RE.sub(REDACTED, value)
     value = URL_CREDENTIAL_RE.sub(r"\1\2:[redacted]@", value)
     value = URL_SECRET_QUERY_RE.sub(r"\1[redacted]", value)
     value = AUTH_HEADER_RE.sub(r"\1 [redacted]", value)
