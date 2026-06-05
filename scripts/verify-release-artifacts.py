@@ -135,7 +135,8 @@ def verify_checksum(archive: Path) -> None:
         checksum_archive_name = match.group(2)
         if checksum_archive_name != archive.name:
             raise SystemExit(
-                f"checksum file for {archive.name} names wrong archive: {checksum_archive_name}"
+                "checksum file names wrong archive; "
+                "checksumTargetDisplayed=false contentsDisplayed=false"
             )
 
         expected = match.group(1).lower()

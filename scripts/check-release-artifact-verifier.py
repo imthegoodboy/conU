@@ -160,6 +160,7 @@ def expect_failure(
     expected: str,
     *,
     forbidden: str | None = None,
+    required: tuple[str, ...] = (),
 ) -> None:
     try:
         action()
@@ -173,6 +174,11 @@ def expect_failure(
             raise AssertionError(
                 f"{description} failed with {message!r}, expected {expected!r}"
             ) from exc
+        for value in required:
+            if value not in message:
+                raise AssertionError(
+                    f"{description} omitted required value {value!r}: {message!r}"
+                ) from exc
         return
     raise AssertionError(f"{description} unexpectedly passed")
 
@@ -412,11 +418,14 @@ def main() -> int:
 
         wrong_name = root / "conu-0.1.0-wrong-name.zip"
         write_zip(wrong_name)
-        write_checksum(wrong_name, archive_name="other.zip")
+        malicious_checksum_target = "secret-release-checksum-target-should-not-print.zip"
+        write_checksum(wrong_name, archive_name=malicious_checksum_target)
         expect_failure(
             "wrong checksum archive name",
             lambda: verifier.verify_checksum(wrong_name),
             "names wrong archive",
+            forbidden=malicious_checksum_target,
+            required=("checksumTargetDisplayed=false", "contentsDisplayed=false"),
         )
 
         loose_checksum = root / "conu-0.1.0-loose-checksum.zip"
