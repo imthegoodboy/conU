@@ -92,6 +92,7 @@ def main() -> int:
             1,
             lambda: build_policy(generator, dist),
             "is too large",
+            "conu.rb",
         )
         expect_module_failure_with_limit(
             generator,
@@ -100,6 +101,8 @@ def main() -> int:
             1,
             lambda: build_policy(generator, dist),
             "is too large",
+            f"conu-{VERSION}-windows-x64.zip",
+            f"conu-{VERSION}-windows-x64.zip.sha256",
         )
         expect_module_failure_with_limit(
             generator,
@@ -108,6 +111,8 @@ def main() -> int:
             1,
             lambda: build_policy(generator, dist),
             "is too large",
+            f"conu-{VERSION}-linux-x64.tar.gz",
+            f"conu-{VERSION}-linux-x64.tar.gz.asc",
         )
         expect_module_failure_with_limit(
             generator,
@@ -116,6 +121,40 @@ def main() -> int:
             1,
             lambda: build_policy(generator, dist),
             "source inputs exceed",
+            f"conu-{VERSION}-windows-x64.zip",
+        )
+        expect_module_failure_with_limit(
+            generator,
+            "generated policy output size bound",
+            "MAX_TEXT_ASSET_BYTES",
+            1,
+            lambda: generator.write_text_output(
+                temp / "oversized-update-policy.json",
+                "release update policy",
+                "fixture\n",
+                max_bytes=generator.MAX_TEXT_ASSET_BYTES,
+            ),
+            "is too large",
+            "oversized-update-policy.json",
+        )
+        expect_module_failure_with_limit(
+            generator,
+            "generated policy hash source size bound",
+            "MAX_TEXT_ASSET_BYTES",
+            max(0, policy.stat().st_size - 1),
+            lambda: generator.write_sha256_sidecar(policy),
+            "is too large",
+            policy.name,
+        )
+        expect_module_failure_with_limit(
+            generator,
+            "generated policy sidecar output size bound",
+            "MAX_CHECKSUM_BYTES",
+            1,
+            lambda: generator.write_sha256_sidecar(policy),
+            "is too large",
+            policy.name,
+            f"{policy.name}.sha256",
         )
         with mock.patch.object(Path, "is_symlink", return_value=True):
             expect_module_failure(
@@ -340,7 +379,12 @@ def build_policy(generator, dist: Path) -> dict[str, object]:
     )
 
 
-def expect_module_failure(description: str, action, expected: str) -> None:
+def expect_module_failure(
+    description: str,
+    action,
+    expected: str,
+    *forbidden_values: str,
+) -> None:
     try:
         action()
     except SystemExit as exc:
@@ -349,6 +393,11 @@ def expect_module_failure(description: str, action, expected: str) -> None:
             raise AssertionError(
                 f"{description} failed with {rendered!r}, expected {expected!r}"
             ) from exc
+        for value in forbidden_values:
+            if value in rendered:
+                raise AssertionError(
+                    f"{description} leaked forbidden value {value!r}: {rendered!r}"
+                ) from exc
         return
     raise AssertionError(f"{description} unexpectedly passed")
 
@@ -360,11 +409,12 @@ def expect_module_failure_with_limit(
     value: int,
     action,
     expected: str,
+    *forbidden_values: str,
 ) -> None:
     original = getattr(generator, attr)
     setattr(generator, attr, value)
     try:
-        expect_module_failure(description, action, expected)
+        expect_module_failure(description, action, expected, *forbidden_values)
     finally:
         setattr(generator, attr, original)
 

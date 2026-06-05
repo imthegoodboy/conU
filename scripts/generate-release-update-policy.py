@@ -487,7 +487,7 @@ def release_asset(
     source_budget: SourceBudget,
 ) -> ReleaseAsset:
     path = dist / filename
-    label = f"release update policy asset {filename}"
+    label = f"release update policy {kind} asset"
     max_bytes = MAX_TEXT_ASSET_BYTES if is_text_asset(filename) else MAX_SOURCE_ASSET_BYTES
     asset_file, _size = open_source_file(
         path,
@@ -530,23 +530,21 @@ def verify_sha256_sidecar(
     try:
         checksum_text = read_text_file(
             sidecar,
-            f"SHA-256 sidecar for {label} {path.name}",
+            f"SHA-256 sidecar for release update policy {label}",
             max_bytes=MAX_CHECKSUM_BYTES,
             source_budget=source_budget,
             encoding="ascii",
         )
     except UnicodeDecodeError as exc:
-        raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}: {path.name}") from exc
+        raise SystemExit(f"SHA-256 sidecar is not ASCII for {label}") from exc
     match = CHECKSUM_RE.fullmatch(checksum_text)
     if match is None:
-        raise SystemExit(f"SHA-256 sidecar has invalid format for {label}: {path.name}")
+        raise SystemExit(f"SHA-256 sidecar has invalid format for {label}")
     if match.group(2) != path.name:
-        raise SystemExit(
-            f"SHA-256 sidecar for {label} {path.name} names wrong file: {match.group(2)}"
-        )
+        raise SystemExit(f"SHA-256 sidecar for {label} names wrong file")
     expected = match.group(1).lower()
     if expected != actual:
-        raise SystemExit(f"SHA-256 mismatch for {label}: {path.name}")
+        raise SystemExit(f"SHA-256 mismatch for {label}")
     return expected
 
 
@@ -555,17 +553,17 @@ def require_detached_signature(path: Path, source_budget: SourceBudget) -> None:
     try:
         signature_text = read_text_file(
             signature,
-            f"detached signature for release update policy asset {path.name}",
+            "detached signature for release update policy asset",
             max_bytes=MAX_SIGNATURE_BYTES,
             source_budget=source_budget,
             encoding="ascii",
         )
     except UnicodeDecodeError as exc:
-        raise SystemExit(f"detached signature is not ASCII-armored: {signature.name}") from exc
+        raise SystemExit("detached signature is not ASCII-armored") from exc
     if "BEGIN PGP SIGNATURE" not in signature_text:
-        raise SystemExit(f"detached signature is not ASCII-armored: {signature.name}")
+        raise SystemExit("detached signature is not ASCII-armored")
     if "PRIVATE KEY BLOCK" in signature_text:
-        raise SystemExit(f"detached signature contains private key material: {signature.name}")
+        raise SystemExit("detached signature contains private key material")
 
 
 def asset_url(release_base_url: str, filename: str) -> str:
@@ -662,7 +660,7 @@ def open_regular_file(path: Path, label: str, *, max_bytes: int) -> tuple[Binary
             raise SystemExit(f"{label} must be a regular file: {path.name}")
         size = metadata.st_size
         if size > max_bytes:
-            raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+            raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
         return os.fdopen(fd, "rb"), size
     except BaseException:
         os.close(fd)
@@ -686,7 +684,7 @@ def read_regular_file(
         data = handle.read(max_bytes + 1)
         validate_open_regular_file(handle, label, max_bytes=max_bytes)
     if len(data) > max_bytes:
-        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
     return data
 
 
@@ -759,7 +757,7 @@ def open_output_file(path: Path, label: str) -> BinaryIO:
 def write_text_output(path: Path, label: str, text: str, *, max_bytes: int) -> None:
     data = text.encode("ascii")
     if len(data) > max_bytes:
-        raise SystemExit(f"{label} is too large: {path.name} exceeds {max_bytes} bytes")
+        raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
     with open_output_file(path, label) as handle:
         handle.write(data)
         handle.flush()
@@ -780,12 +778,12 @@ def validate_open_regular_file(handle: BinaryIO, label: str, *, max_bytes: int) 
 def write_sha256_sidecar(path: Path) -> None:
     digest = sha256_file(
         path,
-        f"release update policy output {path.name}",
+        "release update policy output",
         max_bytes=MAX_TEXT_ASSET_BYTES,
     )
     write_text_output(
         path.with_name(f"{path.name}.sha256"),
-        f"SHA-256 sidecar for {path.name}",
+        "release update policy SHA-256 sidecar",
         f"{digest}  {path.name}\n",
         max_bytes=MAX_CHECKSUM_BYTES,
     )
@@ -809,7 +807,7 @@ def is_text_asset(filename: str) -> bool:
 
 def assert_open_file_text_safe(
     handle: BinaryIO,
-    filename: str,
+    _filename: str,
     label: str,
     *,
     max_bytes: int,
@@ -817,14 +815,14 @@ def assert_open_file_text_safe(
     handle.seek(0)
     data = handle.read(max_bytes + 1)
     if len(data) > max_bytes:
-        raise SystemExit(f"{label} is too large: {filename} exceeds {max_bytes} bytes")
+        raise SystemExit(f"{label} is too large: exceeds {max_bytes} bytes")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise SystemExit(f"{filename} is not UTF-8 text") from exc
+        raise SystemExit(f"{label} is not UTF-8 text") from exc
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise SystemExit(f"{filename} contains forbidden text: {forbidden}")
+            raise SystemExit(f"{label} contains forbidden text: {forbidden}")
     validate_open_regular_file(handle, label, max_bytes=max_bytes)
     handle.seek(0)
 
