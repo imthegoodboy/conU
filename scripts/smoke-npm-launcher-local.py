@@ -330,7 +330,10 @@ def validate_archive_read_entry(
 
     state.entry_count += 1
     if state.entry_count > MAX_MEMBER_COUNT:
-        raise SystemExit(f"{archive_name} contains more than {MAX_MEMBER_COUNT} entries")
+        raise archive_member_failure(
+            archive_name,
+            f"contains more than {MAX_MEMBER_COUNT} entries",
+        )
 
     normalized, member_style = normalize_member(archive_name, member_name, expected_root)
     root_style = update_archive_root_style(archive_name, root_style, member_style)
@@ -341,8 +344,9 @@ def validate_archive_read_entry(
 
     state.total_uncompressed += size
     if state.total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
-        raise SystemExit(
-            f"{archive_name} uncompressed contents exceed {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes"
+        raise archive_member_failure(
+            archive_name,
+            f"uncompressed contents exceed {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes",
         )
     if normalized in state.paths:
         raise archive_member_failure(archive_name, "contains duplicate archive path")
@@ -581,7 +585,10 @@ def validate_extract_entry(
 
     state.entry_count += 1
     if state.entry_count > MAX_MEMBER_COUNT:
-        raise SystemExit(f"{archive_name} contains more than {MAX_MEMBER_COUNT} entries")
+        raise archive_member_failure(
+            archive_name,
+            f"contains more than {MAX_MEMBER_COUNT} entries",
+        )
 
     normalized = normalize_extract_path(archive_name, member_name)
     if not normalized:
@@ -591,8 +598,9 @@ def validate_extract_entry(
 
     state.total_uncompressed += size
     if state.total_uncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES:
-        raise SystemExit(
-            f"{archive_name} uncompressed contents exceed {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes"
+        raise archive_member_failure(
+            archive_name,
+            f"uncompressed contents exceed {MAX_TOTAL_UNCOMPRESSED_BYTES} bytes",
         )
     if normalized in state.paths:
         raise archive_member_failure(archive_name, "contains duplicate archive path")
