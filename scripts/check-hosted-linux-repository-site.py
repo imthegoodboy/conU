@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -123,6 +124,63 @@ def main() -> int:
             1,
             "uncompressed ZIP contents exceed",
             "hosted bundle total size bound",
+        )
+
+        oversized_input = temp / "secret-hosted-site-input-name-should-not-print.txt"
+        oversized_input.write_bytes(b"oversized\n")
+        message = expect_action_failure(
+            lambda: site_generator.open_regular_file(
+                oversized_input,
+                "hosted repository site input",
+                max_bytes=1,
+            ),
+            "hosted repository site input is too large",
+            "oversized hosted repository site input",
+        )
+        assert_not_displayed(
+            message,
+            "oversized hosted repository site input",
+            oversized_input.name,
+        )
+
+        original_open_regular_file = site_generator.open_regular_file
+        try:
+            site_generator.open_regular_file = lambda _path, _label, *, max_bytes: (
+                io.BytesIO(b"xx"),
+                2,
+            )
+            message = expect_action_failure(
+                lambda: site_generator.read_regular_file(
+                    Path("secret-hosted-site-read-name-should-not-print.txt"),
+                    "hosted repository site read",
+                    max_bytes=1,
+                ),
+                "hosted repository site read is too large",
+                "oversized hosted repository site read",
+            )
+            assert_not_displayed(
+                message,
+                "oversized hosted repository site read",
+                "secret-hosted-site-read-name-should-not-print.txt",
+            )
+        finally:
+            site_generator.open_regular_file = original_open_regular_file
+
+        oversized_output = temp / "secret-hosted-site-output-name-should-not-print.txt"
+        message = expect_action_failure(
+            lambda: site_generator.write_text_output(
+                oversized_output,
+                "hosted repository site output",
+                "oversized",
+                max_bytes=1,
+            ),
+            "hosted repository site output is too large",
+            "oversized hosted repository site output",
+        )
+        assert_not_displayed(
+            message,
+            "oversized hosted repository site output",
+            oversized_output.name,
         )
 
         unreadable_bundle = temp / "unreadable-hosted-bundle.zip"
@@ -541,6 +599,12 @@ def assert_member_failure_redacted(message: str, label: str, *forbidden_values: 
 def assert_no_sentinel(output: str, label: str) -> None:
     if SENSITIVE_SENTINEL in output:
         raise AssertionError(f"{label} leaked duplicate-key shadow value")
+
+
+def assert_not_displayed(message: str, label: str, *forbidden_values: str) -> None:
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{label}: displayed forbidden value {value!r}: {message!r}")
 
 
 def try_symlink(target: Path, link: Path, *, target_is_directory: bool = False) -> bool:
