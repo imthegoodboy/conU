@@ -38,7 +38,9 @@ function validateArchiveMembers(archivePath) {
 
 function assertSafeArchiveMemberList(members, archiveLabel = "archive") {
   if (!Array.isArray(members) || members.length === 0) {
-    throw new Error(`${archiveLabel} did not contain any extractable members`);
+    throw new Error(
+      `${archiveLabel} did not contain any extractable members; pathDisplayed=false contentsDisplayed=false`
+    );
   }
   if (members.length > MAX_ARCHIVE_MEMBERS) {
     throw archiveMemberPathError(
@@ -131,7 +133,7 @@ function listArchiveMembers(archivePath, archiveLabel) {
   }
 
   throw new Error(
-    `could not inspect archive members before extraction: ${archiveLabel}; pathDisplayed=false`
+    `could not inspect archive members before extraction: ${archiveLabel}; pathDisplayed=false contentsDisplayed=false`
   );
 }
 
@@ -144,7 +146,7 @@ function listArchiveMembersWithTar(archivePath, archiveLabel) {
   const verbose = runTool("tar", ["-tvf", archivePath]);
   if (verbose.status !== 0) {
     throw new Error(
-      `could not inspect archive member types before extraction: ${archiveLabel}; pathDisplayed=false`
+      `could not inspect archive member types before extraction: ${archiveLabel}; pathDisplayed=false contentsDisplayed=false`
     );
   }
 
@@ -307,7 +309,7 @@ function zipMemberType(name, flags, externalAttributes) {
 
 function zipInspectionError(archiveLabel) {
   const error = new Error(
-    `could not inspect zip archive members before extraction: ${archiveLabel}; pathDisplayed=false`
+    `could not inspect zip archive members before extraction: ${archiveLabel}; pathDisplayed=false contentsDisplayed=false`
   );
   error.zipInspectionError = true;
   return error;

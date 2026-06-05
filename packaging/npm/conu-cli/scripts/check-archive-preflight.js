@@ -266,6 +266,12 @@ function expectArchiveInspectionPathRedacted() {
     try {
       validateArchiveMembers(archive);
     } catch (error) {
+      if (!error.message.includes("pathDisplayed=false")) {
+        throw new Error(`expected path display guard, got: ${error.message}`);
+      }
+      if (!error.message.includes("contentsDisplayed=false")) {
+        throw new Error(`expected contents display guard, got: ${error.message}`);
+      }
       if (!error.message.includes(path.basename(archive))) {
         throw new Error(`expected archive filename in error, got: ${error.message}`);
       }
@@ -290,6 +296,9 @@ function expectArchiveInspectionFailurePathGuard() {
     } catch (error) {
       if (!error.message.includes("pathDisplayed=false")) {
         throw new Error(`expected path display guard, got: ${error.message}`);
+      }
+      if (!error.message.includes("contentsDisplayed=false")) {
+        throw new Error(`expected contents display guard, got: ${error.message}`);
       }
       if (!error.message.includes(path.basename(archive))) {
         throw new Error(`expected archive filename in error, got: ${error.message}`);

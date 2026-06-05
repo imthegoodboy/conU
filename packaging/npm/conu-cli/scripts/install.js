@@ -203,7 +203,9 @@ function extractArchive(archivePath, destination, publicAssetName) {
     }
   }
 
-  throw new Error(`failed to extract ${publicAssetName}; pathDisplayed=false`);
+  throw new Error(
+    `failed to extract ${publicAssetName}; pathDisplayed=false contentsDisplayed=false`
+  );
 }
 
 function downloadOptionalText(url, maxBytes, timeoutMs) {
