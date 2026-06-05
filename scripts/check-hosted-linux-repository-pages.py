@@ -196,6 +196,68 @@ def main() -> int:
             "missing SHA-256 sidecar",
         )
 
+        non_ascii_checksum = temp / "non-ascii-checksum"
+        shutil.copytree(dist, non_ascii_checksum)
+        (non_ascii_checksum / f"{SITE_BUNDLE}.sha256").write_bytes(b"\xff\n")
+        output = expect_failure(
+            "non-ASCII site checksum",
+            non_ascii_checksum / SITE_BUNDLE,
+            temp / "non-ascii-checksum-pages",
+            "SHA-256 sidecar is not ASCII",
+        )
+        assert_not_displayed(output, "non-ASCII site checksum", SITE_BUNDLE)
+
+        invalid_checksum = temp / "invalid-checksum"
+        shutil.copytree(dist, invalid_checksum)
+        (invalid_checksum / f"{SITE_BUNDLE}.sha256").write_text(
+            "not a strict checksum\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "invalid site checksum",
+            invalid_checksum / SITE_BUNDLE,
+            temp / "invalid-checksum-pages",
+            "invalid format",
+        )
+        assert_not_displayed(output, "invalid site checksum", SITE_BUNDLE)
+
+        wrong_checksum_target = temp / "wrong-checksum-target"
+        shutil.copytree(dist, wrong_checksum_target)
+        malicious_target = "secret-pages-sidecar-target.zip"
+        (wrong_checksum_target / f"{SITE_BUNDLE}.sha256").write_text(
+            f"{hashlib.sha256(site.read_bytes()).hexdigest()}  {malicious_target}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "wrong site checksum target",
+            wrong_checksum_target / SITE_BUNDLE,
+            temp / "wrong-checksum-target-pages",
+            "names wrong file",
+        )
+        assert_not_displayed(
+            output,
+            "wrong site checksum target",
+            SITE_BUNDLE,
+            malicious_target,
+        )
+
+        mismatched_checksum = temp / "mismatched-checksum"
+        shutil.copytree(dist, mismatched_checksum)
+        (mismatched_checksum / f"{SITE_BUNDLE}.sha256").write_text(
+            f"{'0' * 64}  {SITE_BUNDLE}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "mismatched site checksum",
+            mismatched_checksum / SITE_BUNDLE,
+            temp / "mismatched-checksum-pages",
+            "SHA-256 mismatch",
+        )
+        assert_not_displayed(output, "mismatched site checksum", SITE_BUNDLE)
+
         missing_signature = temp / "missing-signature"
         shutil.copytree(dist, missing_signature)
         (missing_signature / f"{SITE_BUNDLE}.asc").unlink()
@@ -205,6 +267,32 @@ def main() -> int:
             temp / "missing-signature-pages",
             "missing detached signature",
         )
+
+        non_ascii_signature = temp / "non-ascii-signature"
+        shutil.copytree(dist, non_ascii_signature)
+        (non_ascii_signature / f"{SITE_BUNDLE}.asc").write_bytes(b"\xff\n")
+        output = expect_failure(
+            "non-ASCII site signature",
+            non_ascii_signature / SITE_BUNDLE,
+            temp / "non-ascii-signature-pages",
+            "detached signature is not ASCII-armored",
+        )
+        assert_not_displayed(output, "non-ASCII site signature", f"{SITE_BUNDLE}.asc")
+
+        non_armored_signature = temp / "non-armored-signature"
+        shutil.copytree(dist, non_armored_signature)
+        (non_armored_signature / f"{SITE_BUNDLE}.asc").write_text(
+            "not a signature\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        output = expect_failure(
+            "non-armored site signature",
+            non_armored_signature / SITE_BUNDLE,
+            temp / "non-armored-signature-pages",
+            "detached signature is not ASCII-armored",
+        )
+        assert_not_displayed(output, "non-armored site signature", f"{SITE_BUNDLE}.asc")
 
         private_key_signature = temp / "private-key-signature"
         shutil.copytree(dist, private_key_signature)
@@ -218,12 +306,13 @@ def main() -> int:
             encoding="ascii",
             newline="\n",
         )
-        expect_failure(
+        output = expect_failure(
             "private key site signature",
             private_key_signature / SITE_BUNDLE,
             temp / "private-key-signature-pages",
             "private key material",
         )
+        assert_not_displayed(output, "private key site signature", f"{SITE_BUNDLE}.asc")
 
         symlink_site = temp / "symlink-site"
         shutil.copytree(dist, symlink_site)
