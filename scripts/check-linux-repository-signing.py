@@ -288,6 +288,7 @@ def run_source_file_preflights(signer) -> None:
             lambda: signer.repository_metadata_assets(oversized_source),
             "is too large",
             "repository signing source size bound",
+            oversized_metadata.name,
         )
 
         aggregate_source = temp / "aggregate-source"
@@ -315,6 +316,31 @@ def run_source_file_preflights(signer) -> None:
             "must be a regular file",
             "repository signing sidecar directory",
         )
+        oversized_sidecar = temp / "oversized-sidecar"
+        oversized_sidecar.mkdir()
+        oversized_sidecar_bundle = oversized_sidecar / APT_METADATA
+        write_apt_metadata_zip(oversized_sidecar_bundle)
+        oversized_sidecar_path = oversized_sidecar_bundle.with_name(
+            f"{oversized_sidecar_bundle.name}.sha256"
+        )
+        oversized_sidecar_path.write_text(
+            "0" * 64 + f"  {oversized_sidecar_bundle.name}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_constant_failure(
+            signer,
+            "MAX_CHECKSUM_BYTES",
+            max(0, oversized_sidecar_path.stat().st_size - 1),
+            lambda: signer.verify_sha256_sidecar(
+                oversized_sidecar_bundle,
+                "APT repository metadata bundle",
+            ),
+            "is too large",
+            "repository signing sidecar size bound",
+            oversized_sidecar_path.name,
+            oversized_sidecar_bundle.name,
+        )
 
         sidecar_output_directory = temp / "sidecar-output-directory"
         sidecar_output_directory.mkdir()
@@ -325,6 +351,38 @@ def run_source_file_preflights(signer) -> None:
             lambda: signer.write_sha256_sidecar(output_bundle),
             "must be a regular file",
             "repository signing sidecar output directory",
+        )
+        oversized_sidecar_output = temp / "oversized-sidecar-output"
+        oversized_sidecar_output.mkdir()
+        oversized_output_bundle = oversized_sidecar_output / APT_METADATA
+        write_apt_metadata_zip(oversized_output_bundle)
+        oversized_output_sidecar = oversized_output_bundle.with_name(
+            f"{oversized_output_bundle.name}.sha256"
+        )
+        oversized_output_sidecar.write_bytes(b"existing sidecar\n")
+        expect_constant_failure(
+            signer,
+            "MAX_CHECKSUM_BYTES",
+            max(0, oversized_output_sidecar.stat().st_size - 1),
+            lambda: signer.write_sha256_sidecar(oversized_output_bundle),
+            "is too large",
+            "repository signing sidecar output size bound",
+            oversized_output_sidecar.name,
+            oversized_output_bundle.name,
+        )
+
+        oversized_output_bundle_source = temp / "oversized-output-bundle"
+        oversized_output_bundle_source.mkdir()
+        oversized_output_zip = oversized_output_bundle_source / APT_METADATA
+        write_apt_metadata_zip(oversized_output_zip)
+        expect_constant_failure(
+            signer,
+            "MAX_REPOSITORY_METADATA_BUNDLE_BYTES",
+            max(0, oversized_output_zip.stat().st_size - 1),
+            lambda: signer.write_zip_members(oversized_output_zip, {"Release": b"x\n"}),
+            "is too large",
+            "repository signing bundle output size bound",
+            oversized_output_zip.name,
         )
 
         symlink_source = temp / "symlink-source"
@@ -428,23 +486,34 @@ def expect_constant_failure(
     action,
     expected: str,
     label: str,
+    *forbidden_values: str,
 ) -> None:
     original = getattr(signer, constant_name)
     setattr(signer, constant_name, value)
     try:
-        expect_action_failure(action, expected, label)
+        expect_action_failure(action, expected, label, *forbidden_values)
     finally:
         setattr(signer, constant_name, original)
 
 
-def expect_action_failure(action, expected: str, label: str) -> str:
+def expect_action_failure(
+    action,
+    expected: str,
+    label: str,
+    *forbidden_values: str,
+) -> str:
     try:
         action()
     except SystemExit as exc:
         message = str(exc)
-        if expected in message:
-            return message
-        raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+        if expected not in message:
+            raise AssertionError(f"{label}: expected {expected!r}, got {message!r}") from exc
+        for value in forbidden_values:
+            if value in message:
+                raise AssertionError(
+                    f"{label}: displayed forbidden value {value!r}: {message!r}"
+                ) from exc
+        return message
     raise AssertionError(f"{label}: expected failure containing {expected!r}")
 
 
