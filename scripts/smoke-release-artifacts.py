@@ -511,7 +511,7 @@ def open_regular_file(path: Path, label: str, *, max_bytes: int) -> tuple[Binary
         if not stat.S_ISREG(metadata.st_mode):
             raise SystemExit(f"{label} must be a regular file: {path.name}")
         if metadata.st_size > max_bytes:
-            raise SystemExit(f"{label} is too large: {path.name}")
+            raise SystemExit(f"{label} is too large")
         return os.fdopen(fd, "rb"), metadata.st_size
     except BaseException:
         os.close(fd)

@@ -33,6 +33,21 @@ def main() -> int:
             )
 
     with fixture_dir() as root:
+        archive = root / "secret-release-archive-name-should-not-print.zip"
+        write_zip(archive, {"manifest.toml": 'target = "host"\n'})
+        original_limit = smoke.MAX_ARCHIVE_BYTES
+        smoke.MAX_ARCHIVE_BYTES = 1
+        try:
+            expect_action_failure(
+                lambda: smoke.read_manifest_target(archive),
+                "release archive is too large",
+                "oversized release smoke archive",
+                forbidden=archive.name,
+            )
+        finally:
+            smoke.MAX_ARCHIVE_BYTES = original_limit
+
+    with fixture_dir() as root:
         bin_dir = root / "bin"
         write_binaries(bin_dir, smoke)
         smoke.verify_archive_binaries(Path("fixture.zip"), bin_dir)
