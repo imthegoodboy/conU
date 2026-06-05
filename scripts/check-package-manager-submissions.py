@@ -198,6 +198,12 @@ def assert_not_displayed(message: str, description: str, *forbidden_values: str)
             raise AssertionError(f"{description} leaked forbidden value {value!r}: {message!r}")
 
 
+def assert_display_guards(message: str, description: str, *guards: str) -> None:
+    for guard in guards:
+        if guard not in message:
+            raise AssertionError(f"{description} missing display guard {guard!r}: {message!r}")
+
+
 def expect_member_redacted_failure(
     description: str,
     action,
@@ -558,6 +564,12 @@ def main() -> int:
             "wrong package checksum target",
             sidecar.name,
             malicious_target,
+        )
+        assert_display_guards(
+            output,
+            "wrong package checksum target",
+            "checksumTargetDisplayed=false",
+            "contentsDisplayed=false",
         )
 
         invalid_checksum = temp / "invalid-checksum"

@@ -498,7 +498,10 @@ def validate_checksum_source(path: Path, dist: Path) -> None:
     target_name = match.group(2)
     expected_target = path.name[: -len(".sha256")]
     if target_name != expected_target:
-        raise SystemExit(f"{sidecar_label} names wrong target")
+        raise SystemExit(
+            f"{sidecar_label} names wrong target; "
+            "checksumTargetDisplayed=false contentsDisplayed=false"
+        )
     target = dist / target_name
     validate_regular_file(
         target,
