@@ -35,6 +35,9 @@ FORBIDDEN_TEXT = (
     "payload_hex",
     "ciphertext_body",
 )
+TEXT_FAILURE_GUARDS = (
+    "contentsDisplayed=false tokenDisplayed=false keyMaterialDisplayed=false"
+)
 FORBIDDEN_PATH_SEGMENTS = {
     ".conu",
     ".git",
@@ -416,7 +419,9 @@ def decode_ascii(data: bytes, label: str) -> str:
 def assert_no_forbidden_text(text: str, label: str) -> None:
     for forbidden in FORBIDDEN_TEXT:
         if forbidden in text:
-            raise EndpointReadinessError(f"{label} contains forbidden hosted repository text: {forbidden}")
+            raise EndpointReadinessError(
+                f"{label} contains forbidden hosted repository text; {TEXT_FAILURE_GUARDS}"
+            )
 
 
 def validate_repository_json(base_url: str, repository: dict[str, Any]) -> str:

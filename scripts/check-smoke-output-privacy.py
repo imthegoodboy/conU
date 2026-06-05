@@ -110,6 +110,23 @@ def check_command_output_redaction(issues: list[str]) -> None:
         if "[redacted]" not in redacted:
             issues.append(f"command output redaction did not mark secret flag value from {value!r}")
 
+    safe_guards = (
+        "contentsDisplayed=false tokenDisplayed=false keyMaterialDisplayed=false"
+    )
+    if redact_command_output(safe_guards) != safe_guards:
+        issues.append("command output redaction changed safe display guard booleans")
+
+    unsafe_guard_assignments = (
+        f"tokenDisplayed={sentinel}",
+        f"keyMaterialDisplayed={sentinel}",
+    )
+    for value in unsafe_guard_assignments:
+        redacted = redact_command_output(value)
+        if sentinel in redacted:
+            issues.append(f"command output redaction leaked guarded secret value from {value!r}")
+        if "[redacted]" not in redacted:
+            issues.append(f"command output redaction did not mark guarded secret value from {value!r}")
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

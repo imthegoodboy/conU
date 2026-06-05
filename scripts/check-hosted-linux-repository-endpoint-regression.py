@@ -233,6 +233,33 @@ def main() -> int:
                 VERSION,
             )
 
+        forbidden_text = temp / "forbidden-text"
+        shutil.copytree(site_root, forbidden_text)
+        repository_path = forbidden_text / "repository.json"
+        repository = json.loads(repository_path.read_text(encoding="ascii"))
+        repository["forbiddenMarker"] = "NPM_TOKEN"
+        repository_path.write_text(
+            json.dumps(repository, indent=2, sort_keys=True) + "\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        with serve_site(forbidden_text, mode="good") as base_url:
+            rewrite_base_url(forbidden_text, PLACEHOLDER_BASE_URL, base_url)
+            output = run_checker_expect_failure(
+                base_url,
+                "forbidden hosted repository text",
+                "--expected-version",
+                VERSION,
+            )
+            assert_no_forbidden_literal(output, "endpoint forbidden text output", "NPM_TOKEN")
+            for guard in (
+                "contentsDisplayed=false",
+                "tokenDisplayed=false",
+                "keyMaterialDisplayed=false",
+            ):
+                if guard not in output:
+                    raise AssertionError(f"endpoint forbidden text output missed {guard}")
+
         escaped_dot_download_url = temp / "escaped-dot-download-url"
         shutil.copytree(site_root, escaped_dot_download_url)
         with serve_site(escaped_dot_download_url, mode="good") as base_url:
@@ -446,6 +473,11 @@ def run_checker_expect_failure(
 def assert_no_sentinel(output: str, label: str) -> None:
     if SENSITIVE_SENTINEL in output:
         raise AssertionError(f"{label} leaked duplicate-key shadow value")
+
+
+def assert_no_forbidden_literal(output: str, label: str, literal: str) -> None:
+    if literal in output:
+        raise AssertionError(f"{label} leaked forbidden literal {literal!r}")
 
 
 if __name__ == "__main__":
