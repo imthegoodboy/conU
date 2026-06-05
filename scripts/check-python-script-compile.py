@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import py_compile
 import sys
+import tokenize
 from pathlib import Path
 
 
@@ -22,13 +22,19 @@ def main() -> int:
         if not targets:
             raise ValueError("no Python sources found")
         for target in targets:
-            py_compile.compile(str(target), doraise=True)
-    except (OSError, py_compile.PyCompileError, ValueError) as exc:
+            compile_source(target)
+    except (OSError, SyntaxError, ValueError) as exc:
         print(f"Python script compile check failed: {exc}", file=sys.stderr)
         return 1
 
     print(f"Python script compile check passed: {len(targets)} file(s)")
     return 0
+
+
+def compile_source(path: Path) -> None:
+    with tokenize.open(path) as source_file:
+        source = source_file.read()
+    compile(source, str(path), "exec", dont_inherit=True)
 
 
 def discover_python_sources() -> tuple[Path, ...]:
