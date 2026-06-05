@@ -13,6 +13,7 @@ import shutil
 import stat
 import sys
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
@@ -442,8 +443,8 @@ def validate_chocolatey_package(path: Path, dist: Path) -> None:
                     raise archive_member_failure(path.name, "has unsafe Chocolatey package path")
                 text = read_chocolatey_text_member(package, info, path.name)
                 assert_safe_text(text, f"{path.name}:{name}", dist)
-    except (RuntimeError, zipfile.BadZipFile) as exc:
-        raise SystemExit(f"{path.name} is not a readable Chocolatey nupkg") from exc
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise archive_member_failure(path.name, "is not a readable Chocolatey nupkg") from exc
     except UnicodeDecodeError as exc:
         raise SystemExit(f"{path.name} contains non-ASCII Chocolatey metadata") from exc
 
@@ -477,7 +478,7 @@ def read_chocolatey_text_member(
     try:
         with package.open(info, "r") as handle:
             data = handle.read(MAX_TEXT_BYTES + 1)
-    except (RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
+    except (RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error) as exc:
         raise archive_member_failure(
             package_name,
             "could not read Chocolatey package member",
