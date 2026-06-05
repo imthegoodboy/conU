@@ -83,7 +83,11 @@ function main() {
     "https://user:pass@example.com/conu.zip",
     "embedded credentials"
   );
-  expectDisplayUrl("https://example.com/conu.zip?token=secret#fragment", "https://example.com/conu.zip");
+  expectDisplayUrl(
+    "https://example.com/secret-token-path/conu.zip?token=secret#secret-fragment",
+    "https://example.com/[path redacted]; urlPathDisplayed=false queryDisplayed=false fragmentDisplayed=false",
+    ["secret-token-path", "conu.zip", "token=secret", "secret-fragment"]
+  );
   console.log("download URL policy check passed");
 }
 
@@ -204,10 +208,15 @@ function expectRedirectFail(fromUrl, toUrl, expectedMessage) {
   throw new Error(`expected download redirect policy failure: ${expectedMessage}`);
 }
 
-function expectDisplayUrl(url, expected) {
+function expectDisplayUrl(url, expected, forbiddenValues = []) {
   const actual = formatDownloadUrlForError(url);
   if (actual !== expected) {
     throw new Error(`expected sanitized display URL ${expected}, got ${actual}`);
+  }
+  for (const value of forbiddenValues) {
+    if (actual.includes(value)) {
+      throw new Error(`sanitized display URL leaked ${value}: ${actual}`);
+    }
   }
 }
 
