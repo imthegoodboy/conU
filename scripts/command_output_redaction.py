@@ -11,16 +11,17 @@ SECRET_NAME_PATTERN = (
     r"PRIVATE[_-]?KEY|ACCESS[_-]?KEY|SECRET[_-]?KEY|API[_-]?KEY|"
     r"SECURITY[_-]?TOKEN|SESSION[_-]?TOKEN"
 )
+SECRET_VALUE_PATTERN = r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s;&|]+)"
 SECRET_ASSIGNMENT_RE = re.compile(
     rf"\b([A-Z0-9_.-]*(?:{SECRET_NAME_PATTERN})"
-    rf"[A-Z0-9_.-]*)\s*([=:])\s*([^\s;&|]+)",
+    rf"[A-Z0-9_.-]*)\s*([=:])\s*{SECRET_VALUE_PATTERN}",
     re.IGNORECASE,
 )
 AUTH_HEADER_RE = re.compile(r"\b(Bearer|Basic)\s+([A-Za-z0-9._~+/\-=]{8,})", re.IGNORECASE)
 SECRET_FLAG_RE = re.compile(
     rf"(?<!\w)(-{{1,2}}[A-Z0-9_.-]*(?:{SECRET_NAME_PATTERN})"
     r"[A-Z0-9_.-]*)(\s*=\s*|\s+)"
-    r"(\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s;&|]+)",
+    rf"{SECRET_VALUE_PATTERN}",
     re.IGNORECASE,
 )
 NPM_TOKEN_RE = re.compile(r"\bnpm_[A-Za-z0-9]{10,}\b")
