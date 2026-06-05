@@ -12,6 +12,7 @@ import stat
 import sys
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path
 
 
@@ -260,6 +261,14 @@ def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
             continue
         offset += 1
     path.write_bytes(data)
+
+
+class BrokenChocolateyPackage:
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def open(self, _info: zipfile.ZipInfo, _mode: str):
+        raise zlib.error(self.message)
 
 
 def main() -> int:
@@ -521,6 +530,46 @@ def main() -> int:
                 VERSION,
             ),
             "signed target is missing",
+        )
+
+        unreadable_chocolatey = temp / "unreadable-chocolatey"
+        manifest_check.generate(
+            generator,
+            dist,
+            unreadable_chocolatey,
+            build_apt_repository_metadata=True,
+        )
+        write_signed_release_extras(unreadable_chocolatey)
+        unreadable_payload = "do-not-print-corrupt-chocolatey-payload"
+        (unreadable_chocolatey / "conu.0.1.0.nupkg").write_text(
+            unreadable_payload,
+            encoding="ascii",
+        )
+        expect_member_redacted_failure(
+            "unreadable Chocolatey package",
+            lambda: preparer.prepare_submission_bundle(
+                unreadable_chocolatey,
+                temp / "unreadable-chocolatey-out",
+                VERSION,
+                require_rpm_assets=True,
+                require_repository_metadata=True,
+                require_linux_signatures=True,
+            ),
+            "is not a readable Chocolatey nupkg",
+            unreadable_payload,
+        )
+
+        corrupt_member_payload = "do-not-print-corrupt-chocolatey-member"
+        expect_member_redacted_failure(
+            "corrupt Chocolatey package member read",
+            lambda: preparer.read_chocolatey_text_member(
+                BrokenChocolateyPackage(corrupt_member_payload),
+                zipfile.ZipInfo("tools/chocolateyInstall.ps1"),
+                "conu.0.1.0.nupkg",
+            ),
+            "could not read Chocolatey package member",
+            corrupt_member_payload,
+            "tools/chocolateyInstall.ps1",
         )
 
         encrypted_chocolatey = temp / "encrypted-chocolatey"
