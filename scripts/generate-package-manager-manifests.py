@@ -57,6 +57,7 @@ MAX_RELEASE_MEMBER_BYTES = 512_000_000
 MAX_RELEASE_MEMBER_COUNT = 10_000
 MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES = 2_000_000_000
 MEMBER_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false"
+TEXT_FAILURE_GUARDS = "contentsDisplayed=false keyMaterialDisplayed=false"
 MAX_PACKAGE_BINARY_BYTES = MAX_RELEASE_MEMBER_BYTES
 MAX_GENERATED_OUTPUT_BYTES = MAX_RELEASE_TOTAL_UNCOMPRESSED_BYTES
 
@@ -1797,7 +1798,10 @@ def assert_output_safe(text: str, dist: Path) -> None:
     ]
     for literal in forbidden_literals:
         if literal in text:
-            raise SystemExit(f"generated package-manager manifests contain forbidden literal: {literal}")
+            raise SystemExit(
+                "generated package-manager manifests contain forbidden literal; "
+                f"{TEXT_FAILURE_GUARDS}"
+            )
     resolved_dist = str(dist.resolve()).replace("\\", "/")
     if resolved_dist and resolved_dist in text.replace("\\", "/"):
         raise SystemExit("generated package-manager manifests contain local dist path")
