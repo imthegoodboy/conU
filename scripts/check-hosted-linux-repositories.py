@@ -249,6 +249,24 @@ def main() -> int:
             "metadata zip total size bound",
         )
 
+        unreadable_zip = temp / "unreadable-zip"
+        shutil.copytree(dist, unreadable_zip)
+        unreadable_zip_payload = "secret-unreadable-repository-zip-should-not-print"
+        (unreadable_zip / APT_METADATA).write_text(
+            unreadable_zip_payload,
+            encoding="ascii",
+        )
+        message = expect_action_failure(
+            lambda: generator.read_zip_members(unreadable_zip / APT_METADATA),
+            "not a readable zip archive",
+            "unreadable repository metadata zip",
+        )
+        assert_member_failure_redacted(
+            message,
+            "unreadable repository metadata zip",
+            unreadable_zip_payload,
+        )
+
         encrypted_zip = temp / "encrypted-zip"
         shutil.copytree(dist, encrypted_zip)
         mark_zip_member_encrypted(encrypted_zip / APT_METADATA, "Packages")

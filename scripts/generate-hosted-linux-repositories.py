@@ -423,8 +423,8 @@ def read_zip_members(bundle: Path) -> dict[str, bytes]:
                     "hosted repository metadata bundle",
                     max_bytes=MAX_RELEASE_ASSET_BYTES,
                 )
-    except zipfile.BadZipFile as exc:
-        raise SystemExit(f"{bundle.name} is not a readable zip archive") from exc
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise zip_member_failure(bundle.name, "is not a readable zip archive") from exc
     return members
 
 

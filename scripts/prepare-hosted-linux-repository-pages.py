@@ -331,8 +331,8 @@ def read_site_members(site_zip: Path) -> dict[str, bytes]:
                     "hosted Linux repository site ZIP",
                     max_bytes=MAX_SITE_ZIP_BYTES,
                 )
-    except zipfile.BadZipFile as exc:
-        raise SystemExit(f"{site_zip.name} is not a readable zip archive") from exc
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise zip_member_failure(site_zip.name, "is not a readable zip archive") from exc
     return members
 
 

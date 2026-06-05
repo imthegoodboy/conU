@@ -158,6 +158,20 @@ def run_zip_ingestion_preflights() -> None:
             "repository signing total size bound",
         )
 
+        unreadable = temp / "unreadable.zip"
+        unreadable_payload = "secret-unreadable-signing-zip-should-not-print"
+        unreadable.write_text(unreadable_payload, encoding="ascii")
+        message = expect_action_failure(
+            lambda: signer.read_zip_members(unreadable),
+            "not a readable zip archive",
+            "repository signing unreadable zip",
+        )
+        assert_member_failure_redacted(
+            message,
+            "repository signing unreadable zip",
+            unreadable_payload,
+        )
+
         encrypted = temp / "encrypted.zip"
         shutil.copy2(metadata, encrypted)
         mark_zip_member_encrypted(encrypted, "Release")
