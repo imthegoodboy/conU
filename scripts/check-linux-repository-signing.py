@@ -424,6 +424,76 @@ def run_source_file_preflights(signer) -> None:
                 "repository signing symlink sidecar output",
             )
 
+        non_ascii_sidecar = temp / "non-ascii-sidecar"
+        non_ascii_sidecar.mkdir()
+        non_ascii_bundle = non_ascii_sidecar / APT_METADATA
+        write_apt_metadata_zip(non_ascii_bundle)
+        non_ascii_bundle.with_name(f"{non_ascii_bundle.name}.sha256").write_bytes(b"\xff\n")
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(
+                non_ascii_bundle,
+                "APT repository metadata bundle",
+            ),
+            "SHA-256 sidecar is not ASCII",
+            "repository signing non-ASCII sidecar",
+            non_ascii_bundle.name,
+        )
+
+        invalid_sidecar = temp / "invalid-sidecar"
+        invalid_sidecar.mkdir()
+        invalid_bundle = invalid_sidecar / APT_METADATA
+        write_apt_metadata_zip(invalid_bundle)
+        invalid_bundle.with_name(f"{invalid_bundle.name}.sha256").write_text(
+            "not a strict checksum\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(
+                invalid_bundle,
+                "APT repository metadata bundle",
+            ),
+            "invalid format",
+            "repository signing invalid sidecar",
+            invalid_bundle.name,
+        )
+
+        wrong_target_sidecar = temp / "wrong-target-sidecar"
+        wrong_target_sidecar.mkdir()
+        wrong_target_bundle = wrong_target_sidecar / APT_METADATA
+        write_apt_metadata_zip(wrong_target_bundle)
+        malicious_target = "secret-repository-signing-sidecar-target.zip"
+        write_sha256_sidecar(wrong_target_bundle, archive_name=malicious_target)
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(
+                wrong_target_bundle,
+                "APT repository metadata bundle",
+            ),
+            "names wrong file",
+            "repository signing wrong sidecar target",
+            wrong_target_bundle.name,
+            malicious_target,
+        )
+
+        mismatched_sidecar = temp / "mismatched-sidecar"
+        mismatched_sidecar.mkdir()
+        mismatched_bundle = mismatched_sidecar / APT_METADATA
+        write_apt_metadata_zip(mismatched_bundle)
+        mismatched_bundle.with_name(f"{mismatched_bundle.name}.sha256").write_text(
+            f"{'0' * 64}  {mismatched_bundle.name}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        expect_action_failure(
+            lambda: signer.verify_sha256_sidecar(
+                mismatched_bundle,
+                "APT repository metadata bundle",
+            ),
+            "SHA-256 mismatch",
+            "repository signing mismatched sidecar",
+            mismatched_bundle.name,
+        )
+
         symlink_output_bundle = temp / "symlink-output-bundle"
         symlink_output_bundle.mkdir()
         real_output_bundle = symlink_output_bundle / "real.zip"
@@ -695,9 +765,14 @@ def assert_zip_member_normalized(archive: zipfile.ZipFile, name: str) -> None:
         raise AssertionError(f"{name} had mode {oct(mode)}")
 
 
-def write_sha256_sidecar(path: Path, *, sidecar: Path | None = None) -> None:
+def write_sha256_sidecar(
+    path: Path,
+    *,
+    archive_name: str | None = None,
+    sidecar: Path | None = None,
+) -> None:
     (sidecar or path.with_name(f"{path.name}.sha256")).write_text(
-        f"{sha256_file(path)}  {path.name}\n",
+        f"{sha256_file(path)}  {archive_name or path.name}\n",
         encoding="ascii",
         newline="\n",
     )
