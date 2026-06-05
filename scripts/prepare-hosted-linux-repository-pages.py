@@ -12,6 +12,7 @@ import re
 import stat
 import sys
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 from urllib.parse import unquote, urlparse, urlunparse
@@ -324,7 +325,7 @@ def read_site_members(site_zip: Path) -> dict[str, bytes]:
                             f"{site_zip.name} uncompressed contents exceed "
                             f"{MAX_SITE_TOTAL_UNCOMPRESSED_BYTES} bytes"
                         )
-                    members[name] = archive.read(info)
+                    members[name] = read_zip_member(site_zip.name, archive, info)
                 validate_open_regular_file(
                     site_file,
                     "hosted Linux repository site ZIP",
@@ -379,6 +380,13 @@ def validate_zip_member_for_read(site_name: str, info: zipfile.ZipInfo, name: st
     if info.file_size > MAX_SITE_MEMBER_BYTES:
         raise zip_member_failure(site_name, "member is too large for Pages deployment")
     return True
+
+
+def read_zip_member(site_name: str, archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    try:
+        return archive.read(info)
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise zip_member_failure(site_name, "could not read zip member") from exc
 
 
 def validate_site_members(site_name: str, version: str, members: dict[str, bytes]) -> None:

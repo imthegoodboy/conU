@@ -172,6 +172,20 @@ def run_zip_ingestion_preflights() -> None:
             "Release",
         )
 
+        corrupt = temp / "corrupt.zip"
+        shutil.copy2(metadata, corrupt)
+        corrupt_zip_member_data(corrupt, "Release")
+        message = expect_action_failure(
+            lambda: signer.read_zip_members(corrupt),
+            "could not read zip member",
+            "repository signing corrupt member",
+        )
+        assert_member_failure_redacted(
+            message,
+            "repository signing corrupt member",
+            "Release",
+        )
+
         unsupported = temp / "unsupported.zip"
         with zipfile.ZipFile(unsupported, "w", compression=zipfile.ZIP_STORED) as archive:
             info = zipfile.ZipInfo("Release", (2020, 1, 1, 0, 0, 0))
@@ -524,6 +538,32 @@ def mark_zip_member_encrypted(path: Path, member_name: str) -> None:
             continue
         offset += 1
     path.write_bytes(data)
+
+
+def corrupt_zip_member_data(path: Path, member_name: str) -> None:
+    data = bytearray(path.read_bytes())
+    target = member_name.encode("utf-8")
+    offset = 0
+    while offset + 4 <= len(data):
+        signature = int.from_bytes(data[offset : offset + 4], "little")
+        if signature != 0x04034B50:
+            offset += 1
+            continue
+        name_length = int.from_bytes(data[offset + 26 : offset + 28], "little")
+        extra_length = int.from_bytes(data[offset + 28 : offset + 30], "little")
+        name_start = offset + 30
+        name_end = name_start + name_length
+        compressed_size = int.from_bytes(data[offset + 18 : offset + 22], "little")
+        data_start = name_end + extra_length
+        data_end = data_start + compressed_size
+        if data[name_start:name_end] == target:
+            if compressed_size == 0:
+                raise AssertionError(f"{member_name} had no compressed data to corrupt")
+            data[data_end - 1] ^= 0xFF
+            path.write_bytes(data)
+            return
+        offset = data_end
+    raise AssertionError(f"zip member not found for corruption: {member_name}")
 
 
 def verify_apt_signatures(gpg: str, home: Path, bundle: Path, temp: Path) -> None:

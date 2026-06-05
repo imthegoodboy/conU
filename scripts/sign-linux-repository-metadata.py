@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
@@ -306,7 +307,7 @@ def read_zip_members(bundle: Path) -> dict[str, bytes]:
                             f"{bundle.name} uncompressed ZIP contents exceed "
                             f"{MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES} bytes"
                         )
-                    members[name] = archive.read(member)
+                    members[name] = read_zip_member(bundle.name, archive, member)
             validate_open_regular_file(
                 bundle_file,
                 f"repository metadata bundle {bundle.name}",
@@ -334,6 +335,13 @@ def validate_zip_member_for_read(bundle_name: str, member: zipfile.ZipInfo, name
     if member.file_size > MAX_ZIP_MEMBER_BYTES:
         raise zip_member_failure(bundle_name, "zip member is too large")
     return True
+
+
+def read_zip_member(bundle_name: str, archive: zipfile.ZipFile, member: zipfile.ZipInfo) -> bytes:
+    try:
+        return archive.read(member)
+    except (RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
+        raise zip_member_failure(bundle_name, "could not read zip member") from exc
 
 
 def zip_member_failure(archive_name: str, reason: str) -> SystemExit:
