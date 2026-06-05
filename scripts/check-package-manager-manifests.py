@@ -1149,6 +1149,68 @@ def main() -> int:
                 "SHA-256 sidecar for generated RPM package must not be a symlink",
             )
 
+        non_ascii_existing_rpm_sidecar = temp / "non-ascii-existing-rpm-sidecar"
+        non_ascii_existing_rpm_sidecar.mkdir()
+        rpm_package = non_ascii_existing_rpm_sidecar / RPM_X64_FILENAME
+        rpm_package.write_bytes(b"rpm package\n")
+        rpm_package.with_name(f"{rpm_package.name}.sha256").write_bytes(b"\xff\n")
+        message = expect_failure(
+            "non-ASCII existing RPM sidecar",
+            lambda: generator.existing_rpm_package_paths(VERSION, non_ascii_existing_rpm_sidecar),
+            "SHA-256 sidecar is not ASCII",
+        )
+        assert_not_displayed(message, "non-ASCII existing RPM sidecar", rpm_package.name)
+
+        invalid_existing_rpm_sidecar = temp / "invalid-existing-rpm-sidecar"
+        invalid_existing_rpm_sidecar.mkdir()
+        rpm_package = invalid_existing_rpm_sidecar / RPM_X64_FILENAME
+        rpm_package.write_bytes(b"rpm package\n")
+        rpm_package.with_name(f"{rpm_package.name}.sha256").write_text(
+            "not a strict checksum\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        message = expect_failure(
+            "invalid existing RPM sidecar",
+            lambda: generator.existing_rpm_package_paths(VERSION, invalid_existing_rpm_sidecar),
+            "invalid format",
+        )
+        assert_not_displayed(message, "invalid existing RPM sidecar", rpm_package.name)
+
+        wrong_existing_rpm_sidecar = temp / "wrong-existing-rpm-sidecar"
+        wrong_existing_rpm_sidecar.mkdir()
+        rpm_package = wrong_existing_rpm_sidecar / RPM_X64_FILENAME
+        rpm_package.write_bytes(b"rpm package\n")
+        malicious_rpm_target = "secret-package-manager-rpm-sidecar-target.rpm"
+        write_checksum(rpm_package, archive_name=malicious_rpm_target)
+        message = expect_failure(
+            "wrong existing RPM sidecar target",
+            lambda: generator.existing_rpm_package_paths(VERSION, wrong_existing_rpm_sidecar),
+            "names wrong file",
+        )
+        assert_not_displayed(
+            message,
+            "wrong existing RPM sidecar target",
+            rpm_package.name,
+            malicious_rpm_target,
+        )
+
+        mismatched_existing_rpm_sidecar = temp / "mismatched-existing-rpm-sidecar"
+        mismatched_existing_rpm_sidecar.mkdir()
+        rpm_package = mismatched_existing_rpm_sidecar / RPM_X64_FILENAME
+        rpm_package.write_bytes(b"rpm package\n")
+        rpm_package.with_name(f"{rpm_package.name}.sha256").write_text(
+            f"{'0' * 64}  {rpm_package.name}\n",
+            encoding="ascii",
+            newline="\n",
+        )
+        message = expect_failure(
+            "mismatched existing RPM sidecar",
+            lambda: generator.existing_rpm_package_paths(VERSION, mismatched_existing_rpm_sidecar),
+            "SHA-256 mismatch",
+        )
+        assert_not_displayed(message, "mismatched existing RPM sidecar", rpm_package.name)
+
         expect_member_redacted_failure_with_limit(
             generator,
             "MAX_RELEASE_MEMBER_COUNT",
@@ -1371,12 +1433,50 @@ def main() -> int:
             "missing checksum file",
         )
 
+        non_ascii_checksum = temp / "non-ascii-checksum"
+        non_ascii_checksum.mkdir()
+        write_dist(non_ascii_checksum)
+        non_ascii_archive = non_ascii_checksum / TARGETS["windows-x64"]
+        non_ascii_archive.with_name(f"{non_ascii_archive.name}.sha256").write_bytes(b"\xff\n")
+        message = expect_failure(
+            "non-ASCII checksum",
+            lambda: generator.load_release_assets(
+                non_ascii_checksum,
+                VERSION,
+                "imthegoodboy/conU",
+                f"v{VERSION}",
+            ),
+            "checksum file is not ASCII",
+        )
+        assert_not_displayed(message, "non-ASCII checksum", non_ascii_archive.name)
+
+        invalid_checksum = temp / "invalid-checksum"
+        invalid_checksum.mkdir()
+        write_dist(invalid_checksum)
+        invalid_archive = invalid_checksum / TARGETS["windows-x64"]
+        invalid_archive.with_name(f"{invalid_archive.name}.sha256").write_text(
+            "not a strict checksum\n",
+            encoding="ascii",
+        )
+        message = expect_failure(
+            "invalid checksum",
+            lambda: generator.load_release_assets(
+                invalid_checksum,
+                VERSION,
+                "imthegoodboy/conU",
+                f"v{VERSION}",
+            ),
+            "invalid format",
+        )
+        assert_not_displayed(message, "invalid checksum", invalid_archive.name)
+
         wrong_name = temp / "wrong-name"
         wrong_name.mkdir()
         write_dist(wrong_name)
         windows_archive = wrong_name / TARGETS["windows-x64"]
-        write_checksum(windows_archive, archive_name="other.zip")
-        expect_failure(
+        malicious_archive_name = "secret-package-manager-checksum-target.zip"
+        write_checksum(windows_archive, archive_name=malicious_archive_name)
+        message = expect_failure(
             "checksum names wrong archive",
             lambda: generator.load_release_assets(
                 wrong_name,
@@ -1385,6 +1485,12 @@ def main() -> int:
                 f"v{VERSION}",
             ),
             "names wrong archive",
+        )
+        assert_not_displayed(
+            message,
+            "checksum names wrong archive",
+            windows_archive.name,
+            malicious_archive_name,
         )
 
         wrong_digest = temp / "wrong-digest"
@@ -1395,7 +1501,7 @@ def main() -> int:
             f"{'0' * 64}  {linux_archive.name}\n",
             encoding="ascii",
         )
-        expect_failure(
+        message = expect_failure(
             "checksum mismatch",
             lambda: generator.load_release_assets(
                 wrong_digest,
@@ -1405,6 +1511,7 @@ def main() -> int:
             ),
             "checksum mismatch",
         )
+        assert_not_displayed(message, "checksum mismatch", linux_archive.name)
 
         unreadable_windows = temp / "unreadable-windows"
         unreadable_windows.mkdir()
