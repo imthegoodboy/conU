@@ -31,6 +31,8 @@ def assert_raises(func, pattern: str) -> None:
     try:
         func()
     except ValueError as exc:
+        if SENSITIVE_SENTINEL in str(exc):
+            raise AssertionError("npm package verifier error leaked a sensitive path value") from exc
         if pattern not in str(exc):
             raise AssertionError(f"expected {pattern!r} in {exc!r}") from exc
         return
@@ -66,6 +68,13 @@ def run_public_metadata_tests(module) -> None:
     assert_raises(
         lambda: module.validate_manifest_public_surface(cli_rule, broken_files),
         "files changed",
+    )
+
+    sensitive_files = copy.deepcopy(cli_manifest)
+    sensitive_files["files"].append(f"lib/{SENSITIVE_SENTINEL}.js")
+    assert_raises(
+        lambda: module.validate_manifest_public_surface(cli_rule, sensitive_files),
+        "pathDisplayed=false",
     )
 
     duplicate_files = copy.deepcopy(cli_manifest)
@@ -166,11 +175,77 @@ def run_npm_pack_privacy_tests(module) -> None:
         raise AssertionError("npm pack failure printed raw npm stderr")
 
 
+def run_pack_path_display_guard_tests(module) -> None:
+    assert_raises(
+        lambda: module.normalize_pack_path(f"lib\\{SENSITIVE_SENTINEL}.js"),
+        "pathDisplayed=false",
+    )
+    assert_raises(
+        lambda: module.normalize_pack_path(f"/{SENSITIVE_SENTINEL}/index.js"),
+        "pathDisplayed=false",
+    )
+    assert_raises(
+        lambda: module.reject_forbidden_path(f"lib/{SENSITIVE_SENTINEL}.token"),
+        "pathDisplayed=false",
+    )
+
+    cli_rule = rule_by_name(module, "@conu/cli")
+    cli_manifest = manifest_for(module, cli_rule)
+    version = cli_manifest["version"]
+    base_files = [
+        {"path": path, "size": 10}
+        for path in sorted(cli_rule.allowed_files)
+    ]
+
+    original_run_npm_pack = module.run_npm_pack
+    try:
+        module.run_npm_pack = lambda _npm, _package_dir: {
+            "name": cli_rule.name,
+            "version": version,
+            "id": f"{cli_rule.name}@{version}",
+            "filename": "conu-cli-0.1.0.tgz",
+            "size": 100,
+            "unpackedSize": 100,
+            "bundled": [],
+            "files": [
+                *base_files,
+                {"path": f"lib/{SENSITIVE_SENTINEL}.js", "size": 10},
+            ],
+            "entryCount": len(base_files) + 1,
+        }
+        assert_raises(
+            lambda: module.validate_package(Path(__file__).resolve().parents[1], "npm", cli_rule),
+            "pathDisplayed=false",
+        )
+
+        module.run_npm_pack = lambda _npm, _package_dir: {
+            "name": cli_rule.name,
+            "version": version,
+            "id": f"{cli_rule.name}@{version}",
+            "filename": "conu-cli-0.1.0.tgz",
+            "size": 100,
+            "unpackedSize": 100,
+            "bundled": [],
+            "files": [
+                *base_files,
+                {"path": f"lib/{SENSITIVE_SENTINEL}.js", "size": module.MAX_ENTRY_BYTES + 1},
+            ],
+            "entryCount": len(base_files) + 1,
+        }
+        assert_raises(
+            lambda: module.validate_package(Path(__file__).resolve().parents[1], "npm", cli_rule),
+            "pathDisplayed=false",
+        )
+    finally:
+        module.run_npm_pack = original_run_npm_pack
+
+
 def main() -> int:
     module = load_module()
     run_public_metadata_tests(module)
     run_json_duplicate_key_tests(module)
     run_npm_pack_privacy_tests(module)
+    run_pack_path_display_guard_tests(module)
     print("npm package content regression checks passed")
     return 0
 

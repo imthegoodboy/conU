@@ -17,6 +17,7 @@ from json_safety import load_json_object, loads_json
 
 MAX_ENTRY_BYTES = 1_000_000
 MAX_PACKAGE_BYTES = 1_000_000
+PATH_FAILURE_GUARDS = "pathDisplayed=false contentsDisplayed=false tokenDisplayed=false"
 FORBIDDEN_PARTS = frozenset(
     {
         ".conu",
@@ -164,12 +165,12 @@ def normalize_pack_path(raw_path: Any) -> str:
     if not isinstance(raw_path, str) or not raw_path:
         raise ValueError("npm pack reported an empty or non-string file path")
     if "\\" in raw_path:
-        raise ValueError(f"npm pack path uses backslash separators: {raw_path}")
+        raise ValueError(f"npm pack path uses backslash separators; {PATH_FAILURE_GUARDS}")
     path = PurePosixPath(raw_path)
     if path.is_absolute():
-        raise ValueError(f"npm pack path is absolute: {raw_path}")
+        raise ValueError(f"npm pack path is absolute; {PATH_FAILURE_GUARDS}")
     if any(part in ("", ".", "..") for part in path.parts):
-        raise ValueError(f"npm pack path is not normalized: {raw_path}")
+        raise ValueError(f"npm pack path is not normalized; {PATH_FAILURE_GUARDS}")
     return "/".join(path.parts)
 
 
@@ -178,13 +179,13 @@ def reject_forbidden_path(path: str) -> None:
     lower_parts = {part.lower() for part in parts}
     forbidden_parts = sorted(lower_parts & FORBIDDEN_PARTS)
     if forbidden_parts:
-        raise ValueError(f"{path} contains forbidden package path component {forbidden_parts[0]}")
+        raise ValueError(f"npm pack path contains forbidden package path component; {PATH_FAILURE_GUARDS}")
 
     name = parts[-1].lower()
     if name in FORBIDDEN_NAMES or name.startswith(".env."):
-        raise ValueError(f"{path} contains forbidden package file name")
+        raise ValueError(f"npm pack path contains forbidden package file name; {PATH_FAILURE_GUARDS}")
     if name.endswith(FORBIDDEN_SUFFIXES):
-        raise ValueError(f"{path} contains forbidden package file suffix")
+        raise ValueError(f"npm pack path contains forbidden package file suffix; {PATH_FAILURE_GUARDS}")
 
 
 def run_npm_pack(npm: str, package_dir: Path) -> dict[str, Any]:
@@ -240,7 +241,7 @@ def validate_manifest_string_set(
         if missing:
             details.append("missing " + ", ".join(missing))
         if extra:
-            details.append("unexpected " + ", ".join(extra))
+            details.append(f"unexpected {len(extra)} entries; {PATH_FAILURE_GUARDS}")
         raise ValueError(f"{context} {field} changed: {'; '.join(details)}")
 
 
@@ -332,7 +333,12 @@ def validate_package(repo: Path, npm: str, rule: PackageRule) -> int:
             raise ValueError(f"{rule.name} npm pack reported a non-object file entry")
         path = normalize_pack_path(entry.get("path"))
         reject_forbidden_path(path)
-        validate_size("file size", entry.get("size"), MAX_ENTRY_BYTES, f"{rule.name}:{path}")
+        validate_size(
+            "file size",
+            entry.get("size"),
+            MAX_ENTRY_BYTES,
+            f"{rule.name}:npm pack file; {PATH_FAILURE_GUARDS}",
+        )
         actual_files.add(path)
 
     if len(actual_files) != len(files):
@@ -348,7 +354,7 @@ def validate_package(repo: Path, npm: str, rule: PackageRule) -> int:
         if missing:
             details.append("missing " + ", ".join(missing))
         if extra:
-            details.append("unexpected " + ", ".join(extra))
+            details.append(f"unexpected {len(extra)} file(s); {PATH_FAILURE_GUARDS}")
         raise ValueError(f"{rule.name} npm package contents changed: {'; '.join(details)}")
 
     print(f"{rule.name} package contents verified: {len(actual_files)} files")
