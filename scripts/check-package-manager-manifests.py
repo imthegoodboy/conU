@@ -261,7 +261,7 @@ def generate(
         generator.write_sha256_sidecar(metadata_path, rpm_repository_metadata.sha256)
 
 
-def expect_failure(description: str, action, expected: str) -> None:
+def expect_failure(description: str, action, expected: str) -> str:
     try:
         action()
     except SystemExit as exc:
@@ -270,7 +270,7 @@ def expect_failure(description: str, action, expected: str) -> None:
             raise AssertionError(
                 f"{description} failed with {message!r}, expected {expected!r}"
             ) from exc
-        return
+        return message
     raise AssertionError(f"{description} unexpectedly passed")
 
 
@@ -411,6 +411,12 @@ def assert_no_forbidden_text(text: str, label: str, temp: Path) -> None:
     for literal in forbidden:
         if literal and literal in normalized:
             raise AssertionError(f"{label} contained forbidden literal {literal!r}")
+
+
+def assert_not_displayed(message: str, label: str, *forbidden_values: str) -> None:
+    for value in forbidden_values:
+        if value and value in message:
+            raise AssertionError(f"{label}: displayed forbidden value {value!r}: {message!r}")
 
 
 def assert_external_tool_output_redacts(generator) -> None:
@@ -961,6 +967,46 @@ def main() -> int:
         rootless_dist.mkdir()
         hashes = write_dist(rootless_dist, rooted_windows=False)
         generate(generator, rootless_dist, rootless_out)
+
+        oversized_input = temp / "secret-package-manager-input-name-should-not-print.zip"
+        oversized_input.write_bytes(b"oversized\n")
+        message = expect_failure(
+            "oversized package-manager input",
+            lambda: generator.open_regular_file(
+                oversized_input,
+                "package-manager input asset",
+                max_bytes=1,
+            ),
+            "package-manager input asset is too large",
+        )
+        assert_not_displayed(
+            message,
+            "oversized package-manager input",
+            oversized_input.name,
+        )
+
+        original_open_regular_file = generator.open_regular_file
+        try:
+            generator.open_regular_file = lambda _path, _label, *, max_bytes: (
+                io.BytesIO(b"xx"),
+                2,
+            )
+            message = expect_failure(
+                "oversized package-manager read",
+                lambda: generator.read_regular_file(
+                    Path("secret-package-manager-read-name-should-not-print.zip"),
+                    "package-manager read asset",
+                    max_bytes=1,
+                ),
+                "package-manager read asset is too large",
+            )
+            assert_not_displayed(
+                message,
+                "oversized package-manager read",
+                "secret-package-manager-read-name-should-not-print.zip",
+            )
+        finally:
+            generator.open_regular_file = original_open_regular_file
 
         for literal in ("PRIVATE KEY BLOCK", "BEGIN OPENSSH PRIVATE KEY"):
             expect_failure(
