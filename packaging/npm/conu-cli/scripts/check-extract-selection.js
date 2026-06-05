@@ -95,6 +95,26 @@ function main() {
 
   withFixture((root) => {
     writeReleaseLayout(root);
+    withPatchedFs(
+      {
+        opendirSync: () => ({
+          readSync: () => null,
+          closeSync: () => failWithPath(root)
+        })
+      },
+      () => {
+        expectRedactedFailure(
+          root,
+          "failed to inspect extracted tree",
+          root,
+          "redacted extracted directory close failure"
+        );
+      }
+    );
+  });
+
+  withFixture((root) => {
+    writeReleaseLayout(root);
     expectFailure(
       root,
       "exceeds maximum entry count",
