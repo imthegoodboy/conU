@@ -352,6 +352,10 @@ RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
     "python scripts/check-npm-publish-preflight.py "
     "--registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check"
 )
+RELEASE_PREFLIGHT_NPM_METADATA_COMMAND = (
+    'python scripts/check-github-release-secret-readiness.py --repo "$GITHUB_REPOSITORY" '
+    "--simple-launch"
+)
 RELEASE_PREFLIGHT_JOB_SNIPPETS: tuple[tuple[str, str], ...] = (
     ("Ubuntu runner", "runs-on: ubuntu-latest"),
     (
@@ -506,6 +510,18 @@ RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
                 "python scripts/check-release-secret-rotation-gate.py --secret-name "
                 "NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER "
                 "--required-after 2026-06-05T00:00:00Z",
+            ),
+        ),
+    ),
+    (
+        "Validate NPM token metadata rotation",
+        "validate NPM token metadata rotation",
+        (
+            ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
+            ("GitHub token env", "GH_TOKEN: ${{ github.token }}"),
+            (
+                "NPM token metadata command",
+                RELEASE_PREFLIGHT_NPM_METADATA_COMMAND,
             ),
         ),
     ),

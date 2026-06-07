@@ -245,6 +245,11 @@ jobs:
         env:
           CONU_NPM_TOKEN_ROTATED_AFTER: ${{ vars.CONU_NPM_TOKEN_ROTATED_AFTER }}
         run: python scripts/check-release-secret-rotation-gate.py --secret-name NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER --required-after 2026-06-05T00:00:00Z
+      - name: Validate NPM token metadata rotation
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-release-secret-readiness.py --repo "$GITHUB_REPOSITORY" --simple-launch
       - name: Validate npm token authentication and registry availability
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -2534,6 +2539,38 @@ def run_required_release_preflight_tests(module) -> None:
         "is missing rotation marker command"
     ) not in json.dumps(assert_safe_report(report)):
         raise AssertionError("missing NPM token rotation marker preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            '        run: python scripts/check-github-release-secret-readiness.py --repo "$GITHUB_REPOSITORY" --simple-launch\n',
+            "        run: echo skipped-npm-token-metadata-rotation\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("missing NPM token metadata rotation preflight should fail")
+    if (
+        "release.yml:release-preflight validate NPM token metadata rotation "
+        "is missing NPM token metadata command"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing NPM token metadata rotation preflight was not reported")
+
+    report = with_fixture(
+        module,
+        None,
+        ready_release().replace(
+            "          GH_TOKEN: ${{ github.token }}\n        run: python scripts/check-github-release-secret-readiness.py --repo \"$GITHUB_REPOSITORY\" --simple-launch\n",
+            "        run: python scripts/check-github-release-secret-readiness.py --repo \"$GITHUB_REPOSITORY\" --simple-launch\n",
+        ),
+    )
+    if report.ready:
+        raise AssertionError("NPM token metadata rotation preflight without GitHub token should fail")
+    if (
+        "release.yml:release-preflight validate NPM token metadata rotation "
+        "is missing GitHub token env"
+    ) not in json.dumps(assert_safe_report(report)):
+        raise AssertionError("missing NPM token metadata GitHub token issue was not reported")
 
     report = with_fixture(
         module,
