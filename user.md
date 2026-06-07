@@ -52,7 +52,7 @@ Official npm token guide: `https://docs.npmjs.com/creating-and-viewing-access-to
 After the secret and marker are set, validate:
 
 ```powershell
-python scripts\check-github-release-secret-readiness.py --repo imthegoodboy/conU --json
+python scripts\check-github-release-secret-readiness.py --repo imthegoodboy/conU --simple-launch --json
 ```
 
 ## What You Can Skip For Now

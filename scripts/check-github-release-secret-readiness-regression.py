@@ -118,6 +118,53 @@ def run_rotation_marker_tests(module) -> None:
         raise AssertionError("invalid marker issue was not reported")
 
 
+def run_simple_launch_tests(module) -> None:
+    configured = {module.NPM_TOKEN_SECRET_NAME}
+    ready = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        simple_launch=True,
+    )
+    if not ready.ready:
+        raise AssertionError(f"simple launch readiness should pass: {ready.as_json()!r}")
+    parsed_ready = assert_safe_report(ready)
+    if parsed_ready["profile"] != module.SIMPLE_LAUNCH_PROFILE:
+        raise AssertionError("simple launch report omitted its profile")
+    if parsed_ready["releaseSecrets"]["required"] != [module.NPM_TOKEN_SECRET_NAME]:
+        raise AssertionError("simple launch mode should require only NPM_TOKEN")
+    if any(
+        "SIGN" in name or "MACOS" in name or "GPG" in name
+        for name in parsed_ready["releaseSecrets"]["required"]
+    ):
+        raise AssertionError("simple launch mode must not require signing secrets")
+
+    full_release = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+    )
+    if full_release.ready:
+        raise AssertionError("full release readiness should still require signing secrets")
+    parsed_full = assert_safe_report(full_release)
+    if parsed_full["profile"] != module.FULL_RELEASE_PROFILE:
+        raise AssertionError("full release report omitted its profile")
+    if "CONU_WINDOWS_SIGN_CERT_PFX_BASE64" not in parsed_full["releaseSecrets"]["missing"]:
+        raise AssertionError("full release mode no longer reports missing signing secrets")
+
+    missing_token = module.audit_release_secret_readiness(
+        "owner/repo",
+        set(),
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        simple_launch=True,
+    )
+    if missing_token.ready:
+        raise AssertionError("simple launch should fail without NPM_TOKEN")
+    parsed_missing = assert_safe_report(missing_token)
+    if parsed_missing["releaseSecrets"]["missing"] != [module.NPM_TOKEN_SECRET_NAME]:
+        raise AssertionError("simple launch missing report should only mention NPM_TOKEN")
+
+
 def run_repo_normalization_tests(module) -> None:
     helper = sys.modules["github_release_secrets"]
 
@@ -373,11 +420,85 @@ def run_main_tests(module) -> None:
     if SENSITIVE_SENTINEL in rendered:
         raise AssertionError("invalid repository failure leaked a secret value")
 
+    def fake_simple_launch_gh(args, **_kwargs):
+        if args[1:4] == ["secret", "list", "--repo"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps([{"name": module.NPM_TOKEN_SECRET_NAME}]),
+                stderr="",
+            )
+        if args[1:] == [
+            "variable",
+            "list",
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name",
+        ]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps([{"name": module.NPM_TOKEN_ROTATION_MARKER_VAR}]),
+                stderr="",
+            )
+        if args[1:] == [
+            "variable",
+            "get",
+            module.NPM_TOKEN_ROTATION_MARKER_VAR,
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name,value",
+        ]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
+                        "value": "2026-06-05T00:00:01Z",
+                    }
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected gh args: {args!r}")
+
+    sys.argv = [
+        "check-github-release-secret-readiness.py",
+        "--repo",
+        "owner/repo",
+        "--gh",
+        "gh",
+        "--simple-launch",
+        "--json",
+    ]
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    helper.subprocess.run = fake_simple_launch_gh
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = module.main()
+    finally:
+        helper.subprocess.run = original_run
+        sys.argv = original_argv
+
+    rendered = stdout.getvalue() + stderr.getvalue()
+    if exit_code != 0:
+        raise AssertionError(
+            f"expected simple-launch main() to pass, got {exit_code}: {rendered}"
+        )
+    parsed = json.loads(stdout.getvalue())
+    if parsed["profile"] != module.SIMPLE_LAUNCH_PROFILE:
+        raise AssertionError("simple-launch main() JSON omitted the profile")
+    if parsed["releaseSecrets"]["required"] != [module.NPM_TOKEN_SECRET_NAME]:
+        raise AssertionError("simple-launch main() should not require signing secrets")
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("simple-launch main() leaked a secret or variable value")
+
 
 def main() -> int:
     module = load_module()
     run_audit_tests(module)
     run_rotation_marker_tests(module)
+    run_simple_launch_tests(module)
     run_repo_normalization_tests(module)
     run_gh_payload_tests(module)
     run_error_tests(module)

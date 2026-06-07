@@ -28,11 +28,15 @@ from github_release_secrets import (
 
 
 REQUIRED_VARIABLE_VALUES = (NPM_TOKEN_ROTATION_MARKER_VAR,)
+FULL_RELEASE_PROFILE = "tagged-release"
+SIMPLE_LAUNCH_PROFILE = "simple-launch"
+SIMPLE_LAUNCH_REQUIRED_SECRETS = (NPM_TOKEN_SECRET_NAME,)
 
 
 @dataclass(frozen=True)
 class ReleaseSecretReadiness:
     repo: str
+    profile: str
     secrets: SecretReadiness
     npm_rotation_marker: Any
 
@@ -44,6 +48,7 @@ class ReleaseSecretReadiness:
         return {
             "schema": "conu.githubReleaseSecretReadiness.v1",
             "repo": self.repo,
+            "profile": self.profile,
             "ready": self.ready,
             "releaseSecrets": self.secrets.as_json(),
             "npmTokenRotationMarker": self.npm_rotation_marker.as_json(),
@@ -67,13 +72,36 @@ def load_script_module(filename: str, module_name: str):
     return module
 
 
+def audit_secret_names_for_required(
+    repo: str,
+    configured_names: set[str],
+    required_names: tuple[str, ...],
+) -> SecretReadiness:
+    repo = normalize_repo(repo)
+    present = tuple(name for name in required_names if name in configured_names)
+    missing = tuple(name for name in required_names if name not in configured_names)
+    return SecretReadiness(
+        repo=repo,
+        required=required_names,
+        present=present,
+        missing=missing,
+    )
+
+
 def audit_release_secret_readiness(
     repo: str,
     secret_names: set[str],
     variable_values: dict[str, str],
+    *,
+    simple_launch: bool = False,
 ) -> ReleaseSecretReadiness:
     repo = normalize_repo(repo)
-    secrets = audit_secret_names(repo, secret_names)
+    profile = SIMPLE_LAUNCH_PROFILE if simple_launch else FULL_RELEASE_PROFILE
+    secrets = (
+        audit_secret_names_for_required(repo, secret_names, SIMPLE_LAUNCH_REQUIRED_SECRETS)
+        if simple_launch
+        else audit_secret_names(repo, secret_names)
+    )
     gate_module = load_script_module(
         "check-release-secret-rotation-gate.py",
         "check_release_secret_rotation_gate_for_secret_readiness",
@@ -86,6 +114,7 @@ def audit_release_secret_readiness(
     )
     return ReleaseSecretReadiness(
         repo=repo,
+        profile=profile,
         secrets=secrets,
         npm_rotation_marker=npm_rotation_marker,
     )
@@ -97,14 +126,14 @@ def print_text_report(report: ReleaseSecretReadiness) -> None:
             "GitHub release secret readiness passed: "
             f"{len(report.secrets.present)}/{len(report.secrets.required)} required secret names "
             f"and {report.npm_rotation_marker.marker_env} configured "
-            f"for {report.repo}"
+            f"for {report.repo} ({report.profile})"
         )
         return
 
     print(
         "GitHub release secret readiness failed: "
         f"{len(report.secrets.missing)}/{len(report.secrets.required)} required secret names missing "
-        f"for {report.repo}",
+        f"for {report.repo} ({report.profile})",
         file=sys.stderr,
     )
     for name in report.secrets.missing:
@@ -126,6 +155,14 @@ def parse_args() -> argparse.Namespace:
         help="print a machine-readable report containing secret names and non-secret marker status",
     )
     parser.add_argument(
+        "--simple-launch",
+        action="store_true",
+        help=(
+            "check only the unpaid simple launch/testing secret gate: NPM_TOKEN plus "
+            "its non-secret rotation marker; full tagged releases still require all signing secrets"
+        ),
+    )
+    parser.add_argument(
         "--gh",
         default="",
         help=argparse.SUPPRESS,
@@ -145,6 +182,7 @@ def main() -> int:
             repo,
             load_secret_names(repo, gh),
             load_variable_values(repo, gh, REQUIRED_VARIABLE_VALUES),
+            simple_launch=args.simple_launch,
         )
     except (OSError, ValueError) as exc:
         print(f"GitHub release secret readiness failed: {exc}", file=sys.stderr)
