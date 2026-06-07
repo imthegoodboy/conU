@@ -33,6 +33,7 @@ POSIX_ENV_FILE_FORBIDDEN_MODE = stat.S_IRWXG | stat.S_IRWXO
 DRY_RUN_NPM_TOKEN_ROTATION_MARKER_FROM_UPDATED_AT = (
     "from NPM_TOKEN updatedAt after upload"
 )
+SIMPLE_LAUNCH_REQUIRED_SECRETS = (NPM_TOKEN_SECRET_NAME,)
 
 
 def render_env_template(names: tuple[str, ...]) -> str:
@@ -273,6 +274,7 @@ def run_value_preflights(
     require_openssl: bool,
     values: Mapping[str, str] | None = None,
     python_executable: str = sys.executable,
+    simple_launch: bool = False,
 ) -> None:
     platform_command = [
         python_executable,
@@ -281,29 +283,34 @@ def run_value_preflights(
     if require_openssl:
         platform_command.append("--require-openssl")
 
-    preflights: list[tuple[str, list[str]]] = [
-        (
-            "platform signing secret value preflight",
-            platform_command,
-        ),
-        (
-            "Linux signing secret preflight",
-            [
-                python_executable,
-                str(SCRIPT_DIR / "check-linux-signing-secrets-preflight.py"),
-            ],
-        ),
-        (
-            "npm token authentication preflight",
-            [
-                python_executable,
-                str(SCRIPT_DIR / "check-npm-publish-preflight.py"),
-                "--require-token-env",
-                "NPM_TOKEN",
-                "--token-auth-check",
-            ],
-        ),
-    ]
+    npm_token_preflight = (
+        "npm token authentication preflight",
+        [
+            python_executable,
+            str(SCRIPT_DIR / "check-npm-publish-preflight.py"),
+            "--require-token-env",
+            "NPM_TOKEN",
+            "--token-auth-check",
+        ],
+    )
+    preflights: list[tuple[str, list[str]]] = (
+        [npm_token_preflight]
+        if simple_launch
+        else [
+            (
+                "platform signing secret value preflight",
+                platform_command,
+            ),
+            (
+                "Linux signing secret preflight",
+                [
+                    python_executable,
+                    str(SCRIPT_DIR / "check-linux-signing-secrets-preflight.py"),
+                ],
+            ),
+            npm_token_preflight,
+        ]
+    )
     env = None
     if values is not None:
         env = os.environ.copy()
@@ -331,12 +338,13 @@ def configure_release_secrets(
     gh: str,
     values: dict[str, str],
     dry_run: bool,
+    required_names: tuple[str, ...] = REQUIRED_RELEASE_SECRETS,
 ) -> tuple[str, ...]:
-    missing = missing_required_values(values, REQUIRED_RELEASE_SECRETS)
+    missing = missing_required_values(values, required_names)
     if missing:
         raise ValueError("missing local release secret values: " + ", ".join(missing))
 
-    names = tuple(name for name in REQUIRED_RELEASE_SECRETS if name in values)
+    names = tuple(name for name in required_names if name in values)
     if dry_run:
         return names
 
@@ -407,6 +415,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "validate --env-file contains every required release secret name with "
             "a non-empty value, then exit without GitHub CLI access"
+        ),
+    )
+    parser.add_argument(
+        "--simple-launch",
+        action="store_true",
+        help=(
+            "configure only the unpaid simple launch/testing secret gate: "
+            "NPM_TOKEN plus its non-secret rotation marker; full tagged releases "
+            "still require all signing secrets"
         ),
     )
     parser.add_argument(
@@ -507,6 +524,8 @@ def main() -> int:
                 or args.set_npm_token_rotation_marker_from_secret_updated_at
             ):
                 raise ValueError("--check-env-file cannot be combined with setup options")
+        if args.simple_launch and args.require_openssl:
+            raise ValueError("--require-openssl cannot be combined with --simple-launch")
         if args.require_openssl and not args.preflight_values:
             raise ValueError("--require-openssl requires --preflight-values")
         if args.env_file_only and not args.env_file:
@@ -549,17 +568,32 @@ def main() -> int:
                 "NPM token rotation marker setup requires --confirm-npm-token-rotated"
             )
         if args.print_env_template:
-            print(render_env_template(REQUIRED_RELEASE_SECRETS), end="")
+            required_secret_names = (
+                SIMPLE_LAUNCH_REQUIRED_SECRETS
+                if args.simple_launch
+                else REQUIRED_RELEASE_SECRETS
+            )
+            print(render_env_template(required_secret_names), end="")
             return 0
         if args.write_env_template:
-            write_env_template(Path(args.write_env_template).expanduser(), REQUIRED_RELEASE_SECRETS)
+            required_secret_names = (
+                SIMPLE_LAUNCH_REQUIRED_SECRETS
+                if args.simple_launch
+                else REQUIRED_RELEASE_SECRETS
+            )
+            write_env_template(Path(args.write_env_template).expanduser(), required_secret_names)
             print(f"GitHub release secret env template written: {args.write_env_template}")
             return 0
+        required_secret_names = (
+            SIMPLE_LAUNCH_REQUIRED_SECRETS
+            if args.simple_launch
+            else REQUIRED_RELEASE_SECRETS
+        )
         if args.check_env_file:
             values = load_env_file_values(
-                Path(args.env_file).expanduser(), REQUIRED_RELEASE_SECRETS
+                Path(args.env_file).expanduser(), required_secret_names
             )
-            missing = missing_required_values(values, REQUIRED_RELEASE_SECRETS)
+            missing = missing_required_values(values, required_secret_names)
             if missing:
                 print_secret_names(
                     "GitHub release secret env file check failed: missing required env-file values:",
@@ -569,9 +603,9 @@ def main() -> int:
                 return 1
             print(
                 "GitHub release secret env file check passed: "
-                f"{len(REQUIRED_RELEASE_SECRETS)} required secret names have non-empty values"
+                f"{len(required_secret_names)} required secret names have non-empty values"
             )
-            for name in REQUIRED_RELEASE_SECRETS:
+            for name in required_secret_names:
                 print(f"present: {name}")
             return 0
 
@@ -593,12 +627,12 @@ def main() -> int:
             if args.env_file_only:
                 values = {}
             else:
-                values, _missing = collect_env_values(REQUIRED_RELEASE_SECRETS)
+                values, _missing = collect_env_values(required_secret_names)
             if args.env_file:
                 values.update(
-                    load_env_file_values(Path(args.env_file).expanduser(), REQUIRED_RELEASE_SECRETS)
+                    load_env_file_values(Path(args.env_file).expanduser(), required_secret_names)
                 )
-            missing = missing_required_values(values, REQUIRED_RELEASE_SECRETS)
+            missing = missing_required_values(values, required_secret_names)
             if missing:
                 print_secret_names(
                     "GitHub release secret setup failed: missing local release secret values:",
@@ -613,14 +647,24 @@ def main() -> int:
             )
 
             if args.preflight_values:
-                run_value_preflights(require_openssl=args.require_openssl, values=values)
+                run_value_preflights(
+                    require_openssl=args.require_openssl,
+                    values=values,
+                    simple_launch=args.simple_launch,
+                )
         else:
             values = {}
 
         gh = args.gh or find_gh()
         repo = normalize_repo(args.repo.strip() or infer_repo(gh))
         if secret_setup_requested:
-            configured = configure_release_secrets(repo, gh, values, args.dry_run)
+            configured = configure_release_secrets(
+                repo,
+                gh,
+                values,
+                args.dry_run,
+                required_secret_names,
+            )
         if marker_requested:
             if args.set_npm_token_rotation_marker_from_secret_updated_at:
                 if should_defer_npm_rotation_marker_updated_at(
