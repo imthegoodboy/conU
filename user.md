@@ -49,7 +49,8 @@ Paste the token only into the GitHub CLI secret prompt. Do not paste it into cha
 
 Official npm token guide: `https://docs.npmjs.com/creating-and-viewing-access-tokens`
 
-After the secret and marker are set, validate:
+After the rotated secret and marker are set, validate both the GitHub secret
+`updatedAt` metadata and the non-secret marker:
 
 ```powershell
 python scripts\check-github-release-secret-readiness.py --repo imthegoodboy/conU --simple-launch --json

@@ -535,6 +535,20 @@ def run_repo_version_json_duplicate_tests(module) -> None:
 
 
 def run_secret_rotation_tests(module) -> None:
+    default_requirement = module.default_secret_rotation_requirements()[0]
+    if default_requirement.name != module.NPM_TOKEN_SECRET_NAME:
+        raise AssertionError("default secret rotation requirement should check NPM_TOKEN")
+    if default_requirement.updated_after != module.NPM_TOKEN_ROTATION_REQUIRED_AFTER:
+        raise AssertionError("default NPM_TOKEN rotation timestamp changed unexpectedly")
+
+    override = module.SecretRotationRequirement(
+        name=module.NPM_TOKEN_SECRET_NAME,
+        updated_after="2026-06-06T00:00:00Z",
+    )
+    merged = module.merge_secret_rotation_requirements((override,))
+    if merged != (override,):
+        raise AssertionError("user secret rotation requirement should override the default")
+
     requirement = module.SecretRotationRequirement(
         name="NPM_TOKEN",
         updated_after="2026-06-05T00:00:00Z",
