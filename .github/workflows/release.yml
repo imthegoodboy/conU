@@ -81,6 +81,11 @@ jobs:
         env:
           CONU_NPM_TOKEN_ROTATED_AFTER: ${{ vars.CONU_NPM_TOKEN_ROTATED_AFTER }}
         run: python scripts/check-release-secret-rotation-gate.py --secret-name NPM_TOKEN --rotated-after-env CONU_NPM_TOKEN_ROTATED_AFTER --required-after 2026-06-05T00:00:00Z
+      - name: Validate NPM token metadata rotation
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-github-release-secret-readiness.py --repo "$GITHUB_REPOSITORY" --simple-launch
       - name: Validate npm token authentication and registry availability
         if: startsWith(github.ref, 'refs/tags/v')
         env:
