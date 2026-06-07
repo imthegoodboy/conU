@@ -22,11 +22,10 @@ gh secret set NPM_TOKEN --repo imthegoodboy/conU
 
 For simple testing, there is nothing else you need to paste or configure for npm right now.
 
-Before any real npm publish, rotate `NPM_TOKEN` because a token value was pasted in chat. After rotating it, set the non-secret rotation marker:
+Before any real npm publish, rotate `NPM_TOKEN` because a token value was pasted in chat. After rotating it, set the non-secret rotation marker from GitHub's secret metadata:
 
 ```powershell
-$rotatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-gh variable set CONU_NPM_TOKEN_ROTATED_AFTER --repo imthegoodboy/conU --body $rotatedAt
+python scripts\set-github-release-secrets.py --repo imthegoodboy/conU --simple-launch --set-npm-token-rotation-marker-from-secret-updated-at --confirm-npm-token-rotated
 ```
 
 Only run the marker command after the new rotated token has been uploaded to GitHub Secrets.

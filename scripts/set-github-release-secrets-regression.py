@@ -90,6 +90,12 @@ def write_required_env_file(path: Path, module, value: str) -> None:
     secure_write_text(path, "\n".join(lines) + "\n")
 
 
+def write_named_env_file(path: Path, names: tuple[str, ...], value: str) -> None:
+    lines = ["# local release secrets for regression"]
+    lines.extend(f"{name}={value}" for name in names)
+    secure_write_text(path, "\n".join(lines) + "\n")
+
+
 def run_env_template_tests(module) -> None:
     template = module.render_env_template(module.REQUIRED_RELEASE_SECRETS)
     if SENSITIVE_SENTINEL in template:
@@ -462,6 +468,30 @@ def run_value_preflight_tests(module) -> None:
         if kwargs.get("env", {}).get("NPM_TOKEN") != SENSITIVE_SENTINEL:
             raise AssertionError("value preflight did not receive env-file values via env")
 
+    calls = []
+    module.subprocess.run = fake_run
+    try:
+        module.run_value_preflights(
+            require_openssl=False,
+            values={"NPM_TOKEN": SENSITIVE_SENTINEL},
+            python_executable="python",
+            simple_launch=True,
+        )
+    finally:
+        module.subprocess.run = original_run
+
+    if len(calls) != 1:
+        raise AssertionError(f"expected one simple-launch preflight call, got {len(calls)}")
+    rendered = "\n".join(" ".join(args) for args, _kwargs in calls)
+    if "check-npm-publish-preflight.py" not in rendered:
+        raise AssertionError("simple-launch preflight did not call npm token auth")
+    if "check-platform-signing-secrets-preflight.py" in rendered:
+        raise AssertionError("simple-launch preflight should not call platform signing checks")
+    if "check-linux-signing-secrets-preflight.py" in rendered:
+        raise AssertionError("simple-launch preflight should not call Linux signing checks")
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("simple-launch preflight leaked secret value in arguments")
+
     def failed_run(_args, **_kwargs):
         return SimpleNamespace(returncode=7, stdout=SENSITIVE_SENTINEL, stderr=SENSITIVE_SENTINEL)
 
@@ -520,6 +550,17 @@ def run_dry_run_tests(module) -> None:
         if calls:
             raise AssertionError("dry run must not call gh secret set")
 
+        simple_values = {module.NPM_TOKEN_SECRET_NAME: SENSITIVE_SENTINEL}
+        configured_simple = module.configure_release_secrets(
+            "owner/repo",
+            "gh",
+            simple_values,
+            dry_run=True,
+            required_names=module.SIMPLE_LAUNCH_REQUIRED_SECRETS,
+        )
+        if configured_simple != module.SIMPLE_LAUNCH_REQUIRED_SECRETS:
+            raise AssertionError("simple-launch dry run should report only NPM_TOKEN")
+
         assert_raises(
             lambda: module.require_npm_rotation_marker_for_token_write(
                 values=values,
@@ -546,6 +587,162 @@ def run_dry_run_tests(module) -> None:
             ),
             module.NPM_TOKEN_ROTATION_MARKER_VAR,
         )
+    finally:
+        restore_env(original)
+
+
+def run_simple_launch_main_tests(module) -> None:
+    original = {name: os.environ.get(name) for name in module.REQUIRED_RELEASE_SECRETS}
+    try:
+        for name in module.REQUIRED_RELEASE_SECRETS:
+            os.environ.pop(name, None)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / "simple.env"
+            write_named_env_file(env_file, module.SIMPLE_LAUNCH_REQUIRED_SECRETS, SENSITIVE_SENTINEL)
+
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--env-file",
+                    str(env_file),
+                    "--check-env-file",
+                    "--simple-launch",
+                ],
+            )
+            if exit_code != 0:
+                raise AssertionError(f"expected simple-launch env-file check to pass: {rendered}")
+            if "1 required secret names" not in rendered:
+                raise AssertionError("simple-launch env-file check should report one required name")
+            if "present: NPM_TOKEN" not in rendered:
+                raise AssertionError("simple-launch env-file check omitted NPM_TOKEN")
+            if "CONU_WINDOWS_SIGN_CERT_PFX_BASE64" in rendered:
+                raise AssertionError("simple-launch env-file check should not mention signing secrets")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("simple-launch env-file check leaked a secret value")
+
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--repo",
+                    "owner/repo",
+                    "--gh",
+                    "gh",
+                    "--env-file",
+                    str(env_file),
+                    "--env-file-only",
+                    "--simple-launch",
+                    "--dry-run",
+                    "--set-npm-token-rotation-marker-from-secret-updated-at",
+                    "--confirm-npm-token-rotated",
+                ],
+            )
+            if exit_code != 0:
+                raise AssertionError(f"expected simple-launch dry run to pass: {rendered}")
+            if "would configure 1 required secret names" not in rendered:
+                raise AssertionError("simple-launch dry run should configure one secret")
+            if module.DRY_RUN_NPM_TOKEN_ROTATION_MARKER_FROM_UPDATED_AT not in rendered:
+                raise AssertionError("simple-launch dry run omitted deferred marker metadata text")
+            if "CONU_WINDOWS_SIGN_CERT_PFX_BASE64" in rendered:
+                raise AssertionError("simple-launch dry run should not mention signing secrets")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("simple-launch dry run leaked a secret value")
+
+            calls: list[tuple[str, str]] = []
+
+            def fake_set_secret(_gh, _repo, name, value):
+                calls.append(("secret", name))
+                if name != module.NPM_TOKEN_SECRET_NAME:
+                    raise AssertionError(f"simple-launch tried to set unexpected secret {name}")
+                if value != SENSITIVE_SENTINEL:
+                    raise AssertionError("simple-launch setup did not pass NPM_TOKEN value")
+
+            def fake_set_variable(_gh, _repo, name, value):
+                calls.append(("variable", name))
+                if name != module.NPM_TOKEN_ROTATION_MARKER_VAR:
+                    raise AssertionError(f"simple-launch tried to set unexpected variable {name}")
+                if value != "2026-06-05T00:00:05Z":
+                    raise AssertionError("simple-launch marker did not use secret updatedAt")
+
+            original_set_secret = module.set_secret
+            original_set_variable = module.set_variable
+            original_loader = module.load_secret_metadata
+            module.set_secret = fake_set_secret
+            module.set_variable = fake_set_variable
+            module.load_secret_metadata = lambda _repo, _gh: {
+                module.NPM_TOKEN_SECRET_NAME: SimpleNamespace(updated_at="2026-06-05T00:00:05Z")
+            }
+            try:
+                exit_code, rendered = call_main(
+                    module,
+                    [
+                        "set-github-release-secrets.py",
+                        "--repo",
+                        "owner/repo",
+                        "--gh",
+                        "gh",
+                        "--env-file",
+                        str(env_file),
+                        "--env-file-only",
+                        "--simple-launch",
+                        "--set-npm-token-rotation-marker-from-secret-updated-at",
+                        "--confirm-npm-token-rotated",
+                    ],
+                )
+            finally:
+                module.set_secret = original_set_secret
+                module.set_variable = original_set_variable
+                module.load_secret_metadata = original_loader
+            if exit_code != 0:
+                raise AssertionError(f"expected simple-launch setup to pass: {rendered}")
+            if calls != [
+                ("secret", module.NPM_TOKEN_SECRET_NAME),
+                ("variable", module.NPM_TOKEN_ROTATION_MARKER_VAR),
+            ]:
+                raise AssertionError(f"simple-launch setup used unexpected GitHub writes: {calls}")
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("simple-launch setup output leaked a secret value")
+
+            unsupported = Path(temp_dir) / "unsupported.env"
+            write_named_env_file(
+                unsupported,
+                (module.NPM_TOKEN_SECRET_NAME, "CONU_WINDOWS_SIGN_CERT_PFX_BASE64"),
+                SENSITIVE_SENTINEL,
+            )
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--env-file",
+                    str(unsupported),
+                    "--check-env-file",
+                    "--simple-launch",
+                ],
+            )
+            if exit_code == 0 or "unsupported key" not in rendered:
+                raise AssertionError(
+                    f"expected simple-launch env-file to reject signing keys: {rendered}"
+                )
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("simple-launch unsupported-key error leaked a secret value")
+
+            exit_code, rendered = call_main(
+                module,
+                [
+                    "set-github-release-secrets.py",
+                    "--simple-launch",
+                    "--preflight-values",
+                    "--require-openssl",
+                    "--dry-run",
+                ],
+            )
+            if exit_code == 0 or "cannot be combined with --simple-launch" not in rendered:
+                raise AssertionError(
+                    f"expected simple-launch OpenSSL argument guard to fail: {rendered}"
+                )
+            if SENSITIVE_SENTINEL in rendered:
+                raise AssertionError("simple-launch OpenSSL argument error leaked a secret value")
     finally:
         restore_env(original)
 
@@ -1270,6 +1467,7 @@ def main() -> int:
     run_rotation_marker_setup_tests(module)
     run_value_preflight_tests(module)
     run_dry_run_tests(module)
+    run_simple_launch_main_tests(module)
     run_env_file_main_tests(module)
     run_rotation_marker_main_tests(module)
     run_env_template_main_tests(module)
