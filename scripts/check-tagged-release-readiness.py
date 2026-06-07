@@ -1222,12 +1222,53 @@ def print_text_report(report: TaggedReleaseReadiness) -> None:
         )
         return
 
+    def status(ready: bool) -> str:
+        return "ready" if ready else "not ready"
+
+    release_secret_status = (
+        "ready"
+        if report.release_secrets.ready
+        else f"{len(report.release_secrets.missing)}/{len(report.release_secrets.required)} missing"
+    )
     print(
         f"Tagged release readiness failed for {report.repo}@{report.tag}",
         file=sys.stderr,
     )
+    print(
+        "status: "
+        f"release secrets {release_secret_status}; "
+        f"{NPM_TOKEN_SECRET_NAME} updatedAt {status(report.secret_rotation.ready)}; "
+        f"{NPM_TOKEN_ROTATION_MARKER_VAR} {status(report.secret_rotation_markers.ready)}; "
+        f"Linux repository {status(report.linux_repository.ready)}; "
+        f"GitHub Release clobber {status(report.release_clobber.ready)}; "
+        f"npm registry {status(report.npm_registry.ready)}; "
+        f"CI {status(report.ci.ready)}; "
+        f"release branch {status(report.release_branch.ready)}; "
+        f"workflow permissions {status(report.workflow_permissions.ready)}; "
+        f"main branch protection {status(report.main_branch_protection.ready)}; "
+        f"Actions permissions {status(report.actions_permissions.ready)}; "
+        f"repository security {status(report.repository_security.ready)}",
+        file=sys.stderr,
+    )
     for issue in report.issues:
         print(f"issue: {issue}", file=sys.stderr)
+    if report.release_secrets.missing:
+        print(
+            "next: configure the missing release signing/publishing secret names before creating a tag",
+            file=sys.stderr,
+        )
+    if not report.secret_rotation.ready or not report.secret_rotation_markers.ready:
+        print(
+            "next: rotate NPM_TOKEN in GitHub Secrets, then run:",
+            file=sys.stderr,
+        )
+        print(
+            "python scripts\\set-github-release-secrets.py "
+            f"--repo {report.repo} --simple-launch "
+            "--set-npm-token-rotation-marker-from-secret-updated-at "
+            "--confirm-npm-token-rotated",
+            file=sys.stderr,
+        )
 
 
 def parse_args() -> argparse.Namespace:

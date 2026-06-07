@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -735,6 +737,63 @@ def run_secret_rotation_marker_tests(module) -> None:
         raise AssertionError("invalid rotation marker issue was not reported")
 
 
+def run_text_report_guidance_tests(module) -> None:
+    secret_names = all_release_secrets(module)
+    missing_name = "CONU_WINDOWS_SIGN_CERT_PFX_BASE64"
+    if missing_name not in secret_names:
+        raise AssertionError("expected Windows signing certificate secret in release secret set")
+    secret_names.remove(missing_name)
+
+    report = module.audit_tagged_release_readiness(
+        repo="owner/repo",
+        tag=TAG,
+        version=VERSION,
+        secret_names=secret_names,
+        variable_values={
+            module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-04T13:11:57Z",
+        },
+        pages_payload=pages_payload(),
+        release_payload=None,
+        npm_registry_check=False,
+        secret_updated_at={
+            module.NPM_TOKEN_SECRET_NAME: "2026-06-04T13:05:47Z",
+        },
+        secret_rotation_requirements=module.default_secret_rotation_requirements(),
+        secret_rotation_marker_requirements=module.default_secret_rotation_marker_requirements(),
+        **ready_governance_kwargs(),
+    )
+    if report.ready:
+        raise AssertionError("missing secret and stale npm rotation metadata should fail")
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        module.print_text_report(report)
+    rendered = stdout.getvalue() + stderr.getvalue()
+
+    for expected in (
+        "status: release secrets 1/",
+        "NPM_TOKEN updatedAt not ready",
+        f"{module.NPM_TOKEN_ROTATION_MARKER_VAR} not ready",
+        "Linux repository ready",
+        "GitHub Release clobber ready",
+        "npm registry ready",
+        "CI ready",
+        "release branch ready",
+        "workflow permissions ready",
+        "main branch protection ready",
+        "Actions permissions ready",
+        "repository security ready",
+        "configure the missing release signing/publishing secret names",
+        "rotate NPM_TOKEN in GitHub Secrets",
+        "python scripts\\set-github-release-secrets.py --repo owner/repo --simple-launch",
+    ):
+        if expected not in rendered:
+            raise AssertionError(f"text readiness guidance was missing: {expected}")
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("text readiness guidance leaked unrelated sensitive text")
+
+
 def run_custom_repository_tests(module) -> None:
     report = module.audit_tagged_release_readiness(
         repo="owner/repo",
@@ -1321,6 +1380,7 @@ def main() -> int:
     run_repo_version_json_duplicate_tests(module)
     run_secret_rotation_tests(module)
     run_secret_rotation_marker_tests(module)
+    run_text_report_guidance_tests(module)
     run_custom_repository_tests(module)
     run_variable_loader_tests(module)
     run_safe_failure_tests(module)
