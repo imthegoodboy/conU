@@ -385,6 +385,24 @@ def parse_secret_rotation_requirements(values: list[str]) -> tuple[SecretRotatio
     return tuple(requirements)
 
 
+def default_secret_rotation_requirements() -> tuple[SecretRotationRequirement, ...]:
+    return (
+        SecretRotationRequirement(
+            name=NPM_TOKEN_SECRET_NAME,
+            updated_after=NPM_TOKEN_ROTATION_REQUIRED_AFTER,
+        ),
+    )
+
+
+def merge_secret_rotation_requirements(
+    user_requirements: tuple[SecretRotationRequirement, ...],
+) -> tuple[SecretRotationRequirement, ...]:
+    requirements = {item.name: item for item in default_secret_rotation_requirements()}
+    for requirement in user_requirements:
+        requirements[requirement.name] = requirement
+    return tuple(requirements.values())
+
+
 def audit_secret_rotation(
     secret_updated_at: dict[str, str],
     requirements: tuple[SecretRotationRequirement, ...],
@@ -1288,11 +1306,16 @@ def main() -> int:
         tag = validate_tag_for_version(args.tag or default_tag(version), version)
         gh = args.gh or find_gh()
         repo = normalize_repo(args.repo.strip() or infer_repo(gh))
-        secret_rotation_requirements = parse_secret_rotation_requirements(
+        user_secret_rotation_requirements = parse_secret_rotation_requirements(
             args.require_secret_updated_after
         )
-        if args.ci_only and secret_rotation_requirements:
+        if args.ci_only and user_secret_rotation_requirements:
             raise ValueError("--require-secret-updated-after cannot be used with --ci-only")
+        secret_rotation_requirements = (
+            ()
+            if args.ci_only
+            else merge_secret_rotation_requirements(user_secret_rotation_requirements)
+        )
         if args.ci_only:
             release_target_sha = args.release_target_head.strip()
             ci_head_sha = args.ci_head.strip() or release_target_sha or resolve_git_head()

@@ -73,20 +73,32 @@ def run_audit_tests(module) -> None:
         raise AssertionError(f"expected only {missing_name} missing, got {not_ready.missing}")
 
 
+def secret_update_times(module, updated_at: str = "2026-06-05T00:00:01Z") -> dict[str, str]:
+    return {name: updated_at for name in module.REQUIRED_RELEASE_SECRETS}
+
+
 def run_rotation_marker_tests(module) -> None:
     configured = set(module.REQUIRED_RELEASE_SECRETS)
     ready = module.audit_release_secret_readiness(
         "owner/repo",
         configured,
         {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        secret_update_times(module),
     )
     if not ready.ready:
-        raise AssertionError(f"expected ready marker report: {ready.npm_rotation_marker.issues!r}")
+        raise AssertionError(f"expected ready marker report: {ready.as_json()!r}")
     parsed_ready = assert_safe_report(ready)
+    if parsed_ready["npmTokenSecretUpdatedAt"]["updatedAt"] != "2026-06-05T00:00:01Z":
+        raise AssertionError("valid NPM_TOKEN updatedAt timestamp was not reported")
     if parsed_ready["npmTokenRotationMarker"]["rotatedAfter"] != "2026-06-05T00:00:01Z":
         raise AssertionError("valid marker timestamp was not included in normalized form")
 
-    missing = module.audit_release_secret_readiness("owner/repo", configured, {})
+    missing = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {},
+        secret_update_times(module),
+    )
     if missing.ready:
         raise AssertionError("missing npm rotation marker should fail readiness")
     parsed_missing = assert_safe_report(missing)
@@ -97,6 +109,7 @@ def run_rotation_marker_tests(module) -> None:
         "owner/repo",
         configured,
         {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:00Z"},
+        secret_update_times(module),
     )
     if stale.ready:
         raise AssertionError("stale npm rotation marker should fail readiness")
@@ -108,6 +121,7 @@ def run_rotation_marker_tests(module) -> None:
         "owner/repo",
         configured,
         {module.NPM_TOKEN_ROTATION_MARKER_VAR: SENSITIVE_SENTINEL},
+        secret_update_times(module),
     )
     if invalid.ready:
         raise AssertionError("invalid npm rotation marker should fail readiness")
@@ -117,6 +131,44 @@ def run_rotation_marker_tests(module) -> None:
     if "timestamp is invalid" not in json.dumps(parsed_invalid):
         raise AssertionError("invalid marker issue was not reported")
 
+    stale_secret = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        secret_update_times(module, "2026-06-05T00:00:00Z"),
+    )
+    if stale_secret.ready:
+        raise AssertionError("stale NPM_TOKEN updatedAt should fail readiness")
+    parsed_stale_secret = assert_safe_report(stale_secret)
+    if "NPM_TOKEN was not updated after required timestamp" not in json.dumps(parsed_stale_secret):
+        raise AssertionError("stale NPM_TOKEN updatedAt issue was not reported")
+
+    missing_secret_metadata = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        {},
+    )
+    if missing_secret_metadata.ready:
+        raise AssertionError("missing NPM_TOKEN updatedAt should fail readiness")
+    parsed_missing_secret = assert_safe_report(missing_secret_metadata)
+    if "NPM_TOKEN update timestamp is missing" not in json.dumps(parsed_missing_secret):
+        raise AssertionError("missing NPM_TOKEN updatedAt issue was not reported")
+
+    invalid_secret_metadata = module.audit_release_secret_readiness(
+        "owner/repo",
+        configured,
+        {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        {module.NPM_TOKEN_SECRET_NAME: SENSITIVE_SENTINEL},
+    )
+    if invalid_secret_metadata.ready:
+        raise AssertionError("invalid NPM_TOKEN updatedAt should fail readiness")
+    parsed_invalid_secret = assert_safe_report(invalid_secret_metadata)
+    if parsed_invalid_secret["npmTokenSecretUpdatedAt"]["updatedAt"] != "":
+        raise AssertionError("invalid NPM_TOKEN updatedAt should not be echoed")
+    if "NPM_TOKEN update timestamp is invalid" not in json.dumps(parsed_invalid_secret):
+        raise AssertionError("invalid NPM_TOKEN updatedAt issue was not reported")
+
 
 def run_simple_launch_tests(module) -> None:
     configured = {module.NPM_TOKEN_SECRET_NAME}
@@ -124,6 +176,7 @@ def run_simple_launch_tests(module) -> None:
         "owner/repo",
         configured,
         {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        {module.NPM_TOKEN_SECRET_NAME: "2026-06-05T00:00:01Z"},
         simple_launch=True,
     )
     if not ready.ready:
@@ -143,6 +196,7 @@ def run_simple_launch_tests(module) -> None:
         "owner/repo",
         configured,
         {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        {module.NPM_TOKEN_SECRET_NAME: "2026-06-05T00:00:01Z"},
     )
     if full_release.ready:
         raise AssertionError("full release readiness should still require signing secrets")
@@ -156,6 +210,7 @@ def run_simple_launch_tests(module) -> None:
         "owner/repo",
         set(),
         {module.NPM_TOKEN_ROTATION_MARKER_VAR: "2026-06-05T00:00:01Z"},
+        {},
         simple_launch=True,
     )
     if missing_token.ready:
@@ -201,7 +256,11 @@ def run_gh_payload_tests(module) -> None:
     def fake_gh_list(args, **_kwargs):
         if args[1:4] == ["secret", "list", "--repo"]:
             payload = [
-                {"name": name, "value": SENSITIVE_SENTINEL}
+                {
+                    "name": name,
+                    "updatedAt": "2026-06-05T00:00:01Z",
+                    "value": SENSITIVE_SENTINEL,
+                }
                 for name in module.REQUIRED_RELEASE_SECRETS
             ]
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
@@ -254,13 +313,18 @@ def run_gh_payload_tests(module) -> None:
     if set(metadata) != names:
         raise AssertionError("loaded secret metadata did not match required names")
     for record in metadata.values():
-        if record.updated_at != "":
+        if record.updated_at != "2026-06-05T00:00:01Z":
             raise AssertionError("unexpected updatedAt value in fake metadata payload")
     if variables[module.NPM_TOKEN_ROTATION_MARKER_VAR] != "2026-06-05T00:00:01Z":
         raise AssertionError("loaded variable values did not include the rotation marker")
     if "UNRELATED_VARIABLE" in variables:
         raise AssertionError("loaded variable values included an unrelated variable")
-    report = module.audit_release_secret_readiness("owner/repo", names, variables)
+    report = module.audit_release_secret_readiness(
+        "owner/repo",
+        names,
+        variables,
+        {name: record.updated_at for name, record in metadata.items()},
+    )
     assert_safe_report(report)
 
 
@@ -333,7 +397,10 @@ def run_main_tests(module) -> None:
 
     def fake_gh_list(args, **_kwargs):
         if args[1:4] == ["secret", "list", "--repo"]:
-            payload = [{"name": name} for name in module.REQUIRED_RELEASE_SECRETS]
+            payload = [
+                {"name": name, "updatedAt": "2026-06-05T00:00:01Z"}
+                for name in module.REQUIRED_RELEASE_SECRETS
+            ]
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
         if args[1:] == [
             "variable",
@@ -424,7 +491,14 @@ def run_main_tests(module) -> None:
         if args[1:4] == ["secret", "list", "--repo"]:
             return SimpleNamespace(
                 returncode=0,
-                stdout=json.dumps([{"name": module.NPM_TOKEN_SECRET_NAME}]),
+                stdout=json.dumps(
+                    [
+                        {
+                            "name": module.NPM_TOKEN_SECRET_NAME,
+                            "updatedAt": "2026-06-05T00:00:01Z",
+                        }
+                    ]
+                ),
                 stderr="",
             )
         if args[1:] == [

@@ -9,6 +9,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from github_release_secrets import (
     audit_secret_names,
     find_gh,
     infer_repo,
+    load_secret_metadata,
     load_secret_names,
     load_variable_values,
     normalize_repo,
@@ -34,15 +36,45 @@ SIMPLE_LAUNCH_REQUIRED_SECRETS = (NPM_TOKEN_SECRET_NAME,)
 
 
 @dataclass(frozen=True)
+class SecretUpdatedAtReadiness:
+    secret_name: str
+    required_after: str
+    updated_at: str
+    ready: bool
+    issues: tuple[str, ...]
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "checked": True,
+            "ready": self.ready,
+            "secretName": self.secret_name,
+            "requiredAfter": self.required_after,
+            "updatedAt": self.updated_at,
+            "issues": list(self.issues),
+            "payloadDisplayed": False,
+            "tokenDisplayed": False,
+            "tokenHashDisplayed": False,
+            "keyMaterialDisplayed": False,
+            "contentsDisplayed": False,
+            "secretValuesDisplayed": False,
+        }
+
+
+@dataclass(frozen=True)
 class ReleaseSecretReadiness:
     repo: str
     profile: str
     secrets: SecretReadiness
+    npm_token_secret_updated_at: SecretUpdatedAtReadiness
     npm_rotation_marker: Any
 
     @property
     def ready(self) -> bool:
-        return self.secrets.ready and self.npm_rotation_marker.ready
+        return (
+            self.secrets.ready
+            and self.npm_token_secret_updated_at.ready
+            and self.npm_rotation_marker.ready
+        )
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -51,6 +83,7 @@ class ReleaseSecretReadiness:
             "profile": self.profile,
             "ready": self.ready,
             "releaseSecrets": self.secrets.as_json(),
+            "npmTokenSecretUpdatedAt": self.npm_token_secret_updated_at.as_json(),
             "npmTokenRotationMarker": self.npm_rotation_marker.as_json(),
             "payloadDisplayed": False,
             "tokenDisplayed": False,
@@ -70,6 +103,73 @@ def load_script_module(filename: str, module_name: str):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def parse_utc_timestamp(value: str, label: str) -> datetime:
+    raw = value.strip()
+    if not raw:
+        raise ValueError(f"{label} timestamp must not be empty")
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise ValueError(f"{label} timestamp must be ISO-8601 with a timezone") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label} timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def render_utc_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def audit_npm_token_secret_updated_at(
+    secret_updated_at: dict[str, str],
+) -> SecretUpdatedAtReadiness:
+    required = parse_utc_timestamp(
+        NPM_TOKEN_ROTATION_REQUIRED_AFTER,
+        f"{NPM_TOKEN_SECRET_NAME} required rotation",
+    )
+    rendered_required = render_utc_timestamp(required)
+    updated_at = secret_updated_at.get(NPM_TOKEN_SECRET_NAME, "").strip()
+    if not updated_at:
+        return SecretUpdatedAtReadiness(
+            secret_name=NPM_TOKEN_SECRET_NAME,
+            required_after=rendered_required,
+            updated_at="",
+            ready=False,
+            issues=(f"{NPM_TOKEN_SECRET_NAME} update timestamp is missing",),
+        )
+
+    try:
+        observed = parse_utc_timestamp(updated_at, f"{NPM_TOKEN_SECRET_NAME} updatedAt")
+    except ValueError:
+        return SecretUpdatedAtReadiness(
+            secret_name=NPM_TOKEN_SECRET_NAME,
+            required_after=rendered_required,
+            updated_at="",
+            ready=False,
+            issues=(f"{NPM_TOKEN_SECRET_NAME} update timestamp is invalid",),
+        )
+
+    rendered_observed = render_utc_timestamp(observed)
+    if observed <= required:
+        return SecretUpdatedAtReadiness(
+            secret_name=NPM_TOKEN_SECRET_NAME,
+            required_after=rendered_required,
+            updated_at=rendered_observed,
+            ready=False,
+            issues=(f"{NPM_TOKEN_SECRET_NAME} was not updated after required timestamp",),
+        )
+
+    return SecretUpdatedAtReadiness(
+        secret_name=NPM_TOKEN_SECRET_NAME,
+        required_after=rendered_required,
+        updated_at=rendered_observed,
+        ready=True,
+        issues=(),
+    )
 
 
 def audit_secret_names_for_required(
@@ -92,6 +192,7 @@ def audit_release_secret_readiness(
     repo: str,
     secret_names: set[str],
     variable_values: dict[str, str],
+    secret_updated_at: dict[str, str],
     *,
     simple_launch: bool = False,
 ) -> ReleaseSecretReadiness:
@@ -106,6 +207,7 @@ def audit_release_secret_readiness(
         "check-release-secret-rotation-gate.py",
         "check_release_secret_rotation_gate_for_secret_readiness",
     )
+    npm_token_secret_updated_at = audit_npm_token_secret_updated_at(secret_updated_at)
     npm_rotation_marker = gate_module.audit_rotation_marker(
         secret_name=NPM_TOKEN_SECRET_NAME,
         marker_env=NPM_TOKEN_ROTATION_MARKER_VAR,
@@ -116,6 +218,7 @@ def audit_release_secret_readiness(
         repo=repo,
         profile=profile,
         secrets=secrets,
+        npm_token_secret_updated_at=npm_token_secret_updated_at,
         npm_rotation_marker=npm_rotation_marker,
     )
 
@@ -138,6 +241,8 @@ def print_text_report(report: ReleaseSecretReadiness) -> None:
     )
     for name in report.secrets.missing:
         print(f"missing: {name}", file=sys.stderr)
+    for issue in report.npm_token_secret_updated_at.issues:
+        print(f"secret: {issue}", file=sys.stderr)
     for issue in report.npm_rotation_marker.issues:
         print(f"marker: {issue}", file=sys.stderr)
 
@@ -178,10 +283,15 @@ def main() -> int:
 
         gh = args.gh or find_gh()
         repo = normalize_repo(args.repo.strip() or infer_repo(gh))
+        secret_records = load_secret_metadata(repo, gh)
         report = audit_release_secret_readiness(
             repo,
-            load_secret_names(repo, gh),
+            set(secret_records),
             load_variable_values(repo, gh, REQUIRED_VARIABLE_VALUES),
+            {
+                name: record.updated_at
+                for name, record in secret_records.items()
+            },
             simple_launch=args.simple_launch,
         )
     except (OSError, ValueError) as exc:
