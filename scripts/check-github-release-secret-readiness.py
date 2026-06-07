@@ -233,9 +233,18 @@ def print_text_report(report: ReleaseSecretReadiness) -> None:
         )
         return
 
+    secret_name_status = (
+        "ready"
+        if report.secrets.ready
+        else f"{len(report.secrets.missing)}/{len(report.secrets.required)} missing"
+    )
+    updated_at_status = "ready" if report.npm_token_secret_updated_at.ready else "not ready"
+    marker_status = "ready" if report.npm_rotation_marker.ready else "not ready"
     print(
         "GitHub release secret readiness failed: "
-        f"{len(report.secrets.missing)}/{len(report.secrets.required)} required secret names missing "
+        f"secret names {secret_name_status}; "
+        f"{NPM_TOKEN_SECRET_NAME} updatedAt {updated_at_status}; "
+        f"{NPM_TOKEN_ROTATION_MARKER_VAR} {marker_status} "
         f"for {report.repo} ({report.profile})",
         file=sys.stderr,
     )
@@ -245,6 +254,25 @@ def print_text_report(report: ReleaseSecretReadiness) -> None:
         print(f"secret: {issue}", file=sys.stderr)
     for issue in report.npm_rotation_marker.issues:
         print(f"marker: {issue}", file=sys.stderr)
+    if (
+        report.profile == SIMPLE_LAUNCH_PROFILE
+        and report.secrets.ready
+        and (
+            not report.npm_token_secret_updated_at.ready
+            or not report.npm_rotation_marker.ready
+        )
+    ):
+        print(
+            "next: rotate NPM_TOKEN in GitHub Secrets, then run:",
+            file=sys.stderr,
+        )
+        print(
+            "python scripts\\set-github-release-secrets.py "
+            f"--repo {report.repo} --simple-launch "
+            "--set-npm-token-rotation-marker-from-secret-updated-at "
+            "--confirm-npm-token-rotated",
+            file=sys.stderr,
+        )
 
 
 def parse_args() -> argparse.Namespace:

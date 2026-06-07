@@ -567,6 +567,89 @@ def run_main_tests(module) -> None:
     if SENSITIVE_SENTINEL in rendered:
         raise AssertionError("simple-launch main() leaked a secret or variable value")
 
+    def fake_stale_simple_launch_gh(args, **_kwargs):
+        if args[1:4] == ["secret", "list", "--repo"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "name": module.NPM_TOKEN_SECRET_NAME,
+                            "updatedAt": "2026-06-04T13:05:47Z",
+                            "value": SENSITIVE_SENTINEL,
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if args[1:] == [
+            "variable",
+            "list",
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name",
+        ]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps([{"name": module.NPM_TOKEN_ROTATION_MARKER_VAR}]),
+                stderr="",
+            )
+        if args[1:] == [
+            "variable",
+            "get",
+            module.NPM_TOKEN_ROTATION_MARKER_VAR,
+            "--repo",
+            "owner/repo",
+            "--json",
+            "name,value",
+        ]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "name": module.NPM_TOKEN_ROTATION_MARKER_VAR,
+                        "value": "2026-06-04T13:11:57Z",
+                    }
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected gh args: {args!r}")
+
+    sys.argv = [
+        "check-github-release-secret-readiness.py",
+        "--repo",
+        "owner/repo",
+        "--gh",
+        "gh",
+        "--simple-launch",
+    ]
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    helper.subprocess.run = fake_stale_simple_launch_gh
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = module.main()
+    finally:
+        helper.subprocess.run = original_run
+        sys.argv = original_argv
+
+    rendered = stdout.getvalue() + stderr.getvalue()
+    if exit_code == 0:
+        raise AssertionError("stale simple-launch readiness should fail")
+    if "secret names ready" not in rendered:
+        raise AssertionError("stale simple-launch text should show secret names are ready")
+    if "NPM_TOKEN updatedAt not ready" not in rendered:
+        raise AssertionError("stale simple-launch text omitted updatedAt status")
+    if f"{module.NPM_TOKEN_ROTATION_MARKER_VAR} not ready" not in rendered:
+        raise AssertionError("stale simple-launch text omitted marker status")
+    if "set-github-release-secrets.py --repo owner/repo --simple-launch" not in rendered:
+        raise AssertionError("stale simple-launch text omitted safe repair command")
+    if "0/1 required secret names missing" in rendered:
+        raise AssertionError("stale simple-launch text kept the misleading missing-secret summary")
+    if SENSITIVE_SENTINEL in rendered:
+        raise AssertionError("stale simple-launch text leaked a secret or variable value")
+
 
 def main() -> int:
     module = load_module()
