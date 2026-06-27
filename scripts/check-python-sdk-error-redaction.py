@@ -722,6 +722,30 @@ def run_command_surface_parity_test(module) -> None:
             b"payload fixture",
         ),
         (
+            lambda: client.wait_for_message(
+                "agent.beta",
+                after_envelope_id="env.local.1",
+                timeout_ms=500,
+                interval_ms=10,
+                process_ipc=True,
+            ),
+            (
+                "C:/tools/conu-test.exe",
+                "messages",
+                "wait",
+                "agent.beta",
+                "--timeout-ms",
+                "500",
+                "--interval-ms",
+                "10",
+                "--json",
+                "--after",
+                "env.local.1",
+                "--process-ipc",
+            ),
+            None,
+        ),
+        (
             lambda: client.write_stream("stream.local.1", bytearray(b"stream fixture")),
             (
                 "C:/tools/conu-test.exe",

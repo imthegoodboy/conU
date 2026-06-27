@@ -1,6 +1,7 @@
 /target/
 /.conu/
 /dist/
+/site/.vercel/
 /packaging/npm/conu-cli/node_modules/
 /packaging/npm/conu-cli/vendor/
 /packaging/npm/conu-cli/*.tgz

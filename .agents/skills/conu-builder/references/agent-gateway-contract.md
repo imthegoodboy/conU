@@ -91,6 +91,7 @@ Supported commands:
 ```txt
 conu messages send <from-agent> <to-agent> --stdin [--json]
 conu messages inbox <agent-id> [--json]
+conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
 conu messages receipts [--json]
 ```
 
@@ -324,6 +325,7 @@ ConuClient::list_routes()
 ConuClient::list_route_probes()
 ConuClient::send_message_bytes()
 ConuClient::inbox_metadata()
+ConuClient::wait_for_message()
 ConuClient::receive_message_bytes()
 ConuClient::open_stream()
 ConuClient::write_stream_bytes()
@@ -354,6 +356,7 @@ ConuClient.routes()
 ConuClient.sendMessage()
 ConuClient.sendRemoteMessage()
 ConuClient.inbox()
+ConuClient.waitForMessage()
 ConuClient.relaySync()
 ConuClient.openStream()
 ConuClient.writeStream()

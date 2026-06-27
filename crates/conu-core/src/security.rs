@@ -2449,25 +2449,25 @@ fn user_managed_wrap_key() -> Result<[u8; 32], SecurityError> {
         }
     }
 
-    if let Ok(value) = std::env::var(SECRET_WRAP_KEY_HEX_ENV) {
-        if !value.trim().is_empty() {
-            return parse_user_managed_wrap_key(&value);
-        }
+    if let Ok(value) = std::env::var(SECRET_WRAP_KEY_HEX_ENV)
+        && !value.trim().is_empty()
+    {
+        return parse_user_managed_wrap_key(&value);
     }
 
-    if let Ok(path_value) = std::env::var(SECRET_WRAP_KEY_FILE_ENV) {
-        if !path_value.trim().is_empty() {
-            let path = PathBuf::from(path_value);
-            let contents = read_user_managed_secret_wrap_key_file(&path)?;
-            let value = contents
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty() && !line.starts_with('#'))
-                .ok_or_else(|| SecurityError::InvalidPayload {
-                    reason: "user-managed secret wrap key file is empty".to_string(),
-                })?;
-            return parse_user_managed_wrap_key(value);
-        }
+    if let Ok(path_value) = std::env::var(SECRET_WRAP_KEY_FILE_ENV)
+        && !path_value.trim().is_empty()
+    {
+        let path = PathBuf::from(path_value);
+        let contents = read_user_managed_secret_wrap_key_file(&path)?;
+        let value = contents
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'))
+            .ok_or_else(|| SecurityError::InvalidPayload {
+                reason: "user-managed secret wrap key file is empty".to_string(),
+            })?;
+        return parse_user_managed_wrap_key(value);
     }
 
     Err(SecurityError::InvalidPayload {
@@ -3451,7 +3451,7 @@ fn hex_decode_exact<const N: usize>(value: &str) -> Result<[u8; N], String> {
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
     let value = value.trim();
-    if value.len() % 2 != 0 {
+    if (value.len() & 1) == 1 {
         return Err("hex value must have an even number of characters".to_string());
     }
 

@@ -1114,7 +1114,7 @@ fn validate_hex_value(
             reason: format!("{field} is too long"),
         });
     }
-    if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if (value.len() & 1) == 1 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(AgentError::InvalidRequest {
             reason: format!("{field} must be hex"),
         });

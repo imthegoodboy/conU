@@ -33,7 +33,7 @@ use conu_core::streams::{
 };
 use conu_core::trust::{self, JoinReport, PairingInvite, RevokeReport, TrustedPeer};
 use conu_protocol::{AgentCapabilities, OpaquePayload};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use conu_core::agents::{AgentPresence as Presence, SignedAgentCard};
 pub use conu_core::policy::{PeerPolicyRecord, PeerPolicyUpdate};
@@ -313,6 +313,59 @@ impl ConuClient {
         Ok(messages::list_agent_inbox(self.home_override(), agent_id)?)
     }
 
+    /// Wait for delivered message metadata for a local agent without returning payload bytes.
+    pub fn wait_for_message(
+        &self,
+        agent_id: &str,
+        after_envelope_id: Option<&str>,
+        timeout: Duration,
+        interval: Duration,
+        process_ipc: bool,
+    ) -> Result<MessageWaitReport, SdkError> {
+        let started = Instant::now();
+
+        loop {
+            if process_ipc {
+                self.process_queued()?;
+            }
+
+            let entries = messages::list_agent_inbox(self.home_override(), agent_id)?;
+            match newest_wait_entry(&entries, after_envelope_id) {
+                WaitEntrySearch::Found(entry) => {
+                    return Ok(MessageWaitReport {
+                        agent_id: agent_id.to_string(),
+                        status: MessageWaitStatus::Delivered,
+                        message: Some(entry),
+                        waited: started.elapsed(),
+                        process_ipc,
+                        contents_displayed: false,
+                    });
+                }
+                WaitEntrySearch::MissingAfter => {
+                    return Err(SdkError::WaitAfterEnvelopeNotFound {
+                        agent_id: agent_id.to_string(),
+                        envelope_id: after_envelope_id.unwrap_or_default().to_string(),
+                    });
+                }
+                WaitEntrySearch::None => {}
+            }
+
+            if started.elapsed() >= timeout {
+                return Ok(MessageWaitReport {
+                    agent_id: agent_id.to_string(),
+                    status: MessageWaitStatus::Timeout,
+                    message: None,
+                    waited: started.elapsed(),
+                    process_ipc,
+                    contents_displayed: false,
+                });
+            }
+
+            let remaining = timeout.saturating_sub(started.elapsed());
+            std::thread::sleep(interval.max(Duration::from_millis(1)).min(remaining));
+        }
+    }
+
     /// Read payload bytes for a delivered local message addressed to `agent_id`.
     pub fn receive_message_bytes(
         &self,
@@ -490,6 +543,68 @@ pub struct ProcessReport {
     pub sessions: SessionSyncReport,
 }
 
+/// Metadata-only result from waiting for a local agent inbox message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageWaitReport {
+    pub agent_id: String,
+    pub status: MessageWaitStatus,
+    pub message: Option<InboxEntry>,
+    pub waited: Duration,
+    pub process_ipc: bool,
+    pub contents_displayed: bool,
+}
+
+/// Delivery status from `ConuClient::wait_for_message`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageWaitStatus {
+    Delivered,
+    Timeout,
+}
+
+enum WaitEntrySearch {
+    Found(InboxEntry),
+    MissingAfter,
+    None,
+}
+
+fn newest_wait_entry(entries: &[InboxEntry], after_envelope_id: Option<&str>) -> WaitEntrySearch {
+    let Some(after_envelope_id) = after_envelope_id else {
+        return entries
+            .iter()
+            .max_by(|left, right| {
+                left.delivered_at_unix
+                    .cmp(&right.delivered_at_unix)
+                    .then_with(|| left.envelope_id.cmp(&right.envelope_id))
+            })
+            .cloned()
+            .map(WaitEntrySearch::Found)
+            .unwrap_or(WaitEntrySearch::None);
+    };
+
+    let Some(after) = entries
+        .iter()
+        .find(|entry| entry.envelope_id == after_envelope_id)
+    else {
+        return WaitEntrySearch::MissingAfter;
+    };
+
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.delivered_at_unix > after.delivered_at_unix
+                || (entry.delivered_at_unix == after.delivered_at_unix
+                    && entry.envelope_id.as_str() > after.envelope_id.as_str())
+        })
+        .max_by(|left, right| {
+            left.delivered_at_unix
+                .cmp(&right.delivered_at_unix)
+                .then_with(|| left.envelope_id.cmp(&right.envelope_id))
+        })
+        .cloned()
+        .map(WaitEntrySearch::Found)
+        .unwrap_or(WaitEntrySearch::None)
+}
+
 /// Errors returned by the SDK.
 pub enum SdkError {
     State(state::StateError),
@@ -509,6 +624,10 @@ pub enum SdkError {
         envelope_id: String,
     },
     UnauthorizedReceive {
+        agent_id: String,
+        envelope_id: String,
+    },
+    WaitAfterEnvelopeNotFound {
         agent_id: String,
         envelope_id: String,
     },
@@ -543,6 +662,12 @@ impl fmt::Debug for SdkError {
                 .field("envelope_id", &"[redacted]")
                 .field("contents_displayed", &false)
                 .finish(),
+            Self::WaitAfterEnvelopeNotFound { .. } => formatter
+                .debug_struct("WaitAfterEnvelopeNotFound")
+                .field("agent_id", &"[redacted]")
+                .field("envelope_id", &"[redacted]")
+                .field("contents_displayed", &false)
+                .finish(),
         }
     }
 }
@@ -569,6 +694,10 @@ impl fmt::Display for SdkError {
             Self::UnauthorizedReceive { .. } => write!(
                 formatter,
                 "agent is not authorized to receive the requested envelope; contentsDisplayed=false"
+            ),
+            Self::WaitAfterEnvelopeNotFound { .. } => write!(
+                formatter,
+                "after envelope was not found in the addressed agent inbox; contentsDisplayed=false"
             ),
         }
     }
@@ -689,6 +818,90 @@ mod tests {
     }
 
     #[test]
+    fn sdk_wait_for_message_processes_queue_without_payload() {
+        let client = ConuClient::with_home(test_home("wait-message"));
+        client.init().expect("state initializes");
+        client
+            .register_agent("agent.sender", "Sender", "test-agent")
+            .expect("sender registers");
+        client
+            .register_agent("agent.receiver", "Receiver", "test-agent")
+            .expect("receiver registers");
+        client
+            .send_message_bytes(
+                "agent.sender",
+                "agent.receiver",
+                b"private message contents",
+            )
+            .expect("message queues");
+
+        let waited = client
+            .wait_for_message(
+                "agent.receiver",
+                None,
+                Duration::from_millis(1000),
+                Duration::from_millis(1),
+                true,
+            )
+            .expect("message waits");
+        let debug = format!("{waited:?}");
+
+        assert_eq!(waited.status, MessageWaitStatus::Delivered);
+        assert_eq!(waited.message.as_ref().expect("message").payload_bytes, 24);
+        assert!(waited.process_ipc);
+        assert!(!waited.contents_displayed);
+        assert!(!debug.contains("private message contents"));
+    }
+
+    #[test]
+    fn sdk_wait_for_message_timeout_is_metadata_only() {
+        let client = ConuClient::with_home(test_home("wait-timeout"));
+        client.init().expect("state initializes");
+
+        let waited = client
+            .wait_for_message(
+                "agent.receiver",
+                None,
+                Duration::from_millis(0),
+                Duration::from_millis(1),
+                false,
+            )
+            .expect("timeout waits");
+        let debug = format!("{waited:?}");
+
+        assert_eq!(waited.status, MessageWaitStatus::Timeout);
+        assert!(waited.message.is_none());
+        assert!(!waited.contents_displayed);
+        assert!(!debug.contains("private message contents"));
+    }
+
+    #[test]
+    fn sdk_wait_after_missing_envelope_redacts_identifiers() {
+        let client = ConuClient::with_home(test_home("wait-missing-after"));
+        client.init().expect("state initializes");
+
+        let error = client
+            .wait_for_message(
+                "agent.secret-token",
+                Some("env.secret-token"),
+                Duration::from_millis(0),
+                Duration::from_millis(1),
+                false,
+            )
+            .expect_err("missing after envelope fails");
+
+        for rendered in [error.to_string(), format!("{error:?}")] {
+            assert!(!rendered.contains("agent.secret-token"));
+            assert!(!rendered.contains("env.secret-token"));
+            assert!(!rendered.contains("secret-token"));
+            assert!(
+                rendered.contains("contentsDisplayed=false")
+                    || rendered.contains("contents_displayed: false")
+            );
+        }
+    }
+
+    #[test]
     fn sdk_receive_is_scoped_to_recipient_inbox() {
         let client = ConuClient::with_home(test_home("scoped-receive"));
         client.init().expect("state initializes");
@@ -737,6 +950,18 @@ mod tests {
             format!("{missing:?}"),
             unauthorized.to_string(),
             format!("{unauthorized:?}"),
+            SdkError::WaitAfterEnvelopeNotFound {
+                agent_id: "agent.secret-token".to_string(),
+                envelope_id: "env.secret-token".to_string(),
+            }
+            .to_string(),
+            format!(
+                "{:?}",
+                SdkError::WaitAfterEnvelopeNotFound {
+                    agent_id: "agent.secret-token".to_string(),
+                    envelope_id: "env.secret-token".to_string(),
+                }
+            ),
         ] {
             assert!(!rendered.contains("agent.secret-token"));
             assert!(!rendered.contains("env.secret-token"));

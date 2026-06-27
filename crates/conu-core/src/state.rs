@@ -1318,29 +1318,29 @@ fn sanitize_display_name(value: &str) -> String {
 }
 
 fn default_home() -> Result<PathBuf, StateError> {
-    if let Ok(value) = env::var("CONU_HOME") {
-        if !value.trim().is_empty() {
-            return Ok(PathBuf::from(value));
-        }
+    if let Ok(value) = env::var("CONU_HOME")
+        && !value.trim().is_empty()
+    {
+        return Ok(PathBuf::from(value));
     }
 
     #[cfg(windows)]
-    if let Ok(value) = env::var("APPDATA") {
-        if !value.trim().is_empty() {
-            return Ok(PathBuf::from(value).join("conU"));
-        }
+    if let Ok(value) = env::var("APPDATA")
+        && !value.trim().is_empty()
+    {
+        return Ok(PathBuf::from(value).join("conU"));
     }
 
-    if let Ok(value) = env::var("HOME") {
-        if !value.trim().is_empty() {
-            return Ok(PathBuf::from(value).join(".conu"));
-        }
+    if let Ok(value) = env::var("HOME")
+        && !value.trim().is_empty()
+    {
+        return Ok(PathBuf::from(value).join(".conu"));
     }
 
-    if let Ok(value) = env::var("USERPROFILE") {
-        if !value.trim().is_empty() {
-            return Ok(PathBuf::from(value).join(".conu"));
-        }
+    if let Ok(value) = env::var("USERPROFILE")
+        && !value.trim().is_empty()
+    {
+        return Ok(PathBuf::from(value).join(".conu"));
     }
 
     Err(StateError::MissingHome)

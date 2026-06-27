@@ -27,9 +27,15 @@ client.register_agent("agent.beta", "Beta", "local-agent")?;
 client.process_queued()?;
 
 client.send_message_bytes("agent.alpha", "agent.beta", b"private bytes")?;
-let report = client.process_queued()?;
-let inbox = client.inbox_metadata("agent.beta")?;
-let payload = client.receive_message_bytes("agent.beta", &inbox[0].envelope_id)?;
+let waited = client.wait_for_message(
+    "agent.beta",
+    None,
+    std::time::Duration::from_secs(30),
+    std::time::Duration::from_millis(250),
+    true,
+)?;
+let envelope_id = waited.message.as_ref().expect("message").envelope_id.clone();
+let payload = client.receive_message_bytes("agent.beta", &envelope_id)?;
 ```
 
 `register_agent()` keeps the default message/presence-only capability set. Use `register_agent_with_capabilities()` before calling stream or room APIs so conU can enforce explicit local grants.
@@ -62,6 +68,7 @@ send_remote_message_bytes()
 relay_sync()
 relay_queue_summary()
 inbox_metadata()
+wait_for_message()
 receive_message_bytes()
 list_receipts()
 open_stream()
@@ -102,7 +109,8 @@ client.register_agent("agent.alpha", "Alpha")
 client.register_agent("agent.beta", "Beta")
 client.process_queued()
 sent = client.send_message("agent.alpha", "agent.beta", b"private bytes")
-print(sent["payloadBytes"])
+waited = client.wait_for_message("agent.beta", process_ipc=True)
+print(sent["payloadBytes"], waited["status"])
 ```
 
 The wrapper passes send/stream payload bytes through stdin and returns command output to the caller. It does not print or log payloads. Pass `streams=True` and/or `rooms=True` to `register_agent()` before using stream or room helpers.
@@ -129,16 +137,18 @@ client.registerAgent("agent.beta", "Beta", { rooms: true, streams: true });
 client.processQueued();
 
 const sent = client.sendMessage("agent.alpha", "agent.beta", "private bytes");
-const inbox = client.inbox("agent.beta");
-const received = client.receiveMessageBytes("agent.beta", inbox.entries[0].envelopeId);
+const waited = client.waitForMessage("agent.beta", { timeoutMs: 30000, processIpc: true });
+const envelopeId = waited.message?.envelopeId;
+if (!envelopeId) throw new Error("timed out waiting for agent.beta");
+const received = client.receiveMessageBytes("agent.beta", envelopeId);
 console.log({
-  sentEnvelopeId: sent.envelopeId,
-  inboxEntries: inbox.entries?.length ?? 0,
+  sentStatus: sent.status,
+  waitedStatus: waited.status,
   receivedBytes: received.byteLength,
 });
 ```
 
-Useful calls include `init()`, `status()`, `securityAudit()`, `registerAgent()`, `heartbeat()`, `agents()`, `exportAgentCard()`, `trustAgentCard()`, `identityExport()`, `trustPeer()`, `setPeerPolicy()`, `sendMessage()`, `sendRemoteMessage()`, `inbox()`, `receiveMessageBytes()`, `relaySync()`, `syncRoutes()`, `routes()`, `openStream()`, `writeStream()`, `createRoom()`, `joinRoom()`, `setRoomTopicPolicy()`, `publishRoomEvent()`, `rotateIdentity()`, `retireIdentityArchives()`, `rotateStorage()`, `retireStorage()`, `telemetrySnapshot()`, and `processQueued()`.
+Useful calls include `init()`, `status()`, `securityAudit()`, `registerAgent()`, `heartbeat()`, `agents()`, `exportAgentCard()`, `trustAgentCard()`, `identityExport()`, `trustPeer()`, `setPeerPolicy()`, `sendMessage()`, `sendRemoteMessage()`, `inbox()`, `waitForMessage()`, `receiveMessageBytes()`, `relaySync()`, `syncRoutes()`, `routes()`, `openStream()`, `writeStream()`, `createRoom()`, `joinRoom()`, `setRoomTopicPolicy()`, `publishRoomEvent()`, `rotateIdentity()`, `retireIdentityArchives()`, `rotateStorage()`, `retireStorage()`, `telemetrySnapshot()`, and `processQueued()`.
 
 Payload-bearing methods pass bytes through stdin rather than argv. The wrapper does not print or log payloads, and command responses stay on the current CLI metadata contract. The TypeScript wrapper exposes raw local inbox bytes only through the explicit `receiveMessageBytes(agentId, envelopeId)` helper, which calls `conu_receive_message` with `includePayload: true` and still requires the envelope to be present in that addressed local agent inbox.
 

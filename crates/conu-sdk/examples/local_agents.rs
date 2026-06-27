@@ -21,12 +21,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "agent.example.bob",
         "example private payload",
     )?;
-    let processed = client.process_queued()?;
-    let inbox = client.inbox_metadata("agent.example.bob")?;
-    let received = client.receive_message_bytes("agent.example.bob", &inbox[0].envelope_id)?;
+    let waited = client.wait_for_message(
+        "agent.example.bob",
+        None,
+        std::time::Duration::from_secs(30),
+        std::time::Duration::from_millis(250),
+        true,
+    )?;
+    let envelope_id = waited
+        .message
+        .as_ref()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out waiting for agent.example.bob",
+            )
+        })?
+        .envelope_id
+        .clone();
+    let received = client.receive_message_bytes("agent.example.bob", &envelope_id)?;
 
     println!("queued request {}", sent.request_id);
-    println!("delivered envelopes {}", processed.messages.delivered);
+    println!("wait status {:?}", waited.status);
     println!("bob received {} opaque bytes", received.len());
     println!("payload contents were not displayed by conU");
 

@@ -255,6 +255,7 @@ quick commands
   conu rooms publish <room-id> <from-agent> <topic> --stdin
   conu messages send <from-agent> <to-agent> --stdin
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
+  conu messages wait <agent-id> --timeout-ms 30000 --json
   conu relay sync --wait-ms 3000
   conu relay credential set --stdin
   conu identity export
@@ -1323,6 +1324,7 @@ fn render_messages(
     match args.first().map(String::as_str) {
         Some("send") => render_message_send(&args[1..], home_override, stdin_payload),
         Some("inbox") => render_message_inbox(&args[1..], home_override),
+        Some("wait") => render_message_wait(&args[1..], home_override),
         Some("receipts") => render_message_receipts(&args[1..], home_override),
         _ => CliOutput::failure(2, render_messages_usage()),
     }
@@ -1572,6 +1574,89 @@ fn render_message_inbox(args: &[String], home_override: Option<PathBuf>) -> CliO
     CliOutput::success(render_inbox_text(&parsed.agent_id, &entries))
 }
 
+fn render_message_wait(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_message_wait_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let started = std::time::Instant::now();
+
+    loop {
+        if parsed.process_ipc
+            && let Err(error) = process_wait_ipc(home_override.clone())
+        {
+            return CliOutput::failure(1, format!("conU messages wait failed\n\n{error}"));
+        }
+
+        let entries = match messages::list_agent_inbox(home_override.clone(), &parsed.agent_id) {
+            Ok(entries) => entries,
+            Err(error) => {
+                return CliOutput::failure(1, format!("conU messages wait failed\n\n{error}"));
+            }
+        };
+        match newest_wait_entry(&entries, parsed.after_envelope_id.as_deref()) {
+            WaitEntrySearch::Found(entry) => {
+                let waited_ms = waited_millis(started);
+                if parsed.json {
+                    return CliOutput::success(render_wait_json(
+                        &parsed.agent_id,
+                        Some(&entry),
+                        "delivered",
+                        waited_ms,
+                        parsed.process_ipc,
+                    ));
+                }
+                return CliOutput::success(render_wait_text(
+                    &parsed.agent_id,
+                    Some(&entry),
+                    "delivered",
+                    waited_ms,
+                    parsed.process_ipc,
+                ));
+            }
+            WaitEntrySearch::MissingAfter => {
+                return CliOutput::failure(
+                    1,
+                    "conU messages wait failed\n\nafter envelope was not found in this agent inbox; contentsDisplayed=false",
+                );
+            }
+            WaitEntrySearch::None => {}
+        }
+
+        let elapsed = waited_millis(started);
+        if elapsed >= parsed.timeout_ms {
+            if parsed.json {
+                return CliOutput::success(render_wait_json(
+                    &parsed.agent_id,
+                    None,
+                    "timeout",
+                    elapsed,
+                    parsed.process_ipc,
+                ));
+            }
+            return CliOutput::success(render_wait_text(
+                &parsed.agent_id,
+                None,
+                "timeout",
+                elapsed,
+                parsed.process_ipc,
+            ));
+        }
+
+        let remaining = parsed.timeout_ms.saturating_sub(elapsed);
+        thread::sleep(Duration::from_millis(
+            parsed.interval_ms.min(remaining).max(1),
+        ));
+    }
+}
+
+fn process_wait_ipc(home_override: Option<PathBuf>) -> Result<(), String> {
+    agents::process_gateway_requests(home_override.clone()).map_err(|error| error.to_string())?;
+    messages::process_message_requests(home_override.clone()).map_err(|error| error.to_string())?;
+    sessions::sync_remote_sessions(home_override).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn render_message_receipts(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let json = match json_flag(args) {
         Ok(json) => json,
@@ -1589,6 +1674,153 @@ fn render_message_receipts(args: &[String], home_override: Option<PathBuf>) -> C
     }
 
     CliOutput::success(render_receipts_text(&receipts))
+}
+
+enum WaitEntrySearch {
+    Found(InboxEntry),
+    MissingAfter,
+    None,
+}
+
+fn newest_wait_entry(entries: &[InboxEntry], after_envelope_id: Option<&str>) -> WaitEntrySearch {
+    let Some(after_envelope_id) = after_envelope_id else {
+        return entries
+            .iter()
+            .max_by(|left, right| {
+                left.delivered_at_unix
+                    .cmp(&right.delivered_at_unix)
+                    .then_with(|| left.envelope_id.cmp(&right.envelope_id))
+            })
+            .cloned()
+            .map(WaitEntrySearch::Found)
+            .unwrap_or(WaitEntrySearch::None);
+    };
+
+    let Some(after) = entries
+        .iter()
+        .find(|entry| entry.envelope_id == after_envelope_id)
+    else {
+        return WaitEntrySearch::MissingAfter;
+    };
+
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.delivered_at_unix > after.delivered_at_unix
+                || (entry.delivered_at_unix == after.delivered_at_unix
+                    && entry.envelope_id.as_str() > after.envelope_id.as_str())
+        })
+        .max_by(|left, right| {
+            left.delivered_at_unix
+                .cmp(&right.delivered_at_unix)
+                .then_with(|| left.envelope_id.cmp(&right.envelope_id))
+        })
+        .cloned()
+        .map(WaitEntrySearch::Found)
+        .unwrap_or(WaitEntrySearch::None)
+}
+
+fn waited_millis(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn render_wait_json(
+    agent_id: &str,
+    entry: Option<&InboxEntry>,
+    status: &str,
+    waited_ms: u64,
+    process_ipc: bool,
+) -> String {
+    let message = entry
+        .map(render_wait_message_json)
+        .unwrap_or_else(|| "null".to_string());
+
+    format!(
+        r#"{{
+  "agentId": "{}",
+  "status": "{}",
+  "message": {},
+  "waitedMs": {},
+  "processIpc": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(agent_id),
+        json_escape(status),
+        message,
+        waited_ms,
+        process_ipc
+    )
+}
+
+fn render_wait_message_json(entry: &InboxEntry) -> String {
+    format!(
+        r#"{{
+    "envelopeId": "{}",
+    "fromAgentId": "{}",
+    "toAgentId": "{}",
+    "kind": "{}",
+    "streamId": {},
+    "receiptId": "{}",
+    "payloadBytes": {},
+    "deliveredAtUnix": {}
+  }}"#,
+        json_escape(&entry.envelope_id),
+        json_escape(&entry.from_agent_id),
+        json_escape(&entry.to_agent_id),
+        json_escape(&entry.kind),
+        optional_json_string(entry.stream_id.as_deref()),
+        json_escape(&entry.receipt_id),
+        entry.payload_bytes,
+        entry.delivered_at_unix
+    )
+}
+
+fn render_wait_text(
+    agent_id: &str,
+    entry: Option<&InboxEntry>,
+    status: &str,
+    waited_ms: u64,
+    process_ipc: bool,
+) -> String {
+    let message = entry
+        .map(|entry| {
+            let stream = entry
+                .stream_id
+                .as_deref()
+                .map(|stream_id| format!("\nstream: {stream_id}"))
+                .unwrap_or_default();
+            format!(
+                r"message
+  envelope: {}
+  kind: {}{stream}
+  from: {}
+  to: {}
+  receipt: {}
+  bytes: {}
+  deliveredAtUnix: {}",
+                entry.envelope_id,
+                entry.kind,
+                entry.from_agent_id,
+                entry.to_agent_id,
+                entry.receipt_id,
+                entry.payload_bytes,
+                entry.delivered_at_unix
+            )
+        })
+        .unwrap_or_else(|| "message\n  none".to_string());
+
+    format!(
+        r"conU messages wait
+
+status: {status}
+agent: {agent_id}
+waitedMs: {waited_ms}
+processIpc: {process_ipc}
+{message}
+
+privacy
+  payload view  contents are not displayed by conU"
+    )
 }
 
 fn render_inbox_json(agent_id: &str, entries: &[InboxEntry]) -> String {
@@ -1768,6 +2000,15 @@ struct MessageInboxArgs {
     json: bool,
 }
 
+struct MessageWaitArgs {
+    agent_id: String,
+    after_envelope_id: Option<String>,
+    timeout_ms: u64,
+    interval_ms: u64,
+    process_ipc: bool,
+    json: bool,
+}
+
 fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput> {
     let mut json = false;
     let mut stdin = false;
@@ -1833,11 +2074,82 @@ fn parse_message_inbox_args(args: &[String]) -> Result<MessageInboxArgs, CliOutp
     Ok(MessageInboxArgs { agent_id, json })
 }
 
+fn parse_message_wait_args(args: &[String]) -> Result<MessageWaitArgs, CliOutput> {
+    const MAX_TIMEOUT_MS: u64 = 300_000;
+    const MAX_INTERVAL_MS: u64 = 10_000;
+
+    let mut json = false;
+    let mut process_ipc = false;
+    let mut timeout_ms = 30_000;
+    let mut interval_ms = 250;
+    let mut after_envelope_id = None;
+    let mut agent_id = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--process-ipc" => process_ipc = true,
+            "--after" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                after_envelope_id = Some(value.clone());
+                index += 1;
+            }
+            "--timeout-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                timeout_ms = match value.parse::<u64>() {
+                    Ok(value) if value <= MAX_TIMEOUT_MS => value,
+                    _ => return Err(CliOutput::failure(2, render_messages_usage())),
+                };
+                index += 1;
+            }
+            "--interval-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                interval_ms = match value.parse::<u64>() {
+                    Ok(value) if (1..=MAX_INTERVAL_MS).contains(&value) => value,
+                    _ => return Err(CliOutput::failure(2, render_messages_usage())),
+                };
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            value => {
+                if agent_id.is_some() {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                }
+                agent_id = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    let Some(agent_id) = agent_id else {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    };
+
+    Ok(MessageWaitArgs {
+        agent_id,
+        after_envelope_id,
+        timeout_ms,
+        interval_ms,
+        process_ipc,
+        json,
+    })
+}
+
 fn render_messages_usage() -> String {
     r"usage:
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
+  conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receipts [--json]"
         .to_string()
 }
@@ -4529,12 +4841,12 @@ fn wait_for_message_delivery(
     }
 
     for _ in 0..40 {
-        if let Ok(entries) = messages::list_agent_inbox(home_override.clone(), to_agent_id) {
-            if let Some(entry) = entries.into_iter().find(|entry| {
+        if let Ok(entries) = messages::list_agent_inbox(home_override.clone(), to_agent_id)
+            && let Some(entry) = entries.into_iter().find(|entry| {
                 !before.contains(&entry.envelope_id) && entry.payload_bytes == payload_bytes
-            }) {
-                return Some(entry);
-            }
+            })
+        {
+            return Some(entry);
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -8478,10 +8790,10 @@ fn install_staged_update_binaries(
             .and_then(|_| verify_update_temp_install_target(report, temp_target))
         {
             let mut recovery_errors = Vec::new();
-            if let Some(backup_file) = backup_file.as_ref() {
-                if let Err(error) = restore_update_backup(target_file, backup_file) {
-                    recovery_errors.push(error);
-                }
+            if let Some(backup_file) = backup_file.as_ref()
+                && let Err(error) = restore_update_backup(target_file, backup_file)
+            {
+                recovery_errors.push(error);
             }
             if let Err(error) = rollback_update_install(&installed) {
                 recovery_errors.push(error);
@@ -8494,10 +8806,10 @@ fn install_staged_update_binaries(
         }
         if let Err(error) = fs::rename(temp_target, target_file) {
             let mut recovery_errors = Vec::new();
-            if let Some(backup_file) = backup_file.as_ref() {
-                if let Err(error) = restore_update_backup(target_file, backup_file) {
-                    recovery_errors.push(error);
-                }
+            if let Some(backup_file) = backup_file.as_ref()
+                && let Err(error) = restore_update_backup(target_file, backup_file)
+            {
+                recovery_errors.push(error);
             }
             if let Err(error) = rollback_update_install(&installed) {
                 recovery_errors.push(error);
@@ -8963,10 +9275,10 @@ fn rollback_update_install(installed: &[(PathBuf, Option<PathBuf>)]) -> Result<(
             },
             Err(error) => errors.push(error),
         }
-        if let Some(backup_file) = backup_file {
-            if let Err(error) = restore_update_backup(target_file, backup_file) {
-                errors.push(error);
-            }
+        if let Some(backup_file) = backup_file
+            && let Err(error) = restore_update_backup(target_file, backup_file)
+        {
+            errors.push(error);
         }
     }
     if errors.is_empty() {
@@ -10615,10 +10927,10 @@ fn validate_update_public_host(host: &str, label: &str) -> Result<(), String> {
     {
         return Err(format!("release update policy {label} host must be public"));
     }
-    if let Ok(ip) = trimmed.parse::<IpAddr>() {
-        if !is_public_ip(ip) {
-            return Err(format!("release update policy {label} host must be public"));
-        }
+    if let Ok(ip) = trimmed.parse::<IpAddr>()
+        && !is_public_ip(ip)
+    {
+        return Err(format!("release update policy {label} host must be public"));
     }
     Ok(())
 }
@@ -11469,6 +11781,7 @@ Usage:
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
+  conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receipts [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
   conu relay credential status [--json]
@@ -11784,10 +12097,10 @@ fn json_optional_string(value: Option<&str>) -> String {
 }
 
 fn resolve_conud_executable() -> PathBuf {
-    if let Ok(value) = env::var("CONUD_EXE") {
-        if !value.trim().is_empty() {
-            return PathBuf::from(value);
-        }
+    if let Ok(value) = env::var("CONUD_EXE")
+        && !value.trim().is_empty()
+    {
+        return PathBuf::from(value);
     }
 
     if let Ok(mut path) = env::current_exe() {
@@ -15491,6 +15804,126 @@ mod tests {
         assert_eq!(output.code, 0, "{}", output.stderr);
         assert!(output.stdout.contains("\"fromAgentId\": \"agent.sender\""));
         assert!(output.stdout.contains("\"payloadBytes\": 3"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+    }
+
+    #[test]
+    fn messages_wait_returns_existing_metadata_without_payload() {
+        let home = temp_home("message-wait-existing");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "wait",
+                "agent.receiver",
+                "--timeout-ms",
+                "0",
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"delivered\""));
+        assert!(output.stdout.contains("\"fromAgentId\": \"agent.sender\""));
+        assert!(output.stdout.contains("\"payloadBytes\": 24"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_wait_process_ipc_delivers_queued_local_message() {
+        let home = temp_home("message-wait-process-ipc");
+        let sender = run_with_home(
+            [
+                "agents",
+                "register",
+                "agent.sender",
+                "Sender",
+                "--kind",
+                "test-agent",
+            ],
+            Some(home.clone()),
+        );
+        let receiver = run_with_home(
+            [
+                "agents",
+                "register",
+                "agent.receiver",
+                "Receiver",
+                "--kind",
+                "test-agent",
+            ],
+            Some(home.clone()),
+        );
+        let sent = run_with_home_and_stdin(
+            [
+                "messages",
+                "send",
+                "agent.sender",
+                "agent.receiver",
+                "--stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            b"private message contents".to_vec(),
+        );
+
+        assert_eq!(sender.code, 0, "{}", sender.stderr);
+        assert_eq!(receiver.code, 0, "{}", receiver.stderr);
+        let waited = run_with_home(
+            [
+                "messages",
+                "wait",
+                "agent.receiver",
+                "--process-ipc",
+                "--timeout-ms",
+                "1000",
+                "--interval-ms",
+                "1",
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(sent.code, 0, "{}", sent.stderr);
+        assert!(sent.stdout.contains("\"status\": \"queued\""));
+        assert_eq!(waited.code, 0, "{}", waited.stderr);
+        assert!(waited.stdout.contains("\"status\": \"delivered\""));
+        assert!(waited.stdout.contains("\"processIpc\": true"));
+        assert!(waited.stdout.contains("\"payloadBytes\": 24"));
+        assert!(!waited.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_wait_timeout_is_payload_safe() {
+        let home = temp_home("message-wait-timeout");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "wait",
+                "agent.receiver",
+                "--timeout-ms",
+                "0",
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"timeout\""));
+        assert!(output.stdout.contains("\"message\": null"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
     }
 
