@@ -348,9 +348,13 @@ SAFE_GITHUB_ENV_HELPER_CALLS = (
     'append_github_env CONU_MACOS_KEYCHAIN "$keychain_path"',
     'append_github_env CONU_MACOS_NOTARY_KEYCHAIN_PROFILE "conu-notary-profile"',
 )
-RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
+RELEASE_PREFLIGHT_NPM_REGISTRY_COMMAND = (
     "python scripts/check-npm-publish-preflight.py "
     "--registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check"
+)
+RELEASE_PREFLIGHT_NPM_AUTH_COMMAND = (
+    "python scripts/check-npm-publish-preflight.py "
+    "--require-token-env NODE_AUTH_TOKEN --token-auth-check"
 )
 RELEASE_PREFLIGHT_NPM_METADATA_COMMAND = (
     'python scripts/check-github-release-secret-readiness.py --repo "$GITHUB_REPOSITORY" '
@@ -531,7 +535,7 @@ RELEASE_PREFLIGHT_REQUIRED_STEPS: tuple[
         (
             ("tag gate", "if: startsWith(github.ref, 'refs/tags/v')"),
             ("NPM token env", "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"),
-            ("npm auth/registry command", RELEASE_PREFLIGHT_NPM_AUTH_COMMAND),
+            ("npm auth/registry command", RELEASE_PREFLIGHT_NPM_REGISTRY_COMMAND),
         ),
     ),
     (
