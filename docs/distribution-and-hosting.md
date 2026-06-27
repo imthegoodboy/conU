@@ -28,6 +28,12 @@ conu doctor
 conu start
 ```
 
+The repo also includes:
+
+- `render.yaml` for a Render-hosted `conu-relay` web service.
+- `docs/render-relay-hosting.md` for the shortest hosted relay setup path.
+- `site/` for a static download and how-it-works page deployable on Vercel, Render Static Sites, GitHub Pages, or any static host.
+
 The npm package under `packaging/npm/conu-cli` is a launcher. It downloads the native release archive for the user's platform, verifies the `.sha256` file, and exposes:
 
 ```txt

@@ -9,6 +9,44 @@ Agents own the conversation.
 conU owns the connection.
 ```
 
+## Fast Path
+
+conU has three practical surfaces:
+
+- Native CLI/runtime: `conu`, `conud`, `conu-relay`, and `conu-mcp`.
+- npm distribution: `@conu/cli` installs those native binaries after public release assets are published.
+- Hosted relay: `conu-relay` can run on Render or another reachable host so agents on different machines can exchange peer-encrypted envelopes.
+
+Same-machine agents do not need hosting:
+
+```sh
+conu init
+conu agents register agent.alpha "Alpha" --kind coding-agent --streams true --rooms true
+conu agents register agent.beta "Beta" --kind coding-agent --streams true --rooms true
+printf "private bytes" | conu messages send agent.alpha agent.beta --stdin
+conud --process-ipc
+conu messages inbox agent.beta --json
+conu messages receipts --json
+```
+
+Cross-machine agents need trusted peer cards, explicit peer policy, and either a reachable direct route or a hosted relay:
+
+```sh
+conu relay credential set --stdin
+conu identity export --json
+conu peers trust <peer-node-id> "<peer name>" --exchange-key <hex> --relay wss://<relay-host>/conu --signing-key <hex> --signature <hex> --signature-key-id <id>
+conu peers policy <peer-node-id> --messages true --streams true --rooms true
+conu start
+printf "private bytes" | conu messages send agent.alpha agent.remote --peer <peer-node-id> --stdin
+```
+
+Deployment and public-user entry points:
+
+- Render relay Blueprint: `render.yaml`
+- Relay hosting guide: `docs/render-relay-hosting.md`
+- Static download/how-it-works page: `site/index.html`
+- Agent integration skill: `.agents/skills/conu-agent-user/SKILL.md`
+
 ## Current Status
 
 Phase 14 and Phase 15 are complete for the current local-first app, with rooms/pub/sub metadata, encrypted-at-rest local and relay-backed room event fanout, room topic publish/subscribe policy, a richer CLI control-room dashboard, local agent connect flows, authenticated direct QUIC delivery for reachable trusted peers, and a hardened relay data path beyond the original MVP. The CLI identity/dashboard shell exists, `conu init` creates real local state and security keys, `conu start` launches the local `conUD` runtime, local agents can register signed metadata and presence, registered local agents can export signed public agent cards for trusted peers, remote signed agent cards can be imported after peer trust is established or exchanged automatically over encrypted relay control envelopes, registered local agents can exchange encrypted-at-rest opaque message envelopes, users can exchange signed public peer cards, trusted peers require explicit peer-scoped policy grants before sending peer-encrypted messages, stream chunks, or room events through direct QUIC or `conu-relay`, conUD can automatically pump configured relay routes, and the relay enforces configurable connection and frame-rate limits plus offline scoped credential issuance, manifest upsert/rotate/revoke helpers, online account-scoped credential admin, payload-safe local scoped admin-token manifest audits, payload-safe hosted relay readiness preflights, admin-gated online hosted tenant lifecycle, local/admin-gated hosted account suspension, guarded hosted fleet account/node audit and suspension plus credential revoke over local manifests, guarded hosted fleet tenant account upsert/revoke plus tenant-node upsert/revoke over local tenant registries, a metadata-only hosted tenant registry, live-reloaded hashed credential manifests, metadata-only accounting/quotas, metadata-only abuse/dashboard counters, local/admin-gated hosted abuse threshold reports with reusable policy files and optional fail-on-threshold exit status, payload-safe local/admin-gated session-state audits, payload-safe local and admin-gated online mailbox retention audits with reusable policy files, confirm-gated local/admin online and scheduled relay-local expired mailbox purge, confirm-gated hosted fleet mailbox purge orchestration over guarded local fleet manifests, local hosted-dashboard snapshots, admin-gated online hosted-dashboard snapshots, guarded hosted fleet dashboards with reusable mailbox retention policy gates plus abuse threshold checks, and guarded hosted fleet abuse response plans that turn aggregate threshold breaches into deterministic operator action categories. Streams and rooms produce payload-safe watch events, local metadata logs can be rotated, and local storage keys can be rotated or retired without displaying contents. `conu telemetry snapshot` exports only allowlisted local aggregate counters. Windows local secrets are wrapped with current-user DPAPI, macOS uses user Keychain, Linux uses Secret Service when available, and `conu security audit` reports hardened controls without showing secrets. Agents can use conU through the Rust SDK, Python wrapper SDK, TypeScript/JavaScript SDK, and MCP stdio adapter, conUD owns payload-safe direct/relay route selection, and release packaging/readiness checks now exist. The repo also contains an npm launcher package template and relay hosting docs for the first public distribution path.

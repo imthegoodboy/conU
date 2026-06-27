@@ -5798,7 +5798,13 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
     stream
         .set_read_timeout(Some(hub.session_policy.idle_timeout))
         .map_err(|error| RelayError::io("configure relay connection", error))?;
-    perform_websocket_handshake(&mut stream)?;
+    if matches!(
+        perform_relay_handshake(&mut stream)?,
+        RelayHandshake::HealthCheck
+    ) {
+        let _ = stream.shutdown(Shutdown::Both);
+        return Ok(());
+    }
 
     let mut session_node = None::<(String, String)>;
     let mut authenticated_at = None::<Instant>;
@@ -6879,8 +6885,17 @@ impl FrameRateLimiter {
     }
 }
 
-fn perform_websocket_handshake(stream: &mut TcpStream) -> Result<(), RelayError> {
+enum RelayHandshake {
+    WebSocket,
+    HealthCheck,
+}
+
+fn perform_relay_handshake(stream: &mut TcpStream) -> Result<RelayHandshake, RelayError> {
     let request = read_http_request(stream)?;
+    if is_http_health_check(&request) {
+        write_http_health_check(stream)?;
+        return Ok(RelayHandshake::HealthCheck);
+    }
     let key = header_value(&request, "sec-websocket-key")
         .ok_or_else(|| RelayError::Protocol("missing Sec-WebSocket-Key header".to_string()))?;
     let accept = websocket_accept_key(&key);
@@ -6889,7 +6904,32 @@ fn perform_websocket_handshake(stream: &mut TcpStream) -> Result<(), RelayError>
     );
     stream
         .write_all(response.as_bytes())
-        .map_err(|error| RelayError::io("write websocket handshake", error))
+        .map_err(|error| RelayError::io("write websocket handshake", error))?;
+    Ok(RelayHandshake::WebSocket)
+}
+
+fn is_http_health_check(request: &str) -> bool {
+    let Some(request_line) = request.lines().next() else {
+        return false;
+    };
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default();
+    method == "GET"
+        && matches!(path, "/" | "/healthz")
+        && header_value(request, "sec-websocket-key").is_none()
+}
+
+fn write_http_health_check(stream: &mut TcpStream) -> Result<(), RelayError> {
+    const BODY: &str = "conu-relay ok payload=not_observed\n";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
+        BODY.len(),
+        BODY
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| RelayError::io("write relay health check", error))
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<String, RelayError> {
@@ -13219,6 +13259,30 @@ token_displayed = false\n"
             .set_read_timeout(Some(TEST_SERVER_FRAME_POLL))
             .expect("frame timeout set");
         stream
+    }
+
+    #[test]
+    fn relay_health_check_returns_payload_safe_http_ok() {
+        let relay = spawn_relay(RelayConfig::new("127.0.0.1:0", "local-dev-token").unwrap())
+            .expect("relay starts");
+        let mut stream = TcpStream::connect(relay.local_addr()).expect("health client connects");
+        stream
+            .set_read_timeout(Some(TEST_HANDSHAKE_READ_TIMEOUT))
+            .expect("timeout set");
+        stream
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("health request writes");
+
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .expect("health response reads");
+        let response = String::from_utf8(response).expect("health response utf8");
+        assert!(response.contains("HTTP/1.1 200 OK"));
+        assert!(response.contains("conu-relay ok payload=not_observed"));
+        assert!(!response.contains("local-dev-token"));
+        assert!(!response.contains("ciphertext"));
+        relay.stop();
     }
 
     fn write_client_text(stream: &mut TcpStream, text: &str) {

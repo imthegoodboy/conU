@@ -1,0 +1,48 @@
+services:
+  - type: web
+    name: conu-relay
+    runtime: docker
+    dockerfilePath: ./packaging/docker/relay.Dockerfile
+    dockerContext: .
+    plan: starter
+    autoDeploy: false
+    healthCheckPath: /healthz
+    disk:
+      name: conu-relay-data
+      mountPath: /var/lib/conu-relay
+      sizeGB: 1
+    envVars:
+      - key: CONU_RELAY_TOKEN
+        generateValue: true
+      - key: CONU_RELAY_SESSION_STATE_DIR
+        value: /var/lib/conu-relay/sessions
+      - key: CONU_RELAY_MAILBOX_DIR
+        value: /var/lib/conu-relay/mailbox
+      - key: CONU_RELAY_ACCOUNTING_DIR
+        value: /var/lib/conu-relay/accounting
+      - key: CONU_RELAY_ABUSE_DIR
+        value: /var/lib/conu-relay/abuse
+      - key: CONU_RELAY_MAX_CONNECTIONS
+        value: "512"
+      - key: CONU_RELAY_MAX_CONNECTIONS_PER_IP
+        value: "64"
+      - key: CONU_RELAY_MAX_FRAMES_PER_MINUTE
+        value: "600"
+      - key: CONU_RELAY_IDLE_TIMEOUT_SECONDS
+        value: "120"
+      - key: CONU_RELAY_SESSION_TTL_SECONDS
+        value: "3600"
+      - key: CONU_RELAY_MAX_OFFLINE_ENVELOPES_PER_NODE
+        value: "128"
+      - key: CONU_RELAY_OFFLINE_ENVELOPE_TTL_SECONDS
+        value: "3600"
+      - key: CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS
+        value: "3600"
+      - key: CONU_RELAY_ACCOUNTING_WINDOW_SECONDS
+        value: "86400"
+      - key: CONU_RELAY_MAX_ENVELOPES_SENT_PER_NODE
+        value: "10000"
+      - key: CONU_RELAY_MAX_BYTES_SENT_PER_NODE
+        value: "1073741824"
+      - key: CONU_RELAY_ABUSE_WINDOW_SECONDS
+        value: "86400"

@@ -14,6 +14,8 @@ RUN apt-get update \
     && chown -R conu:conu /var/lib/conu-relay
 
 COPY --from=build /src/target/release/conu-relay /usr/local/bin/conu-relay
+COPY packaging/docker/relay-entrypoint.sh /usr/local/bin/conu-relay-entrypoint
+RUN chmod 0755 /usr/local/bin/conu-relay-entrypoint
 
 USER conu
 ENV CONU_RELAY_MAILBOX_DIR=/var/lib/conu-relay/mailbox
@@ -23,4 +25,4 @@ ENV CONU_RELAY_ABUSE_DIR=/var/lib/conu-relay/abuse
 VOLUME ["/var/lib/conu-relay"]
 EXPOSE 8787
 
-ENTRYPOINT ["conu-relay", "--serve", "0.0.0.0:8787"]
+ENTRYPOINT ["conu-relay-entrypoint"]
