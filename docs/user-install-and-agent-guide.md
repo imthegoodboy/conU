@@ -56,7 +56,7 @@ Current version status: Phase 14 and Phase 15 are complete for the current local
 This is the best public install shape once the first GitHub Release and npm package are published:
 
 ```powershell
-npm install -g conu
+npm install -g @imthegoodboy/conu
 conu doctor
 conu init
 conu logs rotate --max-bytes 1048576 --keep 5
@@ -693,7 +693,7 @@ These are not hidden bugs; they are the honest state of the current app:
 | Area | Current issue | User impact | Workaround today |
 | --- | --- | --- | --- |
 | Installer | Release artifact scripts exist, tagged release workflow supports Windows Authenticode, macOS notarization, fingerprint-pinned Linux detached `.asc` signatures, native RPM package signatures, native APT/RPM metadata signatures, and a Linux GPG public-key release asset, but one-click OS installers are not published | Users still install from archives or source until package-manager distribution exists | Verify checksums, GitHub attestations, `conu-linux-gpg-key.asc`, the published full maintainer fingerprint, and platform signatures before install |
-| npm install | `conu` is the public npm package | `npm install -g conu` installs the launcher after release assets are attached | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
+| npm install | `@imthegoodboy/conu` is the public npm package | `npm install -g @imthegoodboy/conu` installs the launcher after release assets are attached | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
 | Agent API | Rust SDK, Python wrapper, TypeScript/JavaScript Node wrapper, and MCP adapter exist | Most local/server-side agents can integrate now; browser-native and hosted SDK permission work still need future design | Use MCP, Rust SDK, Python SDK, TypeScript Node SDK, or CLI/stdin |
