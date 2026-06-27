@@ -1966,6 +1966,11 @@ EXPECTED_JOB_PERMISSIONS: dict[tuple[str, str], dict[str, str]] = {
     ("release.yml", "manual-preview-release"): {
         "contents": "write",
     },
+    ("release.yml", "simple-launch-release"): {
+        "actions": "read",
+        "contents": "write",
+        "id-token": "write",
+    },
     ("release.yml", "github-release"): {
         "contents": "write",
     },
