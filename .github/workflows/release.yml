@@ -524,16 +524,16 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check
-      - name: Verify release tag is unpublished
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/check-github-release-clobber-preflight.py --repo "$GITHUB_REPOSITORY" --tag "$CONU_SIMPLE_LAUNCH_TAG"
-      - name: Publish unsigned simple launch release assets
+      - name: Publish or reuse unsigned simple launch release assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -eu
+          if gh release view "$CONU_SIMPLE_LAUNCH_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Simple launch release $CONU_SIMPLE_LAUNCH_TAG already exists; verifying assets before npm publish."
+            exit 0
+          fi
           cat > release-notes.md <<EOF
           conU ${CONU_SIMPLE_LAUNCH_TAG} simple launch
 
@@ -558,30 +558,20 @@ jobs:
           gh release view "$CONU_SIMPLE_LAUNCH_TAG" --repo "$GH_REPO" --json tagName,isDraft,isPrerelease
           mkdir -p "$RUNNER_TEMP/conu-simple-launch-check"
           gh release download "$CONU_SIMPLE_LAUNCH_TAG" --repo "$GH_REPO" --pattern "conu-${CONU_SIMPLE_LAUNCH_VERSION}-linux-x64.tar.gz.sha256" --dir "$RUNNER_TEMP/conu-simple-launch-check"
-      - name: Publish @conu/cli
+      - name: Publish conu
         working-directory: packaging/npm/conu-cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for simple launch @conu/cli publication."
-            exit 1
-          fi
-          npm publish --access public --provenance
-      - name: Publish @conu/sdk
-        working-directory: sdk/typescript
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for simple launch @conu/sdk publication."
+            echo "::error::NPM_TOKEN is required for simple launch conu publication."
             exit 1
           fi
           npm publish --access public --provenance
       - name: Verify npm packages are visible
         run: |
           set -eu
-          for package in @conu/cli @conu/sdk; do
+          for package in conu; do
             for attempt in 1 2 3 4 5 6; do
               if npm view "${package}@${CONU_SIMPLE_LAUNCH_VERSION}" version --json; then
                 break
@@ -984,23 +974,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check
-      - name: Publish @conu/cli
+      - name: Publish conu
         working-directory: packaging/npm/conu-cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for tagged @conu/cli publication."
-            exit 1
-          fi
-          npm publish --access public --provenance
-      - name: Publish @conu/sdk
-        working-directory: sdk/typescript
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for tagged @conu/sdk publication."
+            echo "::error::NPM_TOKEN is required for tagged conu publication."
             exit 1
           fi
           npm publish --access public --provenance

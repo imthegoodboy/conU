@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test the @conu/cli npm launcher against local release binaries."""
+"""Smoke test the conu npm launcher against local release binaries."""
 
 from __future__ import annotations
 
@@ -73,12 +73,12 @@ def main() -> int:
         "--package-dir",
         type=Path,
         default=DEFAULT_PACKAGE_DIR,
-        help="path to the @conu/cli package directory",
+        help="path to the conu package directory",
     )
     args = parser.parse_args()
 
     dist = validate_input_directory(args.dist, "release dist directory")
-    package_dir = validate_package_directory(args.package_dir, "@conu/cli package directory")
+    package_dir = validate_package_directory(args.package_dir, "conu package directory")
 
     node = require_tool("node")
     npm = require_tool("npm", "npm.cmd")
@@ -708,7 +708,7 @@ def install_npm_package(
 
 
 def smoke_installed_launcher(archive: Path, node: str, prefix: Path, temp_root: Path) -> None:
-    package_root = prefix / "node_modules" / "@conu" / "cli"
+    package_root = prefix / "node_modules" / "conu"
     if not package_root.joinpath("package.json").exists():
         raise SystemExit(f"{archive.name} npm install did not create {package_root}")
 

@@ -29,7 +29,7 @@ def main() -> int:
             expect_action_failure(
                 lambda: smoke.validate_package_directory(
                     root / "package",
-                    "@conu/cli package directory",
+                    "conu package directory",
                 ),
                 "must not be a symlink",
                 "npm smoke symlink package directory",
@@ -47,7 +47,7 @@ def main() -> int:
             expect_action_failure(
                 lambda: smoke.validate_package_directory(
                     package_dir,
-                    "@conu/cli package directory",
+                    "conu package directory",
                 ),
                 "npm package manifest must not be a symlink",
                 "npm smoke symlink package manifest",

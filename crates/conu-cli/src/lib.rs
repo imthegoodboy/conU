@@ -7591,9 +7591,9 @@ fn validate_npm_metadata(policy: &Value, version: &str) -> Result<(), String> {
             "release update policy npm.packages entries must be objects".to_string()
         })?;
         let name = string_member(object, "name", "npm.packages")?;
-        if !name.starts_with("@conu/") {
+        if name != "conu" {
             return Err(format!(
-                "release update policy npm package is outside @conu scope: {name}"
+                "release update policy npm package must be conu: {name}"
             ));
         }
         let package_version = string_member(object, "version", "npm.packages")?;
@@ -16129,11 +16129,7 @@ mod tests {
   "npm": {{
     "packages": [
       {{
-        "name": "@conu/cli",
-        "version": "0.1.0"
-      }},
-      {{
-        "name": "@conu/sdk",
+        "name": "conu",
         "version": "0.1.0"
       }}
     ],

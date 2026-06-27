@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test the @conu/cli npm launcher download installer path."""
+"""Smoke test the conu npm launcher download installer path."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def main() -> int:
         "--package-dir",
         type=Path,
         default=DEFAULT_PACKAGE_DIR,
-        help="path to the @conu/cli package directory",
+        help="path to the conu package directory",
     )
     args = parser.parse_args()
 
@@ -35,7 +35,7 @@ def main() -> int:
     dist = local_smoke.validate_input_directory(args.dist, "release dist directory")
     package_dir = local_smoke.validate_package_directory(
         args.package_dir,
-        "@conu/cli package directory",
+        "conu package directory",
     )
 
     node = local_smoke.require_tool("node")

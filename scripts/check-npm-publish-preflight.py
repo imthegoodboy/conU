@@ -38,8 +38,7 @@ class PackageInfo:
 
 
 PACKAGES = (
-    PackageRule(name="@conu/cli", directory=Path("packaging/npm/conu-cli")),
-    PackageRule(name="@conu/sdk", directory=Path("sdk/typescript")),
+    PackageRule(name="conu", directory=Path("packaging/npm/conu-cli")),
 )
 
 

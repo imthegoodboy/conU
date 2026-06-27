@@ -250,7 +250,7 @@ gh attestation verify ./conu-0.1.0-linux-x64.tar.gz -R imthegoodboy/conU
 The `npm/conu-cli` package is the intended one-command install wrapper:
 
 ```sh
-npm install -g @conu/cli
+npm install -g conu
 ```
 
 It downloads the native release archive from GitHub Releases with bounded request time and response sizes, requires a strict checksum line naming that archive, hashes the archive in chunks, bounds extracted-tree entry/depth scanning, requires extracted binaries to come from the expected release `bin/` directory, and exposes `conu`, `conud`, `conu-relay`, and `conu-mcp`. The local `CONU_NPM_BINARY_DIR` override must point at an existing directory containing regular files for every expected binary before the installer copies anything into `vendor/`.
@@ -268,7 +268,7 @@ publish GitHub Release assets automatically and require the repository
 `NPM_TOKEN` secret so npm publication cannot silently skip after a GitHub-only
 release. Tagged npm publication also runs the npm publish preflight with a
 registry availability check before either package is published, so existing
-`@conu/cli` or `@conu/sdk` versions fail before a partial publish starts.
+the `conu` version fails before publication starts.
 
 ## Relay Docker Template
 

@@ -72,7 +72,7 @@ def main() -> None:
     require_contains(
         "site/index.html",
         [
-            "npm install -g @conu/cli",
+            "npm install -g conu",
             "<h1 id=\"title\">conU</h1>",
             "Download",
         ],
