@@ -266,7 +266,7 @@ pub fn list_agent_inbox(
         }
     }
 
-    entries.sort_by(|left, right| left.envelope_id.cmp(&right.envelope_id));
+    sort_inbox_entries(&mut entries);
     Ok(entries)
 }
 
@@ -426,8 +426,24 @@ pub fn list_receipts(home_override: Option<PathBuf>) -> Result<Vec<DeliveryRecei
         }
     }
 
-    receipts.sort_by(|left, right| left.receipt_id.cmp(&right.receipt_id));
+    sort_delivery_receipts(&mut receipts);
     Ok(receipts)
+}
+
+fn sort_inbox_entries(entries: &mut [InboxEntry]) {
+    entries.sort_by(|left, right| {
+        left.delivered_at_unix
+            .cmp(&right.delivered_at_unix)
+            .then_with(|| left.envelope_id.cmp(&right.envelope_id))
+    });
+}
+
+fn sort_delivery_receipts(receipts: &mut [DeliveryReceipt]) {
+    receipts.sort_by(|left, right| {
+        left.delivered_at_unix
+            .cmp(&right.delivered_at_unix)
+            .then_with(|| left.receipt_id.cmp(&right.receipt_id))
+    });
 }
 
 fn process_one_message_request(
@@ -1329,6 +1345,48 @@ fn current_unix_nanos() -> u128 {
 mod tests {
     use super::*;
     use conu_protocol::AgentCapabilities;
+
+    #[test]
+    fn inbox_metadata_sorts_by_delivery_time_then_envelope_id() {
+        let mut entries = vec![
+            test_inbox_metadata("env.new", 30),
+            test_inbox_metadata("env.same.b", 20),
+            test_inbox_metadata("env.old", 10),
+            test_inbox_metadata("env.same.a", 20),
+        ];
+
+        sort_inbox_entries(&mut entries);
+
+        let envelope_ids: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.envelope_id.as_str())
+            .collect();
+        assert_eq!(
+            envelope_ids,
+            vec!["env.old", "env.same.a", "env.same.b", "env.new"]
+        );
+    }
+
+    #[test]
+    fn delivery_receipts_sort_by_delivery_time_then_receipt_id() {
+        let mut receipts = vec![
+            test_delivery_receipt("rcpt.new", "env.new", 30),
+            test_delivery_receipt("rcpt.same.b", "env.same.b", 20),
+            test_delivery_receipt("rcpt.old", "env.old", 10),
+            test_delivery_receipt("rcpt.same.a", "env.same.a", 20),
+        ];
+
+        sort_delivery_receipts(&mut receipts);
+
+        let receipt_ids: Vec<&str> = receipts
+            .iter()
+            .map(|receipt| receipt.receipt_id.as_str())
+            .collect();
+        assert_eq!(
+            receipt_ids,
+            vec!["rcpt.old", "rcpt.same.a", "rcpt.same.b", "rcpt.new"]
+        );
+    }
 
     #[test]
     fn message_request_file_hides_literal_payload() {
@@ -2387,18 +2445,40 @@ mod tests {
         assert!(message_log.is_dir());
     }
 
-    #[cfg(unix)]
-    fn test_inbox_entry() -> InboxEntry {
+    fn test_inbox_metadata(envelope_id: &str, delivered_at_unix: u64) -> InboxEntry {
         InboxEntry {
-            envelope_id: "env.test".to_string(),
+            envelope_id: envelope_id.to_string(),
             from_agent_id: "agent.sender".to_string(),
             to_agent_id: "agent.receiver".to_string(),
             kind: "message".to_string(),
             stream_id: None,
-            receipt_id: "rcpt.test".to_string(),
-            delivered_at_unix: 1,
+            receipt_id: format!("rcpt.{envelope_id}"),
+            delivered_at_unix,
             payload_bytes: 0,
         }
+    }
+
+    fn test_delivery_receipt(
+        receipt_id: &str,
+        envelope_id: &str,
+        delivered_at_unix: u64,
+    ) -> DeliveryReceipt {
+        DeliveryReceipt {
+            receipt_id: receipt_id.to_string(),
+            envelope_id: envelope_id.to_string(),
+            from_agent_id: "agent.sender".to_string(),
+            to_agent_id: "agent.receiver".to_string(),
+            kind: "message".to_string(),
+            stream_id: None,
+            status: "delivered".to_string(),
+            delivered_at_unix,
+            payload_bytes: 0,
+        }
+    }
+
+    #[cfg(unix)]
+    fn test_inbox_entry() -> InboxEntry {
+        test_inbox_metadata("env.test", 1)
     }
 
     fn register_agent(home: &Path, agent_id: &str) {
