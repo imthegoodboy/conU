@@ -105,7 +105,7 @@ def main() -> int:
 
             prefix = temp_root / f"{archive_stem(archive)}-npm"
             install_npm_package(archive, npm, package_dir, bin_dir, prefix)
-            smoke_installed_launcher(archive, node, prefix, temp_root)
+            smoke_installed_launcher(archive, node, prefix, temp_root, package_dir)
             smoked += 1
 
     if smoked == 0:
@@ -140,6 +140,35 @@ def validate_package_directory(path: Path, label: str) -> Path:
     if not package_json.exists() or not package_json.is_file():
         raise SystemExit(f"missing npm package manifest in {package_dir}")
     return package_dir
+
+
+def installed_package_path(package_dir: Path) -> Path:
+    manifest_path = package_dir / "package.json"
+    try:
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"npm package manifest is invalid JSON: {manifest_path}") from exc
+
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise SystemExit(f"npm package manifest missing package name: {manifest_path}")
+    if "\\" in name or any(ord(character) <= 32 or ord(character) == 127 for character in name):
+        raise SystemExit("npm package name is not safe for node_modules path")
+
+    if name.startswith("@"):
+        parts = name.split("/")
+        if len(parts) != 2:
+            raise SystemExit("scoped npm package name must be @scope/name")
+    else:
+        if "/" in name:
+            raise SystemExit("unscoped npm package name must not contain /")
+        parts = [name]
+
+    for part in parts:
+        if part in {"", ".", ".."}:
+            raise SystemExit("npm package name has an unsafe path segment")
+    return Path(*parts)
 
 
 def read_manifest_target(archive: Path) -> str:
@@ -707,8 +736,14 @@ def install_npm_package(
     )
 
 
-def smoke_installed_launcher(archive: Path, node: str, prefix: Path, temp_root: Path) -> None:
-    package_root = prefix / "node_modules" / "conu"
+def smoke_installed_launcher(
+    archive: Path,
+    node: str,
+    prefix: Path,
+    temp_root: Path,
+    package_dir: Path,
+) -> None:
+    package_root = prefix / "node_modules" / installed_package_path(package_dir)
     if not package_root.joinpath("package.json").exists():
         raise SystemExit(f"{archive.name} npm install did not create {package_root}")
 

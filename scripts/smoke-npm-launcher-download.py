@@ -91,7 +91,7 @@ def main() -> int:
                     release_base,
                     local_smoke,
                 )
-                local_smoke.smoke_installed_launcher(archive, node, prefix, temp_root)
+                local_smoke.smoke_installed_launcher(archive, node, prefix, temp_root, package_dir)
                 print(f"smoked {archive.name}: npm launcher download install verified checksum")
                 smoked += 1
 
