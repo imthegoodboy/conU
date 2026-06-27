@@ -64,7 +64,7 @@ class PackageRule:
 
 PACKAGES = (
     PackageRule(
-        name="conu",
+        name="@imthegoodboy/conu",
         directory=Path("packaging/npm/conu-cli"),
         package_files=frozenset({"bin/", "lib/", "scripts/", "README.md"}),
         bin_entries={
