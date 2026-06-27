@@ -8,6 +8,19 @@ For simple testing and launch prep, you do not need paid Windows or Apple signin
 
 For local/manual testing, no new secret is required right now.
 
+The public npm package is already published as:
+
+```txt
+@imthegoodboy/conu
+```
+
+Install it with:
+
+```powershell
+npm install -g @imthegoodboy/conu
+conu doctor
+```
+
 The npm publish secret exists in GitHub Actions:
 
 ```txt
@@ -22,7 +35,7 @@ gh secret set NPM_TOKEN --repo imthegoodboy/conU
 
 For simple testing, there is nothing else you need to paste or configure for npm right now.
 
-Before any real npm publish, rotate `NPM_TOKEN` because a token value was pasted in chat. After rotating it, set the non-secret rotation marker from GitHub's secret metadata:
+Rotate `NPM_TOKEN` because token values were pasted in chat during setup. After rotating it, set the non-secret rotation marker from GitHub's secret metadata:
 
 ```powershell
 python scripts\set-github-release-secrets.py --repo imthegoodboy/conU --simple-launch --set-npm-token-rotation-marker-from-secret-updated-at --confirm-npm-token-rotated
@@ -94,7 +107,7 @@ unsigned local/manual builds
 production-readiness fixes that do not require paid certificates
 ```
 
-The only thing that will still be blocked is the final fully signed public tagged release gate. That is expected until real Windows/macOS signing credentials exist.
+The only thing still outside this simple launch path is a fully signed Windows/macOS release with paid signing credentials. That is expected until real Windows/macOS signing credentials exist.
 
 ## How To Test Locally Now
 
@@ -121,7 +134,7 @@ Reply with:
 continue without paid signing secrets
 ```
 
-Then I will continue production-readiness work without waiting for Windows/macOS certificates.
+Then I can continue production-readiness work without waiting for Windows/macOS certificates.
 
 ## Later Only: Fully Signed Public Release
 
