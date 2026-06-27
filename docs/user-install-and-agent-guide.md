@@ -273,12 +273,12 @@ PowerShell:
 
 ```powershell
 "opaque bytes from agent.codex" | conu messages send agent.codex agent.helper --stdin
-conud --process-ipc
+conu messages wait agent.helper --process-ipc --timeout-ms 30000 --json
 conu messages inbox agent.helper --json
 conu messages receipts --json
 ```
 
-The inbox command shows metadata only: envelope id, sender, receiver, receipt id, byte count, and delivery time. It does not print the payload.
+The wait and inbox commands show metadata only: envelope id, sender, receiver, receipt id, byte count, and delivery time. They do not print the payload.
 
 ## Connect Two Local Agents
 
@@ -509,11 +509,25 @@ conu-sdk = { path = "crates/conu-sdk" }
 Minimal usage:
 
 ```rust
-use conu_sdk::{ConuClient, PeerPolicyUpdate};
+use conu_sdk::{Capabilities, ConuClient, PeerPolicyUpdate};
 
 let client = ConuClient::new();
 client.init()?;
-client.register_agent("agent.mybot", "My Bot", "local-agent")?;
+let mut capabilities = Capabilities::basic();
+capabilities.streams = true;
+capabilities.rooms = true;
+client.register_agent_with_capabilities(
+    "agent.mybot",
+    "My Bot",
+    "local-agent",
+    capabilities.clone(),
+)?;
+client.register_agent_with_capabilities(
+    "agent.other",
+    "Other",
+    "local-agent",
+    capabilities,
+)?;
 client.process_queued()?;
 let _local_agent_card = client.export_agent_card("agent.mybot")?;
 // Manual fallback for a SignedAgentCard received from an already trusted peer:
@@ -526,6 +540,15 @@ client.set_peer_policy("node_peer", PeerPolicyUpdate {
     mailbox: Some(false),
 })?;
 client.send_message_bytes("agent.mybot", "agent.other", b"opaque bytes")?;
+let waited = client.wait_for_message(
+    "agent.other",
+    None,
+    std::time::Duration::from_secs(30),
+    std::time::Duration::from_millis(250),
+    true,
+)?;
+let envelope_id = waited.message.as_ref().expect("message").envelope_id.clone();
+let _received = client.receive_message_bytes("agent.other", &envelope_id)?;
 client.send_remote_message_bytes("agent.mybot", "agent.remote", "node_peer", b"opaque bytes")?;
 client.create_room("room.dev", "Dev Room", "agent.mybot")?;
 client.join_room("room.dev", "agent.other")?;
@@ -550,19 +573,23 @@ from conu_sdk import ConuClient
 
 client = ConuClient(home=".conu-agent")
 client.init()
-client.register_agent("agent.mybot", "My Bot")
+client.register_agent("agent.mybot", "My Bot", streams=True, rooms=True)
+client.register_agent("agent.other", "Other", streams=True, rooms=True)
 client.process_queued()
 local_agent_card = client.export_agent_card("agent.mybot")
 # Manual fallback for a dict received from an already trusted peer:
 # client.trust_agent_card(remote_agent_card)
 client.set_peer_policy("node_peer", messages=True, streams=True)
 client.send_message("agent.mybot", "agent.other", b"opaque bytes")
+waited = client.wait_for_message("agent.other", process_ipc=True)
+received = client.receive_message_bytes("agent.other", waited["message"]["envelopeId"])
 client.send_remote_message("agent.mybot", "agent.remote", "node_peer", b"opaque bytes")
 client.create_room("room.dev", "Dev Room", "agent.mybot")
 client.join_room("room.dev", "agent.other")
 client.set_room_topic_policy("room.dev", "agent.mybot", "build", publish=True, subscribe=True)
 client.publish_room_event("room.dev", "agent.mybot", "build", b"opaque bytes")
 client.relay_sync(wait_ms=3000)
+print({"receivedBytes": len(received), "contentsDisplayed": False})
 ```
 
 ### TypeScript/JavaScript Agent Setup
@@ -586,9 +613,8 @@ const localAgentCard = client.exportAgentCard("agent.mybot");
 // client.trustAgentCard(remoteAgentCard);
 client.setPeerPolicy("node_peer", { messages: true, streams: true, rooms: true });
 client.sendMessage("agent.mybot", "agent.other", "opaque bytes");
-client.processQueued();
-const inbox = client.inbox("agent.other");
-const received = client.receiveMessageBytes("agent.other", inbox.entries[0].envelopeId);
+const waited = client.waitForMessage("agent.other", { processIpc: true });
+const received = client.receiveMessageBytes("agent.other", waited.message.envelopeId);
 client.sendRemoteMessage("agent.mybot", "agent.remote", "node_peer", "opaque bytes");
 client.createRoom("room.dev", "Dev Room", "agent.mybot");
 client.joinRoom("room.dev", "agent.other");
@@ -630,6 +656,7 @@ Rules:
   conu identity export --json
   conu agents export <agent-id> --json
   conu messages inbox <agent-id> --json
+  conu messages wait <agent-id> --timeout-ms 30000 --json
   conu messages receipts --json
   conu security audit --json
 - For remote delivery, import a peer card once:
@@ -655,7 +682,7 @@ conu agents register agent.mybot "My Bot" --kind local-agent --streams true --ro
 conu agents register agent.other "Other Agent" --kind local-agent --streams true --rooms true
 conud --process-ipc
 "hello as opaque bytes" | conu messages send agent.mybot agent.other --stdin
-conud --process-ipc
+conu messages wait agent.other --process-ipc --timeout-ms 30000 --json
 conu messages inbox agent.other --json
 ```
 

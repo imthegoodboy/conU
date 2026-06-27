@@ -375,10 +375,10 @@ impl RelayRuntimePump {
         let timeout = Duration::from_millis(500);
         let mut client = RelayWebSocketClient::connect(endpoint, timeout)?;
         let mut hello = RelayHello::new(node_id.to_string(), token.to_string())?;
-        if self.resume_endpoint.as_deref() == Some(endpoint) {
-            if let Some(resume_session_id) = &self.resume_session_id {
-                hello = hello.with_resume_session_id(resume_session_id.clone())?;
-            }
+        if self.resume_endpoint.as_deref() == Some(endpoint)
+            && let Some(resume_session_id) = &self.resume_session_id
+        {
+            hello = hello.with_resume_session_id(resume_session_id.clone())?;
         }
         client.send(&RelayClientFrame::Hello(hello))?;
 
@@ -1522,18 +1522,18 @@ fn relay_endpoint_for_sync(
 ) -> Result<String, RelayDeliveryError> {
     if let Some(first) = queued_paths.first() {
         let request = read_relay_request(first)?;
-        if let Some(peer) = trusted_peer(paths, &request.to_node_id)? {
-            if let Some(endpoint) = peer.relay_endpoint {
-                return validate_endpoint(endpoint);
-            }
+        if let Some(peer) = trusted_peer(paths, &request.to_node_id)?
+            && let Some(endpoint) = peer.relay_endpoint
+        {
+            return validate_endpoint(endpoint);
         }
     }
 
     for peer in trust::list_peers(Some(paths.home.clone()))? {
-        if peer.status == TrustStatus::Trusted {
-            if let Some(endpoint) = peer.relay_endpoint {
-                return validate_endpoint(endpoint);
-            }
+        if peer.status == TrustStatus::Trusted
+            && let Some(endpoint) = peer.relay_endpoint
+        {
+            return validate_endpoint(endpoint);
         }
     }
 

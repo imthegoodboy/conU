@@ -23,6 +23,19 @@ def require_contains(path: str, needles: list[str]) -> None:
 
 
 def main() -> None:
+    if (ROOT / "Dockerfile").read_text(encoding="utf-8") != (
+        ROOT / "packaging/docker/relay.Dockerfile"
+    ).read_text(encoding="utf-8"):
+        raise SystemExit("Dockerfile must match packaging/docker/relay.Dockerfile")
+    require_contains(
+        "Dockerfile",
+        [
+            "FROM rust:1.88-bookworm AS build",
+            "cargo build --release -p conu-relay",
+            "conu-relay-entrypoint",
+        ],
+    )
+    require_contains("Cargo.toml", ['rust-version = "1.88"'])
     require_contains(
         "packaging/docker/relay-entrypoint.sh",
         ["${PORT:-8787}", 'conu-relay --serve "0.0.0.0:${port}"'],
@@ -37,6 +50,7 @@ def main() -> None:
             "type: web",
             "runtime: docker",
             "dockerfilePath: ./packaging/docker/relay.Dockerfile",
+            "plan: free",
             "mountPath: /var/lib/conu-relay",
             "CONU_RELAY_TOKEN",
             "generateValue: true",
@@ -47,6 +61,8 @@ def main() -> None:
         "docs/render-relay-hosting.md",
         [
             "wss://<service>.onrender.com/conu",
+            "free plan",
+            "persistent disk",
             "/healthz",
             "conu-relay --issue-credential",
             "conu peers policy",
@@ -57,7 +73,7 @@ def main() -> None:
         "site/index.html",
         [
             "npm install -g @conu/cli",
-            "Agent communication CLI",
+            "<h1 id=\"title\">conU</h1>",
             "Download",
         ],
     )

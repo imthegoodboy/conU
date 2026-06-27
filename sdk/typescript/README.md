@@ -23,9 +23,10 @@ client.registerAgent("agent.beta", "Beta", { streams: true, rooms: true });
 client.processQueued();
 
 const sent = client.sendMessage("agent.alpha", "agent.beta", "private bytes");
-client.processQueued();
-const inbox = client.inbox("agent.beta");
-const payload = client.receiveMessageBytes("agent.beta", inbox.entries[0].envelopeId);
+const waited = client.waitForMessage("agent.beta", { processIpc: true });
+const envelopeId = waited.message?.envelopeId;
+if (!envelopeId) throw new Error("timed out waiting for agent.beta");
+const payload = client.receiveMessageBytes("agent.beta", envelopeId);
 console.log({ sentBytes: sent.payloadBytes, receivedBytes: payload.byteLength });
 ```
 
@@ -44,8 +45,8 @@ Useful calls include:
 - `registerAgent()`, `heartbeat()`, `agents()`
 - `identityExport()`, `trustPeer()`, `setPeerPolicy()`
 - `exportAgentCard()`, `trustAgentCard()`
-- `sendMessage()`, `sendRemoteMessage()`, `inbox()`, `receiveMessageBytes()`,
-  `receipts()`
+- `sendMessage()`, `sendRemoteMessage()`, `inbox()`, `waitForMessage()`,
+  `receiveMessageBytes()`, `receipts()`
 - `openStream()`, `writeStream()`, `closeStream()`
 - `createRoom()`, `joinRoom()`, `publishRoomEvent()`, `setRoomTopicPolicy()`
 - `relaySync()`, `setRelayCredential()`, `relayCredentialStatus()`

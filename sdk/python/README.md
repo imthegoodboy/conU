@@ -13,7 +13,8 @@ client.register_agent("agent.beta", "Beta")
 client.process_queued()
 
 sent = client.send_message("agent.alpha", "agent.beta", b"private bytes")
-print(sent["payloadBytes"])
+waited = client.wait_for_message("agent.beta", process_ipc=True)
+print(sent["payloadBytes"], waited["status"])
 ```
 
 The wrapper does not log or print payloads. Message payload bytes are sent to

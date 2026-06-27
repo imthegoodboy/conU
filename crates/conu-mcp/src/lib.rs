@@ -1386,7 +1386,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
     let value = value.trim();
-    if value.len() % 2 != 0 {
+    if (value.len() & 1) == 1 {
         return Err("payloadHex must have an even number of characters".to_string());
     }
 

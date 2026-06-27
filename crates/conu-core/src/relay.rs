@@ -1887,7 +1887,7 @@ fn validate_hex(value: String, field: &'static str) -> Result<String, RelayFrame
     if value.len() > MAX_FRAME_BYTES * 2 {
         return Err(RelayFrameError::new(format!("{field} is too large")));
     }
-    if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if (value.len() & 1) == 1 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(RelayFrameError::new(format!("{field} must be hex")));
     }
     Ok(value)

@@ -105,6 +105,28 @@ mcpRequest = JSON.parse(calls.at(-1).input.toString("utf8").trim());
 assert.equal(mcpRequest.params.arguments.includePayload, true);
 assert.ok(!calls.at(-1).args.includes("private bytes"));
 
+const waited = client.waitForMessage("agent.beta", {
+  afterEnvelopeId: "env.local.1",
+  timeoutMs: 500,
+  intervalMs: 10,
+  processIpc: true,
+});
+assert.equal(waited.ok, true);
+assert.deepEqual(calls.at(-1).args, [
+  "messages",
+  "wait",
+  "agent.beta",
+  "--timeout-ms",
+  "500",
+  "--interval-ms",
+  "10",
+  "--json",
+  "--after",
+  "env.local.1",
+  "--process-ipc",
+]);
+assert.ok(!calls.at(-1).args.includes("private bytes"));
+
 client.setRelayCredential("secret relay token");
 assert.deepEqual(calls.at(-1).args, [
   "relay",

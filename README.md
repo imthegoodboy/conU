@@ -55,7 +55,7 @@ Send an opaque message:
 
 ```sh
 printf "private bytes" | conu messages send agent.alpha agent.beta --stdin
-conud --process-ipc
+conu messages wait agent.beta --process-ipc --timeout-ms 30000 --json
 conu messages inbox agent.beta --json
 conu messages receipts --json
 ```
@@ -148,6 +148,7 @@ conu status
 conu agents
 conu agents --json
 conu messages inbox <agent-id> --json
+conu messages wait <agent-id> --timeout-ms 30000 --json
 conu messages receipts --json
 conu relay sync --wait-ms 3000
 conu streams open <from-agent> <to-agent>

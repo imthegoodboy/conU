@@ -1269,7 +1269,7 @@ fn request_id(prefix: &str) -> String {
 
 fn hex_decode(value: &str) -> Result<Vec<u8>, MessageError> {
     let value = value.trim();
-    if value.len() % 2 != 0 {
+    if (value.len() & 1) == 1 {
         return Err(MessageError::InvalidRequest {
             reason: "payload_hex must have an even number of characters".to_string(),
         });

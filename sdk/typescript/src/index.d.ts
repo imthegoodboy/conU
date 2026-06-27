@@ -81,6 +81,13 @@ export interface ReceiveMessageOptions {
   includePayload?: boolean;
 }
 
+export interface WaitForMessageOptions {
+  afterEnvelopeId?: string;
+  timeoutMs?: number;
+  intervalMs?: number;
+  processIpc?: boolean;
+}
+
 export interface SignedAgentCard {
   agentId: string;
   displayName: string;
@@ -126,6 +133,7 @@ export class ConuClient {
   rooms(): JsonObject;
   roomEvents(): JsonObject;
   inbox(agentId: string): JsonObject;
+  waitForMessage(agentId: string, options?: WaitForMessageOptions): JsonObject;
   receiveMessage(agentId: string, envelopeId: string, options?: ReceiveMessageOptions): JsonObject;
   receiveMessageBytes(agentId: string, envelopeId: string): Uint8Array;
   receipts(): JsonObject;

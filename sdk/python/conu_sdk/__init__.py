@@ -234,6 +234,30 @@ class ConuClient:
     def inbox(self, agent_id: str) -> dict[str, Any]:
         return self._run_json(self.conu_bin, "messages", "inbox", agent_id, "--json")
 
+    def wait_for_message(
+        self,
+        agent_id: str,
+        after_envelope_id: str | None = None,
+        timeout_ms: int = 30_000,
+        interval_ms: int = 250,
+        process_ipc: bool = False,
+    ) -> dict[str, Any]:
+        args: list[str] = [
+            "messages",
+            "wait",
+            _command_arg(agent_id, self.conu_bin),
+            "--timeout-ms",
+            _command_arg(timeout_ms, self.conu_bin),
+            "--interval-ms",
+            _command_arg(interval_ms, self.conu_bin),
+            "--json",
+        ]
+        if after_envelope_id is not None:
+            args.extend(["--after", _command_arg(after_envelope_id, self.conu_bin)])
+        if process_ipc:
+            args.append("--process-ipc")
+        return self._run_json(self.conu_bin, *args)
+
     def receive_message(
         self,
         agent_id: str,

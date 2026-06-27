@@ -4,13 +4,18 @@ services:
     runtime: docker
     dockerfilePath: ./packaging/docker/relay.Dockerfile
     dockerContext: .
-    plan: starter
+    plan: free
     autoDeploy: false
     healthCheckPath: /healthz
-    disk:
-      name: conu-relay-data
-      mountPath: /var/lib/conu-relay
-      sizeGB: 1
+    # Free launch uses the container filesystem, so relay session/mailbox
+    # metadata is ephemeral across deploys and restarts. For durable relay
+    # mailbox/session/accounting state, upgrade this service to a paid plan and
+    # add a persistent disk:
+    #
+    # disk:
+    #   name: conu-relay-data
+    #   mountPath: /var/lib/conu-relay
+    #   sizeGB: 1
     envVars:
       - key: CONU_RELAY_TOKEN
         generateValue: true

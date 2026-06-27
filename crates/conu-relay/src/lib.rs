@@ -2140,15 +2140,17 @@ pub fn audit_hosted_relay_credentials_file_with_node(
         let node_mismatch = node_id
             .as_deref()
             .is_some_and(|target| record_node != target);
-        if node_id.is_none() {
-            if let Some(account) = record_account {
-                accounts.insert(account.to_string());
-            }
+        if node_id.is_none()
+            && let Some(account) = record_account
+        {
+            accounts.insert(account.to_string());
         }
-        if node_id.is_some() && !account_mismatch && !node_mismatch {
-            if let Some(account) = record_account {
-                accounts.insert(account.to_string());
-            }
+        if node_id.is_some()
+            && !account_mismatch
+            && !node_mismatch
+            && let Some(account) = record_account
+        {
+            accounts.insert(account.to_string());
         }
         if account_mismatch || node_mismatch {
             continue;
@@ -4893,20 +4895,17 @@ impl RelayHub {
 
     fn remove_client(&self, node_id: &str, session_id: &str) {
         let mut removed = false;
-        if let Ok(mut state) = self.state.lock() {
-            if state
+        if let Ok(mut state) = self.state.lock()
+            && state
                 .clients
                 .get(node_id)
                 .is_some_and(|connection| connection.session_id == session_id)
-            {
-                state.clients.remove(node_id);
-                removed = true;
-            }
+        {
+            state.clients.remove(node_id);
+            removed = true;
         }
-        if removed {
-            if let Ok(mut sessions) = self.sessions.lock() {
-                let _ = sessions.touch_session(node_id, session_id, &self.session_storage);
-            }
+        if removed && let Ok(mut sessions) = self.sessions.lock() {
+            let _ = sessions.touch_session(node_id, session_id, &self.session_storage);
         }
     }
 
@@ -5016,15 +5015,14 @@ impl RelayHub {
                 } else {
                     "rotated"
                 };
-                if let Some(tenants_file) = self.admin.tenants_file() {
-                    if let Err(error) = hosted_tenant_registry_authorizes_account_node(
+                if let Some(tenants_file) = self.admin.tenants_file()
+                    && let Err(error) = hosted_tenant_registry_authorizes_account_node(
                         tenants_file,
                         account_id,
                         node_id,
-                    ) {
-                        return self
-                            .admin_result_for_update_error(request, account_id, node_id, error);
-                    }
+                    )
+                {
+                    return self.admin_result_for_update_error(request, account_id, node_id, error);
                 }
                 if let Err(error) = upsert_hosted_relay_credential_hash_in_file(
                     &credentials_file,
@@ -5903,21 +5901,18 @@ fn handle_connection(mut stream: TcpStream, hub: Arc<RelayHub>) -> Result<(), Re
                     )?;
                     break;
                 }
-                if let Some(tenants_file) = hub.admin.tenants_file() {
-                    if hosted_tenant_registry_authorizes_node(tenants_file, &hello.node_id).is_err()
-                    {
-                        let _ = hub.record_abuse(
-                            Some(&hello.node_id),
-                            RelayAbuseKind::TenantDeniedSession,
-                        );
-                        write_text_frame(
-                            &mut stream,
-                            &render_server_frame(&RelayServerFrame::Error {
-                                reason: "unauthorized".to_string(),
-                            }),
-                        )?;
-                        break;
-                    }
+                if let Some(tenants_file) = hub.admin.tenants_file()
+                    && hosted_tenant_registry_authorizes_node(tenants_file, &hello.node_id).is_err()
+                {
+                    let _ =
+                        hub.record_abuse(Some(&hello.node_id), RelayAbuseKind::TenantDeniedSession);
+                    write_text_frame(
+                        &mut stream,
+                        &render_server_frame(&RelayServerFrame::Error {
+                            reason: "unauthorized".to_string(),
+                        }),
+                    )?;
+                    break;
                 }
                 let (session_id, resumed, queued) = hub.add_client(
                     hello.node_id.clone(),
@@ -6323,10 +6318,10 @@ impl RelaySessionState {
         }
 
         let now = current_unix_millis_u64();
-        if !self.records.contains_key(node_id) {
-            if let Some(record) = Self::load_record_from_storage(storage, node_id)? {
-                self.records.insert(record.node_id.clone(), record);
-            }
+        if !self.records.contains_key(node_id)
+            && let Some(record) = Self::load_record_from_storage(storage, node_id)?
+        {
+            self.records.insert(record.node_id.clone(), record);
         }
         let Some(record) = self.records.get(node_id) else {
             return Ok(false);
@@ -6599,10 +6594,10 @@ impl RelayAccountingState {
         if let Some(sender) = self.records.get(from_node_id) {
             persist_accounting_record(storage, sender)?;
         }
-        if from_node_id != to_node_id {
-            if let Some(receiver) = self.records.get(to_node_id) {
-                persist_accounting_record(storage, receiver)?;
-            }
+        if from_node_id != to_node_id
+            && let Some(receiver) = self.records.get(to_node_id)
+        {
+            persist_accounting_record(storage, receiver)?;
         }
         Ok(())
     }
@@ -7866,10 +7861,10 @@ fn bind_addr_is_public(bind_addr: &str) -> bool {
 
 fn bind_host(bind_addr: &str) -> String {
     let bind_addr = bind_addr.trim();
-    if let Some(rest) = bind_addr.strip_prefix('[') {
-        if let Some((host, _)) = rest.split_once(']') {
-            return host.trim().to_string();
-        }
+    if let Some(rest) = bind_addr.strip_prefix('[')
+        && let Some((host, _)) = rest.split_once(']')
+    {
+        return host.trim().to_string();
     }
 
     bind_addr
@@ -11384,6 +11379,7 @@ contents_displayed = false\n"
             }
             other => panic!("unexpected frame: {other:?}"),
         };
+        thread::sleep(Duration::from_millis(100));
         drop(node_a);
         drop(relay);
 

@@ -62,17 +62,18 @@ Payloads go through stdin, not command arguments.
 
 ```sh
 printf "private bytes" | conu messages send agent.mybot agent.other --stdin
-conud --process-ipc
+conu messages wait agent.other --process-ipc --timeout-ms 30000 --json
 conu messages receipts --json
 ```
 
-Read inbox metadata:
+Read inbox metadata or wait for the next addressed envelope:
 
 ```sh
 conu messages inbox agent.other --json
+conu messages wait agent.other --after <last-envelope-id> --timeout-ms 30000 --json
 ```
 
-Use SDK or MCP explicit receive APIs when the addressed agent needs payload bytes. Normal CLI list/status/watch output must remain metadata-only.
+Use Rust `wait_for_message()`, Python `wait_for_message()`, TypeScript `waitForMessage()`, or CLI `conu messages wait` for metadata-only waiting. Use SDK or MCP explicit receive APIs when the addressed agent needs payload bytes. Normal CLI list/status/watch output must remain metadata-only.
 
 ## Use A Hosted Relay
 
@@ -122,6 +123,7 @@ conu status --json
 conu agents --json
 conu peers --json
 conu messages inbox agent.mybot --json
+conu messages wait agent.mybot --timeout-ms 30000 --json
 conu messages receipts --json
 conu streams
 conu rooms

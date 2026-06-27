@@ -202,6 +202,26 @@ export class ConuClient {
     ]);
   }
 
+  waitForMessage(agentId, options = {}) {
+    const args = [
+      "messages",
+      "wait",
+      commandArg(agentId, this.conuBin),
+      "--timeout-ms",
+      commandArg(options.timeoutMs ?? 30000, this.conuBin),
+      "--interval-ms",
+      commandArg(options.intervalMs ?? 250, this.conuBin),
+      "--json",
+    ];
+    if (options.afterEnvelopeId !== undefined && options.afterEnvelopeId !== null) {
+      args.push("--after", commandArg(options.afterEnvelopeId, this.conuBin));
+    }
+    if (options.processIpc) {
+      args.push("--process-ipc");
+    }
+    return this.runJson(this.conuBin, args);
+  }
+
   receiveMessage(agentId, envelopeId, options = {}) {
     return this.callMcpTool("conu_receive_message", {
       agentId: commandArg(agentId, this.mcpBin),

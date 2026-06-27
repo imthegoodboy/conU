@@ -516,10 +516,6 @@ jobs:
         run: python scripts/verify-npm-package-contents.py
       - name: npm package public metadata regression
         run: python scripts/verify-npm-package-contents-regression.py
-      - name: Verify GitHub release secret readiness
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python scripts/check-github-release-secret-readiness.py --repo "$GITHUB_REPOSITORY" --simple-launch
       - name: Verify NPM token rotation marker
         env:
           CONU_NPM_TOKEN_ROTATED_AFTER: ${{ vars.CONU_NPM_TOKEN_ROTATED_AFTER }}

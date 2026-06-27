@@ -13,8 +13,13 @@ conu-relay
   Dockerfile: packaging/docker/relay.Dockerfile
   public endpoint: https://<service>.onrender.com
   WebSocket endpoint for conU clients: wss://<service>.onrender.com/conu
-  persistent disk: /var/lib/conu-relay
+  default storage: ephemeral container filesystem
+  optional persistent disk: /var/lib/conu-relay
 ```
+
+The repository also includes a root `Dockerfile` with the same relay image for
+Render CLI direct-service creation, because `render services create` defaults
+to `./Dockerfile`.
 
 Render provides the public `PORT` value for web services. The relay Docker entrypoint reads `PORT` and starts:
 
@@ -32,7 +37,9 @@ The relay responds with payload-safe text only.
 
 ## Before Deploying
 
-Use a paid Render instance type if you need the persistent disk. The relay stores metadata-only sessions, accounting, abuse counters, and optional durable encrypted mailbox files under `/var/lib/conu-relay`.
+The default `render.yaml` uses Render's free plan so the relay can launch without adding billing details. On that path, files under `/var/lib/conu-relay` are ephemeral across deploys and restarts. This is fine for first public testing and live relay traffic, but same-node session resume hints, accounting windows, abuse counters, and optional durable encrypted mailbox files are not durable across restarts.
+
+Use a paid Render instance type plus a persistent disk if you need durable relay state. Uncomment the `disk:` block in `render.yaml`, keep the mount at `/var/lib/conu-relay`, and redeploy. The relay stores metadata-only sessions, accounting, abuse counters, and optional durable encrypted mailbox files under that path.
 
 The Blueprint starts with a generated `CONU_RELAY_TOKEN` secret so the first deploy can boot on an empty disk. That is good for controlled testing. For a production relay with separate credentials per node, switch to a scoped credentials manifest after the service is deployed.
 
@@ -62,16 +69,46 @@ Deliver each raw `node-*.token` value only to that node owner. Do not paste rela
 ## Deploy On Render
 
 1. Push this repo to GitHub.
-2. In Render, create a new Blueprint from this repository.
-3. Confirm the `conu-relay` service from `render.yaml`.
-4. Copy the generated `CONU_RELAY_TOKEN` only into controlled test nodes, or replace it with a scoped credentials manifest before public use.
-5. Give users the endpoint:
+2. Validate the Blueprint locally:
+
+```sh
+render blueprints validate
+```
+
+3. In Render, create a new Blueprint from this repository.
+4. Confirm the `conu-relay` service from `render.yaml`.
+5. Copy the generated `CONU_RELAY_TOKEN` only into controlled test nodes, or replace it with a scoped credentials manifest before public use.
+6. Give users the endpoint:
 
 ```txt
 wss://<service>.onrender.com/conu
 ```
 
 Render terminates TLS for the public `https://` endpoint. conU clients use the same host with `wss://`.
+
+## Render CLI Direct Service
+
+The direct CLI path uses the root `Dockerfile` and is useful when you do not
+want to apply the full Blueprint from the Dashboard:
+
+```sh
+render services create \
+  --name conu-relay \
+  --type web_service \
+  --repo https://github.com/imthegoodboy/conU \
+  --branch main \
+  --runtime docker \
+  --plan free \
+  --health-check-path /healthz \
+  --auto-deploy=false \
+  --env-var CONU_RELAY_TOKEN=<long-controlled-test-token> \
+  --confirm \
+  -o json
+```
+
+The token must be at least 24 characters for Render's public bind. Do not put
+real relay tokens in shell history; use the Render Dashboard for production
+secret values or rotate the token immediately after creation.
 
 ## User Node Setup
 

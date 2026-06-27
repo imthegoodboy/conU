@@ -26,6 +26,7 @@ Implemented so far:
 - automatic peer-encrypted signed agent-card exchange during trusted session sync
 - local opaque envelope submission through `conu messages send --stdin`
 - local recipient inbox listing through `conu messages inbox`
+- local recipient inbox waiting through `conu messages wait`, with optional queued IPC processing and metadata-only timeout/delivery output
 - metadata-only delivery receipts through `conu messages receipts`
 - conUD processing for local message delivery
 - encrypted-at-rest local message request and inbox payload storage
@@ -48,7 +49,7 @@ Implemented so far:
 - explicit manual relay send/receive sync through `conu relay sync`
 - replay protection for local message request and envelope ids
 - `conu security audit` for payload-safe hardening status
-- Rust SDK crate `conu-sdk` for agent-facing registration, messaging, receive, peer, security, and stream calls
+- Rust SDK crate `conu-sdk` for agent-facing registration, messaging, wait/receive, peer, security, and stream calls
 - MCP stdio adapter crate `conu-mcp` exposing conU tools over newline-delimited JSON-RPC
 - Python stdlib wrapper SDK under `sdk/python`
 - TypeScript/JavaScript wrapper SDK under `sdk/typescript`

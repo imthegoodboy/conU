@@ -2,7 +2,6 @@
   color-scheme: dark;
   --bg: #000;
   --text: #fff;
-  --muted: #b8b8b8;
   --line: #fff;
 }
 
@@ -25,31 +24,21 @@ body {
 .page {
   display: grid;
   align-content: center;
-  justify-items: start;
-  gap: 24px;
-  min-height: 100vh;
-  width: min(760px, calc(100% - 48px));
+  justify-items: center;
+  gap: 28px;
+  min-height: 100svh;
+  width: min(720px, calc(100% - 48px));
   margin: 0 auto;
   padding: 48px 0;
+  text-align: center;
 }
 
-.mark,
 h1 {
   margin: 0;
   letter-spacing: 0;
-}
-
-.mark {
-  color: var(--muted);
-  font-size: 16px;
-  font-weight: 700;
-}
-
-h1 {
-  max-width: 720px;
-  font-size: 64px;
-  line-height: 1.02;
-  font-weight: 760;
+  font-size: 88px;
+  line-height: 0.95;
+  font-weight: 800;
 }
 
 .download {
@@ -68,7 +57,7 @@ h1 {
 
 pre {
   width: 100%;
-  max-width: 520px;
+  max-width: 460px;
   margin: 0;
   overflow-x: auto;
   border: 1px solid var(--line);
@@ -86,11 +75,11 @@ code {
 @media (max-width: 620px) {
   .page {
     width: min(100% - 32px, 760px);
-    gap: 20px;
+    gap: 22px;
   }
 
   h1 {
-    font-size: 42px;
+    font-size: 56px;
   }
 
   pre {

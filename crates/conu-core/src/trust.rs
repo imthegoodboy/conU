@@ -1244,7 +1244,7 @@ fn validate_hex(value: String, field: &'static str) -> Result<String, TrustError
             reason: format!("{field} cannot be empty"),
         });
     }
-    if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if (value.len() & 1) == 1 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(TrustError::InvalidRequest {
             reason: format!("{field} must be hex"),
         });

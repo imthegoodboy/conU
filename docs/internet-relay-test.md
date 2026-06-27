@@ -167,13 +167,13 @@ On Node A, queue the message. The running conUD relay pump flushes it and the ru
 "hello over encrypted relay" | conu messages send agent.a agent.b --peer <node-b-id> --stdin
 ```
 
-On Node B, inspect the addressed inbox metadata:
+On Node B, wait for the addressed inbox metadata:
 
 ```powershell
-conu messages inbox agent.b --json
+conu messages wait agent.b --timeout-ms 30000 --json
 ```
 
-The inbox should show an envelope from `agent.a` to `agent.b` with a byte count and `contentsDisplayed: false`.
+The wait result should show an envelope from `agent.a` to `agent.b` with a byte count and `contentsDisplayed: false`.
 
 To test relay-backed stream chunks after Node A can see Node B's signed remote agent metadata and that metadata advertises `streams=true`:
 

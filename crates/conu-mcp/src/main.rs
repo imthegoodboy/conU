@@ -9,11 +9,11 @@ fn main() -> ExitCode {
     for line in stdin.lock().lines() {
         match line {
             Ok(line) => {
-                if let Some(response) = server.handle_line(&line) {
-                    if writeln!(stdout, "{response}").is_err() || stdout.flush().is_err() {
-                        eprintln!("conu-mcp failed to write MCP response");
-                        return ExitCode::from(1);
-                    }
+                if let Some(response) = server.handle_line(&line)
+                    && (writeln!(stdout, "{response}").is_err() || stdout.flush().is_err())
+                {
+                    eprintln!("conu-mcp failed to write MCP response");
+                    return ExitCode::from(1);
                 }
             }
             Err(error) => {
