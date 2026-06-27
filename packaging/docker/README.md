@@ -2,6 +2,10 @@
 
 This template builds and runs the current `conu-relay` service.
 
+The same Dockerfile is used by the Render Blueprint at the repository root.
+The entrypoint reads Render's `PORT` value and falls back to `8787` for local
+Docker runs.
+
 ```sh
 docker build -f packaging/docker/relay.Dockerfile -t conu-relay .
 docker run --rm -p 8787:8787 \
