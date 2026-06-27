@@ -151,7 +151,7 @@ def parse_args() -> argparse.Namespace:
         default=Path("dist"),
         help="directory receiving the update policy JSON",
     )
-    parser.add_argument("--version", help="release version; defaults to @conu/cli version")
+    parser.add_argument("--version", help="release version; defaults to conu package version")
     parser.add_argument("--tag", help="release tag; defaults to v<version>")
     parser.add_argument("--repo", default="imthegoodboy/conU", help="GitHub repository owner/name")
     parser.add_argument(
@@ -178,8 +178,7 @@ def read_package_version(relative_path: str) -> str:
 
 def verify_package_versions(version: str) -> None:
     packages = {
-        "packaging/npm/conu-cli/package.json": "@conu/cli",
-        "sdk/typescript/package.json": "@conu/sdk",
+        "packaging/npm/conu-cli/package.json": "conu",
     }
     for relative, label in packages.items():
         actual = read_package_version(relative)
@@ -339,8 +338,7 @@ def build_update_policy(
         "npm": {
             "registry": NPM_REGISTRY,
             "packages": [
-                {"name": "@conu/cli", "version": version},
-                {"name": "@conu/sdk", "version": version},
+                {"name": "conu", "version": version},
             ],
         },
         "payloadDisplayed": False,

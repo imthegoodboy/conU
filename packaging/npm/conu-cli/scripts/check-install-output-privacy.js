@@ -152,7 +152,7 @@ function expectChildEnvScrubsWrapperSelector() {
     CONU_RELAY_TOKEN: "relay-token",
     NODE_AUTH_TOKEN: "node-auth-token",
     NPM_CONFIG_USERCONFIG: "npm-user-config",
-    NPM_PACKAGE_NAME: "@conu/cli",
+    NPM_PACKAGE_NAME: "conu",
     NPM_TOKEN: "npm-token",
     npm_command: "exec",
     npm_config_cache: "npm-cache",

@@ -26,7 +26,7 @@ Current version status: Phase 14 and Phase 15 are complete for the current local
 - Export/import signed public agent cards for trusted peers.
 - Let Rust agents use `conu_sdk::ConuClient`.
 - Let Python agents use `sdk/python/conu_sdk`.
-- Let TypeScript/JavaScript agents use `sdk/typescript` / `@conu/sdk`.
+- Let TypeScript/JavaScript agents use `sdk/typescript`.
 - Let MCP-capable agents launch `conu-mcp` and call conU tools.
 - Run `conu doctor` to check local install readiness and payload-safe logs.
 - Rotate local metadata logs by size and archive count with `conu logs rotate`.
@@ -40,7 +40,7 @@ Current version status: Phase 14 and Phase 15 are complete for the current local
 ## What Does Not Work Yet
 
 - No signed one-click installer yet.
-- No published `@conu/cli` package yet; the package template exists under `packaging/npm/conu-cli` and should be published after GitHub Release assets/checksums exist.
+- The public npm package is `conu`.
 - No CLI command that reveals message contents. This is intentional; use SDK or MCP explicit receive APIs when the addressed local agent needs payload bytes.
 - Rooms provide local pub/sub coordination, encrypted-at-rest local fanout, relay-backed fanout to joined trusted remote agents, per-topic publish/subscribe grants for configured topics, and watch visibility.
 - No hosted relay service yet. The client supports reachable `ws://` and certificate-valid `wss://` relay endpoints, and relays can use offline scoped credentials or account-scoped online issue/rotate/revoke/audit against a live credential manifest, but the bundled relay server itself is still plain WebSocket and needs TLS termination for public use.
@@ -56,7 +56,7 @@ Current version status: Phase 14 and Phase 15 are complete for the current local
 This is the best public install shape once the first GitHub Release and npm package are published:
 
 ```powershell
-npm install -g @conu/cli
+npm install -g conu
 conu doctor
 conu init
 conu logs rotate --max-bytes 1048576 --keep 5
@@ -693,7 +693,7 @@ These are not hidden bugs; they are the honest state of the current app:
 | Area | Current issue | User impact | Workaround today |
 | --- | --- | --- | --- |
 | Installer | Release artifact scripts exist, tagged release workflow supports Windows Authenticode, macOS notarization, fingerprint-pinned Linux detached `.asc` signatures, native RPM package signatures, native APT/RPM metadata signatures, and a Linux GPG public-key release asset, but one-click OS installers are not published | Users still install from archives or source until package-manager distribution exists | Verify checksums, GitHub attestations, `conu-linux-gpg-key.asc`, the published full maintainer fingerprint, and platform signatures before install |
-| npm install | `@conu/cli` template exists but is not published until release assets are attached | `npm install -g @conu/cli` is the target path, not a live package guarantee yet | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
+| npm install | `conu` is the public npm package | `npm install -g conu` installs the launcher after release assets are attached | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
 | Agent API | Rust SDK, Python wrapper, TypeScript/JavaScript Node wrapper, and MCP adapter exist | Most local/server-side agents can integrate now; browser-native and hosted SDK permission work still need future design | Use MCP, Rust SDK, Python SDK, TypeScript Node SDK, or CLI/stdin |

@@ -855,23 +855,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-npm-publish-preflight.py --registry-check --require-token-env NODE_AUTH_TOKEN --token-auth-check
-      - name: Publish @conu/cli
+      - name: Publish conu
         working-directory: packaging/npm/conu-cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for tagged @conu/cli publication."
-            exit 1
-          fi
-          npm publish --access public --provenance
-      - name: Publish @conu/sdk
-        working-directory: sdk/typescript
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for tagged @conu/sdk publication."
+            echo "::error::NPM_TOKEN is required for tagged conu publication."
             exit 1
           fi
           npm publish --access public --provenance
@@ -3667,28 +3657,12 @@ def run_required_npm_publication_gate_tests(module) -> None:
         ),
     )
     if report.ready:
-        raise AssertionError("missing @conu/cli npm provenance should fail")
+        raise AssertionError("missing conu npm provenance should fail")
     if (
-        "release.yml:npm-publish publish @conu/cli with provenance "
+        "release.yml:npm-publish publish conu with provenance "
         "is missing provenance publish command"
     ) not in json.dumps(assert_safe_report(report)):
-        raise AssertionError("missing @conu/cli provenance issue was not reported")
-
-    report = with_fixture(
-        module,
-        None,
-        ready_release().replace(
-            "        working-directory: sdk/typescript\n",
-            "        working-directory: sdk\n",
-        ),
-    )
-    if report.ready:
-        raise AssertionError("wrong @conu/sdk package directory should fail")
-    if (
-        "release.yml:npm-publish publish @conu/sdk with provenance "
-        "is missing SDK package directory"
-    ) not in json.dumps(assert_safe_report(report)):
-        raise AssertionError("wrong @conu/sdk package directory issue was not reported")
+        raise AssertionError("missing conu provenance issue was not reported")
 
 
 def run_required_release_publication_gate_tests(module) -> None:

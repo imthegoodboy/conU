@@ -22,7 +22,7 @@ Why this shape:
 The target public command is:
 
 ```sh
-npm install -g @conu/cli
+npm install -g conu
 conu init
 conu doctor
 conu start
@@ -70,7 +70,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 3. Run the release validation checklist.
 4. Configure the repository signing secrets, `CONU_LINUX_GPG_KEY_FINGERPRINT`, and `NPM_TOKEN`; after exporting local values, or generating ignored `.env.release` with `python scripts/set-github-release-secrets.py --write-env-template .env.release`, filling the required `KEY=VALUE` pairs, validating the file with `python scripts/set-github-release-secrets.py --env-file .env.release --check-env-file`, and adding `--env-file .env.release --env-file-only`, run `python scripts/set-github-release-secrets.py --repo imthegoodboy/conU --dry-run --preflight-values --require-openssl`, rerun without `--dry-run` after the value preflights pass, then run `python scripts/check-tagged-release-readiness.py --repo imthegoodboy/conU --tag v0.1.0 --npm-registry-check --require-ci --require-default-branch-head`; the commands fail before tag creation if platform signing values, Linux signing values, required secret names, default Pages or custom S3 repository settings, GitHub Release clobber status, package version/tag consistency, target commit CI status, default branch head status, or target npm package availability are not ready.
 5. Tag the release, for example `v0.1.0`.
-6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, sign Windows binaries, sign and notarize macOS ZIP archives, verify that archives exclude conU state/log/payload paths and include the required install/service templates with strict checksum parsing and bounded streaming archive inspection, smoke-test the unpacked archive, run the package-manager manifest regression, run the package-manager submission bundle regression, run the Linux signing-secret preflight regression, run the platform signing-secret value preflight regression, run the RPM-package-signing regression, run the Linux detached-signing regression, run the Linux repository-signing regression, run the hosted Linux repository bundle regression, run the hosted Linux repository site regression, run the hosted Linux repository Pages regression, run the hosted Linux repository endpoint regression, run the release update-policy regression, run the release update-download/apply dry-run gate regression, run the GitHub Pages readiness regression, run the GitHub Release clobber preflight regression, run the GitHub Release asset publication regression, run the Linux public-key-export regression, run the npm launcher local-smoke preflight regression, smoke-test the npm launcher local install path with an existing regular-file binary directory, and smoke-test the npm launcher download/checksum install path with HTTPS-or-loopback URL enforcement, bounded timeout/size behavior, strict checksum archive-name matching, streamed npm archive hashing, archive-member count/duplicate/state-path preflight, bounded extracted-tree scanning, and exact extracted release-root binary selection, generate GitHub artifact attestations for the archives and `.sha256` files, generate Homebrew, Scoop, winget, Chocolatey, Debian, RPM, and APT/RPM repository metadata from those strict checksums, build RPM release assets with `.rpm.sha256` sidecars, verify the imported Linux signing key fingerprint, sign those RPM package payloads and refresh their sidecars before RPM repository metadata is generated, export `conu-linux-gpg-key.asc` plus its `.sha256` sidecar, add native APT/RPM repository metadata signatures and refreshed metadata ZIP sidecars, create detached `.asc` signatures for Linux archives and Linux package/metadata assets, prepare and detached-sign the package-manager submission bundle, generate and detached-sign the hosted Linux repository bundle, generate and detached-sign the hosted Linux repository site artifact, generate `conu-<version>-update-policy.json` and detached-sign it, prepare a verified static Pages directory from the signed site artifact, refuse to continue if the GitHub Release already exists for the tag, upload the archives, `.sha256` files, `.asc` signatures, Linux GPG public-key asset, package-manager submission bundle, hosted repository bundle, hosted repository site artifact, release update-policy metadata, and generated package-manager files to a new GitHub Release, import the published Linux public key, verify its fingerprint, run public `conu update check`, `conu update download`, and `conu update apply --dry-run` with GPG verification against the uploaded release, deploy the verified static repository site to GitHub Pages when `CONU_LINUX_REPOSITORY_BASE_URL` is not set, run verified npm package content dry-runs that reject unexpected files, local state/build/payload paths, oversized files, and bundled dependencies, run the GitHub Release asset publication preflight against the public tag so missing uploaded assets fail before npm registry access, run the npm publish preflight so public package metadata is present and existing `@conu/cli`/`@conu/sdk` versions fail before either package is published, and publish `@conu/cli` plus `@conu/sdk` with npm provenance after GitHub Release assets are available. Set repository variable `CONU_LINUX_REPOSITORY_BASE_URL` when the static repository will be served from a custom HTTPS URL; otherwise leave it unset so tagged releases default the site metadata to the repository GitHub Pages URL, verify the live Pages setting, and deploy that verified site through GitHub Pages Actions. After a custom endpoint is published, run the endpoint readiness check against that URL before directing package-manager users to it.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, verify that archives exclude conU state/log/payload paths, run package and release regressions, smoke-test local and download npm launcher installs, publish GitHub Release assets, and publish the public `conu` npm package with provenance after the matching GitHub Release assets are available. The full signed production release path additionally signs Windows, macOS, Linux, package-manager, and update-policy artifacts.
 For the supported custom S3-compatible repository publisher, set repository
 variable `CONU_LINUX_REPOSITORY_BASE_URL` to the public HTTPS URL, set
 `CONU_LINUX_REPOSITORY_S3_BUCKET`, optional
@@ -86,7 +86,7 @@ TLS certificates, CDN behavior, and non-S3 hosts remain operator-owned.
 7. Test from a clean shell:
 
 ```sh
-npm install -g @conu/cli
+npm install -g conu
 conu doctor
 conud --check
 conu-relay --check
@@ -255,7 +255,7 @@ unattended automatic update apply remains disabled by policy.
 Recommended for normal users after the first public release:
 
 ```sh
-npm install -g @conu/cli
+npm install -g conu
 ```
 
 Recommended for Rust developers:
@@ -469,7 +469,7 @@ Treat conU as the road, not the conversation.
 For the user install story, finish publishing in this order:
 
 1. Keep release assets and checksums generated by CI.
-2. Publish `@conu/cli` after the GitHub Release exists.
+2. Publish `conu` after the GitHub Release exists.
 3. Put public relay tests behind TLS termination and use `wss://` endpoints.
 4. Add distributed account control planes, remote tenant lifecycle/workflow automation beyond guarded local fleet account/node audit, tenant-node upsert/revoke, account/node suspension plus single-relay account suspension/scoped admin tenant commands, distributed monitoring/dashboards/alerting beyond single-relay threshold reports, distributed hosted mailbox retention policy beyond local/admin-gated audit and purge plus local scheduled purge workflows, and distributed multi-instance session migration before opening a managed relay to everyone.
 5. Submit the generated package-manager submission bundle contents to the appropriate external Homebrew/Scoop/winget/Chocolatey/Debian/RPM repositories, configure DNS/TLS/CDN for any custom repository host, use `scripts/publish-hosted-linux-repository-s3.py` for the supported S3-compatible static host path, run `python scripts/check-hosted-linux-repository-endpoint.py --base-url <https-url> --expected-version <version>` against the live endpoint, then exercise `conu update check --policy-url <https-url>`, `conu update download --policy-url <https-url> --output-dir <dir> --target <target>`, and a `conu update apply --policy-url <https-url> --artifact-file <archive> --install-dir <dir> --target <target> --dry-run` against a real signed release before enabling any unattended automatic update flow.

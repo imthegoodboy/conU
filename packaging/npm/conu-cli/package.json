@@ -1,5 +1,5 @@
 {
-  "name": "@conu/cli",
+  "name": "conu",
   "version": "0.1.0",
   "description": "conU native Rust CLI, daemon, relay, and MCP adapter launcher.",
   "keywords": [
