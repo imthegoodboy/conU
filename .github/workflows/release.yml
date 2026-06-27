@@ -563,20 +563,36 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -eu
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "::error::NPM_TOKEN is required for simple launch @imthegoodboy/conu publication."
             exit 1
           fi
-          npm publish --access public --provenance
+          PACKAGE="@imthegoodboy/conu"
+          VERSION="${CONU_SIMPLE_LAUNCH_VERSION}"
+          npm access public "$PACKAGE" >/dev/null 2>&1 || true
+          if npm view "${PACKAGE}@${VERSION}" version --json >/dev/null 2>&1; then
+            echo "${PACKAGE}@${VERSION} is already visible; skipping npm publish."
+            exit 0
+          fi
+          if ! npm publish --access public --provenance; then
+            npm access public "$PACKAGE" >/dev/null 2>&1 || true
+            if npm view "${PACKAGE}@${VERSION}" version --json >/dev/null 2>&1; then
+              echo "${PACKAGE}@${VERSION} became visible after publish retry handling."
+              exit 0
+            fi
+            exit 1
+          fi
+          npm access public "$PACKAGE" >/dev/null 2>&1 || true
       - name: Verify npm packages are visible
         run: |
           set -eu
           for package in @imthegoodboy/conu; do
-            for attempt in 1 2 3 4 5 6; do
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
               if npm view "${package}@${CONU_SIMPLE_LAUNCH_VERSION}" version --json; then
                 break
               fi
-              if [ "$attempt" = "6" ]; then
+              if [ "$attempt" = "18" ]; then
                 echo "::error::Published package ${package}@${CONU_SIMPLE_LAUNCH_VERSION} was not visible after retries."
                 exit 1
               fi
@@ -979,8 +995,24 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -eu
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "::error::NPM_TOKEN is required for tagged @imthegoodboy/conu publication."
             exit 1
           fi
-          npm publish --access public --provenance
+          PACKAGE="@imthegoodboy/conu"
+          VERSION="${GITHUB_REF_NAME#v}"
+          npm access public "$PACKAGE" >/dev/null 2>&1 || true
+          if npm view "${PACKAGE}@${VERSION}" version --json >/dev/null 2>&1; then
+            echo "${PACKAGE}@${VERSION} is already visible; skipping npm publish."
+            exit 0
+          fi
+          if ! npm publish --access public --provenance; then
+            npm access public "$PACKAGE" >/dev/null 2>&1 || true
+            if npm view "${PACKAGE}@${VERSION}" version --json >/dev/null 2>&1; then
+              echo "${PACKAGE}@${VERSION} became visible after publish retry handling."
+              exit 0
+            fi
+            exit 1
+          fi
+          npm access public "$PACKAGE" >/dev/null 2>&1 || true
