@@ -18,10 +18,10 @@ Do not ask conU to think, summarize, classify, or rewrite your message. Send byt
 
 ## Install
 
-Target public install after release publication:
+Public install:
 
 ```sh
-npm install -g @conu/cli
+npm install -g @imthegoodboy/conu
 ```
 
 Current source install:
