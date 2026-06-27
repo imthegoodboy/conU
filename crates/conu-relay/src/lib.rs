@@ -13282,7 +13282,6 @@ token_displayed = false\n"
         assert!(response.contains("conu-relay ok payload=not_observed"));
         assert!(!response.contains("local-dev-token"));
         assert!(!response.contains("ciphertext"));
-        relay.stop();
     }
 
     fn write_client_text(stream: &mut TcpStream, text: &str) {
