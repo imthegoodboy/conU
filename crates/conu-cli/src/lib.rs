@@ -257,6 +257,7 @@ quick commands
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
   conu messages wait <agent-id> --timeout-ms 30000 --json
   conu messages history <agent-id> --limit 20 --json
+  conu messages reply <agent-id> <envelope-id> --stdin
   conu messages receive <agent-id> <envelope-id> --output <file>
   conu relay sync --wait-ms 3000
   conu relay credential set --stdin
@@ -1327,6 +1328,7 @@ fn render_messages(
         Some("send") => render_message_send(&args[1..], home_override, stdin_payload),
         Some("inbox") => render_message_inbox(&args[1..], home_override),
         Some("history") => render_message_history(&args[1..], home_override),
+        Some("reply") => render_message_reply(&args[1..], home_override, stdin_payload),
         Some("wait") => render_message_wait(&args[1..], home_override),
         Some("receive") => render_message_receive(&args[1..], home_override),
         Some("receipts") => render_message_receipts(&args[1..], home_override),
@@ -1603,6 +1605,109 @@ fn render_message_history(args: &[String], home_override: Option<PathBuf>) -> Cl
     }
 
     CliOutput::success(render_history_text(&parsed.agent_id, &history, &parsed))
+}
+
+fn render_message_reply(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let parsed = match parse_message_reply_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    if !parsed.stdin {
+        return CliOutput::failure(2, render_messages_usage());
+    }
+    if stdin_payload.is_empty() {
+        return CliOutput::failure(2, "stdin payload is empty");
+    }
+
+    let target =
+        match reply_target_entry(home_override.clone(), &parsed.agent_id, &parsed.envelope_id) {
+            Ok(target) => target,
+            Err(error) => return CliOutput::failure(1, error),
+        };
+    let before = inbox_ids(home_override.clone(), &target.from_agent_id);
+    let payload_bytes = stdin_payload.len();
+    let message = match LocalMessage::new(
+        &parsed.agent_id,
+        &target.from_agent_id,
+        OpaquePayload::from_bytes(stdin_payload),
+    ) {
+        Ok(message) => message,
+        Err(error) => {
+            return CliOutput::failure(2, format!("conU messages reply failed\n\n{error}"));
+        }
+    };
+    let submission = match messages::submit_local_message(home_override.clone(), message) {
+        Ok(submission) => submission,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU messages reply failed\n\n{error}"));
+        }
+    };
+    let delivered = wait_for_message_delivery(
+        home_override,
+        &target.from_agent_id,
+        before,
+        submission.payload_bytes,
+    );
+    let status = if delivered.is_some() {
+        "delivered"
+    } else {
+        "queued"
+    };
+
+    if parsed.json {
+        let envelope_id = delivered
+            .as_ref()
+            .map(|entry| json_string(&entry.envelope_id))
+            .unwrap_or_else(|| "null".to_string());
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "{}",
+  "fromAgentId": "{}",
+  "toAgentId": "{}",
+  "inReplyToEnvelopeId": "{}",
+  "requestId": "{}",
+  "envelopeId": {},
+  "payloadBytes": {},
+  "contentsDisplayed": false
+}}"#,
+            status,
+            json_escape(&parsed.agent_id),
+            json_escape(&target.from_agent_id),
+            json_escape(&target.envelope_id),
+            json_escape(&submission.request_id),
+            envelope_id,
+            payload_bytes
+        ));
+    }
+
+    let envelope_line = delivered
+        .as_ref()
+        .map(|entry| format!("envelope: {}", entry.envelope_id))
+        .unwrap_or_else(|| "envelope: pending".to_string());
+
+    CliOutput::success(format!(
+        r"conU messages reply
+
+status: {status}
+from: {}
+to: {}
+inReplyTo: {}
+request: {}
+{envelope_line}
+bytes: {}
+
+privacy
+  payload view  contentsDisplayed=false",
+        parsed.agent_id,
+        target.from_agent_id,
+        target.envelope_id,
+        submission.request_id,
+        payload_bytes
+    ))
 }
 
 fn render_message_wait(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -2141,6 +2246,26 @@ privacy
     )
 }
 
+fn reply_target_entry(
+    home_override: Option<PathBuf>,
+    agent_id: &str,
+    envelope_id: &str,
+) -> Result<InboxEntry, String> {
+    let entries = messages::list_agent_inbox(home_override, agent_id).map_err(|_| {
+        "conU messages reply failed\n\nreply metadata could not be read for this local agent; contentsDisplayed=false".to_string()
+    })?;
+    let Some(entry) = entries
+        .into_iter()
+        .find(|entry| entry.envelope_id == envelope_id && entry.to_agent_id == agent_id)
+    else {
+        return Err(
+            "conU messages reply failed\n\nreply target was not found in this agent inbox; contentsDisplayed=false"
+                .to_string(),
+        );
+    };
+    Ok(entry)
+}
+
 fn render_receipts_json(receipts: &[DeliveryReceipt]) -> String {
     let receipts = receipts
         .iter()
@@ -2241,6 +2366,13 @@ struct MessageHistoryArgs {
     after_envelope_id: Option<String>,
     limit: usize,
     newest_first: bool,
+    json: bool,
+}
+
+struct MessageReplyArgs {
+    agent_id: String,
+    envelope_id: String,
+    stdin: bool,
     json: bool,
 }
 
@@ -2379,6 +2511,34 @@ fn parse_message_history_args(args: &[String]) -> Result<MessageHistoryArgs, Cli
         after_envelope_id,
         limit,
         newest_first,
+        json,
+    })
+}
+
+fn parse_message_reply_args(args: &[String]) -> Result<MessageReplyArgs, CliOutput> {
+    let mut json = false;
+    let mut stdin = false;
+    let mut positional = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--stdin" => stdin = true,
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    }
+
+    Ok(MessageReplyArgs {
+        agent_id: positional.remove(0),
+        envelope_id: positional.remove(0),
+        stdin,
         json,
     })
 }
@@ -2529,6 +2689,7 @@ fn render_messages_usage() -> String {
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
+  conu messages reply <agent-id> <envelope-id> --stdin [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receipts [--json]"
@@ -12184,6 +12345,7 @@ Usage:
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
+  conu messages reply <agent-id> <envelope-id> --stdin [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receipts [--json]
@@ -16395,6 +16557,133 @@ mod tests {
         assert!(output.stderr.contains("contentsDisplayed=false"));
         assert!(!output.stderr.contains(home.to_str().expect("path utf8")));
         assert!(!output.stderr.contains("private message"));
+    }
+
+    #[test]
+    fn messages_reply_queues_to_original_sender_without_original_payload() {
+        let home = temp_home("message-reply-queued");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"original private message",
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+
+        let output = run_with_home_and_stdin(
+            [
+                "messages",
+                "reply",
+                "agent.receiver",
+                &inbox[0].envelope_id,
+                "--stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            b"private reply contents".to_vec(),
+        );
+        let request = fs::read_dir(state::StatePaths::from_home(home).message_ipc_inbox_dir)
+            .expect("message inbox reads")
+            .next()
+            .expect("reply request exists")
+            .expect("reply request entry");
+        let request_text = fs::read_to_string(request.path()).expect("request reads");
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"queued\""));
+        assert!(
+            output
+                .stdout
+                .contains("\"fromAgentId\": \"agent.receiver\"")
+        );
+        assert!(output.stdout.contains("\"toAgentId\": \"agent.sender\""));
+        assert!(output.stdout.contains("\"inReplyToEnvelopeId\""));
+        assert!(output.stdout.contains("\"payloadBytes\": 22"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(request_text.contains("from_agent_id = \"agent.receiver\""));
+        assert!(request_text.contains("to_agent_id = \"agent.sender\""));
+        assert!(request_text.contains("payload_len = 22"));
+        assert!(request_text.contains("payload_privacy = \"encrypted_at_rest\""));
+        assert!(!output.stdout.contains("original private message"));
+        assert!(!output.stdout.contains("private reply contents"));
+        assert!(!request_text.contains("original private message"));
+        assert!(!request_text.contains("private reply contents"));
+    }
+
+    #[test]
+    fn messages_reply_round_trip_delivers_to_original_sender_after_processing() {
+        let home = temp_home("message-reply-round-trip");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"original private message",
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+
+        let output = run_with_home_and_stdin(
+            [
+                "messages",
+                "reply",
+                "agent.receiver",
+                &inbox[0].envelope_id,
+                "--stdin",
+            ],
+            Some(home.clone()),
+            b"useful reply bytes".to_vec(),
+        );
+        messages::process_message_requests(Some(home.clone())).expect("reply processes");
+        let sender_inbox =
+            messages::list_agent_inbox(Some(home), "agent.sender").expect("sender inbox reads");
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("conU messages reply"));
+        assert!(output.stdout.contains("from: agent.receiver"));
+        assert!(output.stdout.contains("to: agent.sender"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(!output.stdout.contains("original private message"));
+        assert!(!output.stdout.contains("useful reply bytes"));
+        assert_eq!(sender_inbox.len(), 1);
+        assert_eq!(sender_inbox[0].from_agent_id, "agent.receiver");
+        assert_eq!(sender_inbox[0].to_agent_id, "agent.sender");
+        assert_eq!(sender_inbox[0].payload_bytes, 18);
+    }
+
+    #[test]
+    fn messages_reply_missing_target_does_not_display_paths_or_payload() {
+        let home = temp_home("message-reply-missing-target");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"original private message",
+        );
+
+        let output = run_with_home_and_stdin(
+            [
+                "messages",
+                "reply",
+                "agent.receiver",
+                "env.missing",
+                "--stdin",
+            ],
+            Some(home.clone()),
+            b"private reply contents".to_vec(),
+        );
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(!output.stderr.contains(home.to_str().expect("path utf8")));
+        assert!(!output.stderr.contains("original private message"));
+        assert!(!output.stderr.contains("private reply contents"));
     }
 
     #[test]
