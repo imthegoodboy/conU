@@ -1212,6 +1212,7 @@ impl RelayWebSocketClient {
                         error.kind(),
                         io::ErrorKind::UnexpectedEof
                             | io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::Interrupted
                             | io::ErrorKind::TimedOut
                             | io::ErrorKind::WouldBlock
                     ) =>
@@ -2278,6 +2279,7 @@ fn read_server_text_frame(stream: &mut dyn RelayStream) -> Result<Option<String>
                 error.kind(),
                 io::ErrorKind::UnexpectedEof
                     | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::Interrupted
                     | io::ErrorKind::TimedOut
                     | io::ErrorKind::WouldBlock
             ) =>
