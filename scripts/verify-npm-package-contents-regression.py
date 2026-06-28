@@ -52,7 +52,7 @@ def rule_by_name(module, name: str):
 
 
 def run_public_metadata_tests(module) -> None:
-    cli_rule = rule_by_name(module, "conu")
+    cli_rule = rule_by_name(module, "@imthegoodboy/conu")
     cli_manifest = manifest_for(module, cli_rule)
     module.validate_manifest_public_surface(cli_rule, cli_manifest)
 
@@ -115,7 +115,7 @@ def run_json_duplicate_key_tests(module) -> None:
         temp = Path(temp_text)
         duplicate = temp / "package.json"
         duplicate.write_text(
-            '{"name":"conu","version":"0.1.0","version":"'
+            '{"name":"@imthegoodboy/conu","version":"0.1.0","version":"'
             + SENSITIVE_SENTINEL
             + '"}\n',
             encoding="utf-8",
@@ -134,7 +134,7 @@ def run_json_duplicate_key_tests(module) -> None:
 
         nested = temp / "nested-package.json"
         nested.write_text(
-            '{"name":"conu","scripts":{"postinstall":"node scripts/install.js",'
+            '{"name":"@imthegoodboy/conu","scripts":{"postinstall":"node scripts/install.js",'
             + '"postinstall":"'
             + SENSITIVE_SENTINEL
             + '"}}\n',
@@ -189,7 +189,7 @@ def run_pack_path_display_guard_tests(module) -> None:
         "pathDisplayed=false",
     )
 
-    cli_rule = rule_by_name(module, "conu")
+    cli_rule = rule_by_name(module, "@imthegoodboy/conu")
     cli_manifest = manifest_for(module, cli_rule)
     version = cli_manifest["version"]
     base_files = [

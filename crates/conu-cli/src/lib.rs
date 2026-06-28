@@ -8133,9 +8133,9 @@ fn validate_npm_metadata(policy: &Value, version: &str) -> Result<(), String> {
             "release update policy npm.packages entries must be objects".to_string()
         })?;
         let name = string_member(object, "name", "npm.packages")?;
-        if name != "conu" {
+        if name != "@imthegoodboy/conu" {
             return Err(format!(
-                "release update policy npm package must be conu: {name}"
+                "release update policy npm package must be @imthegoodboy/conu: {name}"
             ));
         }
         let package_version = string_member(object, "version", "npm.packages")?;
@@ -17175,7 +17175,7 @@ mod tests {
   "npm": {{
     "packages": [
       {{
-        "name": "conu",
+        "name": "@imthegoodboy/conu",
         "version": "0.1.0"
       }}
     ],

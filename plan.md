@@ -6624,8 +6624,8 @@ Validation:
 
 Known gaps:
 
-- `conu` is the public npm launcher package.
-- GitHub Release assets must be attached before users can run `npm install -g conu` successfully.
+- `@imthegoodboy/conu` is the public npm launcher package; npm registry similarity policy blocks the bare `conu` package name even though the installed command is `conu`.
+- GitHub Release assets must be attached before users can run `npm install -g @imthegoodboy/conu` successfully.
 - Release artifacts are checksummed but not signed/notarized.
 - The relay host path remains controlled self-hosting over reachable `ws://`, not a managed public relay network.
 - Hosted relay auth/rate limits, hosted session policy/resume, stream-chunk routing, offline mailbox, direct QUIC, capability policy, signed remote agent-card exchange, and OS-backed key storage remain future work.
@@ -6633,7 +6633,7 @@ Known gaps:
 
 Next recommendation:
 
-- Publish the first GitHub Release with platform artifacts/checksums, then publish `conu`; after that, prioritize hosted relay auth/session policy before advertising a public managed relay.
+- Publish the first GitHub Release with platform artifacts/checksums, then publish `@imthegoodboy/conu`; after that, prioritize hosted relay auth/session policy before advertising a public managed relay.
 
 ## Post Phase 15 Relay Abuse Controls
 
