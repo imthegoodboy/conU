@@ -198,7 +198,7 @@ checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "conu-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "conu-core",
  "conu-protocol",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "conu-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chacha20poly1305",
  "conu-protocol",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "conu-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "conu-sdk",
  "serde_json",
@@ -241,11 +241,11 @@ dependencies = [
 
 [[package]]
 name = "conu-protocol"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "conu-relay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "conu-core",
  "conu-protocol",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "conu-sdk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "conu-core",
  "conu-protocol",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "conud"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "conu-core",
 ]
