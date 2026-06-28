@@ -1325,6 +1325,7 @@ fn render_messages(
         Some("send") => render_message_send(&args[1..], home_override, stdin_payload),
         Some("inbox") => render_message_inbox(&args[1..], home_override),
         Some("wait") => render_message_wait(&args[1..], home_override),
+        Some("receive") => render_message_receive(&args[1..], home_override),
         Some("receipts") => render_message_receipts(&args[1..], home_override),
         _ => CliOutput::failure(2, render_messages_usage()),
     }
@@ -1676,6 +1677,61 @@ fn render_message_receipts(args: &[String], home_override: Option<PathBuf>) -> C
     CliOutput::success(render_receipts_text(&receipts))
 }
 
+fn render_message_receive(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_message_receive_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let payload = match messages::read_message_payload(
+        home_override,
+        &parsed.agent_id,
+        &parsed.envelope_id,
+    ) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return CliOutput::failure(
+                1,
+                "conU messages receive failed\n\npayload could not be read for the addressed local agent; pathDisplayed=false contentsDisplayed=false".to_string(),
+            );
+        }
+    };
+    if let Err(error) = write_message_receive_output(&parsed.output_path, payload.as_bytes()) {
+        return CliOutput::failure(1, format!("conU messages receive failed\n\n{error}"));
+    }
+
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "written",
+  "agentId": "{}",
+  "envelopeId": "{}",
+  "payloadBytes": {},
+  "pathDisplayed": false,
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&parsed.agent_id),
+            json_escape(&parsed.envelope_id),
+            payload.len()
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU messages receive
+
+status: written
+agent: {}
+envelope: {}
+bytes: {}
+output: local; pathDisplayed=false
+
+privacy
+  payload view  contentsDisplayed=false",
+        parsed.agent_id,
+        parsed.envelope_id,
+        payload.len()
+    ))
+}
+
 enum WaitEntrySearch {
     Found(InboxEntry),
     MissingAfter,
@@ -2009,6 +2065,13 @@ struct MessageWaitArgs {
     json: bool,
 }
 
+struct MessageReceiveArgs {
+    agent_id: String,
+    envelope_id: String,
+    output_path: PathBuf,
+    json: bool,
+}
+
 fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput> {
     let mut json = false;
     let mut stdin = false;
@@ -2144,12 +2207,83 @@ fn parse_message_wait_args(args: &[String]) -> Result<MessageWaitArgs, CliOutput
     })
 }
 
+fn parse_message_receive_args(args: &[String]) -> Result<MessageReceiveArgs, CliOutput> {
+    let mut json = false;
+    let mut output_path = None;
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--output" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                output_path = Some(PathBuf::from(value));
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    }
+    let Some(output_path) = output_path else {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    };
+
+    Ok(MessageReceiveArgs {
+        agent_id: positional.remove(0),
+        envelope_id: positional.remove(0),
+        output_path,
+        json,
+    })
+}
+
+fn write_message_receive_output(path: &Path, payload: &[u8]) -> Result<(), String> {
+    if path.as_os_str().is_empty() {
+        return Err(
+            "output path is empty; pathDisplayed=false contentsDisplayed=false".to_string(),
+        );
+    }
+    if path.exists() {
+        return Err(
+            "output file already exists; pathDisplayed=false contentsDisplayed=false".to_string(),
+        );
+    }
+    if path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.exists())
+    {
+        return Err(
+            "output directory does not exist; pathDisplayed=false contentsDisplayed=false"
+                .to_string(),
+        );
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| "could not create output file; pathDisplayed=false contentsDisplayed=false")?;
+    file.write_all(payload)
+        .map_err(|_| "could not write output file; pathDisplayed=false contentsDisplayed=false")?;
+    Ok(())
+}
+
 fn render_messages_usage() -> String {
     r"usage:
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+  conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receipts [--json]"
         .to_string()
 }
@@ -15843,6 +15977,173 @@ mod tests {
         assert!(output.stdout.contains("\"fromAgentId\": \"agent.sender\""));
         assert!(output.stdout.contains("\"payloadBytes\": 3"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+    }
+
+    #[test]
+    fn messages_receive_writes_payload_to_new_output_without_displaying_contents() {
+        let home = temp_home("message-receive-output");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let output_path = home.join("received.bin");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "receive",
+                "agent.receiver",
+                &inbox[0].envelope_id,
+                "--output",
+                output_path.to_str().expect("path utf8"),
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(
+            fs::read(&output_path).expect("received output reads"),
+            b"private message contents"
+        );
+        assert!(output.stdout.contains("\"status\": \"written\""));
+        assert!(output.stdout.contains("\"payloadBytes\": 24"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(
+            !output
+                .stdout
+                .contains(output_path.to_str().expect("path utf8"))
+        );
+        assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_receive_text_output_keeps_path_and_contents_hidden() {
+        let home = temp_home("message-receive-text-output");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let output_path = home.join("received.bin");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "receive",
+                "agent.receiver",
+                &inbox[0].envelope_id,
+                "--output",
+                output_path.to_str().expect("path utf8"),
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(
+            fs::read(&output_path).expect("received output reads"),
+            b"private message contents"
+        );
+        assert!(output.stdout.contains("status: written"));
+        assert!(output.stdout.contains("pathDisplayed=false"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(
+            !output
+                .stdout
+                .contains(output_path.to_str().expect("path utf8"))
+        );
+        assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_receive_rejects_existing_output_without_payload_or_path() {
+        let home = temp_home("message-receive-existing-output");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let output_path = home.join("received.bin");
+        fs::write(&output_path, b"existing").expect("existing output writes");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "receive",
+                "agent.receiver",
+                &inbox[0].envelope_id,
+                "--output",
+                output_path.to_str().expect("path utf8"),
+            ],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 1);
+        assert_eq!(
+            fs::read(&output_path).expect("existing output reads"),
+            b"existing"
+        );
+        assert!(output.stderr.contains("pathDisplayed=false"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(
+            !output
+                .stderr
+                .contains(output_path.to_str().expect("path utf8"))
+        );
+        assert!(!output.stderr.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_receive_missing_envelope_does_not_display_inbox_path() {
+        let home = temp_home("message-receive-missing-envelope");
+        register_test_agent(&home, "agent.receiver");
+        let output_path = home.join("received.bin");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "receive",
+                "agent.receiver",
+                "env.missing",
+                "--output",
+                output_path.to_str().expect("path utf8"),
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 1);
+        assert!(!output_path.exists());
+        assert!(output.stderr.contains("pathDisplayed=false"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(!output.stderr.contains(home.to_str().expect("path utf8")));
+        assert!(
+            !output
+                .stderr
+                .contains(output_path.to_str().expect("path utf8"))
+        );
     }
 
     #[test]

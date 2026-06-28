@@ -170,6 +170,7 @@ Do not add proc-macro/build-script-heavy dependencies unless validation can stil
 - The Rust SDK should wrap `conu-core` surfaces instead of duplicating file-format logic.
 - SDK send/list/status/receipt/stream methods must return metadata only unless the method is an explicit receive call.
 - `receive_message_bytes(agent_id, envelope_id)` must verify the envelope is present in that addressed local agent inbox before returning bytes.
+- `conu messages receive <agent-id> <envelope-id> --output <file>` may write addressed local payload bytes only to a newly created operator-chosen file; stdout/stderr must remain metadata-only, must set `contentsDisplayed=false`, and must not print the path unless a separate `pathDisplayed=false` guard is present.
 - `conu-mcp` uses MCP stdio: newline-delimited JSON-RPC on stdin/stdout.
 - `conu-mcp` stdout must contain only valid MCP messages. Use stderr only for infrastructure errors, never payloads.
 - MCP tools should return text content containing JSON-shaped results for compatibility, but send/list/status/stream results must not echo payload text.
