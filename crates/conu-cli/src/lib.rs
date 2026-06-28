@@ -11138,6 +11138,8 @@ fn render_doctor_json(
   }},
   "releaseGates": {{
     "localInstallReady": {},
+    "controlledRelayReady": {},
+    "managedPublicNetworkReady": false,
     "publicInternetReady": false,
     "knownLimitsDocumented": true
   }},
@@ -11164,7 +11166,8 @@ fn render_doctor_json(
         log_scan.payload_safe,
         log_scan.scanned_files,
         log_scan.issues,
-        local_install_ready(snapshot, security, binaries, log_scan)
+        local_install_ready(snapshot, security, binaries, log_scan),
+        controlled_relay_ready(snapshot, security, binaries, log_scan)
     )
 }
 
@@ -11205,7 +11208,8 @@ logs
 
 release gates
   local install      {}
-  public internet    not ready; hosted relay auth/TLS and streams remain future work
+  controlled relay   {}
+  managed network    not ready; no managed multi-region relay service
   known limits       documented
 
 privacy
@@ -11228,7 +11232,10 @@ privacy
         yes_no(log_scan.payload_safe),
         log_scan.scanned_files,
         log_scan.issues,
-        yes_no(local_install_ready(snapshot, security, binaries, log_scan))
+        yes_no(local_install_ready(snapshot, security, binaries, log_scan)),
+        yes_no(controlled_relay_ready(
+            snapshot, security, binaries, log_scan
+        ))
     )
 }
 
@@ -11260,6 +11267,20 @@ fn local_install_ready(
     snapshot.is_initialized()
         && security_controls_ready(security)
         && all_required_binaries_present(binaries)
+        && log_scan.payload_safe
+}
+
+fn controlled_relay_ready(
+    snapshot: &StateSnapshot,
+    security: &SecurityAudit,
+    binaries: &[DoctorBinary],
+    log_scan: &DoctorLogScan,
+) -> bool {
+    snapshot.is_initialized()
+        && security_controls_ready(security)
+        && doctor_binary_present(binaries, "conu")
+        && doctor_binary_present(binaries, "conud")
+        && doctor_binary_present(binaries, "conu-relay")
         && log_scan.payload_safe
 }
 
@@ -15345,9 +15366,26 @@ mod tests {
         assert_eq!(after_init.code, 0, "{}", after_init.stderr);
         assert!(after_init.stdout.contains("conU doctor"));
         assert!(
+            before_init
+                .stdout
+                .contains("\"controlledRelayReady\": false")
+        );
+        assert!(
+            before_init
+                .stdout
+                .contains("\"managedPublicNetworkReady\": false")
+        );
+        assert!(after_init.stdout.contains("controlled relay"));
+        assert!(after_init.stdout.contains("managed network    not ready"));
+        assert!(
             after_init
                 .stdout
                 .contains("payload view       contents are not displayed")
+        );
+        assert!(
+            !after_init
+                .stdout
+                .contains("hosted relay auth/TLS and streams remain future work")
         );
         assert!(!after_init.stdout.contains("private message contents"));
     }
