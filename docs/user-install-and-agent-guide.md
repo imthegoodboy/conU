@@ -275,10 +275,12 @@ PowerShell:
 "opaque bytes from agent.codex" | conu messages send agent.codex agent.helper --stdin
 conu messages wait agent.helper --process-ipc --timeout-ms 30000 --json
 conu messages inbox agent.helper --json
+conu messages history agent.helper --limit 20 --json
+conu messages receive agent.helper <envelope-id> --output received.bin
 conu messages receipts --json
 ```
 
-The wait and inbox commands show metadata only: envelope id, sender, receiver, receipt id, byte count, and delivery time. They do not print the payload.
+The wait, inbox, and history commands show metadata only: envelope id, sender, receiver, receipt id, byte count, and delivery time. They do not print the payload. Use `messages receive` only when you intentionally want addressed local payload bytes written to a new file.
 
 ## Connect Two Local Agents
 
@@ -656,7 +658,9 @@ Rules:
   conu identity export --json
   conu agents export <agent-id> --json
   conu messages inbox <agent-id> --json
+  conu messages history <agent-id> --limit 20 --json
   conu messages wait <agent-id> --timeout-ms 30000 --json
+  conu messages receive <agent-id> <envelope-id> --output <file>
   conu messages receipts --json
   conu security audit --json
 - For remote delivery, import a peer card once:
@@ -684,6 +688,7 @@ conud --process-ipc
 "hello as opaque bytes" | conu messages send agent.mybot agent.other --stdin
 conu messages wait agent.other --process-ipc --timeout-ms 30000 --json
 conu messages inbox agent.other --json
+conu messages history agent.other --limit 20 --json
 ```
 
 ## Current App Issues To Know
@@ -723,6 +728,7 @@ conu agents register agent.b "Agent B" --kind test-agent
 conu routes sync
 "test opaque payload" | conu messages send agent.a agent.b --stdin
 conu messages inbox agent.b --json
+conu messages history agent.b --limit 20 --json
 conu watch
 conu stop
 ```
@@ -738,6 +744,7 @@ conu routes sync
 "test opaque payload" | conu messages send agent.a agent.b --stdin
 conud --process-ipc
 conu messages inbox agent.b --json
+conu messages history agent.b --limit 20 --json
 ```
 
 ## Best Next Product Work

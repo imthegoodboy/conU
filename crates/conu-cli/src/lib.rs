@@ -256,6 +256,8 @@ quick commands
   conu messages send <from-agent> <to-agent> --stdin
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
   conu messages wait <agent-id> --timeout-ms 30000 --json
+  conu messages history <agent-id> --limit 20 --json
+  conu messages receive <agent-id> <envelope-id> --output <file>
   conu relay sync --wait-ms 3000
   conu relay credential set --stdin
   conu identity export
@@ -1324,6 +1326,7 @@ fn render_messages(
     match args.first().map(String::as_str) {
         Some("send") => render_message_send(&args[1..], home_override, stdin_payload),
         Some("inbox") => render_message_inbox(&args[1..], home_override),
+        Some("history") => render_message_history(&args[1..], home_override),
         Some("wait") => render_message_wait(&args[1..], home_override),
         Some("receive") => render_message_receive(&args[1..], home_override),
         Some("receipts") => render_message_receipts(&args[1..], home_override),
@@ -1573,6 +1576,33 @@ fn render_message_inbox(args: &[String], home_override: Option<PathBuf>) -> CliO
     }
 
     CliOutput::success(render_inbox_text(&parsed.agent_id, &entries))
+}
+
+fn render_message_history(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_message_history_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let entries = match messages::list_agent_inbox(home_override, &parsed.agent_id) {
+        Ok(entries) => entries,
+        Err(_) => {
+            return CliOutput::failure(
+                1,
+                "conU messages history failed\n\nmessage metadata could not be read for this local agent; contentsDisplayed=false".to_string(),
+            );
+        }
+    };
+    let history =
+        match select_history_entries(&entries, parsed.after_envelope_id.as_deref(), parsed.limit) {
+            Ok(history) => history,
+            Err(error) => return CliOutput::failure(1, error),
+        };
+
+    if parsed.json {
+        return CliOutput::success(render_history_json(&parsed.agent_id, &history, &parsed));
+    }
+
+    CliOutput::success(render_history_text(&parsed.agent_id, &history, &parsed))
 }
 
 fn render_message_wait(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -1961,6 +1991,156 @@ privacy
     )
 }
 
+struct MessageHistory {
+    entries: Vec<InboxEntry>,
+    total_messages: usize,
+    truncated_before: usize,
+    truncated_after: usize,
+}
+
+fn select_history_entries(
+    entries: &[InboxEntry],
+    after_envelope_id: Option<&str>,
+    limit: usize,
+) -> Result<MessageHistory, String> {
+    let total_messages = entries.len();
+    let (candidates, truncated_before) = if let Some(after_envelope_id) = after_envelope_id {
+        let Some(position) = entries
+            .iter()
+            .position(|entry| entry.envelope_id == after_envelope_id)
+        else {
+            return Err(
+                "conU messages history failed\n\nafter envelope was not found in this agent inbox; contentsDisplayed=false"
+                    .to_string(),
+            );
+        };
+        (&entries[position + 1..], position + 1)
+    } else if entries.len() > limit {
+        (&entries[entries.len() - limit..], entries.len() - limit)
+    } else {
+        (entries, 0)
+    };
+
+    let selected_count = candidates.len().min(limit);
+    let selected = candidates[..selected_count].to_vec();
+    Ok(MessageHistory {
+        entries: selected,
+        total_messages,
+        truncated_before,
+        truncated_after: candidates.len().saturating_sub(selected_count),
+    })
+}
+
+fn render_history_json(
+    agent_id: &str,
+    history: &MessageHistory,
+    parsed: &MessageHistoryArgs,
+) -> String {
+    let mut entries = history.entries.clone();
+    if parsed.newest_first {
+        entries.reverse();
+    }
+    let messages = entries
+        .iter()
+        .map(render_wait_message_json)
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let messages = if messages.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{messages}\n  ]")
+    };
+
+    format!(
+        r#"{{
+  "agentId": "{}",
+  "totalMessages": {},
+  "returnedMessages": {},
+  "limit": {},
+  "afterEnvelopeId": {},
+  "newestFirst": {},
+  "truncatedBefore": {},
+  "truncatedAfter": {},
+  "messages": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(agent_id),
+        history.total_messages,
+        history.entries.len(),
+        parsed.limit,
+        optional_json_string(parsed.after_envelope_id.as_deref()),
+        parsed.newest_first,
+        history.truncated_before,
+        history.truncated_after,
+        messages
+    )
+}
+
+fn render_history_text(
+    agent_id: &str,
+    history: &MessageHistory,
+    parsed: &MessageHistoryArgs,
+) -> String {
+    let mut entries = history.entries.clone();
+    if parsed.newest_first {
+        entries.reverse();
+    }
+    let order = if parsed.newest_first {
+        "newest-first"
+    } else {
+        "oldest-first"
+    };
+    let after = parsed.after_envelope_id.as_deref().unwrap_or("none");
+    let messages = if entries.is_empty() {
+        "  none matched".to_string()
+    } else {
+        entries
+            .iter()
+            .map(|entry| {
+                let stream = entry
+                    .stream_id
+                    .as_deref()
+                    .map(|stream_id| format!("  stream {stream_id}"))
+                    .unwrap_or_default();
+                format!(
+                    "  {}  {}{}  from {}  bytes {}  receipt {}  deliveredAtUnix {}",
+                    entry.envelope_id,
+                    entry.kind,
+                    stream,
+                    entry.from_agent_id,
+                    entry.payload_bytes,
+                    entry.receipt_id,
+                    entry.delivered_at_unix
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU messages history
+
+agent: {agent_id}
+totalMessages: {}
+returnedMessages: {}
+limit: {}
+after: {after}
+order: {order}
+truncatedBefore: {}
+truncatedAfter: {}
+messages
+{messages}
+
+privacy
+  payload view  contentsDisplayed=false",
+        history.total_messages,
+        history.entries.len(),
+        parsed.limit,
+        history.truncated_before,
+        history.truncated_after
+    )
+}
+
 fn render_receipts_json(receipts: &[DeliveryReceipt]) -> String {
     let receipts = receipts
         .iter()
@@ -2056,6 +2236,14 @@ struct MessageInboxArgs {
     json: bool,
 }
 
+struct MessageHistoryArgs {
+    agent_id: String,
+    after_envelope_id: Option<String>,
+    limit: usize,
+    newest_first: bool,
+    json: bool,
+}
+
 struct MessageWaitArgs {
     agent_id: String,
     after_envelope_id: Option<String>,
@@ -2135,6 +2323,64 @@ fn parse_message_inbox_args(args: &[String]) -> Result<MessageInboxArgs, CliOutp
     };
 
     Ok(MessageInboxArgs { agent_id, json })
+}
+
+fn parse_message_history_args(args: &[String]) -> Result<MessageHistoryArgs, CliOutput> {
+    const DEFAULT_LIMIT: usize = 50;
+    const MAX_LIMIT: usize = 1_000;
+
+    let mut json = false;
+    let mut newest_first = false;
+    let mut after_envelope_id = None;
+    let mut limit = DEFAULT_LIMIT;
+    let mut agent_id = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--newest-first" => newest_first = true,
+            "--after" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                after_envelope_id = Some(value.clone());
+                index += 1;
+            }
+            "--limit" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                limit = match value.parse::<usize>() {
+                    Ok(value) if (1..=MAX_LIMIT).contains(&value) => value,
+                    _ => return Err(CliOutput::failure(2, render_messages_usage())),
+                };
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            value => {
+                if agent_id.is_some() {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                }
+                agent_id = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    let Some(agent_id) = agent_id else {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    };
+
+    Ok(MessageHistoryArgs {
+        agent_id,
+        after_envelope_id,
+        limit,
+        newest_first,
+        json,
+    })
 }
 
 fn parse_message_wait_args(args: &[String]) -> Result<MessageWaitArgs, CliOutput> {
@@ -2282,6 +2528,7 @@ fn render_messages_usage() -> String {
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
+  conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receipts [--json]"
@@ -11936,7 +12183,9 @@ Usage:
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
+  conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+  conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receipts [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
   conu relay credential status [--json]
@@ -15980,6 +16229,175 @@ mod tests {
     }
 
     #[test]
+    fn messages_history_limits_recent_metadata_without_payload() {
+        let home = temp_home("message-history-limit");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message one",
+        );
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message two",
+        );
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message three",
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "history",
+                "agent.receiver",
+                "--limit",
+                "2",
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"totalMessages\": 3"));
+        assert!(output.stdout.contains("\"returnedMessages\": 2"));
+        assert!(output.stdout.contains("\"truncatedBefore\": 1"));
+        assert!(output.stdout.contains("\"truncatedAfter\": 0"));
+        assert_eq!(output.stdout.matches("\"envelopeId\"").count(), 2);
+        assert!(!output.stdout.contains(&inbox[0].envelope_id));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private message"));
+    }
+
+    #[test]
+    fn messages_history_after_returns_resume_window_without_payload() {
+        let home = temp_home("message-history-after");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message one",
+        );
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message two",
+        );
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message three",
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "history",
+                "agent.receiver",
+                "--after",
+                &inbox[0].envelope_id,
+                "--limit",
+                "1",
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"returnedMessages\": 1"));
+        assert!(output.stdout.contains("\"truncatedBefore\": 1"));
+        assert!(output.stdout.contains("\"truncatedAfter\": 1"));
+        assert!(output.stdout.contains(&format!(
+            "\"afterEnvelopeId\": \"{}\"",
+            inbox[0].envelope_id
+        )));
+        assert!(output.stdout.contains(&inbox[1].envelope_id));
+        assert!(!output.stdout.contains(&inbox[2].envelope_id));
+        assert!(!output.stdout.contains("private message"));
+    }
+
+    #[test]
+    fn messages_history_text_can_show_newest_first_without_contents() {
+        let home = temp_home("message-history-text");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message one",
+        );
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message two",
+        );
+
+        let output = run_with_home(
+            [
+                "messages",
+                "history",
+                "agent.receiver",
+                "--limit",
+                "2",
+                "--newest-first",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("conU messages history"));
+        assert!(output.stdout.contains("order: newest-first"));
+        assert!(output.stdout.contains("returnedMessages: 2"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(!output.stdout.contains("private message"));
+    }
+
+    #[test]
+    fn messages_history_missing_after_does_not_display_paths_or_payload() {
+        let home = temp_home("message-history-missing-after");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message one",
+        );
+
+        let output = run_with_home(
+            [
+                "messages",
+                "history",
+                "agent.receiver",
+                "--after",
+                "env.missing",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(!output.stderr.contains(home.to_str().expect("path utf8")));
+        assert!(!output.stderr.contains("private message"));
+    }
+
+    #[test]
     fn messages_receive_writes_payload_to_new_output_without_displaying_contents() {
         let home = temp_home("message-receive-output");
         register_test_agent(&home, "agent.sender");
@@ -16808,6 +17226,17 @@ mod tests {
         assert!(error.contains("pathDisplayed=false"), "{error}");
         assert!(error.contains("contentsDisplayed=false"), "{error}");
         assert!(!error.contains(forbidden), "{error}");
+    }
+
+    fn deliver_test_message(home: &Path, from_agent: &str, to_agent: &str, payload: &[u8]) {
+        let message = LocalMessage::new(
+            from_agent,
+            to_agent,
+            OpaquePayload::from_bytes(payload.to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.to_path_buf()), message).expect("message submits");
+        messages::process_message_requests(Some(home.to_path_buf())).expect("message processes");
     }
 
     fn register_test_agent(home: &std::path::Path, agent_id: &str) {
