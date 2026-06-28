@@ -855,13 +855,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-npm-publish-preflight.py --require-token-env NODE_AUTH_TOKEN --token-auth-check
-      - name: Publish @imthegoodboy/conu
+      - name: Publish conu
         working-directory: packaging/npm/conu-cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for tagged @imthegoodboy/conu publication."
+            echo "::error::NPM_TOKEN is required for tagged conu publication."
             exit 1
           fi
           npm publish --access public --provenance
@@ -3659,10 +3659,10 @@ def run_required_npm_publication_gate_tests(module) -> None:
     if report.ready:
         raise AssertionError("missing conu npm provenance should fail")
     if (
-        "release.yml:npm-publish publish @imthegoodboy/conu with provenance "
+        "release.yml:npm-publish publish conu with provenance "
         "is missing provenance publish command"
     ) not in json.dumps(assert_safe_report(report)):
-        raise AssertionError("missing @imthegoodboy/conu provenance issue was not reported")
+        raise AssertionError("missing conu provenance issue was not reported")
 
 
 def run_required_release_publication_gate_tests(module) -> None:

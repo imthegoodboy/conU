@@ -102,13 +102,13 @@ def run_registry_tests(module) -> None:
 
 def run_version_consistency_tests(module) -> None:
     packages = (
-        module.PackageInfo("@imthegoodboy/conu", "0.1.0", Path("packaging/npm/conu-cli")),
+        module.PackageInfo("conu", "0.1.0", Path("packaging/npm/conu-cli")),
         module.PackageInfo("conu-sdk", "0.1.0", Path("sdk/typescript")),
     )
     module.validate_package_version_consistency(packages)
 
     mismatched = (
-        module.PackageInfo("@imthegoodboy/conu", "0.1.0", Path("packaging/npm/conu-cli")),
+        module.PackageInfo("conu", "0.1.0", Path("packaging/npm/conu-cli")),
         module.PackageInfo("conu-sdk", "0.2.0", Path("sdk/typescript")),
     )
     assert_raises(
@@ -123,7 +123,7 @@ def run_manifest_version_tests(module) -> None:
         package_dir = repo / "packaging" / "npm" / "conu-cli"
         package_dir.mkdir(parents=True)
         manifest = {
-            "name": "@imthegoodboy/conu",
+            "name": "conu",
             "version": "0.1.0\n",
         }
         (package_dir / "package.json").write_text(
@@ -134,14 +134,14 @@ def run_manifest_version_tests(module) -> None:
         assert_raises(
             lambda: module.validate_manifest(
                 repo,
-                module.PackageRule("@imthegoodboy/conu", Path("packaging/npm/conu-cli")),
+                module.PackageRule("conu", Path("packaging/npm/conu-cli")),
             ),
             "version is not semver-like",
         )
 
         (package_dir / "package.json").write_text(
             (
-                '{"name":"@imthegoodboy/conu","version":"0.1.0",'
+                '{"name":"conu","version":"0.1.0",'
                 f'"version":"{SENSITIVE_SENTINEL}"}}\n'
             ),
             encoding="utf-8",
@@ -150,7 +150,7 @@ def run_manifest_version_tests(module) -> None:
         assert_raises_without_leak(
             lambda: module.validate_manifest(
                 repo,
-                module.PackageRule("@imthegoodboy/conu", Path("packaging/npm/conu-cli")),
+                module.PackageRule("conu", Path("packaging/npm/conu-cli")),
             ),
             "duplicate JSON key",
         )

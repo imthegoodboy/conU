@@ -24,7 +24,7 @@ conU owns the connection.
 After public release assets are published:
 
 ```sh
-npm install -g @imthegoodboy/conu
+npm install -g conu
 conu doctor
 ```
 

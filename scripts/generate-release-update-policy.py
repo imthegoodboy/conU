@@ -178,7 +178,7 @@ def read_package_version(relative_path: str) -> str:
 
 def verify_package_versions(version: str) -> None:
     packages = {
-        "packaging/npm/conu-cli/package.json": "@imthegoodboy/conu",
+        "packaging/npm/conu-cli/package.json": "conu",
     }
     for relative, label in packages.items():
         actual = read_package_version(relative)
@@ -338,7 +338,7 @@ def build_update_policy(
         "npm": {
             "registry": NPM_REGISTRY,
             "packages": [
-                {"name": "@imthegoodboy/conu", "version": version},
+                {"name": "conu", "version": version},
             ],
         },
         "payloadDisplayed": False,

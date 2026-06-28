@@ -38,7 +38,7 @@ class PackageInfo:
 
 
 PACKAGES = (
-    PackageRule(name="@imthegoodboy/conu", directory=Path("packaging/npm/conu-cli")),
+    PackageRule(name="conu", directory=Path("packaging/npm/conu-cli")),
 )
 
 
