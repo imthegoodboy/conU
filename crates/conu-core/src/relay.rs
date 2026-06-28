@@ -7,18 +7,27 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::io;
+use std::net::{TcpStream, ToSocketAddrs};
+#[cfg(test)]
 use std::process;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use native_tls::{HandshakeError, TlsConnector, TlsStream};
+#[cfg(test)]
+use std::io::{Read, Write};
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{Message, WebSocket};
 
 use crate::relay_endpoint::{self, RelayEndpointError};
 
+#[cfg(test)]
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+#[cfg(test)]
 const MAX_HTTP_HEADER_BYTES: usize = 8192;
 const MAX_FRAME_BYTES: usize = 256 * 1024;
+const MIN_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Error produced while parsing or rendering relay frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1142,13 +1151,15 @@ pub fn parse_server_frame(line: &str) -> Result<RelayServerFrame, RelayFrameErro
     }
 }
 
+#[cfg(test)]
 trait RelayStream: Read + Write {}
 
+#[cfg(test)]
 impl<T> RelayStream for T where T: Read + Write {}
 
-/// Minimal WebSocket client for runtime-to-relay sync.
+/// WebSocket client for runtime-to-relay sync.
 pub struct RelayWebSocketClient {
-    stream: Box<dyn RelayStream>,
+    socket: WebSocket<MaybeTlsStream<TcpStream>>,
 }
 
 impl fmt::Debug for RelayWebSocketClient {
@@ -1163,33 +1174,131 @@ impl fmt::Debug for RelayWebSocketClient {
 impl RelayWebSocketClient {
     pub fn connect(endpoint: &str, timeout: Duration) -> Result<Self, RelayFrameError> {
         let parsed = ParsedEndpoint::parse(endpoint)?;
-        let stream = TcpStream::connect((&parsed.host[..], parsed.port))
-            .map_err(|error| RelayFrameError::io("connect relay endpoint", error))?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|error| RelayFrameError::io("configure relay read timeout", error))?;
-        stream
-            .set_write_timeout(Some(timeout))
-            .map_err(|error| RelayFrameError::io("configure relay write timeout", error))?;
-        let mut stream: Box<dyn RelayStream> = match parsed.scheme {
-            RelayScheme::Ws => Box::new(stream),
-            RelayScheme::Wss => Box::new(connect_tls(&parsed.host, stream)?),
-        };
-        perform_client_handshake(stream.as_mut(), &parsed)?;
-
-        Ok(Self { stream })
+        let connect_timeout = timeout.max(MIN_WEBSOCKET_CONNECT_TIMEOUT);
+        let stream = connect_relay_tcp(&parsed, connect_timeout)?;
+        let (mut socket, _response) =
+            match tungstenite::client_tls_with_config(endpoint, stream, None, None) {
+                Ok(result) => result,
+                Err(tungstenite::handshake::HandshakeError::Failure(error)) => {
+                    return Err(RelayFrameError::new(format!(
+                        "connect relay websocket: {error}"
+                    )));
+                }
+                Err(tungstenite::handshake::HandshakeError::Interrupted(_)) => {
+                    return Err(RelayFrameError::new(
+                        "connect relay websocket: handshake interrupted",
+                    ));
+                }
+            };
+        configure_websocket_timeouts(socket.get_mut(), timeout)?;
+        Ok(Self { socket })
     }
 
     pub fn send(&mut self, frame: &RelayClientFrame) -> Result<(), RelayFrameError> {
-        write_client_text_frame(self.stream.as_mut(), &render_client_frame(frame))
+        self.socket
+            .send(Message::Text(render_client_frame(frame).into()))
+            .map_err(|error| RelayFrameError::new(format!("write websocket frame: {error}")))
     }
 
     pub fn read(&mut self) -> Result<Option<RelayServerFrame>, RelayFrameError> {
-        let Some(text) = read_server_text_frame(self.stream.as_mut())? else {
-            return Ok(None);
-        };
-        parse_server_frame(&text).map(Some)
+        loop {
+            let message = match self.socket.read() {
+                Ok(message) => message,
+                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                    return Ok(None);
+                }
+                Err(tungstenite::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::UnexpectedEof
+                            | io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::TimedOut
+                            | io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => {
+                    return Err(RelayFrameError::new(format!(
+                        "read websocket frame: {error}"
+                    )));
+                }
+            };
+
+            match message {
+                Message::Text(text) => return parse_server_frame(&text).map(Some),
+                Message::Ping(_) | Message::Pong(_) => {
+                    self.socket.flush().map_err(|error| {
+                        RelayFrameError::new(format!("flush websocket control frame: {error}"))
+                    })?;
+                    return Ok(Some(RelayServerFrame::Pong));
+                }
+                Message::Close(_) => return Ok(None),
+                Message::Binary(_) => {
+                    return Err(RelayFrameError::new(
+                        "relay websocket returned non-text frame",
+                    ));
+                }
+                Message::Frame(_) => continue,
+            }
+        }
     }
+}
+
+fn connect_relay_tcp(
+    endpoint: &ParsedEndpoint,
+    timeout: Duration,
+) -> Result<TcpStream, RelayFrameError> {
+    let addresses = (endpoint.host.as_str(), endpoint.port)
+        .to_socket_addrs()
+        .map_err(|error| RelayFrameError::io("resolve relay endpoint", error))?;
+    let mut last_error = None;
+
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(stream) => {
+                stream
+                    .set_read_timeout(Some(timeout))
+                    .map_err(|error| RelayFrameError::io("configure relay read timeout", error))?;
+                stream
+                    .set_write_timeout(Some(timeout))
+                    .map_err(|error| RelayFrameError::io("configure relay write timeout", error))?;
+                stream
+                    .set_nodelay(true)
+                    .map_err(|error| RelayFrameError::io("configure relay tcp nodelay", error))?;
+                return Ok(stream);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(RelayFrameError::io(
+        "connect relay endpoint",
+        last_error.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "relay endpoint has no addresses",
+            )
+        }),
+    ))
+}
+
+fn configure_websocket_timeouts(
+    stream: &MaybeTlsStream<TcpStream>,
+    timeout: Duration,
+) -> Result<(), RelayFrameError> {
+    let tcp_stream = match stream {
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::NativeTls(stream) => stream.get_ref(),
+        #[allow(unreachable_patterns)]
+        _ => return Ok(()),
+    };
+    tcp_stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|error| RelayFrameError::io("configure relay read timeout", error))?;
+    tcp_stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|error| RelayFrameError::io("configure relay write timeout", error))
 }
 
 impl RelayForward {
@@ -2044,25 +2153,13 @@ impl ParsedEndpoint {
         })
     }
 
+    #[cfg(test)]
     fn authority(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
 }
 
-fn connect_tls(host: &str, stream: TcpStream) -> Result<TlsStream<TcpStream>, RelayFrameError> {
-    let connector = TlsConnector::new()
-        .map_err(|error| RelayFrameError::new(format!("configure relay TLS: {error}")))?;
-    match connector.connect(host, stream) {
-        Ok(stream) => Ok(stream),
-        Err(HandshakeError::Failure(error)) => {
-            Err(RelayFrameError::new(format!("connect relay TLS: {error}")))
-        }
-        Err(HandshakeError::WouldBlock(_)) => Err(RelayFrameError::new(
-            "connect relay TLS: handshake would block",
-        )),
-    }
-}
-
+#[cfg(test)]
 fn perform_client_handshake(
     stream: &mut dyn RelayStream,
     endpoint: &ParsedEndpoint,
@@ -2077,6 +2174,9 @@ fn perform_client_handshake(
     stream
         .write_all(request.as_bytes())
         .map_err(|error| RelayFrameError::io("write websocket handshake", error))?;
+    stream
+        .flush()
+        .map_err(|error| RelayFrameError::io("flush websocket handshake", error))?;
     let response = read_http_response(stream)?;
 
     if !response.starts_with("HTTP/1.1 101") && !response.starts_with("HTTP/1.0 101") {
@@ -2093,6 +2193,7 @@ fn perform_client_handshake(
     Ok(())
 }
 
+#[cfg(test)]
 fn read_http_response(stream: &mut dyn RelayStream) -> Result<String, RelayFrameError> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 1];
@@ -2113,6 +2214,7 @@ fn read_http_response(stream: &mut dyn RelayStream) -> Result<String, RelayFrame
     ))
 }
 
+#[cfg(test)]
 fn header_value(response: &str, header: &str) -> Option<String> {
     response.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
@@ -2124,6 +2226,7 @@ fn header_value(response: &str, header: &str) -> Option<String> {
     })
 }
 
+#[cfg(test)]
 fn write_client_text_frame(
     stream: &mut dyn RelayStream,
     text: &str,
@@ -2131,6 +2234,7 @@ fn write_client_text_frame(
     write_client_raw_frame(stream, 0x1, text.as_bytes())
 }
 
+#[cfg(test)]
 fn write_client_raw_frame(
     stream: &mut dyn RelayStream,
     opcode: u8,
@@ -2157,9 +2261,14 @@ fn write_client_raw_frame(
 
     stream
         .write_all(&frame)
-        .map_err(|error| RelayFrameError::io("write websocket frame", error))
+        .map_err(|error| RelayFrameError::io("write websocket frame", error))?;
+    stream
+        .flush()
+        .map_err(|error| RelayFrameError::io("flush websocket frame", error))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn read_server_text_frame(stream: &mut dyn RelayStream) -> Result<Option<String>, RelayFrameError> {
     let mut header = [0_u8; 2];
     match stream.read_exact(&mut header) {
@@ -2233,6 +2342,7 @@ fn read_server_text_frame(stream: &mut dyn RelayStream) -> Result<Option<String>
     }
 }
 
+#[cfg(test)]
 fn websocket_key() -> String {
     let mut bytes = [0_u8; 16];
     bytes[..4].copy_from_slice(&process::id().to_be_bytes());
@@ -2241,6 +2351,7 @@ fn websocket_key() -> String {
     base64_encode(&bytes)
 }
 
+#[cfg(test)]
 fn websocket_mask() -> [u8; 4] {
     let now = current_unix_nanos();
     [
@@ -2251,6 +2362,7 @@ fn websocket_mask() -> [u8; 4] {
     ]
 }
 
+#[cfg(test)]
 fn websocket_accept_key(client_key: &str) -> String {
     let mut input = String::with_capacity(client_key.len() + WEBSOCKET_GUID.len());
     input.push_str(client_key.trim());
@@ -2258,6 +2370,7 @@ fn websocket_accept_key(client_key: &str) -> String {
     base64_encode(&sha1(input.as_bytes()))
 }
 
+#[cfg(test)]
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -2285,6 +2398,7 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(test)]
 fn sha1(bytes: &[u8]) -> [u8; 20] {
     let mut h0: u32 = 0x67452301;
     let mut h1: u32 = 0xefcdab89;
@@ -2357,6 +2471,7 @@ fn sha1(bytes: &[u8]) -> [u8; 20] {
     out
 }
 
+#[cfg(test)]
 fn current_unix_nanos() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2367,6 +2482,62 @@ fn current_unix_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+
+    #[derive(Default)]
+    struct FlushBufferedStream {
+        written: Vec<u8>,
+        response: Vec<u8>,
+        read_offset: usize,
+        flushed: bool,
+    }
+
+    impl Read for FlushBufferedStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if !self.flushed {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "buffered stream requires flush before response",
+                ));
+            }
+            if self.read_offset >= self.response.len() {
+                return Ok(0);
+            }
+            let count = buffer
+                .len()
+                .min(self.response.len().saturating_sub(self.read_offset));
+            buffer[..count]
+                .copy_from_slice(&self.response[self.read_offset..self.read_offset + count]);
+            self.read_offset += count;
+            Ok(count)
+        }
+    }
+
+    impl Write for FlushBufferedStream {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.written.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushed = true;
+            let request = String::from_utf8_lossy(&self.written);
+            if let Some(key) = request.lines().find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.trim()
+                        .eq_ignore_ascii_case("sec-websocket-key")
+                        .then(|| value.trim().to_string())
+                })
+            }) {
+                let accept = websocket_accept_key(&key);
+                self.response = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                )
+                .into_bytes();
+            }
+            Ok(())
+        }
+    }
 
     #[test]
     fn hello_debug_redacts_token() {
@@ -2418,6 +2589,30 @@ mod tests {
                 resumed: false,
             }
         );
+    }
+
+    #[test]
+    fn client_handshake_flushes_buffered_stream_before_reading_response() {
+        let endpoint =
+            ParsedEndpoint::parse("wss://relay.example.com/conu").expect("endpoint parses");
+        let mut stream = FlushBufferedStream::default();
+
+        perform_client_handshake(&mut stream, &endpoint).expect("handshake succeeds after flush");
+
+        let request = String::from_utf8(stream.written).expect("request is ascii");
+        assert!(stream.flushed);
+        assert!(request.contains("GET /conu HTTP/1.1"));
+        assert!(request.contains("Sec-WebSocket-Key:"));
+    }
+
+    #[test]
+    fn client_frame_writer_flushes_buffered_stream() {
+        let mut stream = FlushBufferedStream::default();
+
+        write_client_text_frame(&mut stream, "PING payload=not_observed").expect("frame writes");
+
+        assert!(stream.flushed);
+        assert!(!stream.written.is_empty());
     }
 
     #[test]
