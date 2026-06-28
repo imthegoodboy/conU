@@ -1332,6 +1332,7 @@ fn render_messages(
         Some("wait") => render_message_wait(&args[1..], home_override),
         Some("receive") => render_message_receive(&args[1..], home_override),
         Some("receipts") => render_message_receipts(&args[1..], home_override),
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_messages_usage()),
         _ => CliOutput::failure(2, render_messages_usage()),
     }
 }
@@ -4446,6 +4447,7 @@ fn render_relay(
     match args.first().map(String::as_str) {
         Some("sync") => render_relay_sync(&args[1..], home_override),
         Some("credential") => render_relay_credential(&args[1..], home_override, stdin_payload),
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_relay_usage()),
         _ => CliOutput::failure(2, render_relay_usage()),
     }
 }
@@ -4459,6 +4461,7 @@ fn render_relay_credential(
         Some("set") => render_relay_credential_set(&args[1..], home_override, stdin_payload),
         Some("clear") => render_relay_credential_clear(&args[1..], home_override),
         Some("status") | None => render_relay_credential_status(&args[1..], home_override),
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_relay_usage()),
         _ => CliOutput::failure(2, render_relay_usage()),
     }
 }
@@ -12798,6 +12801,25 @@ mod tests {
 
         let receipts = run_with_home(["messages", "receipts"], Some(home));
         assert_eq!(receipts.code, 0);
+    }
+
+    #[test]
+    fn command_group_help_exits_successfully() {
+        for args in [
+            vec!["messages", "--help"],
+            vec!["messages", "-h"],
+            vec!["messages", "help"],
+            vec!["relay", "--help"],
+            vec!["relay", "-h"],
+            vec!["relay", "help"],
+            vec!["relay", "credential", "--help"],
+        ] {
+            let output = run(args.clone());
+
+            assert_eq!(output.code, 0, "{args:?} failed: {}", output.stderr);
+            assert!(output.stdout.contains("usage:"));
+            assert!(output.stderr.is_empty());
+        }
     }
 
     #[test]
