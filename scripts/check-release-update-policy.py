@@ -16,10 +16,12 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = ROOT / "scripts" / "generate-release-update-policy.py"
-VERSION = "0.1.0"
+VERSION = json.loads((ROOT / "packaging/npm/conu-cli/package.json").read_text(encoding="utf-8"))[
+    "version"
+]
 TAG = f"v{VERSION}"
 REPO = "imthegoodboy/conU"
-BASE_URL = "https://github.com/imthegoodboy/conU/releases/download/v0.1.0"
+BASE_URL = f"https://github.com/imthegoodboy/conU/releases/download/{TAG}"
 POLICY = f"conu-{VERSION}-update-policy.json"
 PLATFORM_ARCHIVES = (
     f"conu-{VERSION}-windows-x64.zip",
