@@ -11,13 +11,13 @@ For local/manual testing, no new secret is required right now.
 The public npm package is already published as:
 
 ```txt
-conu
+@imthegoodboy/conu
 ```
 
 Install it with:
 
 ```powershell
-npm install -g conu
+npm install -g @imthegoodboy/conu
 conu doctor
 ```
 

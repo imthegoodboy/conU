@@ -2,11 +2,11 @@
 
 This guide explains how a user can install the current conU app, start it on their PC, and let local agents use it.
 
-Current version status: Phase 14 and Phase 15 are complete for the current local-first app, with rooms/pub/sub metadata, encrypted-at-rest local room event fanout, relay-backed room event fanout, authenticated direct QUIC delivery for reachable trusted peers, a stronger CLI dashboard/connect flow, and relay-backed message, stream-chunk, and room-event paths that run from conUD when configured. conU is usable for local agent registration, signed public agent-card exchange after peer trust, automatic encrypted signed-agent-card exchange during session sync, peer-scoped permission grants, local encrypted-at-rest message submission, local identity-key rotation with peer-card refresh, local archived identity-key retirement after peer-card refresh, local storage-key rotation with message queue/inbox re-encryption, local archived storage-key retirement after dependency scanning, local agent connect streams, room/pub/sub metadata and local or remote fanout, signed manual public peer-card exchange, peer-encrypted one-shot direct or relay messages, stream chunks, and room events between trusted nodes, bounded offline relay mailbox delivery with optional durable ciphertext files, configurable relay connection/frame/mailbox limits, payload-safe relay session-state audits, metadata-only relay accounting and abuse counters, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, payload-safe local log rotation, payload-safe local telemetry snapshots, Rust SDK calls, Python and TypeScript/JavaScript wrapper SDKs, an MCP stdio adapter, repeatable release builds, service templates, the public `conu` npm launcher, Docker/Render relay hosting templates, and `conu doctor` readiness checks. It is not yet a managed multi-region public relay network.
+Current version status: Phase 14 and Phase 15 are complete for the current local-first app, with rooms/pub/sub metadata, encrypted-at-rest local room event fanout, relay-backed room event fanout, authenticated direct QUIC delivery for reachable trusted peers, a stronger CLI dashboard/connect flow, and relay-backed message, stream-chunk, and room-event paths that run from conUD when configured. conU is usable for local agent registration, signed public agent-card exchange after peer trust, automatic encrypted signed-agent-card exchange during session sync, peer-scoped permission grants, local encrypted-at-rest message submission, local identity-key rotation with peer-card refresh, local archived identity-key retirement after peer-card refresh, local storage-key rotation with message queue/inbox re-encryption, local archived storage-key retirement after dependency scanning, local agent connect streams, room/pub/sub metadata and local or remote fanout, signed manual public peer-card exchange, peer-encrypted one-shot direct or relay messages, stream chunks, and room events between trusted nodes, bounded offline relay mailbox delivery with optional durable ciphertext files, configurable relay connection/frame/mailbox limits, payload-safe relay session-state audits, metadata-only relay accounting and abuse counters, stream metadata, trust metadata, direct/relay route metadata, private CLI watch output, payload-safe local log rotation, payload-safe local telemetry snapshots, Rust SDK calls, Python and TypeScript/JavaScript wrapper SDKs, an MCP stdio adapter, repeatable release builds, service templates, the public `@imthegoodboy/conu` npm launcher, Docker/Render relay hosting templates, and `conu doctor` readiness checks. It is not yet a managed multi-region public relay network.
 
 ## What Works Today
 
-- Install from source, from a Phase 15 release artifact, or with `npm install -g conu`.
+- Install from source, from a Phase 15 release artifact, or with `npm install -g @imthegoodboy/conu`.
 - Initialize local conU state and security keys.
 - Start and stop the local `conUD` runtime.
 - Register local agents by id.
@@ -40,7 +40,7 @@ Current version status: Phase 14 and Phase 15 are complete for the current local
 ## What Does Not Work Yet
 
 - No signed one-click installer yet.
-- The npm package is `conu` and exposes the `conu`, `conud`, `conu-relay`, and `conu-mcp` commands.
+- The public npm package is `@imthegoodboy/conu` and exposes the `conu`, `conud`, `conu-relay`, and `conu-mcp` commands. The unscoped `conu` package name is blocked by npm registry similarity policy.
 - No CLI command that reveals message contents. This is intentional; use SDK or MCP explicit receive APIs when the addressed local agent needs payload bytes.
 - Rooms provide local pub/sub coordination, encrypted-at-rest local fanout, relay-backed fanout to joined trusted remote agents, per-topic publish/subscribe grants for configured topics, and watch visibility.
 - The current hosted Render relay is for controlled testing and real relay traffic, not a managed multi-region public relay network. The client supports reachable `ws://` and certificate-valid `wss://` relay endpoints, and relays can use offline scoped credentials or account-scoped online issue/rotate/revoke/audit against a live credential manifest. The bundled relay server itself is still plain WebSocket and needs TLS termination for public use.
@@ -56,7 +56,7 @@ Current version status: Phase 14 and Phase 15 are complete for the current local
 Public npm install:
 
 ```powershell
-npm install -g conu
+npm install -g @imthegoodboy/conu
 conu doctor
 conu init
 conu logs rotate --max-bytes 1048576 --keep 5
@@ -701,7 +701,7 @@ These are not hidden bugs; they are the honest state of the current app:
 | Area | Current issue | User impact | Workaround today |
 | --- | --- | --- | --- |
 | Installer | Release artifact scripts exist, tagged release workflow supports Windows Authenticode, macOS notarization, fingerprint-pinned Linux detached `.asc` signatures, native RPM package signatures, native APT/RPM metadata signatures, and a Linux GPG public-key release asset, but one-click OS installers are not published | Users still install from archives or source until package-manager distribution exists | Verify checksums, GitHub attestations, `conu-linux-gpg-key.asc`, the published full maintainer fingerprint, and platform signatures before install |
-| npm install | `conu` is the public npm package | `npm install -g conu` installs the launcher from current public release assets | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
+| npm install | `@imthegoodboy/conu` is the public npm package | `npm install -g @imthegoodboy/conu` installs the launcher from current public release assets | Use source install or a local `CONU_NPM_BINARY_DIR` package test |
 | Windows linker | Default MSVC toolchain may fail without `link.exe` | `cargo check/test/install` can fail | Use `stable-x86_64-pc-windows-gnu` or install Visual Studio C++ Build Tools |
 | Runtime discovery | `conu start` needs `conud` beside `conu` or on PATH | Start can fail after manual binary moves | Install both with Cargo or set `CONUD_EXE` |
 | Agent API | Rust SDK, Python wrapper, TypeScript/JavaScript Node wrapper, and MCP adapter exist | Most local/server-side agents can integrate now; browser-native and hosted SDK permission work still need future design | Use MCP, Rust SDK, Python SDK, TypeScript Node SDK, or CLI/stdin |

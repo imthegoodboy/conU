@@ -21,7 +21,7 @@ Do not ask conU to think, summarize, classify, or rewrite your message. Send byt
 Public install:
 
 ```sh
-npm install -g conu
+npm install -g @imthegoodboy/conu
 ```
 
 Current source install:
