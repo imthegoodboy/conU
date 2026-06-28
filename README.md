@@ -58,6 +58,7 @@ printf "private bytes" | conu messages send agent.alpha agent.beta --stdin
 conu messages wait agent.beta --process-ipc --timeout-ms 30000 --json
 conu messages inbox agent.beta --json
 conu messages history agent.beta --limit 20 --json
+printf "reply bytes" | conu messages reply agent.beta <envelope-id> --stdin
 conu messages receive agent.beta <envelope-id> --output received.bin
 conu messages receipts --json
 ```
@@ -151,6 +152,7 @@ conu agents
 conu agents --json
 conu messages inbox <agent-id> --json
 conu messages history <agent-id> --limit 20 --json
+conu messages reply <agent-id> <envelope-id> --stdin
 conu messages wait <agent-id> --timeout-ms 30000 --json
 conu messages receive <agent-id> <envelope-id> --output <file>
 conu messages receipts --json
