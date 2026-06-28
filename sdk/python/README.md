@@ -14,11 +14,13 @@ client.process_queued()
 
 sent = client.send_message("agent.alpha", "agent.beta", b"private bytes")
 waited = client.wait_for_message("agent.beta", process_ipc=True)
-print(sent["payloadBytes"], waited["status"])
+received = client.receive_message_bytes("agent.beta", waited["message"]["envelopeId"])
+print(sent["payloadBytes"], waited["status"], len(received))
 ```
 
 The wrapper does not log or print payloads. Message payload bytes are sent to
-`conu messages send --stdin`; metadata commands use `--json`.
+`conu messages send --stdin`; metadata commands use `--json`, and raw bytes are
+available only through explicit receive helpers.
 
 `register_agent()` defaults to message and presence capability only. Pass
 `streams=True` and/or `rooms=True` before using stream or room helpers.

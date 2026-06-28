@@ -537,9 +537,16 @@ try {
     $conu = Get-BinaryPath "conu"
     $conud = Get-BinaryPath "conud"
     $conuRelay = Get-BinaryPath "conu-relay"
+    $conuMcp = Get-BinaryPath "conu-mcp"
 
     if (-not $SkipSmokes) {
         $smokeToolchain = Get-EffectiveSmokeToolchain
+        Invoke-ReadinessStep "agent message receive smoke" {
+            & python scripts/smoke-agent-message-receive.py `
+                --conu-bin $conu `
+                --conud-bin $conud `
+                --mcp-bin $conuMcp
+        }
         Invoke-PwshScript "local smoke" (Join-Path $repo "scripts/smoke-local.ps1") @{
             Conu = $conu
             Conud = $conud
@@ -547,7 +554,9 @@ try {
             SkipBuild = $true
         }
         Invoke-PwshScript "identity retirement smoke" (Join-Path $repo "scripts/smoke-identity-retirement.ps1") @{
+            Conu = $conu
             Toolchain = $smokeToolchain
+            SkipBuild = $true
         }
         Invoke-PwshScript "relay daemon smoke" (Join-Path $repo "scripts/smoke-relay-daemon.ps1") @{
             Conu = $conu

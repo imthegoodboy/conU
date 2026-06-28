@@ -107,6 +107,37 @@ def run_success_result_metadata_test(module) -> None:
     assert_success_result_defaults(result)
 
 
+def run_bare_command_path_resolution_test(module) -> None:
+    class SuccessCompleted:
+        stdout = b'{"contentsDisplayed":false}'
+        stderr = b""
+        returncode = 0
+
+    captured: dict[str, object] = {}
+
+    def fake_which(binary, path=None):  # noqa: ANN001
+        captured["which"] = (binary, path)
+        if binary == "conu":
+            return "C:/npm/bin/conu.cmd"
+        return None
+
+    def fake_run(argv, **_kwargs):
+        captured["argv"] = tuple(argv)
+        return SuccessCompleted()
+
+    module.shutil.which = fake_which
+    module.subprocess.run = fake_run
+    client = module.ConuClient(conu_bin="conu", env={"PATH": "C:/npm/bin"})
+    result = client.status()
+
+    if captured.get("which") != ("conu", "C:/npm/bin"):
+        raise AssertionError("Python SDK should resolve bare commands through PATH")
+    if captured.get("argv") != ("C:/npm/bin/conu.cmd", "status", "--json"):
+        raise AssertionError("Python SDK should execute the resolved bare command path")
+    if result != {"contentsDisplayed": False}:
+        raise AssertionError("Python SDK command result JSON changed unexpectedly")
+
+
 def run_failed_command_redaction_test(module) -> None:
     captured: dict[str, tuple[str, ...]] = {}
 
@@ -888,6 +919,7 @@ def run_mcp_argument_encoding_redaction_test(module) -> None:
 def main() -> int:
     module = load_sdk()
     run_success_result_metadata_test(module)
+    run_bare_command_path_resolution_test(module)
     run_failed_command_redaction_test(module)
     run_spawn_error_redaction_test(module)
     run_constructor_binary_redaction_test(module)

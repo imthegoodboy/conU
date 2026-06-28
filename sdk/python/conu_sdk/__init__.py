@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -616,9 +617,10 @@ class ConuClient:
     ) -> CommandResult:
         safe_binary = _command_arg(binary, binary)
         argv = (safe_binary, *(_command_arg(arg, safe_binary) for arg in args))
+        exec_argv = (_resolve_binary_for_execution(safe_binary, self.env), *argv[1:])
         try:
             completed = subprocess.run(
-                argv,
+                exec_argv,
                 input=input_bytes,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -641,6 +643,22 @@ class ConuClient:
                 safe_result,
             )
         return result
+
+
+def _resolve_binary_for_execution(binary: str, env: dict[str, str]) -> str:
+    if _looks_like_path(binary):
+        return binary
+    found = shutil.which(binary, path=env.get("PATH"))
+    return found or binary
+
+
+def _looks_like_path(value: str) -> bool:
+    return (
+        "/" in value
+        or "\\" in value
+        or value.startswith(".")
+        or (len(value) >= 2 and value[1] == ":")
+    )
 
 
 def _normalize_command_binary(binary: Any) -> str:

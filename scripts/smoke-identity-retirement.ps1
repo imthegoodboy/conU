@@ -1,18 +1,33 @@
 param(
-    [string]$Toolchain = "stable-x86_64-pc-windows-gnu"
+    [string]$Conu = "target/debug/conu.exe",
+    [string]$Toolchain = $env:CONU_RUST_TOOLCHAIN,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
 
+$repo = Resolve-Path (Join-Path $PSScriptRoot "..")
 $smokeHome = Join-Path $env:TEMP ("conu-identity-retire-smoke-" + [guid]::NewGuid().ToString("N"))
 $previousConuHome = $env:CONU_HOME
+$script:ConuPath = $null
 
 function Invoke-Conu {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ConuArgs)
-    & cargo "+$Toolchain" run -q -p conu-cli -- @ConuArgs
+    if ($SkipBuild) {
+        & $script:ConuPath @ConuArgs
+    } elseif (-not [string]::IsNullOrWhiteSpace($Toolchain)) {
+        & cargo "+$Toolchain" run -q -p conu-cli -- @ConuArgs
+    } else {
+        & cargo "+stable-x86_64-pc-windows-gnu" run -q -p conu-cli -- @ConuArgs
+    }
 }
 
+Push-Location $repo
 try {
+    if ($SkipBuild) {
+        $script:ConuPath = (Resolve-Path $Conu).Path
+    }
+
     New-Item -ItemType Directory -Force $smokeHome | Out-Null
     $env:CONU_HOME = $smokeHome
 
@@ -72,4 +87,5 @@ finally {
     if ($null -ne $resolvedSmoke -and $resolvedSmoke.Path.StartsWith([System.IO.Path]::GetTempPath(), [System.StringComparison]::OrdinalIgnoreCase)) {
         Remove-Item -LiteralPath $resolvedSmoke.Path -Recurse -Force
     }
+    Pop-Location
 }
