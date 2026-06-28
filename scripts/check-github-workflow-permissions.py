@@ -1408,8 +1408,8 @@ NPM_PUBLISH_REQUIRED_STEPS: tuple[
         ),
     ),
     (
-        "Publish @imthegoodboy/conu",
-        "publish @imthegoodboy/conu with provenance",
+        "Publish conu",
+        "publish conu with provenance",
         (
             ("CLI package directory", "working-directory: packaging/npm/conu-cli"),
             ("NPM token env", "NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"),

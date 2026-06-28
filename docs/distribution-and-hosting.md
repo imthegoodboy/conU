@@ -22,7 +22,7 @@ Why this shape:
 The target public command is:
 
 ```sh
-npm install -g @imthegoodboy/conu
+npm install -g conu
 conu init
 conu doctor
 conu start
@@ -70,7 +70,7 @@ The release workflow builds platform-named artifacts and uploads matching checks
 3. Run the release validation checklist.
 4. Configure the repository signing secrets, `CONU_LINUX_GPG_KEY_FINGERPRINT`, and `NPM_TOKEN`; after exporting local values, or generating ignored `.env.release` with `python scripts/set-github-release-secrets.py --write-env-template .env.release`, filling the required `KEY=VALUE` pairs, validating the file with `python scripts/set-github-release-secrets.py --env-file .env.release --check-env-file`, and adding `--env-file .env.release --env-file-only`, run `python scripts/set-github-release-secrets.py --repo imthegoodboy/conU --dry-run --preflight-values --require-openssl`, rerun without `--dry-run` after the value preflights pass, then run `python scripts/check-tagged-release-readiness.py --repo imthegoodboy/conU --tag v0.1.0 --npm-registry-check --require-ci --require-default-branch-head`; the commands fail before tag creation if platform signing values, Linux signing values, required secret names, default Pages or custom S3 repository settings, GitHub Release clobber status, package version/tag consistency, target commit CI status, default branch head status, or target npm package availability are not ready.
 5. Tag the release, for example `v0.1.0`.
-6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, verify that archives exclude conU state/log/payload paths, run package and release regressions, smoke-test local and download npm launcher installs, publish GitHub Release assets, and publish the public `@imthegoodboy/conu` npm package with provenance after the matching GitHub Release assets are available. The full signed production release path additionally signs Windows, macOS, Linux, package-manager, and update-policy artifacts.
+6. Let the `Release Artifacts` GitHub Actions workflow build platform archives, verify that archives exclude conU state/log/payload paths, run package and release regressions, smoke-test local and download npm launcher installs, publish the public `conu` npm package with provenance after the matching GitHub Release assets are available. The full signed production release path additionally signs Windows, macOS, Linux, package-manager, and update-policy artifacts.
 For the supported custom S3-compatible repository publisher, set repository
 variable `CONU_LINUX_REPOSITORY_BASE_URL` to the public HTTPS URL, set
 `CONU_LINUX_REPOSITORY_S3_BUCKET`, optional
@@ -86,7 +86,7 @@ TLS certificates, CDN behavior, and non-S3 hosts remain operator-owned.
 7. Test from a clean shell:
 
 ```sh
-npm install -g @imthegoodboy/conu
+npm install -g conu
 conu doctor
 conud --check
 conu-relay --check
@@ -255,7 +255,7 @@ unattended automatic update apply remains disabled by policy.
 Recommended for normal users after the first public release:
 
 ```sh
-npm install -g @imthegoodboy/conu
+npm install -g conu
 ```
 
 Recommended for Rust developers:

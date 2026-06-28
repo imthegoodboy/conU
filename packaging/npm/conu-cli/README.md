@@ -1,4 +1,4 @@
-# @imthegoodboy/conu
+# conu
 
 This npm package is a thin launcher for the native Rust conU binaries:
 
@@ -15,7 +15,7 @@ Use a supported Node.js LTS line. This package currently accepts Node 22 LTS or
 Node 24 LTS and intentionally rejects EOL Node lines.
 
 ```sh
-npm install -g @imthegoodboy/conu
+npm install -g conu
 conu doctor
 ```
 

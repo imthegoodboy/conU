@@ -558,17 +558,17 @@ jobs:
           gh release view "$CONU_SIMPLE_LAUNCH_TAG" --repo "$GH_REPO" --json tagName,isDraft,isPrerelease
           mkdir -p "$RUNNER_TEMP/conu-simple-launch-check"
           gh release download "$CONU_SIMPLE_LAUNCH_TAG" --repo "$GH_REPO" --pattern "conu-${CONU_SIMPLE_LAUNCH_VERSION}-linux-x64.tar.gz.sha256" --dir "$RUNNER_TEMP/conu-simple-launch-check"
-      - name: Publish @imthegoodboy/conu
+      - name: Publish conu
         working-directory: packaging/npm/conu-cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -eu
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for simple launch @imthegoodboy/conu publication."
+            echo "::error::NPM_TOKEN is required for simple launch conu publication."
             exit 1
           fi
-          PACKAGE="@imthegoodboy/conu"
+          PACKAGE="conu"
           VERSION="${CONU_SIMPLE_LAUNCH_VERSION}"
           npm access public "$PACKAGE" >/dev/null 2>&1 || true
           if npm view "${PACKAGE}@${VERSION}" version --json >/dev/null 2>&1; then
@@ -587,7 +587,7 @@ jobs:
       - name: Verify npm packages are visible
         run: |
           set -eu
-          for package in @imthegoodboy/conu; do
+          for package in conu; do
             for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
               if npm view "${package}@${CONU_SIMPLE_LAUNCH_VERSION}" version --json; then
                 break
@@ -990,17 +990,17 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python scripts/check-npm-publish-preflight.py --require-token-env NODE_AUTH_TOKEN --token-auth-check
-      - name: Publish @imthegoodboy/conu
+      - name: Publish conu
         working-directory: packaging/npm/conu-cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -eu
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::NPM_TOKEN is required for tagged @imthegoodboy/conu publication."
+            echo "::error::NPM_TOKEN is required for tagged conu publication."
             exit 1
           fi
-          PACKAGE="@imthegoodboy/conu"
+          PACKAGE="conu"
           VERSION="${GITHUB_REF_NAME#v}"
           npm access public "$PACKAGE" >/dev/null 2>&1 || true
           if npm view "${PACKAGE}@${VERSION}" version --json >/dev/null 2>&1; then
