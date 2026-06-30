@@ -184,11 +184,4 @@ rustup toolchain install stable-x86_64-pc-windows-gnu
 cargo +stable-x86_64-pc-windows-gnu test --workspace
 ```
 
-## More Docs
-
-- Architecture: `architecture.md`
-- Relay hosting on Render: `docs/render-relay-hosting.md`
-- SDK and MCP guide: `docs/sdk-and-mcp.md`
-- Direct transport and routes: `docs/direct-transport-and-routes.md`
-- Distribution and hosting: `docs/distribution-and-hosting.md`
-- Release checklist: `docs/release-checklist.md`
+ 
