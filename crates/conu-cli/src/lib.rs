@@ -84,6 +84,295 @@ fn unexpected_argument_error() -> CliOutput {
     CliOutput::failure(2, "unexpected argument; contentsDisplayed=false")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuAction {
+    Command(&'static [&'static str]),
+    Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MenuItem {
+    title: &'static str,
+    command: &'static str,
+    detail: &'static str,
+    action: MenuAction,
+}
+
+const MENU_ITEMS: &[MenuItem] = &[
+    MenuItem {
+        title: "Dashboard",
+        command: "conu dashboard",
+        detail: "runtime, agents, routes",
+        action: MenuAction::Command(&["dashboard"]),
+    },
+    MenuItem {
+        title: "Doctor",
+        command: "conu doctor",
+        detail: "install and readiness check",
+        action: MenuAction::Command(&["doctor"]),
+    },
+    MenuItem {
+        title: "Start",
+        command: "conu start",
+        detail: "launch conUD runtime",
+        action: MenuAction::Command(&["start"]),
+    },
+    MenuItem {
+        title: "Agents",
+        command: "conu agents",
+        detail: "local and remote agent list",
+        action: MenuAction::Command(&["agents"]),
+    },
+    MenuItem {
+        title: "Connect",
+        command: "conu connect",
+        detail: "agent connection selector",
+        action: MenuAction::Command(&["connect"]),
+    },
+    MenuItem {
+        title: "Watch",
+        command: "conu watch",
+        detail: "private transport activity",
+        action: MenuAction::Command(&["watch"]),
+    },
+    MenuItem {
+        title: "Pair",
+        command: "conu pair",
+        detail: "create a trusted peer invite",
+        action: MenuAction::Command(&["pair"]),
+    },
+    MenuItem {
+        title: "Help",
+        command: "conu --help",
+        detail: "all commands",
+        action: MenuAction::Command(&["--help"]),
+    },
+    MenuItem {
+        title: "Exit",
+        command: "close menu",
+        detail: "return to terminal",
+        action: MenuAction::Exit,
+    },
+];
+
+struct TerminalMenuStatus {
+    node: String,
+    state: String,
+    runtime_state: String,
+    local_agents: usize,
+    remote_agents: usize,
+}
+
+struct TerminalMenuGuard;
+
+impl Drop for TerminalMenuGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = crossterm::execute!(
+            stdout,
+            crossterm::cursor::Show,
+            crossterm::terminal::LeaveAlternateScreen
+        );
+    }
+}
+
+/// Run the human terminal menu. Callers should gate this to real TTY sessions.
+pub fn run_terminal_menu() -> io::Result<CliOutput> {
+    crossterm::terminal::enable_raw_mode()?;
+    let _guard = TerminalMenuGuard;
+    let mut stdout = io::stdout();
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::cursor::Hide
+    )?;
+
+    let mut selected = 0usize;
+    loop {
+        draw_terminal_menu(&mut stdout, selected)?;
+        if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+            match key {
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Up,
+                    ..
+                } => {
+                    selected = if selected == 0 {
+                        MENU_ITEMS.len() - 1
+                    } else {
+                        selected - 1
+                    };
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Down,
+                    ..
+                } => {
+                    selected = (selected + 1) % MENU_ITEMS.len();
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Enter,
+                    ..
+                } => {
+                    return Ok(run_menu_item(MENU_ITEMS[selected]));
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Esc,
+                    ..
+                }
+                | crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('q'),
+                    ..
+                }
+                | crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('Q'),
+                    ..
+                }
+                | crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('c'),
+                    modifiers: crossterm::event::KeyModifiers::CONTROL,
+                    ..
+                } => {
+                    return Ok(CliOutput::success(
+                        "conU menu closed\ncontentsDisplayed=false",
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn draw_terminal_menu(stdout: &mut impl Write, selected: usize) -> io::Result<()> {
+    let status = terminal_menu_status(None);
+    let selected = selected.min(MENU_ITEMS.len().saturating_sub(1));
+
+    crossterm::queue!(
+        stdout,
+        crossterm::cursor::MoveTo(0, 0),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::style::SetForegroundColor(crossterm::style::Color::Cyan),
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Bold),
+        crossterm::style::Print("conU\n"),
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset),
+        crossterm::style::SetForegroundColor(crossterm::style::Color::Magenta),
+        crossterm::style::Print("agent command bridge\n\n"),
+        crossterm::style::ResetColor
+    )?;
+
+    queue_menu_status_line(
+        stdout,
+        "runtime",
+        &status.runtime_state,
+        runtime_menu_color(&status.runtime_state),
+    )?;
+    queue_menu_status_line(
+        stdout,
+        "node",
+        &status.node,
+        crossterm::style::Color::DarkGrey,
+    )?;
+    queue_menu_status_line(
+        stdout,
+        "state",
+        &status.state,
+        crossterm::style::Color::Blue,
+    )?;
+    queue_menu_status_line(
+        stdout,
+        "local agents",
+        &status.local_agents.to_string(),
+        crossterm::style::Color::Green,
+    )?;
+    queue_menu_status_line(
+        stdout,
+        "remote agents",
+        &status.remote_agents.to_string(),
+        crossterm::style::Color::Yellow,
+    )?;
+
+    crossterm::queue!(
+        stdout,
+        crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
+        crossterm::style::Print("\nUse Up/Down to choose, Enter to run, q or Esc to close.\n\n"),
+        crossterm::style::ResetColor
+    )?;
+
+    for (index, item) in MENU_ITEMS.iter().enumerate() {
+        if index == selected {
+            crossterm::queue!(
+                stdout,
+                crossterm::style::SetBackgroundColor(crossterm::style::Color::DarkCyan),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::White),
+                crossterm::style::SetAttribute(crossterm::style::Attribute::Bold),
+                crossterm::style::Print(format!("> {:<10} ", item.title)),
+                crossterm::style::SetAttribute(crossterm::style::Attribute::Reset),
+                crossterm::style::SetBackgroundColor(crossterm::style::Color::DarkCyan),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::Cyan),
+                crossterm::style::Print(format!("{:<18} ", item.command)),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::White),
+                crossterm::style::Print(item.detail),
+                crossterm::style::ResetColor,
+                crossterm::style::Print("\n")
+            )?;
+        } else {
+            crossterm::queue!(
+                stdout,
+                crossterm::style::SetForegroundColor(crossterm::style::Color::White),
+                crossterm::style::Print(format!("  {:<10} ", item.title)),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::Blue),
+                crossterm::style::Print(format!("{:<18} ", item.command)),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
+                crossterm::style::Print(item.detail),
+                crossterm::style::ResetColor,
+                crossterm::style::Print("\n")
+            )?;
+        }
+    }
+
+    crossterm::queue!(
+        stdout,
+        crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
+        crossterm::style::Print(
+            "\nprivacy\n  payload view  private, never displayed\n  contentsDisplayed=false"
+        ),
+        crossterm::style::ResetColor
+    )?;
+    stdout.flush()
+}
+
+fn queue_menu_status_line(
+    stdout: &mut impl Write,
+    label: &str,
+    value: &str,
+    color: crossterm::style::Color,
+) -> io::Result<()> {
+    crossterm::queue!(
+        stdout,
+        crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
+        crossterm::style::Print(format!("{label:<14} ")),
+        crossterm::style::SetForegroundColor(color),
+        crossterm::style::Print(value),
+        crossterm::style::ResetColor,
+        crossterm::style::Print("\n")
+    )
+}
+
+fn runtime_menu_color(runtime_state: &str) -> crossterm::style::Color {
+    match runtime_state {
+        "live" | "running" => crossterm::style::Color::Green,
+        "offline" => crossterm::style::Color::Yellow,
+        "unavailable" => crossterm::style::Color::Red,
+        _ => crossterm::style::Color::White,
+    }
+}
+
+fn run_menu_item(item: MenuItem) -> CliOutput {
+    match item.action {
+        MenuAction::Command(args) => run(args.iter().copied()),
+        MenuAction::Exit => CliOutput::success("conU menu closed\ncontentsDisplayed=false"),
+    }
+}
+
 /// Dispatch a conU CLI invocation.
 pub fn run<I, S>(args: I) -> CliOutput
 where
@@ -131,6 +420,13 @@ where
 
     match command {
         "init" => render_init(&args[1..], home_override),
+        "menu" => {
+            if let Some(error) = reject_args(&args[1..]) {
+                error
+            } else {
+                CliOutput::success(render_terminal_menu(0, home_override))
+            }
+        }
         "dashboard" => {
             if let Some(error) = reject_args(&args[1..]) {
                 error
@@ -242,45 +538,15 @@ recent room bus
   events         {}
   latest         {}
 
-quick commands
+next actions
+  conu menu
   conu init
   conu start
-  conu status
-  conu agents
-  conu agents register <agent-id> <display-name> [--streams true] [--rooms true]
-  conu connect local <from-agent> <to-agent>
-  conu rooms create <room-id> <display-name> --agent <agent-id>
-  conu rooms join <room-id> <agent-id>
-  conu rooms policy <room-id> <agent-id> <topic> --publish true --subscribe true
-  conu rooms publish <room-id> <from-agent> <topic> --stdin
-  conu messages send <from-agent> <to-agent> --stdin
-  conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
-  conu messages wait <agent-id> --timeout-ms 30000 --json
-  conu messages history <agent-id> --limit 20 --json
-  conu messages reply <agent-id> <envelope-id> --stdin
-  conu messages receive <agent-id> <envelope-id> --output <file>
-  conu relay sync --wait-ms 3000
-  conu relay credential set --stdin
-  conu identity export
-  conu streams open <from-agent> <to-agent>
-  conu routes sync
-  conu logs rotate
-  conu telemetry snapshot --json
-  conu update check --policy-file <path>
-  conu update check --policy-url <https-url>
-  conu update download --policy-url <https-url> --output-dir <dir>
-  conu update apply --policy-file <path> --artifact-file <archive> --install-dir <dir> --dry-run
-  conu security audit
-  conu security rotate storage --confirm
-  conu security rotate identity --confirm-peer-refresh
-  conu security retire identity --confirm-peer-refresh-complete
-  conu security retire storage --confirm
   conu doctor
-  conu pair
-  conu peers
-  conu join <code>
+  conu agents
   conu connect
-  conu watch",
+  conu watch
+  conu --help",
         conu_core::PRODUCT_LAW,
         room_records.len(),
         selected_direct_route_count(&route_records),
@@ -288,6 +554,73 @@ quick commands
         room_events.len(),
         latest_room_event_label(&room_events)
     )
+}
+
+fn render_terminal_menu(selected: usize, home_override: Option<PathBuf>) -> String {
+    let status = terminal_menu_status(home_override);
+    let selected = selected.min(MENU_ITEMS.len().saturating_sub(1));
+
+    let mut output = format!(
+        r"conU
+agent command bridge
+
+runtime        {}
+node           {}
+state          {}
+local agents   {}
+remote agents  {}
+
+Use Up/Down to choose, Enter to run, q or Esc to close.
+
+",
+        status.runtime_state, status.node, status.state, status.local_agents, status.remote_agents
+    );
+
+    for (index, item) in MENU_ITEMS.iter().enumerate() {
+        let marker = if index == selected { ">" } else { " " };
+        output.push_str(&format!(
+            "{marker} {:<10} {:<18} {}\n",
+            item.title, item.command, item.detail
+        ));
+    }
+
+    output.push_str(
+        r"
+privacy
+  payload view  private, never displayed
+  contentsDisplayed=false",
+    );
+    output
+}
+
+fn terminal_menu_status(home_override: Option<PathBuf>) -> TerminalMenuStatus {
+    let snapshot = state::read_state(home_override.clone()).ok();
+    let runtime_status = runtime::read_runtime(home_override.clone()).ok();
+    let local_agent_records = agents::list_local_agents(home_override.clone()).unwrap_or_default();
+    let remote_agent_records = sessions::list_remote_agents(home_override).unwrap_or_default();
+    let node = snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.node.as_ref())
+        .map(|node| node.node_id.clone())
+        .unwrap_or_else(|| "not initialized".to_string());
+    let state = snapshot
+        .as_ref()
+        .map(initialization_label)
+        .unwrap_or("unavailable")
+        .to_string();
+    let runtime_state = runtime_status
+        .as_ref()
+        .map(runtime_state_label)
+        .unwrap_or("unavailable")
+        .to_string();
+
+    TerminalMenuStatus {
+        node,
+        state,
+        runtime_state,
+        local_agents: local_agent_records.len(),
+        remote_agents: remote_agent_records.len(),
+    }
 }
 
 fn dashboard_local_agents(agents: &[LocalAgentRecord]) -> String {
@@ -6298,6 +6631,7 @@ fn render_connect_selector(home_override: Option<PathBuf>) -> CliOutput {
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let next_steps = connect_next_steps(&local_agents, &remote_agents, &rooms);
 
     CliOutput::success(format!(
         r"conU connect
@@ -6309,16 +6643,63 @@ selector
   route plan           direct {} | relay {}
   mode                 local stream | room | remote relay message
 
-actions
-  conu connect local <from-agent> <to-agent>
-  conu connect room <room-id> <agent-id>
-  conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin
+next
+{next_steps}
 
 privacy
   payload view  contents are not displayed by conU",
         selected_direct_route_count(&route_records),
         selected_relay_route_count(&route_records)
     ))
+}
+
+fn connect_next_steps(
+    local_agents: &[LocalAgentRecord],
+    remote_agents: &[RemoteAgentRecord],
+    rooms: &[RoomRecord],
+) -> String {
+    let mut steps = Vec::new();
+
+    if local_agents.len() < 2 {
+        steps
+            .push("conu agents register agent.alpha Alpha --streams true --rooms true".to_string());
+        steps.push("conu agents register agent.beta Beta --streams true --rooms true".to_string());
+    } else {
+        steps.push(format!(
+            "conu connect local {} {}",
+            local_agents[0].agent_id, local_agents[1].agent_id
+        ));
+    }
+
+    if let (Some(room), Some(agent)) = (rooms.first(), local_agents.first()) {
+        steps.push(format!(
+            "conu connect room {} {}",
+            room.room_id, agent.agent_id
+        ));
+    } else if let Some(agent) = local_agents.first() {
+        steps.push(format!(
+            "conu rooms create room.dev \"Dev Room\" --agent {}",
+            agent.agent_id
+        ));
+    }
+
+    if let (Some(local), Some(remote)) = (local_agents.first(), remote_agents.first()) {
+        steps.push(format!(
+            "conu messages send {} {} --peer {} --stdin",
+            local.agent_id, remote.agent_id, remote.peer_node_id
+        ));
+    } else {
+        steps.push("conu pair".to_string());
+        steps.push("conu join <code>".to_string());
+    }
+
+    steps.push("conu watch".to_string());
+
+    steps
+        .into_iter()
+        .map(|step| format!("  {step}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 struct ConnectLocalArgs {
@@ -12336,6 +12717,7 @@ fn render_help() -> String {
 
 Usage:
   conu
+  conu menu
   conu dashboard
   conu init
   conu status [--json]
@@ -12765,11 +13147,52 @@ mod tests {
 
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("control room"));
+        assert!(output.stdout.contains("next actions"));
+        assert!(output.stdout.contains("conu menu"));
         assert!(output.stdout.contains("conu init"));
+        assert!(!output.stdout.contains("conu update apply"));
         assert!(output.stderr.is_empty());
         assert_eq!(explicit.code, 0);
         assert!(explicit.stdout.contains("control room"));
         assert!(explicit.stderr.is_empty());
+    }
+
+    #[test]
+    fn menu_command_renders_terminal_launcher_without_payloads() {
+        let home = temp_home("menu");
+        let output = run_with_home(["menu"], Some(home));
+
+        assert_eq!(output.code, 0);
+        assert!(output.stdout.contains("Use Up/Down"));
+        assert!(output.stdout.contains("conu dashboard"));
+        assert!(output.stdout.contains("conu connect"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(!output.stdout.contains("private message contents"));
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn connect_selector_suggests_useful_next_steps() {
+        let home = temp_home("connect-selector");
+        let empty = run_with_home(["connect"], Some(home.clone()));
+
+        assert_eq!(empty.code, 0);
+        assert!(empty.stdout.contains("conu agents register agent.alpha"));
+        assert!(empty.stdout.contains("conu pair"));
+
+        register_test_agent(&home, "agent.alpha");
+        register_test_agent(&home, "agent.beta");
+        let ready = run_with_home(["connect"], Some(home));
+
+        assert_eq!(ready.code, 0);
+        assert!(
+            ready
+                .stdout
+                .contains("conu connect local agent.alpha agent.beta")
+        );
+        assert!(ready.stdout.contains("contents are not displayed"));
+        assert!(!ready.stdout.contains("private message contents"));
+        assert!(ready.stderr.is_empty());
     }
 
     #[test]
@@ -12778,6 +13201,7 @@ mod tests {
 
         for command in [
             "init",
+            "menu",
             "status",
             "agents",
             "streams",
