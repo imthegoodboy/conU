@@ -189,6 +189,8 @@ struct LocalSetupReport {
     state_path: PathBuf,
     node_id: String,
     node_created: bool,
+    from_agent_id: String,
+    to_agent_id: String,
     registered_agents: usize,
     local_agents: usize,
     stream_id: String,
@@ -196,12 +198,25 @@ struct LocalSetupReport {
     room_id: String,
     room_created: bool,
     room_participants: usize,
-    helper_joined_room: bool,
+    to_agent_joined_room: bool,
     inbox_entries: usize,
     receipts: usize,
     payload_bytes: usize,
     request_id: String,
     envelope_id: String,
+}
+
+struct LocalSetupOptions {
+    from_agent_id: String,
+    to_agent_id: String,
+    from_display_name: String,
+    to_display_name: String,
+    from_display_name_explicit: bool,
+    to_display_name_explicit: bool,
+    room_id: String,
+    room_display_name: String,
+    room_display_name_explicit: bool,
+    json: bool,
 }
 
 struct SmokeHome {
@@ -12219,8 +12234,28 @@ const LOCAL_SMOKE_TO_AGENT: &str = "agent.beta";
 const LOCAL_SMOKE_PAYLOAD: &[u8] = &[b'Z'; 32];
 const LOCAL_SETUP_FROM_AGENT: &str = "agent.builder";
 const LOCAL_SETUP_TO_AGENT: &str = "agent.helper";
+const LOCAL_SETUP_FROM_DISPLAY: &str = "Builder Agent";
+const LOCAL_SETUP_TO_DISPLAY: &str = "Helper Agent";
 const LOCAL_SETUP_ROOM: &str = "room.dev";
+const LOCAL_SETUP_ROOM_DISPLAY: &str = "Dev Room";
 const LOCAL_SETUP_PAYLOAD: &[u8] = &[0xA5; 32];
+
+impl Default for LocalSetupOptions {
+    fn default() -> Self {
+        Self {
+            from_agent_id: LOCAL_SETUP_FROM_AGENT.to_string(),
+            to_agent_id: LOCAL_SETUP_TO_AGENT.to_string(),
+            from_display_name: LOCAL_SETUP_FROM_DISPLAY.to_string(),
+            to_display_name: LOCAL_SETUP_TO_DISPLAY.to_string(),
+            from_display_name_explicit: false,
+            to_display_name_explicit: false,
+            room_id: LOCAL_SETUP_ROOM.to_string(),
+            room_display_name: LOCAL_SETUP_ROOM_DISPLAY.to_string(),
+            room_display_name_explicit: false,
+            json: false,
+        }
+    }
+}
 
 impl SmokeHome {
     fn create(home_override: Option<PathBuf>) -> Result<Self, String> {
@@ -12411,8 +12446,9 @@ fn render_smoke_usage() -> String {
 fn render_setup(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("local") => render_setup_local(&args[1..], home_override),
-        Some("--json") | None => render_setup_local(args, home_override),
         Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_setup_usage()),
+        Some(value) if value.starts_with("--") => render_setup_local(args, home_override),
+        None => render_setup_local(args, home_override),
         Some(_) => CliOutput::failure(2, render_setup_usage()),
     }
 }
@@ -12425,35 +12461,138 @@ fn render_setup_local(args: &[String], home_override: Option<PathBuf>) -> CliOut
         return CliOutput::success(render_setup_usage());
     }
 
-    let json = match json_flag(args) {
-        Ok(json) => json,
+    let options = match parse_setup_local_args(args) {
+        Ok(options) => options,
         Err(error) => return error,
     };
 
-    match run_local_setup(home_override) {
-        Ok(report) if json => CliOutput::success(render_local_setup_json(&report)),
+    match run_local_setup(home_override, &options) {
+        Ok(report) if options.json => CliOutput::success(render_local_setup_json(&report)),
         Ok(report) => CliOutput::success(render_local_setup_text(&report)),
         Err(error) => CliOutput::failure(1, format!("conU setup failed\n\n{error}")),
     }
 }
 
-fn run_local_setup(home_override: Option<PathBuf>) -> Result<LocalSetupReport, String> {
+fn parse_setup_local_args(args: &[String]) -> Result<LocalSetupOptions, CliOutput> {
+    let mut options = LocalSetupOptions::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json = true;
+                index += 1;
+            }
+            "--from" => {
+                options.from_agent_id = parse_setup_option_value(args, index, "--from")?;
+                index += 2;
+            }
+            "--to" => {
+                options.to_agent_id = parse_setup_option_value(args, index, "--to")?;
+                index += 2;
+            }
+            "--from-name" => {
+                options.from_display_name = parse_setup_option_value(args, index, "--from-name")?;
+                options.from_display_name_explicit = true;
+                index += 2;
+            }
+            "--to-name" => {
+                options.to_display_name = parse_setup_option_value(args, index, "--to-name")?;
+                options.to_display_name_explicit = true;
+                index += 2;
+            }
+            "--room" => {
+                options.room_id = parse_setup_option_value(args, index, "--room")?;
+                index += 2;
+            }
+            "--room-name" => {
+                options.room_display_name = parse_setup_option_value(args, index, "--room-name")?;
+                options.room_display_name_explicit = true;
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            _ => {
+                return Err(CliOutput::failure(2, render_setup_usage()));
+            }
+        }
+    }
+
+    if options.from_agent_id == options.to_agent_id {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "--from and --to must be different\n\n{}",
+                render_setup_usage()
+            ),
+        ));
+    }
+    if options.from_agent_id != LOCAL_SETUP_FROM_AGENT && !options.from_display_name_explicit {
+        options.from_display_name = options.from_agent_id.clone();
+    }
+    if options.to_agent_id != LOCAL_SETUP_TO_AGENT && !options.to_display_name_explicit {
+        options.to_display_name = options.to_agent_id.clone();
+    }
+    if options.room_id != LOCAL_SETUP_ROOM && !options.room_display_name_explicit {
+        options.room_display_name = options.room_id.clone();
+    }
+
+    Ok(options)
+}
+
+fn parse_setup_option_value(
+    args: &[String],
+    index: usize,
+    option: &'static str,
+) -> Result<String, CliOutput> {
+    let Some(value) = args.get(index + 1) else {
+        return Err(CliOutput::failure(2, render_setup_usage()));
+    };
+    if value.starts_with("--") || value.trim().is_empty() {
+        return Err(CliOutput::failure(
+            2,
+            format!("{option} expects a value\n\n{}", render_setup_usage()),
+        ));
+    }
+    Ok(value.clone())
+}
+
+fn run_local_setup(
+    home_override: Option<PathBuf>,
+    options: &LocalSetupOptions,
+) -> Result<LocalSetupReport, String> {
     let init = state::init_state(home_override.clone())
         .map_err(|error| format!("initialize local state: {error}"))?;
     security::ensure_security_state_from_paths(&init.paths)
         .map_err(|error| format!("initialize local security: {error}"))?;
     let home = init.paths.home.clone();
 
-    submit_setup_agent(&home, LOCAL_SETUP_FROM_AGENT, "Builder Agent")?;
-    submit_setup_agent(&home, LOCAL_SETUP_TO_AGENT, "Helper Agent")?;
+    let existing_agents = agents::list_local_agents(Some(home.clone()))
+        .map_err(|error| format!("read existing local agents: {error}"))?;
+    let from_display_name = setup_agent_display_name(
+        &existing_agents,
+        &options.from_agent_id,
+        &options.from_display_name,
+        options.from_display_name_explicit,
+    );
+    let to_display_name = setup_agent_display_name(
+        &existing_agents,
+        &options.to_agent_id,
+        &options.to_display_name,
+        options.to_display_name_explicit,
+    );
+
+    submit_setup_agent(&home, &options.from_agent_id, &from_display_name)?;
+    submit_setup_agent(&home, &options.to_agent_id, &to_display_name)?;
     let gateway = agents::process_gateway_requests(Some(home.clone()))
         .map_err(|error| format!("process local agent gateway: {error}"))?;
 
     let local_agents = agents::list_local_agents(Some(home.clone()))
         .map_err(|error| format!("read local agents: {error}"))?;
-    for agent_id in [LOCAL_SETUP_FROM_AGENT, LOCAL_SETUP_TO_AGENT] {
+    for agent_id in [&options.from_agent_id, &options.to_agent_id] {
         if !local_agents.iter().any(|agent| {
-            agent.agent_id == agent_id
+            agent.agent_id.as_str() == agent_id.as_str()
                 && agent.capabilities.messages
                 && agent.capabilities.streams
                 && agent.capabilities.rooms
@@ -12464,12 +12603,12 @@ fn run_local_setup(home_override: Option<PathBuf>) -> Result<LocalSetupReport, S
         }
     }
 
-    let (stream, stream_created) = setup_local_stream(&home)?;
-    let (room, room_created, helper_joined_room) = setup_local_room(&home)?;
+    let (stream, stream_created) = setup_local_stream(&home, options)?;
+    let (room, room_created, to_agent_joined_room) = setup_local_room(&home, options)?;
 
     let message = LocalMessage::new(
-        LOCAL_SETUP_FROM_AGENT,
-        LOCAL_SETUP_TO_AGENT,
+        &options.from_agent_id,
+        &options.to_agent_id,
         OpaquePayload::from_bytes(LOCAL_SETUP_PAYLOAD.to_vec()),
     )
     .map_err(|error| format!("build local setup message: {error}"))?;
@@ -12481,13 +12620,13 @@ fn run_local_setup(home_override: Option<PathBuf>) -> Result<LocalSetupReport, S
         return Err("local setup message was not delivered".to_string());
     }
 
-    let inbox = messages::list_agent_inbox(Some(home.clone()), LOCAL_SETUP_TO_AGENT)
-        .map_err(|error| format!("read helper inbox metadata: {error}"))?;
+    let inbox = messages::list_agent_inbox(Some(home.clone()), &options.to_agent_id)
+        .map_err(|error| format!("read setup inbox metadata: {error}"))?;
     let delivered = processed.envelope_ids.iter().rev().find_map(|envelope_id| {
         inbox.iter().find(|entry| {
             entry.envelope_id.as_str() == envelope_id.as_str()
-                && entry.from_agent_id == LOCAL_SETUP_FROM_AGENT
-                && entry.to_agent_id == LOCAL_SETUP_TO_AGENT
+                && entry.from_agent_id.as_str() == options.from_agent_id.as_str()
+                && entry.to_agent_id.as_str() == options.to_agent_id.as_str()
                 && entry.payload_bytes == LOCAL_SETUP_PAYLOAD.len()
         })
     });
@@ -12509,6 +12648,8 @@ fn run_local_setup(home_override: Option<PathBuf>) -> Result<LocalSetupReport, S
         state_path: home,
         node_id: init.node.node_id,
         node_created: init.node_created,
+        from_agent_id: options.from_agent_id.clone(),
+        to_agent_id: options.to_agent_id.clone(),
         registered_agents: gateway.registered_agents.len(),
         local_agents: local_agents.len(),
         stream_id: stream.stream_id,
@@ -12516,7 +12657,7 @@ fn run_local_setup(home_override: Option<PathBuf>) -> Result<LocalSetupReport, S
         room_id: room.room_id,
         room_created,
         room_participants: room.participants.len(),
-        helper_joined_room,
+        to_agent_joined_room,
         inbox_entries: inbox.len(),
         receipts: receipt_count,
         payload_bytes: submission.payload_bytes,
@@ -12534,6 +12675,23 @@ fn submit_setup_agent(home: &Path, agent_id: &str, display_name: &str) -> Result
         .map_err(|error| format!("submit setup agent metadata: {error}"))
 }
 
+fn setup_agent_display_name(
+    existing_agents: &[LocalAgentRecord],
+    agent_id: &str,
+    default_display_name: &str,
+    explicit: bool,
+) -> String {
+    if explicit {
+        return default_display_name.to_string();
+    }
+
+    existing_agents
+        .iter()
+        .find(|agent| agent.agent_id == agent_id)
+        .map(|agent| agent.display_name.clone())
+        .unwrap_or_else(|| default_display_name.to_string())
+}
+
 fn setup_agent_capabilities() -> AgentCapabilities {
     let mut capabilities = AgentCapabilities::basic();
     capabilities.messages = true;
@@ -12544,13 +12702,16 @@ fn setup_agent_capabilities() -> AgentCapabilities {
     capabilities
 }
 
-fn setup_local_stream(home: &Path) -> Result<(StreamRecord, bool), String> {
+fn setup_local_stream(
+    home: &Path,
+    options: &LocalSetupOptions,
+) -> Result<(StreamRecord, bool), String> {
     let existing = streams::list_streams(Some(home.to_path_buf()))
         .map_err(|error| format!("read local stream metadata: {error}"))?
         .into_iter()
         .find(|stream| {
-            stream.from_agent_id == LOCAL_SETUP_FROM_AGENT
-                && stream.to_agent_id == LOCAL_SETUP_TO_AGENT
+            stream.from_agent_id.as_str() == options.from_agent_id.as_str()
+                && stream.to_agent_id.as_str() == options.to_agent_id.as_str()
                 && stream.kind == "message"
                 && stream.state.as_str() == "open"
         });
@@ -12560,52 +12721,55 @@ fn setup_local_stream(home: &Path) -> Result<(StreamRecord, bool), String> {
 
     streams::open_stream(
         Some(home.to_path_buf()),
-        LOCAL_SETUP_FROM_AGENT,
-        LOCAL_SETUP_TO_AGENT,
+        &options.from_agent_id,
+        &options.to_agent_id,
         "message",
     )
     .map(|report| (report.stream, true))
     .map_err(|error| format!("open local setup stream: {error}"))
 }
 
-fn setup_local_room(home: &Path) -> Result<(RoomRecord, bool, bool), String> {
+fn setup_local_room(
+    home: &Path,
+    options: &LocalSetupOptions,
+) -> Result<(RoomRecord, bool, bool), String> {
     let existing = rooms::list_rooms(Some(home.to_path_buf()))
         .map_err(|error| format!("read local room metadata: {error}"))?
         .into_iter()
-        .find(|room| room.room_id == LOCAL_SETUP_ROOM);
+        .find(|room| room.room_id.as_str() == options.room_id.as_str());
 
     let (room, created) = if let Some(room) = existing {
         (room, false)
     } else {
         let report = rooms::create_room(
             Some(home.to_path_buf()),
-            LOCAL_SETUP_ROOM,
-            "Dev Room",
-            LOCAL_SETUP_FROM_AGENT,
+            &options.room_id,
+            &options.room_display_name,
+            &options.from_agent_id,
         )
         .map_err(|error| format!("create local setup room: {error}"))?;
         (report.room, true)
     };
 
-    let builder_present = room
+    let from_agent_present = room
         .participants
         .iter()
-        .any(|participant| participant.agent_id == LOCAL_SETUP_FROM_AGENT);
-    if !builder_present {
+        .any(|participant| participant.agent_id.as_str() == options.from_agent_id.as_str());
+    if !from_agent_present {
         rooms::join_room(
             Some(home.to_path_buf()),
-            LOCAL_SETUP_ROOM,
-            LOCAL_SETUP_FROM_AGENT,
+            &options.room_id,
+            &options.from_agent_id,
         )
-        .map_err(|error| format!("join builder to local setup room: {error}"))?;
+        .map_err(|error| format!("join from agent to local setup room: {error}"))?;
     }
 
     let joined = rooms::join_room(
         Some(home.to_path_buf()),
-        LOCAL_SETUP_ROOM,
-        LOCAL_SETUP_TO_AGENT,
+        &options.room_id,
+        &options.to_agent_id,
     )
-    .map_err(|error| format!("join helper to local setup room: {error}"))?;
+    .map_err(|error| format!("join to agent to local setup room: {error}"))?;
     Ok((joined.room, created, joined.joined))
 }
 
@@ -12630,7 +12794,7 @@ fn render_local_setup_json(report: &LocalSetupReport) -> String {
   "room": {{
     "roomId": "{}",
     "created": {},
-    "helperJoined": {},
+    "toAgentJoined": {},
     "participants": {}
   }},
   "delivery": {{
@@ -12646,15 +12810,15 @@ fn render_local_setup_json(report: &LocalSetupReport) -> String {
         json_escape(&report.state_path.display().to_string()),
         json_escape(&report.node_id),
         report.node_created,
-        LOCAL_SETUP_FROM_AGENT,
-        LOCAL_SETUP_TO_AGENT,
+        json_escape(&report.from_agent_id),
+        json_escape(&report.to_agent_id),
         report.registered_agents,
         report.local_agents,
         json_escape(&report.stream_id),
         report.stream_created,
         json_escape(&report.room_id),
         report.room_created,
-        report.helper_joined_room,
+        report.to_agent_joined_room,
         report.room_participants,
         json_escape(&report.request_id),
         json_escape(&report.envelope_id),
@@ -12696,8 +12860,8 @@ privacy
   contentsDisplayed=false",
         report.state_path.display(),
         report.node_id,
-        LOCAL_SETUP_FROM_AGENT,
-        LOCAL_SETUP_TO_AGENT,
+        report.from_agent_id,
+        report.to_agent_id,
         report.registered_agents,
         report.local_agents,
         report.stream_id,
@@ -12710,8 +12874,8 @@ privacy
         report.room_participants,
         if report.room_created {
             "created"
-        } else if report.helper_joined_room {
-            "helper joined"
+        } else if report.to_agent_joined_room {
+            "to agent joined"
         } else {
             "reused"
         },
@@ -12719,18 +12883,18 @@ privacy
         report.envelope_id,
         report.payload_bytes,
         report.receipts,
-        LOCAL_SETUP_FROM_AGENT,
-        LOCAL_SETUP_TO_AGENT,
-        LOCAL_SETUP_FROM_AGENT,
-        LOCAL_SETUP_TO_AGENT,
-        LOCAL_SETUP_TO_AGENT,
+        report.from_agent_id,
+        report.to_agent_id,
+        report.from_agent_id,
+        report.to_agent_id,
+        report.to_agent_id,
         report.room_id,
-        LOCAL_SETUP_FROM_AGENT
+        report.from_agent_id
     )
 }
 
 fn render_setup_usage() -> String {
-    "usage: conu setup [local] [--json]".to_string()
+    "usage: conu setup [local] [--from <agent-id>] [--to <agent-id>] [--from-name <display-name>] [--to-name <display-name>] [--room <room-id>] [--room-name <display-name>] [--json]".to_string()
 }
 
 fn doctor_status(
@@ -13340,7 +13504,7 @@ Usage:
   conu connect local <from-agent> <to-agent> [--kind <kind>] [--json]
   conu connect room <room-id> <agent-id> [--json]
   conu watch
-  conu setup [local] [--json]
+  conu setup [local] [--from <agent-id>] [--to <agent-id>] [--from-name <display-name>] [--to-name <display-name>] [--room <room-id>] [--room-name <display-name>] [--json]
   conu doctor [--json]
   conu smoke [local] [--json]
   conu start [--json]
@@ -13838,6 +14002,9 @@ mod tests {
         assert!(second.stdout.contains("\"status\": \"ready\""));
         assert!(second.stdout.contains("\"persistentState\": true"));
         assert!(second.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(second.stdout.contains("\"from\": \"agent.builder\""));
+        assert!(second.stdout.contains("\"to\": \"agent.helper\""));
+        assert!(second.stdout.contains("\"toAgentJoined\": false"));
         assert!(second.stdout.contains("\"created\": false"));
         assert!(
             !second
@@ -13845,6 +14012,120 @@ mod tests {
                 .contains("local setup private payload contents")
         );
         assert!(second.stderr.is_empty());
+    }
+
+    #[test]
+    fn setup_local_accepts_custom_agent_pair_and_room() {
+        let home = temp_home("setup-local-custom");
+        let output = run_with_home(
+            [
+                "setup",
+                "local",
+                "--from",
+                "agent.frontend",
+                "--to",
+                "agent.qa",
+                "--from-name",
+                "Frontend Agent",
+                "--to-name",
+                "QA Agent",
+                "--room",
+                "room.release",
+                "--room-name",
+                "Release Room",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("agent.frontend -> agent.qa"));
+        assert!(output.stdout.contains("room: room.release"));
+        assert!(
+            output
+                .stdout
+                .contains("conu connect local agent.frontend agent.qa")
+        );
+        assert!(output.stdout.contains("conu messages wait agent.qa"));
+        assert!(
+            output
+                .stdout
+                .contains("conu rooms publish room.release agent.frontend build")
+        );
+        assert!(!output.stdout.contains("agent.builder"));
+        assert!(!output.stdout.contains("agent.helper"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(output.stderr.is_empty());
+
+        let agents = agents::list_local_agents(Some(home.clone())).expect("agents read");
+        assert!(agents.iter().any(|agent| {
+            agent.agent_id == "agent.frontend"
+                && agent.display_name == "Frontend Agent"
+                && agent.capabilities.messages
+                && agent.capabilities.streams
+                && agent.capabilities.rooms
+        }));
+        assert!(agents.iter().any(|agent| {
+            agent.agent_id == "agent.qa"
+                && agent.display_name == "QA Agent"
+                && agent.capabilities.messages
+                && agent.capabilities.streams
+                && agent.capabilities.rooms
+        }));
+
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.qa").expect("inbox reads");
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].from_agent_id, "agent.frontend");
+        assert_eq!(inbox[0].to_agent_id, "agent.qa");
+        assert_eq!(inbox[0].payload_bytes, LOCAL_SETUP_PAYLOAD.len());
+
+        let json = run_with_home(
+            [
+                "setup",
+                "--from",
+                "agent.frontend",
+                "--to",
+                "agent.qa",
+                "--room",
+                "room.release",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(json.code, 0, "{}", json.stderr);
+        assert!(json.stdout.contains("\"from\": \"agent.frontend\""));
+        assert!(json.stdout.contains("\"to\": \"agent.qa\""));
+        assert!(json.stdout.contains("\"roomId\": \"room.release\""));
+        assert!(json.stdout.contains("\"toAgentJoined\": false"));
+        assert!(json.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!json.stdout.contains("local setup private payload contents"));
+        assert!(json.stderr.is_empty());
+
+        let agents_after_repeat =
+            agents::list_local_agents(Some(home)).expect("agents read after repeat setup");
+        assert!(agents_after_repeat.iter().any(|agent| {
+            agent.agent_id == "agent.frontend" && agent.display_name == "Frontend Agent"
+        }));
+        assert!(
+            agents_after_repeat
+                .iter()
+                .any(|agent| agent.agent_id == "agent.qa" && agent.display_name == "QA Agent")
+        );
+    }
+
+    #[test]
+    fn setup_local_rejects_same_agent_pair() {
+        let home = temp_home("setup-local-same-agent");
+        let output = run_with_home(
+            ["setup", "--from", "agent.same", "--to", "agent.same"],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 2);
+        assert!(output.stderr.contains("--from and --to must be different"));
+        assert!(output.stderr.contains("usage: conu setup"));
+        assert!(output.stdout.is_empty());
     }
 
     #[test]
