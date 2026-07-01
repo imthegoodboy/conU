@@ -244,7 +244,7 @@ conud --process-ipc
 Choose stable ids for each local agent:
 
 ```powershell
-conu agents register agent.codex "Codex Desktop" --kind coding-agent
+conu agents register agent.builder "Builder Agent" --kind coding-agent
 conu agents register agent.helper "Helper Agent" --kind coding-agent
 conu agents
 ```
@@ -261,7 +261,7 @@ conu agents --json
 Agents can update presence:
 
 ```powershell
-conu agents heartbeat agent.codex --presence busy
+conu agents heartbeat agent.builder --presence busy
 conud --process-ipc
 ```
 
@@ -272,7 +272,7 @@ Send payload bytes through stdin. Do not put private payload text directly in co
 PowerShell:
 
 ```powershell
-"opaque bytes from agent.codex" | conu messages send agent.codex agent.helper --stdin
+"opaque bytes from agent.builder" | conu messages send agent.builder agent.helper --stdin
 conu messages wait agent.helper --process-ipc --timeout-ms 30000 --json
 conu messages inbox agent.helper --json
 conu messages history agent.helper --limit 20 --json
@@ -288,10 +288,10 @@ The wait, inbox, history, and reply commands show metadata only: envelope id, se
 If two agents are on the same PC, register both and open a local metadata stream:
 
 ```powershell
-conu agents register agent.codex "Codex Desktop" --kind coding-agent --streams true --rooms true
-conu agents register agent.hermes "Hermes" --kind coding-agent --streams true --rooms true
+conu agents register agent.builder "Builder Agent" --kind coding-agent --streams true --rooms true
+conu agents register agent.reviewer "Reviewer Agent" --kind coding-agent --streams true --rooms true
 conud --process-ipc
-conu connect local agent.codex agent.hermes
+conu connect local agent.builder agent.reviewer
 conu watch
 ```
 
@@ -308,11 +308,11 @@ The CLI shows stream id, route, packet count, and byte count. It does not show t
 Rooms are the current multi-agent coordination layer:
 
 ```powershell
-conu rooms create room.dev "Dev Room" --agent agent.codex
-conu rooms join room.dev agent.hermes
-conu rooms policy room.dev agent.hermes build --publish true --subscribe false
-conu rooms policy room.dev agent.codex build --publish false --subscribe true
-"opaque room bytes" | conu rooms publish room.dev agent.hermes build --stdin
+conu rooms create room.dev "Dev Room" --agent agent.builder
+conu rooms join room.dev agent.reviewer
+conu rooms policy room.dev agent.reviewer build --publish true --subscribe false
+conu rooms policy room.dev agent.builder build --publish false --subscribe true
+"opaque room bytes" | conu rooms publish room.dev agent.reviewer build --stdin
 conu rooms
 conu rooms events
 conu watch

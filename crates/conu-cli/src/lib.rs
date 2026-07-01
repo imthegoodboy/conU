@@ -112,6 +112,12 @@ const MENU_ITEMS: &[MenuItem] = &[
         action: MenuAction::Command(&["doctor"]),
     },
     MenuItem {
+        title: "Smoke",
+        command: "conu smoke",
+        detail: "local delivery check",
+        action: MenuAction::Command(&["smoke"]),
+    },
+    MenuItem {
         title: "Start",
         command: "conu start",
         detail: "launch conUD runtime",
@@ -161,6 +167,20 @@ struct TerminalMenuStatus {
     runtime_state: String,
     local_agents: usize,
     remote_agents: usize,
+}
+
+struct LocalSmokeReport {
+    registered_agents: usize,
+    delivered_messages: usize,
+    inbox_entries: usize,
+    receipts: usize,
+    payload_bytes: usize,
+    request_id: String,
+    envelope_id: String,
+}
+
+struct SmokeHome {
+    path: PathBuf,
 }
 
 struct TerminalMenuGuard;
@@ -450,6 +470,7 @@ where
         "connect" => render_connect(&args[1..], home_override),
         "watch" => render_watch(&args[1..], home_override),
         "doctor" => render_doctor(&args[1..], home_override),
+        "smoke" => render_smoke(&args[1..], home_override),
         "logs" => render_logs(&args[1..], home_override),
         "telemetry" => render_telemetry(&args[1..], home_override),
         "update" => render_update(&args[1..]),
@@ -543,6 +564,7 @@ next actions
   conu init
   conu start
   conu doctor
+  conu smoke
   conu agents
   conu connect
   conu watch
@@ -12165,6 +12187,196 @@ privacy
     )
 }
 
+const LOCAL_SMOKE_FROM_AGENT: &str = "agent.alpha";
+const LOCAL_SMOKE_TO_AGENT: &str = "agent.beta";
+const LOCAL_SMOKE_PAYLOAD: &[u8] = &[b'Z'; 32];
+
+impl SmokeHome {
+    fn create(home_override: Option<PathBuf>) -> Result<Self, String> {
+        let base = home_override
+            .unwrap_or_else(env::temp_dir)
+            .join("conu-smoke");
+        fs::create_dir_all(&base)
+            .map_err(|error| format!("could not prepare local smoke workspace: {error}"))?;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = base.join(format!("local-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path)
+            .map_err(|error| format!("could not create local smoke workspace: {error}"))?;
+
+        Ok(Self { path })
+    }
+}
+
+impl Drop for SmokeHome {
+    fn drop(&mut self) {
+        if self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("local-"))
+        {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+fn render_smoke(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    match args.first().map(String::as_str) {
+        Some("local") => render_smoke_local(&args[1..], home_override),
+        Some("--json") | None => render_smoke_local(args, home_override),
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_smoke_usage()),
+        Some(_) => CliOutput::failure(2, render_smoke_usage()),
+    }
+}
+
+fn render_smoke_local(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if args
+        .iter()
+        .any(|arg| arg == "--help" || arg == "-h" || arg == "help")
+    {
+        return CliOutput::success(render_smoke_usage());
+    }
+
+    let json = match json_flag(args) {
+        Ok(json) => json,
+        Err(error) => return error,
+    };
+
+    match run_local_smoke(home_override) {
+        Ok(report) if json => CliOutput::success(render_local_smoke_json(&report)),
+        Ok(report) => CliOutput::success(render_local_smoke_text(&report)),
+        Err(error) => CliOutput::failure(1, format!("conU smoke failed\n\n{error}")),
+    }
+}
+
+fn run_local_smoke(home_override: Option<PathBuf>) -> Result<LocalSmokeReport, String> {
+    let smoke_home = SmokeHome::create(home_override)?;
+    let home = smoke_home.path.clone();
+    let init = state::init_state(Some(home.clone()))
+        .map_err(|error| format!("initialize temp state: {error}"))?;
+    security::ensure_security_state_from_paths(&init.paths)
+        .map_err(|error| format!("initialize temp security: {error}"))?;
+
+    submit_smoke_agent(&home, LOCAL_SMOKE_FROM_AGENT, "Alpha")?;
+    submit_smoke_agent(&home, LOCAL_SMOKE_TO_AGENT, "Beta")?;
+    let gateway = agents::process_gateway_requests(Some(home.clone()))
+        .map_err(|error| format!("process temp agent gateway: {error}"))?;
+    if gateway.registered_agents.len() != 2 {
+        return Err("local smoke did not register both temp agents".to_string());
+    }
+
+    let message = LocalMessage::new(
+        LOCAL_SMOKE_FROM_AGENT,
+        LOCAL_SMOKE_TO_AGENT,
+        OpaquePayload::from_bytes(LOCAL_SMOKE_PAYLOAD.to_vec()),
+    )
+    .map_err(|error| format!("build temp local message: {error}"))?;
+    let submission = messages::submit_local_message(Some(home.clone()), message)
+        .map_err(|error| format!("submit temp local message: {error}"))?;
+    let processed = messages::process_message_requests(Some(home.clone()))
+        .map_err(|error| format!("process temp local message: {error}"))?;
+    let inbox = messages::list_agent_inbox(Some(home.clone()), LOCAL_SMOKE_TO_AGENT)
+        .map_err(|error| format!("read temp inbox metadata: {error}"))?;
+    let receipts = messages::list_receipts(Some(home))
+        .map_err(|error| format!("read temp receipt metadata: {error}"))?;
+
+    let delivered = inbox.iter().find(|entry| {
+        entry.from_agent_id == LOCAL_SMOKE_FROM_AGENT
+            && entry.to_agent_id == LOCAL_SMOKE_TO_AGENT
+            && entry.payload_bytes == LOCAL_SMOKE_PAYLOAD.len()
+    });
+    let Some(delivered) = delivered else {
+        return Err("local smoke did not find delivered inbox metadata".to_string());
+    };
+    if processed.delivered != 1 || receipts.len() != 1 {
+        return Err("local smoke delivery metadata was incomplete".to_string());
+    }
+
+    Ok(LocalSmokeReport {
+        registered_agents: gateway.registered_agents.len(),
+        delivered_messages: processed.delivered,
+        inbox_entries: inbox.len(),
+        receipts: receipts.len(),
+        payload_bytes: submission.payload_bytes,
+        request_id: submission.request_id,
+        envelope_id: delivered.envelope_id.clone(),
+    })
+}
+
+fn submit_smoke_agent(home: &Path, agent_id: &str, display_name: &str) -> Result<(), String> {
+    let registration = AgentRegistration::new(agent_id, display_name, "smoke-agent")
+        .map_err(|error| format!("build temp agent metadata: {error}"))?;
+    agents::submit_registration(Some(home.to_path_buf()), registration)
+        .map(|_| ())
+        .map_err(|error| format!("submit temp agent metadata: {error}"))
+}
+
+fn render_local_smoke_json(report: &LocalSmokeReport) -> String {
+    format!(
+        r#"{{
+  "status": "passed",
+  "mode": "local",
+  "registeredAgents": {},
+  "deliveredMessages": {},
+  "inboxEntries": {},
+  "receipts": {},
+  "payloadBytes": {},
+  "requestId": "{}",
+  "envelopeId": "{}",
+  "tempStatePersisted": false,
+  "contentsDisplayed": false
+}}"#,
+        report.registered_agents,
+        report.delivered_messages,
+        report.inbox_entries,
+        report.receipts,
+        report.payload_bytes,
+        json_escape(&report.request_id),
+        json_escape(&report.envelope_id)
+    )
+}
+
+fn render_local_smoke_text(report: &LocalSmokeReport) -> String {
+    format!(
+        r"conU smoke local
+
+status: passed
+mode: temp local state
+agents registered: {}
+messages delivered: {}
+inbox entries: {}
+receipts: {}
+request: {}
+envelope: {}
+bytes: {}
+
+next
+  conu agents register <agent-id> <display-name> --messages true
+  echo <payload> | conu messages send <from-agent> <to-agent> --stdin
+  conu messages wait <to-agent> --process-ipc --timeout-ms 30000 --json
+
+privacy
+  temp state    removed after smoke
+  payload view  contents are not displayed by conU
+  contentsDisplayed=false",
+        report.registered_agents,
+        report.delivered_messages,
+        report.inbox_entries,
+        report.receipts,
+        report.request_id,
+        report.envelope_id,
+        report.payload_bytes
+    )
+}
+
+fn render_smoke_usage() -> String {
+    "usage: conu smoke [local] [--json]".to_string()
+}
+
 fn doctor_status(
     snapshot: &StateSnapshot,
     security: &SecurityAudit,
@@ -12773,6 +12985,7 @@ Usage:
   conu connect room <room-id> <agent-id> [--json]
   conu watch
   conu doctor [--json]
+  conu smoke [local] [--json]
   conu start [--json]
   conu stop [--json]
   conu components
@@ -13150,6 +13363,7 @@ mod tests {
         assert!(output.stdout.contains("next actions"));
         assert!(output.stdout.contains("conu menu"));
         assert!(output.stdout.contains("conu init"));
+        assert!(output.stdout.contains("conu smoke"));
         assert!(!output.stdout.contains("conu update apply"));
         assert!(output.stderr.is_empty());
         assert_eq!(explicit.code, 0);
@@ -13165,9 +13379,56 @@ mod tests {
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("Use Up/Down"));
         assert!(output.stdout.contains("conu dashboard"));
+        assert!(output.stdout.contains("conu smoke"));
         assert!(output.stdout.contains("conu connect"));
         assert!(output.stdout.contains("contentsDisplayed=false"));
         assert!(!output.stdout.contains("private message contents"));
+        assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn smoke_local_verifies_delivery_without_persisting_temp_state() {
+        let home = temp_home("smoke-local");
+        let output = run_with_home(["smoke", "local"], Some(home.clone()));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("status: passed"));
+        assert!(output.stdout.contains("agents registered: 2"));
+        assert!(output.stdout.contains("messages delivered: 1"));
+        assert!(output.stdout.contains("receipts: 1"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(
+            !output
+                .stdout
+                .contains(&"Z".repeat(LOCAL_SMOKE_PAYLOAD.len()))
+        );
+        assert!(output.stderr.is_empty());
+
+        let smoke_root = home.join("conu-smoke");
+        let entries = fs::read_dir(smoke_root)
+            .expect("smoke root remains")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("smoke root entries read");
+        assert!(entries.is_empty(), "temp smoke homes should be removed");
+    }
+
+    #[test]
+    fn smoke_local_json_reports_metadata_only() {
+        let home = temp_home("smoke-local-json");
+        let output = run_with_home(["smoke", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"passed\""));
+        assert!(output.stdout.contains("\"mode\": \"local\""));
+        assert!(output.stdout.contains("\"registeredAgents\": 2"));
+        assert!(output.stdout.contains("\"deliveredMessages\": 1"));
+        assert!(output.stdout.contains("\"tempStatePersisted\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(
+            !output
+                .stdout
+                .contains(&"Z".repeat(LOCAL_SMOKE_PAYLOAD.len()))
+        );
         assert!(output.stderr.is_empty());
     }
 
@@ -13202,6 +13463,7 @@ mod tests {
         for command in [
             "init",
             "menu",
+            "smoke",
             "status",
             "agents",
             "streams",
