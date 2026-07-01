@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="220" viewBox="0 0 640 220" role="img" aria-labelledby="title desc">
+  <title id="title">conU logo</title>
+  <desc id="desc">A minimal wordmark showing conU as a private connection between agents.</desc>
+  <rect width="640" height="220" rx="32" fill="#0d0f12"/>
+  <g fill="none" stroke="#f7f7f2" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="104" cy="110" r="34"/>
+    <circle cx="536" cy="110" r="34"/>
+    <path d="M146 110H246"/>
+    <path d="M394 110H494"/>
+    <path d="M254 110C286 54 354 54 386 110"/>
+    <path d="M254 110C286 166 354 166 386 110"/>
+  </g>
+  <text x="320" y="133" fill="#f7f7f2" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="70" font-weight="800" text-anchor="middle">conU</text>
+  <text x="320" y="178" fill="#aeb7c2" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" text-anchor="middle">agents own the conversation</text>
+</svg>

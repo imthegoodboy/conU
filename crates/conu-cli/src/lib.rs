@@ -810,6 +810,7 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
 fn render_agents(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("register") => render_agent_register(&args[1..], home_override),
+        Some("prepare") => render_agent_prepare(&args[1..], home_override),
         Some("heartbeat") => render_agent_heartbeat(&args[1..], home_override),
         Some("export") => render_agent_export(&args[1..], home_override),
         Some("trust") => render_agent_trust(&args[1..], home_override),
@@ -919,6 +920,19 @@ privacy
         capabilities_summary(&parsed.capabilities),
         submission.request_id
     ))
+}
+
+fn render_agent_prepare(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_agent_prepare_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+
+    match run_agent_prepare(home_override, &parsed) {
+        Ok(report) if parsed.json => CliOutput::success(render_agent_prepare_json(&report)),
+        Ok(report) => CliOutput::success(render_agent_prepare_text(&report)),
+        Err(error) => CliOutput::failure(1, format!("conU agents prepare failed\n\n{error}")),
+    }
 }
 
 fn render_agent_export(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -1229,6 +1243,7 @@ remote agents
 {remote}
 
 next
+  conu agents prepare <agent-id> <display-name> [--connect <agent-id>] [--room room.dev]
   conu agents register <agent-id> <display-name> [--streams true] [--rooms true]
   conu agents export <agent-id> --json
   conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id>
@@ -1244,6 +1259,41 @@ struct RegisterArgs {
     kind: String,
     capabilities: AgentCapabilities,
     json: bool,
+}
+
+struct AgentPrepareArgs {
+    agent_id: String,
+    display_name: String,
+    kind: String,
+    capabilities: AgentCapabilities,
+    presence: AgentPresence,
+    connect_to_agent_id: Option<String>,
+    stream_kind: String,
+    room_id: Option<String>,
+    room_display_name: Option<String>,
+    json: bool,
+}
+
+struct AgentPrepareReport {
+    state_path: PathBuf,
+    node_id: String,
+    node_created: bool,
+    agent_id: String,
+    display_name: String,
+    kind: String,
+    capabilities: AgentCapabilities,
+    presence: Option<AgentPresence>,
+    registration_request_id: String,
+    presence_request_id: Option<String>,
+    processed_agents: usize,
+    rejected_agents: usize,
+    registered_agents: usize,
+    heartbeat_updated: bool,
+    stream: Option<StreamRecord>,
+    stream_created: bool,
+    room: Option<RoomRecord>,
+    room_created: bool,
+    agent_joined_room: bool,
 }
 
 struct HeartbeatArgs {
@@ -1500,6 +1550,173 @@ fn render_agents_trust_usage() -> String {
     "usage: conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--signature-algorithm <algorithm>] [--json]".to_string()
 }
 
+fn parse_agent_prepare_args(args: &[String]) -> Result<AgentPrepareArgs, CliOutput> {
+    let mut json = false;
+    let mut kind = "local-agent".to_string();
+    let mut capabilities = setup_agent_capabilities();
+    let mut presence = AgentPresence::Ready;
+    let mut connect_to_agent_id = None;
+    let mut stream_kind = "message".to_string();
+    let mut stream_kind_explicit = false;
+    let mut room_id = None;
+    let mut room_display_name = None;
+    let mut room_name_explicit = false;
+    let mut presence_explicit = false;
+    let mut positional = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--kind" => {
+                kind = required_option_value(args, index, render_agents_prepare_usage())?;
+                index += 2;
+            }
+            "--presence" => {
+                let value = required_option_value(args, index, render_agents_prepare_usage())?;
+                presence = parse_presence(&value)?;
+                presence_explicit = true;
+                index += 2;
+            }
+            "--connect" => {
+                connect_to_agent_id = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_prepare_usage(),
+                )?);
+                index += 2;
+            }
+            "--stream-kind" => {
+                stream_kind = required_option_value(args, index, render_agents_prepare_usage())?;
+                stream_kind_explicit = true;
+                index += 2;
+            }
+            "--room" => {
+                room_id = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_prepare_usage(),
+                )?);
+                index += 2;
+            }
+            "--room-name" => {
+                room_display_name = Some(required_option_value(
+                    args,
+                    index,
+                    render_agents_prepare_usage(),
+                )?);
+                room_name_explicit = true;
+                index += 2;
+            }
+            "--messages" => {
+                capabilities.messages =
+                    parse_agent_prepare_bool(args.get(index + 1), "--messages")?;
+                index += 2;
+            }
+            "--streams" => {
+                capabilities.streams = parse_agent_prepare_bool(args.get(index + 1), "--streams")?;
+                index += 2;
+            }
+            "--rooms" => {
+                capabilities.rooms = parse_agent_prepare_bool(args.get(index + 1), "--rooms")?;
+                index += 2;
+            }
+            "--files" => {
+                capabilities.files = parse_agent_prepare_bool(args.get(index + 1), "--files")?;
+                index += 2;
+            }
+            "--presence-capability" => {
+                capabilities.presence =
+                    parse_agent_prepare_bool(args.get(index + 1), "--presence-capability")?;
+                index += 2;
+            }
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            value => {
+                positional.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if positional.len() != 2 {
+        return Err(CliOutput::failure(2, render_agents_prepare_usage()));
+    }
+
+    let agent_id = positional.remove(0);
+    if matches!(connect_to_agent_id.as_deref(), Some(peer_id) if peer_id == agent_id) {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "--connect must be different from <agent-id>\n\n{}",
+                render_agents_prepare_usage()
+            ),
+        ));
+    }
+    if connect_to_agent_id.is_none() && stream_kind_explicit {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "--stream-kind requires --connect\n\n{}",
+                render_agents_prepare_usage()
+            ),
+        ));
+    }
+    if connect_to_agent_id.is_some() && !capabilities.streams {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "--connect requires --streams true\n\n{}",
+                render_agents_prepare_usage()
+            ),
+        ));
+    }
+    if room_id.is_none() && room_name_explicit {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "--room-name requires --room\n\n{}",
+                render_agents_prepare_usage()
+            ),
+        ));
+    }
+    if room_id.is_some() && !capabilities.rooms {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "--room requires --rooms true\n\n{}",
+                render_agents_prepare_usage()
+            ),
+        ));
+    }
+    if presence_explicit && !capabilities.presence {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "--presence requires --presence-capability true\n\n{}",
+                render_agents_prepare_usage()
+            ),
+        ));
+    }
+
+    Ok(AgentPrepareArgs {
+        agent_id,
+        display_name: positional.remove(0),
+        kind,
+        capabilities,
+        presence,
+        connect_to_agent_id,
+        stream_kind,
+        room_id,
+        room_display_name,
+        json,
+    })
+}
+
 fn parse_register_args(args: &[String]) -> Result<RegisterArgs, CliOutput> {
     let mut json = false;
     let mut kind = "local-agent".to_string();
@@ -1567,6 +1784,13 @@ fn parse_register_bool(value: Option<&String>, option: &'static str) -> Result<b
     parse_bool_option(value, option, render_agents_register_usage())
 }
 
+fn parse_agent_prepare_bool(
+    value: Option<&String>,
+    option: &'static str,
+) -> Result<bool, CliOutput> {
+    parse_bool_option(value, option, render_agents_prepare_usage())
+}
+
 fn parse_agent_trust_bool(value: Option<&String>, option: &'static str) -> Result<bool, CliOutput> {
     parse_bool_option(value, option, render_agents_trust_usage())
 }
@@ -1591,6 +1815,10 @@ fn parse_bool_option(
 
 fn render_agents_register_usage() -> String {
     "usage: conu agents register <agent-id> <display-name> [--kind <kind>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--json]".to_string()
+}
+
+fn render_agents_prepare_usage() -> String {
+    "usage: conu agents prepare <agent-id> <display-name> [--kind <kind>] [--presence <ready|busy|idle|offline>] [--connect <agent-id>] [--stream-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence-capability <true|false>] [--json]".to_string()
 }
 
 fn capabilities_summary(capabilities: &AgentCapabilities) -> String {
@@ -6725,9 +6953,10 @@ fn connect_next_steps(
     let mut steps = Vec::new();
 
     if local_agents.len() < 2 {
-        steps
-            .push("conu agents register agent.alpha Alpha --streams true --rooms true".to_string());
-        steps.push("conu agents register agent.beta Beta --streams true --rooms true".to_string());
+        steps.push("conu agents prepare agent.alpha Alpha --room room.dev".to_string());
+        steps.push(
+            "conu agents prepare agent.beta Beta --connect agent.alpha --room room.dev".to_string(),
+        );
     } else {
         steps.push(format!(
             "conu connect local {} {}",
@@ -12666,6 +12895,120 @@ fn run_local_setup(
     })
 }
 
+fn run_agent_prepare(
+    home_override: Option<PathBuf>,
+    options: &AgentPrepareArgs,
+) -> Result<AgentPrepareReport, String> {
+    let init = state::init_state(home_override)
+        .map_err(|error| format!("initialize local state: {error}"))?;
+    security::ensure_security_state_from_paths(&init.paths)
+        .map_err(|error| format!("initialize local security: {error}"))?;
+    let home = init.paths.home.clone();
+
+    let mut registration =
+        AgentRegistration::new(&options.agent_id, &options.display_name, &options.kind)
+            .map_err(|error| format!("build agent metadata: {error}"))?;
+    registration.capabilities = options.capabilities.clone();
+    let registration_submission = agents::submit_registration(Some(home.clone()), registration)
+        .map_err(|error| format!("submit agent metadata: {error}"))?;
+    let registration_gateway = agents::process_gateway_requests(Some(home.clone()))
+        .map_err(|error| format!("process agent metadata: {error}"))?;
+
+    let mut processed_agents = registration_gateway.processed;
+    let mut rejected_agents = registration_gateway.rejected;
+    let registered_agents = registration_gateway.registered_agents.len();
+
+    let registered = agents::list_local_agents(Some(home.clone()))
+        .map_err(|error| format!("read local agents: {error}"))?
+        .into_iter()
+        .find(|agent| agent.agent_id == options.agent_id)
+        .ok_or_else(|| format!("{} was not registered locally", options.agent_id))?;
+    if registered.capabilities != options.capabilities {
+        return Err(format!(
+            "{} capabilities were not applied by the local gateway",
+            options.agent_id
+        ));
+    }
+
+    let mut presence_request_id = None;
+    let mut heartbeat_updated = false;
+    if options.capabilities.presence {
+        let heartbeat = PresenceHeartbeat::new(&options.agent_id, options.presence)
+            .map_err(|error| format!("build agent presence: {error}"))?;
+        let presence_submission = agents::submit_presence_heartbeat(Some(home.clone()), heartbeat)
+            .map_err(|error| format!("submit agent presence: {error}"))?;
+        presence_request_id = Some(presence_submission.request_id);
+        let presence_gateway = agents::process_gateway_requests(Some(home.clone()))
+            .map_err(|error| format!("process agent presence: {error}"))?;
+        heartbeat_updated = presence_gateway
+            .heartbeat_agents
+            .iter()
+            .any(|agent_id| agent_id == &options.agent_id);
+        processed_agents += presence_gateway.processed;
+        rejected_agents += presence_gateway.rejected;
+    }
+
+    let prepared_agent = agents::list_local_agents(Some(home.clone()))
+        .map_err(|error| format!("read prepared agent: {error}"))?
+        .into_iter()
+        .find(|agent| agent.agent_id == options.agent_id)
+        .ok_or_else(|| format!("{} was not available after preparation", options.agent_id))?;
+    if options.capabilities.presence && prepared_agent.presence != options.presence {
+        return Err(format!(
+            "{} presence was not updated to {}",
+            options.agent_id,
+            options.presence.as_str()
+        ));
+    }
+    if options.capabilities.presence && prepared_agent.presence == options.presence {
+        heartbeat_updated = true;
+    }
+
+    let (stream, stream_created) = if let Some(to_agent_id) = options.connect_to_agent_id.as_deref()
+    {
+        let (stream, created) =
+            prepare_agent_stream(&home, &options.agent_id, to_agent_id, &options.stream_kind)?;
+        (Some(stream), created)
+    } else {
+        (None, false)
+    };
+
+    let (room, room_created, agent_joined_room) = if let Some(room_id) = options.room_id.as_deref()
+    {
+        let display_name = options.room_display_name.as_deref().unwrap_or(room_id);
+        let (room, created, joined) =
+            prepare_agent_room(&home, &options.agent_id, room_id, display_name)?;
+        (Some(room), created, joined)
+    } else {
+        (None, false, false)
+    };
+
+    Ok(AgentPrepareReport {
+        state_path: home,
+        node_id: init.node.node_id,
+        node_created: init.node_created,
+        agent_id: options.agent_id.clone(),
+        display_name: prepared_agent.display_name,
+        kind: prepared_agent.kind,
+        capabilities: prepared_agent.capabilities,
+        presence: options
+            .capabilities
+            .presence
+            .then_some(prepared_agent.presence),
+        registration_request_id: registration_submission.request_id,
+        presence_request_id,
+        processed_agents,
+        rejected_agents,
+        registered_agents,
+        heartbeat_updated,
+        stream,
+        stream_created,
+        room,
+        room_created,
+        agent_joined_room,
+    })
+}
+
 fn submit_setup_agent(home: &Path, agent_id: &str, display_name: &str) -> Result<(), String> {
     let mut registration = AgentRegistration::new(agent_id, display_name, "coding-agent")
         .map_err(|error| format!("build setup agent metadata: {error}"))?;
@@ -12771,6 +13114,289 @@ fn setup_local_room(
     )
     .map_err(|error| format!("join to agent to local setup room: {error}"))?;
     Ok((joined.room, created, joined.joined))
+}
+
+fn prepare_agent_stream(
+    home: &Path,
+    from_agent_id: &str,
+    to_agent_id: &str,
+    kind: &str,
+) -> Result<(StreamRecord, bool), String> {
+    let existing = streams::list_streams(Some(home.to_path_buf()))
+        .map_err(|error| format!("read local stream metadata: {error}"))?
+        .into_iter()
+        .find(|stream| {
+            stream.from_agent_id == from_agent_id
+                && stream.to_agent_id == to_agent_id
+                && stream.kind == kind
+                && stream.state.as_str() == "open"
+        });
+    if let Some(stream) = existing {
+        return Ok((stream, false));
+    }
+
+    streams::open_stream(Some(home.to_path_buf()), from_agent_id, to_agent_id, kind)
+        .map(|report| (report.stream, true))
+        .map_err(|error| format!("open prepared agent stream: {error}"))
+}
+
+fn prepare_agent_room(
+    home: &Path,
+    agent_id: &str,
+    room_id: &str,
+    display_name: &str,
+) -> Result<(RoomRecord, bool, bool), String> {
+    let existing = rooms::list_rooms(Some(home.to_path_buf()))
+        .map_err(|error| format!("read local room metadata: {error}"))?
+        .into_iter()
+        .find(|room| room.room_id == room_id);
+
+    let (room, created) = if let Some(room) = existing {
+        (room, false)
+    } else {
+        let report = rooms::create_room(Some(home.to_path_buf()), room_id, display_name, agent_id)
+            .map_err(|error| format!("create prepared agent room: {error}"))?;
+        (report.room, true)
+    };
+
+    if room
+        .participants
+        .iter()
+        .any(|participant| participant.agent_id == agent_id)
+    {
+        return Ok((room, created, false));
+    }
+
+    let joined = rooms::join_room(Some(home.to_path_buf()), room_id, agent_id)
+        .map_err(|error| format!("join prepared agent room: {error}"))?;
+    Ok((joined.room, created, joined.joined))
+}
+
+fn render_agent_prepare_json(report: &AgentPrepareReport) -> String {
+    format!(
+        r#"{{
+  "status": "ready",
+  "statePath": "{}",
+  "nodeId": "{}",
+  "nodeCreated": {},
+  "agent": {{
+    "agentId": "{}",
+    "displayName": "{}",
+    "kind": "{}",
+    "presence": {},
+    "capabilities": {{
+      "messages": {},
+      "streams": {},
+      "rooms": {},
+      "files": {},
+      "presence": {}
+    }}
+  }},
+  "gateway": {{
+    "registrationRequestId": "{}",
+    "presenceRequestId": {},
+    "processed": {},
+    "rejected": {},
+    "registeredAgents": {},
+    "heartbeatUpdated": {}
+  }},
+  "stream": {},
+  "room": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(&report.state_path.display().to_string()),
+        json_escape(&report.node_id),
+        report.node_created,
+        json_escape(&report.agent_id),
+        json_escape(&report.display_name),
+        json_escape(&report.kind),
+        agent_prepare_presence_json(report.presence),
+        report.capabilities.messages,
+        report.capabilities.streams,
+        report.capabilities.rooms,
+        report.capabilities.files,
+        report.capabilities.presence,
+        json_escape(&report.registration_request_id),
+        optional_json_string(report.presence_request_id.as_deref()),
+        report.processed_agents,
+        report.rejected_agents,
+        report.registered_agents,
+        report.heartbeat_updated,
+        agent_prepare_stream_json(report.stream.as_ref(), report.stream_created),
+        agent_prepare_room_json(
+            report.room.as_ref(),
+            report.room_created,
+            report.agent_joined_room
+        )
+    )
+}
+
+fn agent_prepare_presence_json(presence: Option<AgentPresence>) -> String {
+    presence
+        .map(|presence| json_string(presence.as_str()))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn agent_prepare_stream_json(stream: Option<&StreamRecord>, created: bool) -> String {
+    match stream {
+        Some(stream) => format!(
+            r#"{{
+    "streamId": "{}",
+    "fromAgentId": "{}",
+    "toAgentId": "{}",
+    "kind": "{}",
+    "state": "{}",
+    "route": "{}",
+    "created": {},
+    "contentsDisplayed": false
+  }}"#,
+            json_escape(&stream.stream_id),
+            json_escape(&stream.from_agent_id),
+            json_escape(&stream.to_agent_id),
+            json_escape(&stream.kind),
+            stream.state.as_str(),
+            json_escape(&stream.route),
+            created
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn agent_prepare_room_json(room: Option<&RoomRecord>, created: bool, agent_joined: bool) -> String {
+    match room {
+        Some(room) => format!(
+            r#"{{
+    "roomId": "{}",
+    "displayName": "{}",
+    "state": "{}",
+    "createdByAgentId": "{}",
+    "participants": {},
+    "created": {},
+    "agentJoined": {},
+    "contentsDisplayed": false
+  }}"#,
+            json_escape(&room.room_id),
+            json_escape(&room.display_name),
+            room.state.as_str(),
+            json_escape(&room.created_by_agent_id),
+            room.participants.len(),
+            created,
+            agent_joined
+        ),
+        None => "null".to_string(),
+    }
+}
+
+fn render_agent_prepare_text(report: &AgentPrepareReport) -> String {
+    let presence = report
+        .presence
+        .map(|presence| presence.as_str())
+        .unwrap_or("disabled");
+    let presence_request = report
+        .presence_request_id
+        .as_deref()
+        .unwrap_or("not submitted");
+    let stream = match report.stream.as_ref() {
+        Some(stream) => format!(
+            "{} ({}; {} -> {}; kind {}; route {})",
+            stream.stream_id,
+            created_or_reused(report.stream_created),
+            stream.from_agent_id,
+            stream.to_agent_id,
+            stream.kind,
+            stream.route
+        ),
+        None => "not requested".to_string(),
+    };
+    let room = match report.room.as_ref() {
+        Some(room) => format!(
+            "{} ({} participants; {})",
+            room.room_id,
+            room.participants.len(),
+            room_prepare_state(report.room_created, report.agent_joined_room)
+        ),
+        None => "not requested".to_string(),
+    };
+    let next_steps = agent_prepare_next_steps(report);
+
+    format!(
+        r"conU agents prepare
+
+status: ready
+state: {}
+node: {}
+agent: {}
+name: {}
+kind: {}
+capabilities: {}
+presence: {}
+registration request: {}
+presence request: {}
+gateway processed: {}
+gateway rejected: {}
+registered this run: {}
+presence updated: {}
+stream: {}
+room: {}
+
+next
+{}
+
+privacy
+  payload view  contents are not displayed by conU
+  contentsDisplayed=false",
+        report.state_path.display(),
+        report.node_id,
+        report.agent_id,
+        report.display_name,
+        report.kind,
+        capabilities_summary(&report.capabilities),
+        presence,
+        report.registration_request_id,
+        presence_request,
+        report.processed_agents,
+        report.rejected_agents,
+        report.registered_agents,
+        report.heartbeat_updated,
+        stream,
+        room,
+        next_steps
+    )
+}
+
+fn created_or_reused(created: bool) -> &'static str {
+    if created { "created" } else { "reused" }
+}
+
+fn room_prepare_state(created: bool, agent_joined: bool) -> &'static str {
+    if created {
+        "created"
+    } else if agent_joined {
+        "agent joined"
+    } else {
+        "reused"
+    }
+}
+
+fn agent_prepare_next_steps(report: &AgentPrepareReport) -> String {
+    let mut steps = Vec::new();
+    steps.push(format!("conu agents export {} --json", report.agent_id));
+    if let Some(stream) = report.stream.as_ref() {
+        steps.push(format!("conu streams write {} --stdin", stream.stream_id));
+    }
+    if let Some(room) = report.room.as_ref() {
+        steps.push(format!(
+            "conu rooms publish {} {} <topic> --stdin",
+            room.room_id, report.agent_id
+        ));
+    }
+    steps.push("conu watch".to_string());
+
+    steps
+        .into_iter()
+        .map(|step| format!("  {step}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_local_setup_json(report: &LocalSetupReport) -> String {
@@ -13454,6 +14080,7 @@ Usage:
   conu init
   conu status [--json]
   conu agents [--json]
+  conu agents prepare <agent-id> <display-name> [--kind <kind>] [--presence <ready|busy|idle|offline>] [--connect <agent-id>] [--stream-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence-capability <true|false>] [--json]
   conu agents register <agent-id> <display-name> [--kind <kind>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--json]
   conu agents export <agent-id> [--json]
   conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id> [--json]
@@ -14134,7 +14761,8 @@ mod tests {
         let empty = run_with_home(["connect"], Some(home.clone()));
 
         assert_eq!(empty.code, 0);
-        assert!(empty.stdout.contains("conu agents register agent.alpha"));
+        assert!(empty.stdout.contains("conu agents prepare agent.alpha"));
+        assert!(empty.stdout.contains("conu agents prepare agent.beta"));
         assert!(empty.stdout.contains("conu pair"));
 
         register_test_agent(&home, "agent.alpha");
@@ -17602,6 +18230,137 @@ mod tests {
         assert!(agents.stdout.contains("\"agentId\": \"agent.codex\""));
         assert!(agents.stdout.contains("\"streams\": true"));
         assert!(agents.stdout.contains("\"rooms\": true"));
+    }
+
+    #[test]
+    fn agents_prepare_registers_ready_agent_and_optional_stream_room() {
+        let home = temp_home("agent-prepare");
+
+        let peer = run_with_home(
+            ["agents", "prepare", "agent.peer", "Peer Agent"],
+            Some(home.clone()),
+        );
+        let output = run_with_home(
+            [
+                "agents",
+                "prepare",
+                "agent.worker",
+                "Worker Agent",
+                "--connect",
+                "agent.peer",
+                "--room",
+                "room.workshop",
+                "--room-name",
+                "Workshop",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(peer.code, 0, "{}", peer.stderr);
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("status: ready"));
+        assert!(output.stdout.contains("agent: agent.worker"));
+        assert!(output.stdout.contains("presence: ready"));
+        assert!(output.stdout.contains("stream:"));
+        assert!(output.stdout.contains("room: room.workshop"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(!output.stdout.contains("private message contents"));
+
+        let agents = agents::list_local_agents(Some(home.clone())).expect("agents list");
+        let worker = agents
+            .iter()
+            .find(|agent| agent.agent_id == "agent.worker")
+            .expect("worker registered");
+        assert_eq!(worker.presence, AgentPresence::Ready);
+        assert!(worker.capabilities.messages);
+        assert!(worker.capabilities.streams);
+        assert!(worker.capabilities.rooms);
+        assert!(!worker.capabilities.files);
+        assert!(worker.capabilities.presence);
+
+        let stream_records = streams::list_streams(Some(home.clone())).expect("streams list");
+        assert!(stream_records.iter().any(|stream| {
+            stream.from_agent_id == "agent.worker"
+                && stream.to_agent_id == "agent.peer"
+                && stream.kind == "message"
+                && stream.state.as_str() == "open"
+        }));
+
+        let room_records = rooms::list_rooms(Some(home.clone())).expect("rooms list");
+        let room = room_records
+            .iter()
+            .find(|room| room.room_id == "room.workshop")
+            .expect("room created");
+        assert!(
+            room.participants
+                .iter()
+                .any(|participant| participant.agent_id == "agent.worker")
+        );
+
+        let json = run_with_home(
+            [
+                "agents",
+                "prepare",
+                "agent.worker",
+                "Worker Agent",
+                "--connect",
+                "agent.peer",
+                "--room",
+                "room.workshop",
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(json.code, 0, "{}", json.stderr);
+        assert!(json.stdout.contains("\"status\": \"ready\""));
+        assert!(json.stdout.contains("\"agentId\": \"agent.worker\""));
+        assert!(json.stdout.contains("\"presence\": \"ready\""));
+        assert!(json.stdout.contains("\"streamId\":"));
+        assert!(json.stdout.contains("\"roomId\": \"room.workshop\""));
+        assert!(json.stdout.contains("\"created\": false"));
+        assert!(json.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!json.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn agents_prepare_rejects_self_connect() {
+        let output = run_with_home(
+            [
+                "agents",
+                "prepare",
+                "agent.same",
+                "Same Agent",
+                "--connect",
+                "agent.same",
+            ],
+            Some(temp_home("agent-prepare-self-connect")),
+        );
+
+        assert_eq!(output.code, 2);
+        assert!(output.stderr.contains("--connect must be different"));
+    }
+
+    #[test]
+    fn agents_prepare_rejects_contradictory_options_before_state_mutation() {
+        let home = temp_home("agent-prepare-contradictory");
+        let output = run_with_home(
+            [
+                "agents",
+                "prepare",
+                "agent.worker",
+                "Worker Agent",
+                "--connect",
+                "agent.peer",
+                "--streams",
+                "false",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 2);
+        assert!(output.stderr.contains("--connect requires --streams true"));
+        assert!(!state::StatePaths::from_home(home).agent_registry.exists());
     }
 
     #[test]
