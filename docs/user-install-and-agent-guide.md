@@ -400,15 +400,15 @@ For guarded local fleet account workflow checks, run `conu-relay --hosted-fleet-
 
 For repeated mailbox retention checks or cleanup, create a metadata-only retention policy file and pass `--retention-policy-file C:\conu-relay\mailbox-retention.toml` to local/admin mailbox audit/purge commands, hosted readiness, hosted fleet dashboards, or hosted fleet mailbox purge. The file uses `version = "1"`, optional `ttl_seconds` and `node_id` keys, and false display guards; CLI `--ttl-seconds` and `--node` options can override it for a single run. On hosted fleet dashboards, `--fail-on-retention` preserves stdout and returns exit code 3 only when TTL-checked fleet mailbox sources report expired records; it does not purge files or contact remote relays. On hosted fleet mailbox purge, `--dry-run` deletes nothing and `--confirm` deletes only expired valid `.mailbox` files from manifest-listed local mailbox paths. For repeated threshold checks, create a metadata-only thresholds file and pass `--thresholds-file C:\conu-relay\abuse-thresholds.toml` to local/admin threshold commands, hosted readiness, hosted fleet dashboards, or hosted fleet abuse response plans. The file uses `version = "1"`, supported `max_*` keys, and false display guards; CLI `--max-*` options can override it for a single run.
 
-On each node, set `default_relay` in `config.toml` or pass the relay endpoint when trusting a peer. `relay_auto_sync = true` is the default for new state and lets conUD pump relay send/receive automatically when a relay route is configured. Then exchange signed public cards:
+On each node, set `default_relay` in `config.toml` or export the signed peer card with `--relay <endpoint>`. `relay_auto_sync = true` is the default for new state and lets conUD pump relay send/receive automatically when a relay route is configured. Then exchange signed public cards:
 
 ```powershell
-conu identity export --json
-conu peers trust <peer-node-id> "<peer name>" --exchange-key <exchange-public-key-hex> --relay wss://relay.example.com/conu --signing-key <signing-public-key-hex> --signature <signature-hex> --signature-key-id <signature-key-id>
+conu identity export --relay wss://relay.example.com/conu --json > my-peer-card.json
+conu peers trust --card their-peer-card.json
 conu peers policy <peer-node-id> --messages true --streams true --rooms true
 ```
 
-The `signingPublicKeyHex`, `signatureHex`, and `signatureKeyId` values come from the peer's `conu identity export --json` output. conU verifies the signature before storing the trusted peer when those fields are supplied. Legacy unsigned imports still work for controlled tests, but signed peer cards are the production-oriented path. Trust does not grant communication by itself; `conu peers policy` grants only the peer surfaces you choose and missing policy records deny by default.
+The peer node id used by `conu peers policy` is the `nodeId` value in the peer's exported JSON. conU verifies the signed card before storing the trusted peer. Legacy manual field imports still work for controlled tests, but signed peer cards are the production-oriented path. Trust does not grant communication by itself; `conu peers policy` grants only the peer surfaces you choose and missing policy records deny by default.
 
 After signed peer trust and policy are in place, conUD/session sync exchanges signed public agent cards automatically over peer-encrypted relay control envelopes. The relay sees routing metadata and ciphertext, not the signed-card contents. Manual signed agent-card import remains available for daemonless fallback:
 

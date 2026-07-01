@@ -248,14 +248,29 @@ pub fn list_peers(home_override: Option<PathBuf>) -> Result<Vec<TrustedPeer>, Tr
 
 /// Export this node's public card for manual cross-machine trust.
 pub fn export_peer_card(home_override: Option<PathBuf>) -> Result<PeerCard, TrustError> {
+    export_peer_card_with_endpoints(home_override, None, None)
+}
+
+/// Export this node's public card with explicit public endpoint metadata.
+pub fn export_peer_card_with_endpoints(
+    home_override: Option<PathBuf>,
+    relay_endpoint: Option<String>,
+    direct_quic_endpoint: Option<String>,
+) -> Result<PeerCard, TrustError> {
     let init = state::init_state(home_override)?;
     let material = security::local_peer_key_material(&init.paths)?;
     let mut card = PeerCard {
         node_id: init.node.node_id,
         display_name: init.node.display_name,
         exchange_public_key_hex: material.local_exchange_public_key_hex,
-        relay_endpoint: configured_relay_endpoint(&init.paths)?,
-        direct_quic_endpoint: configured_direct_quic_endpoint(&init.paths)?,
+        relay_endpoint: match relay_endpoint {
+            Some(endpoint) => validate_endpoint(endpoint)?,
+            None => configured_relay_endpoint(&init.paths)?,
+        },
+        direct_quic_endpoint: match direct_quic_endpoint {
+            Some(endpoint) => Some(validate_direct_endpoint(endpoint)?),
+            None => configured_direct_quic_endpoint(&init.paths)?,
+        },
         signing_public_key_hex: None,
         signature_algorithm: None,
         signature_key_id: None,

@@ -66,15 +66,12 @@ fn read_bounded_stdin<R: Read>(mut reader: R, plan: StdinReadPlan) -> Result<Vec
 }
 
 fn stdin_read_plan(args: &[String]) -> Option<StdinReadPlan> {
-    if !args.iter().any(|arg| arg == "--stdin") {
-        return None;
-    }
-
     match args {
         [command, subcommand, ..]
-            if (command == "messages" && subcommand == "send")
+            if ((command == "messages" && subcommand == "send")
                 || (command == "streams" && subcommand == "write")
-                || (command == "rooms" && subcommand == "publish") =>
+                || (command == "rooms" && subcommand == "publish"))
+                && args.iter().any(|arg| arg == "--stdin") =>
         {
             Some(StdinReadPlan {
                 label: "stdin payload",
@@ -84,13 +81,31 @@ fn stdin_read_plan(args: &[String]) -> Option<StdinReadPlan> {
         [command, subcommand, action, ..]
             if command == "relay" && subcommand == "credential" && action == "set" =>
         {
+            args.iter()
+                .any(|arg| arg == "--stdin")
+                .then_some(StdinReadPlan {
+                    label: "relay credential token",
+                    max_bytes: MAX_CLI_STDIN_RELAY_TOKEN_BYTES,
+                })
+        }
+        [command, subcommand, action, ..]
+            if command == "peers"
+                && subcommand == "trust"
+                && action != "--help"
+                && option_value(args, "--card").as_deref() == Some("-") =>
+        {
             Some(StdinReadPlan {
-                label: "relay credential token",
-                max_bytes: MAX_CLI_STDIN_RELAY_TOKEN_BYTES,
+                label: "peer card",
+                max_bytes: MAX_CLI_STDIN_PAYLOAD_BYTES,
             })
         }
         _ => None,
     }
+}
+
+fn option_value(args: &[String], option: &str) -> Option<String> {
+    args.windows(2)
+        .find_map(|window| (window[0] == option).then(|| window[1].clone()))
 }
 
 #[cfg(test)]
@@ -167,8 +182,41 @@ mod tests {
             stdin_read_plan(&[
                 "relay".to_string(),
                 "credential".to_string(),
+                "set".to_string(),
+            ]),
+            None
+        );
+        assert_eq!(
+            stdin_read_plan(&[
+                "relay".to_string(),
+                "credential".to_string(),
                 "status".to_string(),
                 "--stdin".to_string(),
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn peer_card_dash_reads_bounded_stdin() {
+        assert_eq!(
+            stdin_read_plan(&[
+                "peers".to_string(),
+                "trust".to_string(),
+                "--card".to_string(),
+                "-".to_string(),
+            ]),
+            Some(StdinReadPlan {
+                label: "peer card",
+                max_bytes: MAX_CLI_STDIN_PAYLOAD_BYTES,
+            })
+        );
+        assert_eq!(
+            stdin_read_plan(&[
+                "peers".to_string(),
+                "trust".to_string(),
+                "--card".to_string(),
+                "peer-card.json".to_string(),
             ]),
             None
         );
