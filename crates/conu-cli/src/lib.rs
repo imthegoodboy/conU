@@ -496,7 +496,7 @@ where
         }
         "status" => render_status(&args[1..], home_override),
         "agents" => render_agents(&args[1..], home_override),
-        "peers" => render_peers(&args[1..], home_override),
+        "peers" => render_peers(&args[1..], home_override, stdin_payload),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
         "relay" => render_relay(&args[1..], home_override, stdin_payload),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
@@ -5911,18 +5911,22 @@ fn render_identity(args: &[String], home_override: Option<PathBuf>) -> CliOutput
 }
 
 fn render_identity_export(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
-    let json = match json_flag(args) {
-        Ok(json) => json,
+    let parsed = match parse_identity_export_args(args) {
+        Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    let card = match trust::export_peer_card(home_override) {
+    let card = match trust::export_peer_card_with_endpoints(
+        home_override,
+        parsed.relay_endpoint,
+        parsed.direct_endpoint,
+    ) {
         Ok(card) => card,
         Err(error) => {
             return CliOutput::failure(1, format!("conU identity export failed\n\n{error}"));
         }
     };
 
-    if json {
+    if parsed.json {
         return CliOutput::success(format!(
             r#"{{
   "nodeId": "{}",
@@ -5963,7 +5967,8 @@ signature key id: {}
 signature: {}
 
 share this public card with a peer, then import their card with:
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> --relay {} --direct <quic://host:port> --signing-key <hex> --signature <hex> --signature-key-id <id>
+  conu identity export --relay {} --json > my-peer-card.json
+  conu peers trust --card their-peer-card.json
 
 privacy
   key view      public exchange key only
@@ -5986,7 +5991,49 @@ privacy
 }
 
 fn render_identity_usage() -> String {
-    "usage: conu identity export [--json]".to_string()
+    "usage: conu identity export [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]".to_string()
+}
+
+struct IdentityExportArgs {
+    json: bool,
+    relay_endpoint: Option<String>,
+    direct_endpoint: Option<String>,
+}
+
+fn parse_identity_export_args(args: &[String]) -> Result<IdentityExportArgs, CliOutput> {
+    let mut json = false;
+    let mut relay_endpoint = None;
+    let mut direct_endpoint = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--relay" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_identity_usage()));
+                };
+                relay_endpoint = Some(value.clone());
+                index += 1;
+            }
+            "--direct" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_identity_usage()));
+                };
+                direct_endpoint = Some(value.clone());
+                index += 1;
+            }
+            value if value.starts_with("--") => return Err(unknown_option_error()),
+            _ => return Err(CliOutput::failure(2, render_identity_usage())),
+        }
+        index += 1;
+    }
+
+    Ok(IdentityExportArgs {
+        json,
+        relay_endpoint,
+        direct_endpoint,
+    })
 }
 
 fn inbox_ids(home_override: Option<PathBuf>, agent_id: &str) -> HashSet<String> {
@@ -6024,11 +6071,15 @@ fn wait_for_message_delivery(
     None
 }
 
-fn render_peers(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+fn render_peers(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("policy") => render_peer_policy(&args[1..], home_override),
         Some("revoke") => render_peer_revoke(&args[1..], home_override),
-        Some("trust") => render_peer_trust(&args[1..], home_override),
+        Some("trust") => render_peer_trust(&args[1..], home_override, stdin_payload),
         _ => render_peer_list(args, home_override),
     }
 }
@@ -6046,21 +6097,40 @@ fn render_peer_list(args: &[String], home_override: Option<PathBuf>) -> CliOutpu
     }
 }
 
-fn render_peer_trust(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+fn render_peer_trust(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
     let parsed = match parse_peer_trust_args(args) {
         Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    let card = PeerCard {
-        node_id: parsed.peer_node_id,
-        display_name: parsed.display_name,
-        exchange_public_key_hex: parsed.exchange_key,
-        relay_endpoint: parsed.relay_endpoint,
-        direct_quic_endpoint: parsed.direct_endpoint,
-        signing_public_key_hex: parsed.signing_key,
-        signature_algorithm: parsed.signature_algorithm,
-        signature_key_id: parsed.signature_key_id,
-        signature_hex: parsed.signature,
+    let card = match parsed.card_source {
+        Some(source) => {
+            match peer_card_from_source(
+                &source,
+                stdin_payload,
+                parsed.relay_endpoint,
+                parsed.direct_endpoint,
+            ) {
+                Ok(card) => card,
+                Err(error) => return error,
+            }
+        }
+        None => PeerCard {
+            node_id: parsed.peer_node_id.expect("manual peer node parsed"),
+            display_name: parsed.display_name.expect("manual display name parsed"),
+            exchange_public_key_hex: parsed.exchange_key.expect("manual exchange key parsed"),
+            relay_endpoint: parsed
+                .relay_endpoint
+                .unwrap_or_else(|| "ws://127.0.0.1:8787".to_string()),
+            direct_quic_endpoint: parsed.direct_endpoint,
+            signing_public_key_hex: parsed.signing_key,
+            signature_algorithm: parsed.signature_algorithm,
+            signature_key_id: parsed.signature_key_id,
+            signature_hex: parsed.signature,
+        },
     };
     let peer = match trust::trust_peer_card(home_override, card) {
         Ok(peer) => peer,
@@ -6302,7 +6372,8 @@ trusted peers
 next
   conu pair
   conu join <code>
-  conu identity export
+  conu identity export --json > peer-card.json
+  conu peers trust --card peer-card.json
   conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>]
   conu peers policy <peer-node-id> --messages true --streams true
   conu peers revoke <peer-node-id>"
@@ -6431,17 +6502,25 @@ next
     )
 }
 
+const MAX_PEER_CARD_BYTES: usize = 64 * 1024;
+
 struct PeerTrustArgs {
-    peer_node_id: String,
-    display_name: String,
-    exchange_key: String,
-    relay_endpoint: String,
+    peer_node_id: Option<String>,
+    display_name: Option<String>,
+    exchange_key: Option<String>,
+    relay_endpoint: Option<String>,
     direct_endpoint: Option<String>,
     signing_key: Option<String>,
     signature_algorithm: Option<String>,
     signature_key_id: Option<String>,
     signature: Option<String>,
+    card_source: Option<PeerCardSource>,
     json: bool,
+}
+
+enum PeerCardSource {
+    File(PathBuf),
+    Stdin,
 }
 
 struct PeerPolicyArgs {
@@ -6517,12 +6596,13 @@ fn render_peer_policy_usage() -> String {
 fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
     let mut json = false;
     let mut exchange_key = None;
-    let mut relay_endpoint = "ws://127.0.0.1:8787".to_string();
+    let mut relay_endpoint = None;
     let mut direct_endpoint = None;
     let mut signing_key = None;
     let mut signature_algorithm = None;
     let mut signature_key_id = None;
     let mut signature = None;
+    let mut card_source = None;
     let mut positional = Vec::new();
     let mut index = 0;
 
@@ -6540,7 +6620,7 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
                 let Some(value) = args.get(index + 1) else {
                     return Err(CliOutput::failure(2, render_peer_trust_usage()));
                 };
-                relay_endpoint = value.clone();
+                relay_endpoint = Some(value.clone());
                 index += 1;
             }
             "--direct" => {
@@ -6578,12 +6658,51 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
                 signature = Some(value.clone());
                 index += 1;
             }
+            "--card" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                };
+                if card_source.is_some() {
+                    return Err(CliOutput::failure(2, render_peer_trust_usage()));
+                }
+                card_source = Some(if value == "-" {
+                    PeerCardSource::Stdin
+                } else {
+                    PeerCardSource::File(PathBuf::from(value.as_str()))
+                });
+                index += 1;
+            }
             value if value.starts_with("--") => {
                 return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
         index += 1;
+    }
+
+    if let Some(card_source) = card_source {
+        if !positional.is_empty()
+            || exchange_key.is_some()
+            || signing_key.is_some()
+            || signature_algorithm.is_some()
+            || signature_key_id.is_some()
+            || signature.is_some()
+        {
+            return Err(CliOutput::failure(2, render_peer_trust_usage()));
+        }
+        return Ok(PeerTrustArgs {
+            peer_node_id: None,
+            display_name: None,
+            exchange_key: None,
+            relay_endpoint,
+            direct_endpoint,
+            signing_key: None,
+            signature_algorithm: None,
+            signature_key_id: None,
+            signature: None,
+            card_source: Some(card_source),
+            json,
+        });
     }
 
     let Some(exchange_key) = exchange_key else {
@@ -6599,21 +6718,212 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
     }
 
     Ok(PeerTrustArgs {
-        peer_node_id: positional.remove(0),
-        display_name: positional.remove(0),
-        exchange_key,
-        relay_endpoint,
+        peer_node_id: Some(positional.remove(0)),
+        display_name: Some(positional.remove(0)),
+        exchange_key: Some(exchange_key),
+        relay_endpoint: Some(relay_endpoint.unwrap_or_else(|| "ws://127.0.0.1:8787".to_string())),
         direct_endpoint,
         signing_key,
         signature_algorithm,
         signature_key_id,
         signature,
+        card_source: None,
         json,
     })
 }
 
 fn render_peer_trust_usage() -> String {
-    "usage: conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--signature-algorithm <algorithm>] [--json]".to_string()
+    "usage: conu peers trust --card <file|-> [--json]\n       conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--signature-algorithm <algorithm>] [--json]".to_string()
+}
+
+fn peer_card_from_source(
+    source: &PeerCardSource,
+    stdin_payload: Vec<u8>,
+    relay_override: Option<String>,
+    direct_override: Option<String>,
+) -> Result<PeerCard, CliOutput> {
+    let bytes = match source {
+        PeerCardSource::Stdin => {
+            if stdin_payload.is_empty() {
+                return Err(CliOutput::failure(
+                    2,
+                    "peer card stdin is empty; contentsDisplayed=false",
+                ));
+            }
+            if stdin_payload.len() > MAX_PEER_CARD_BYTES {
+                return Err(CliOutput::failure(
+                    2,
+                    format!(
+                        "peer card exceeds {MAX_PEER_CARD_BYTES} bytes; contentsDisplayed=false"
+                    ),
+                ));
+            }
+            stdin_payload
+        }
+        PeerCardSource::File(path) => read_peer_card_file(path)?,
+    };
+
+    let mut card = parse_peer_card_json(&bytes).map_err(|error| {
+        CliOutput::failure(2, format!("conU peer card import failed\n\n{error}"))
+    })?;
+    let signed = peer_card_has_signature_fields(&card);
+    if let Some(relay_endpoint) = relay_override {
+        if signed && relay_endpoint != card.relay_endpoint {
+            return Err(CliOutput::failure(
+                2,
+                "signed peer-card relay overrides are not supported; re-export with conu identity export --relay <endpoint> --json\ncontentsDisplayed=false",
+            ));
+        }
+        card.relay_endpoint = relay_endpoint;
+    }
+    if let Some(direct_endpoint) = direct_override {
+        if signed && card.direct_quic_endpoint.as_deref() != Some(direct_endpoint.as_str()) {
+            return Err(CliOutput::failure(
+                2,
+                "signed peer-card direct endpoint overrides are not supported; re-export with conu identity export --direct <quic://host:port> --json\ncontentsDisplayed=false",
+            ));
+        }
+        card.direct_quic_endpoint = Some(direct_endpoint);
+    }
+    Ok(card)
+}
+
+fn peer_card_has_signature_fields(card: &PeerCard) -> bool {
+    card.signing_public_key_hex.is_some()
+        || card.signature_algorithm.is_some()
+        || card.signature_key_id.is_some()
+        || card.signature_hex.is_some()
+}
+
+fn read_peer_card_file(path: &Path) -> Result<Vec<u8>, CliOutput> {
+    if path.as_os_str().is_empty() {
+        return Err(CliOutput::failure(
+            2,
+            "peer card file path is empty; contentsDisplayed=false",
+        ));
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        CliOutput::failure(
+            2,
+            format!("could not inspect peer card file: {error}; contentsDisplayed=false"),
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CliOutput::failure(
+            2,
+            "peer card path must be a regular file; contentsDisplayed=false",
+        ));
+    }
+    if metadata.len() > MAX_PEER_CARD_BYTES as u64 {
+        return Err(CliOutput::failure(
+            2,
+            format!("peer card exceeds {MAX_PEER_CARD_BYTES} bytes; contentsDisplayed=false"),
+        ));
+    }
+
+    let file = fs::File::open(path).map_err(|error| {
+        CliOutput::failure(
+            2,
+            format!("could not open peer card file: {error}; contentsDisplayed=false"),
+        )
+    })?;
+    let opened_metadata = file.metadata().map_err(|error| {
+        CliOutput::failure(
+            2,
+            format!("could not inspect opened peer card file: {error}; contentsDisplayed=false"),
+        )
+    })?;
+    if !opened_metadata.is_file() || opened_metadata.len() > MAX_PEER_CARD_BYTES as u64 {
+        return Err(CliOutput::failure(
+            2,
+            format!("peer card exceeds {MAX_PEER_CARD_BYTES} bytes; contentsDisplayed=false"),
+        ));
+    }
+
+    let mut bytes = Vec::new();
+    file.take((MAX_PEER_CARD_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            CliOutput::failure(
+                2,
+                format!("could not read peer card file: {error}; contentsDisplayed=false"),
+            )
+        })?;
+    if bytes.is_empty() {
+        return Err(CliOutput::failure(
+            2,
+            "peer card file is empty; contentsDisplayed=false",
+        ));
+    }
+    if bytes.len() > MAX_PEER_CARD_BYTES {
+        return Err(CliOutput::failure(
+            2,
+            format!("peer card exceeds {MAX_PEER_CARD_BYTES} bytes; contentsDisplayed=false"),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn parse_peer_card_json(bytes: &[u8]) -> Result<PeerCard, String> {
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let value = DuplicateKeyCheckedJson
+        .deserialize(&mut deserializer)
+        .map_err(|error| format!("peer card JSON is invalid: {error}; contentsDisplayed=false"))?;
+    deserializer
+        .end()
+        .map_err(|error| format!("peer card JSON is invalid: {error}; contentsDisplayed=false"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "peer card JSON must be an object; contentsDisplayed=false".to_string())?;
+
+    Ok(PeerCard {
+        node_id: peer_card_required_string(object, "nodeId")?,
+        display_name: peer_card_required_string(object, "displayName")?,
+        exchange_public_key_hex: peer_card_required_string(object, "exchangePublicKeyHex")?,
+        relay_endpoint: peer_card_required_string(object, "relayEndpoint")?,
+        direct_quic_endpoint: peer_card_optional_string(object, "directQuicEndpoint")?,
+        signing_public_key_hex: peer_card_optional_string(object, "signingPublicKeyHex")?,
+        signature_algorithm: peer_card_optional_string(object, "signatureAlgorithm")?,
+        signature_key_id: peer_card_optional_string(object, "signatureKeyId")?,
+        signature_hex: peer_card_optional_string(object, "signatureHex")?,
+    })
+}
+
+fn peer_card_required_string(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<String, String> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            format!("peer card is missing non-empty string field {field}; contentsDisplayed=false")
+        })
+}
+
+fn peer_card_optional_string(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>, String> {
+    let Some(value) = object.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(text) = value.as_str() else {
+        return Err(format!(
+            "peer card field {field} must be a string; contentsDisplayed=false"
+        ));
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(text.to_string()))
+    }
 }
 
 fn parse_peer_revoke_args(args: &[String]) -> Result<(String, bool), CliOutput> {
@@ -14120,8 +14430,9 @@ Usage:
   conu security rotate identity --confirm-peer-refresh [--json]
   conu security retire identity --confirm-peer-refresh-complete [--json]
   conu security retire storage --confirm [--json]
-  conu identity export [--json]
+  conu identity export [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
   conu peers [--json]
+  conu peers trust --card <file|-> [--json]
   conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--json]
   conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]
   conu peers revoke <peer-node-id> [--json]
@@ -17234,6 +17545,120 @@ mod tests {
                 .stdout
                 .contains(card.signature_hex.as_deref().unwrap_or(""))
         );
+    }
+
+    #[test]
+    fn signed_peer_card_cli_imports_json_file_without_payloads() {
+        let alice_home = temp_home("signed-peer-card-file-alice");
+        let bob_home = temp_home("signed-peer-card-file-bob");
+        fs::create_dir_all(&alice_home).expect("alice fixture dir creates");
+        let exported = run_with_home(
+            [
+                "identity",
+                "export",
+                "--relay",
+                "wss://relay.example.com/conu",
+                "--json",
+            ],
+            Some(bob_home),
+        );
+        let card_path = alice_home.join("bob-peer-card.json");
+        fs::write(&card_path, &exported.stdout).expect("peer card writes");
+
+        let output = run_with_home(
+            vec![
+                "peers".to_string(),
+                "trust".to_string(),
+                "--card".to_string(),
+                card_path.display().to_string(),
+                "--json".to_string(),
+            ],
+            Some(alice_home.clone()),
+        );
+        let peers = trust::list_peers(Some(alice_home)).expect("trusted peers read");
+
+        assert_eq!(exported.code, 0, "{}", exported.stderr);
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"peerCardSigned\": true"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert_eq!(peers.len(), 1);
+        assert_eq!(
+            peers[0].relay_endpoint.as_deref(),
+            Some("wss://relay.example.com/conu")
+        );
+        assert!(!output.stdout.contains("private message contents"));
+        assert!(!output.stdout.contains("signatureHex"));
+    }
+
+    #[test]
+    fn signed_peer_card_cli_imports_json_stdin_without_payloads() {
+        let alice_home = temp_home("signed-peer-card-stdin-alice");
+        let bob_home = temp_home("signed-peer-card-stdin-bob");
+        let exported = run_with_home(
+            [
+                "identity",
+                "export",
+                "--relay",
+                "wss://relay.example.com/conu",
+                "--json",
+            ],
+            Some(bob_home),
+        );
+        assert_eq!(exported.code, 0, "{}", exported.stderr);
+        let output = run_with_home_and_stdin(
+            ["peers", "trust", "--card", "-", "--json"],
+            Some(alice_home),
+            exported.stdout.into_bytes(),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"peerCardSigned\": true"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private message contents"));
+        assert!(!output.stdout.contains("signatureHex"));
+    }
+
+    #[test]
+    fn signed_peer_card_cli_rejects_endpoint_override_without_payloads() {
+        let alice_home = temp_home("signed-peer-card-override-alice");
+        let bob_home = temp_home("signed-peer-card-override-bob");
+        fs::create_dir_all(&alice_home).expect("alice fixture dir creates");
+        let exported = run_with_home(
+            [
+                "identity",
+                "export",
+                "--relay",
+                "wss://relay.example.com/conu",
+                "--json",
+            ],
+            Some(bob_home),
+        );
+        let card_path = alice_home.join("bob-peer-card.json");
+        fs::write(&card_path, &exported.stdout).expect("peer card writes");
+
+        let output = run_with_home(
+            vec![
+                "peers".to_string(),
+                "trust".to_string(),
+                "--card".to_string(),
+                card_path.display().to_string(),
+                "--relay".to_string(),
+                "wss://other.example.com/conu".to_string(),
+                "--json".to_string(),
+            ],
+            Some(alice_home),
+        );
+
+        assert_eq!(exported.code, 0, "{}", exported.stderr);
+        assert_eq!(output.code, 2);
+        assert!(
+            output
+                .stderr
+                .contains("re-export with conu identity export")
+        );
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(!output.stderr.contains("private message contents"));
+        assert!(!output.stderr.contains("signatureHex"));
     }
 
     #[test]

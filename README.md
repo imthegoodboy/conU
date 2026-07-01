@@ -86,17 +86,17 @@ conu messages receive agent.beta <envelope-id> --output received.bin
 
 ## Two-PC Setup
 
-Use this flow when PC 1 and PC 2 should communicate through a controlled relay. A self-hosted relay or the Render Blueprint in `render.yaml` is enough for testing. Put TLS in front of public relays and use `wss://...` for internet paths.
+Use this flow when PC 1 and PC 2 should communicate through a controlled relay. A self-hosted relay or the Render Blueprint in `render.yaml` is enough for testing. Put TLS in front of public relays and use `wss://...` for internet paths. The relay endpoint is signed into the public peer card during export, so export the card with the relay both sides should use.
 
 | Step | PC 1 | PC 2 |
 | --- | --- | --- |
 | 1. Install | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
 | 2. Create local state | `conu init` | `conu init` |
 | 3. Prepare one local agent | `conu agents prepare agent.pc1 "PC 1 Agent" --room room.team` | `conu agents prepare agent.pc2 "PC 2 Agent" --room room.team` |
-| 4. Export public node card | `conu identity export --json > pc1-peer.json` | `conu identity export --json > pc2-peer.json` |
+| 4. Export public node card | `conu identity export --relay wss://<relay-host>/conu --json > pc1-peer.json` | `conu identity export --relay wss://<relay-host>/conu --json > pc2-peer.json` |
 | 5. Exchange public files | Send `pc1-peer.json` to PC 2. Do not send private state or secrets. | Send `pc2-peer.json` to PC 1. Do not send private state or secrets. |
-| 6. Trust the other node | `conu peers trust <pc2-node-id> "PC 2" --exchange-key <pc2-exchange-key> --relay wss://<relay-host>/conu --signing-key <pc2-signing-key> --signature <pc2-signature> --signature-key-id <pc2-key-id>` | `conu peers trust <pc1-node-id> "PC 1" --exchange-key <pc1-exchange-key> --relay wss://<relay-host>/conu --signing-key <pc1-signing-key> --signature <pc1-signature> --signature-key-id <pc1-key-id>` |
-| 7. Allow communication | `conu peers policy <pc2-node-id> --messages true --streams true --rooms true` | `conu peers policy <pc1-node-id> --messages true --streams true --rooms true` |
+| 6. Trust the other node | `conu peers trust --card pc2-peer.json` | `conu peers trust --card pc1-peer.json` |
+| 7. Allow communication | `conu peers policy <pc2-node-id from pc2-peer.json> --messages true --streams true --rooms true` | `conu peers policy <pc1-node-id from pc1-peer.json> --messages true --streams true --rooms true` |
 | 8. Start runtime | `conu start` | `conu start` |
 | 9. Sync sessions | `conu sessions sync --json` | `conu sessions sync --json` |
 | 10. Send a message | `echo "hello from pc1" | conu messages send agent.pc1 agent.pc2 --peer <pc2-node-id> --stdin` | `conu messages wait agent.pc2 --process-ipc --timeout-ms 30000 --json` |
@@ -225,15 +225,17 @@ conu watch
 
 ### 两台电脑端到端流程
 
+公开 peer card 会把 relay endpoint 一起签名，所以导出时就要写入两边要使用的 relay。
+
 | 步骤 | 电脑 1 | 电脑 2 |
 | --- | --- | --- |
 | 1. 安装 | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
 | 2. 初始化 | `conu init` | `conu init` |
 | 3. 准备本地 agent | `conu agents prepare agent.pc1 "PC 1 Agent" --room room.team` | `conu agents prepare agent.pc2 "PC 2 Agent" --room room.team` |
-| 4. 导出公开节点信息 | `conu identity export --json > pc1-peer.json` | `conu identity export --json > pc2-peer.json` |
+| 4. 导出公开节点信息 | `conu identity export --relay wss://<relay-host>/conu --json > pc1-peer.json` | `conu identity export --relay wss://<relay-host>/conu --json > pc2-peer.json` |
 | 5. 交换公开文件 | 把 `pc1-peer.json` 发给电脑 2。不要发送私有状态或密钥。 | 把 `pc2-peer.json` 发给电脑 1。不要发送私有状态或密钥。 |
-| 6. 信任对方节点 | `conu peers trust <pc2-node-id> "PC 2" --exchange-key <pc2-exchange-key> --relay wss://<relay-host>/conu --signing-key <pc2-signing-key> --signature <pc2-signature> --signature-key-id <pc2-key-id>` | `conu peers trust <pc1-node-id> "PC 1" --exchange-key <pc1-exchange-key> --relay wss://<relay-host>/conu --signing-key <pc1-signing-key> --signature <pc1-signature> --signature-key-id <pc1-key-id>` |
-| 7. 授权通信能力 | `conu peers policy <pc2-node-id> --messages true --streams true --rooms true` | `conu peers policy <pc1-node-id> --messages true --streams true --rooms true` |
+| 6. 信任对方节点 | `conu peers trust --card pc2-peer.json` | `conu peers trust --card pc1-peer.json` |
+| 7. 授权通信能力 | `conu peers policy <pc2-node-id from pc2-peer.json> --messages true --streams true --rooms true` | `conu peers policy <pc1-node-id from pc1-peer.json> --messages true --streams true --rooms true` |
 | 8. 启动 runtime | `conu start` | `conu start` |
 | 9. 同步 session | `conu sessions sync --json` | `conu sessions sync --json` |
 | 10. 发送消息 | `echo "hello from pc1" | conu messages send agent.pc1 agent.pc2 --peer <pc2-node-id> --stdin` | `conu messages wait agent.pc2 --process-ipc --timeout-ms 30000 --json` |
