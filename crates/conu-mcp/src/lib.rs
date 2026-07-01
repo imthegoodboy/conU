@@ -145,6 +145,7 @@ impl McpServer {
             "conu_status" => self.tool_status(),
             "conu_security_audit" => self.tool_security_audit(),
             "conu_register_agent" => self.tool_register_agent(args),
+            "conu_prepare_agent" => self.tool_prepare_agent(args),
             "conu_set_presence" => self.tool_set_presence(args),
             "conu_process_queued" => self.tool_process_queued(),
             "conu_sync_routes" => self.tool_sync_routes(),
@@ -236,6 +237,106 @@ impl McpServer {
             "requestId": submission.request_id,
             "processed": process.as_ref().map(|report| report.agents.processed),
             "rejected": process.as_ref().map(|report| report.agents.rejected),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn tool_prepare_agent(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        let agent_id = required_string(args, "agentId")?;
+        self.ensure_agent_allowed(&agent_id)?;
+        let display_name = required_string(args, "displayName")?;
+        let kind = optional_string(args, "kind")?.unwrap_or_else(|| "local-agent".to_string());
+        let capabilities = prepared_capabilities_from_args(args)?;
+        let presence = match optional_string(args, "presence")? {
+            Some(value) => presence_from_str(&value)?,
+            None => Presence::Ready,
+        };
+        let connect_to_agent_id = optional_string(args, "connectToAgentId")?;
+        let stream_kind = optional_string(args, "streamKind")?.unwrap_or_else(|| "message".into());
+        let room_id = optional_string(args, "roomId")?;
+        let room_display_name = optional_string(args, "roomDisplayName")?;
+
+        if matches!(connect_to_agent_id.as_deref(), Some(peer_id) if peer_id == agent_id) {
+            return Err("connectToAgentId must be different from agentId".to_string());
+        }
+
+        let registration = self
+            .client
+            .register_agent_with_capabilities(&agent_id, &display_name, &kind, capabilities.clone())
+            .map_err(safe_sdk_error)?;
+        let registration_processed = self.client.process_queued().map_err(safe_sdk_error)?;
+        let presence_submission = if capabilities.presence {
+            Some(
+                self.client
+                    .set_presence(&agent_id, presence)
+                    .map_err(safe_sdk_error)?,
+            )
+        } else {
+            None
+        };
+        let presence_processed = if presence_submission.is_some() {
+            Some(self.client.process_queued().map_err(safe_sdk_error)?)
+        } else {
+            None
+        };
+        let mut registered_agents = registration_processed.agents.registered_agents.clone();
+        let mut heartbeat_agents = registration_processed.agents.heartbeat_agents.clone();
+        if let Some(report) = presence_processed.as_ref() {
+            registered_agents.extend(report.agents.registered_agents.clone());
+            heartbeat_agents.extend(report.agents.heartbeat_agents.clone());
+        }
+        let processed_agents = registration_processed.agents.processed
+            + presence_processed
+                .as_ref()
+                .map(|report| report.agents.processed)
+                .unwrap_or(0);
+        let rejected_agents = registration_processed.agents.rejected
+            + presence_processed
+                .as_ref()
+                .map(|report| report.agents.rejected)
+                .unwrap_or(0);
+        let messages_delivered = registration_processed.messages.delivered
+            + presence_processed
+                .as_ref()
+                .map(|report| report.messages.delivered)
+                .unwrap_or(0);
+        let sessions_synced = registration_processed.sessions.sessions_synced
+            + presence_processed
+                .as_ref()
+                .map(|report| report.sessions.sessions_synced)
+                .unwrap_or(0);
+
+        let stream = if let Some(to_agent_id) = connect_to_agent_id {
+            Some(self.prepare_agent_stream(&agent_id, &to_agent_id, &stream_kind)?)
+        } else {
+            None
+        };
+        let room = if let Some(room_id) = room_id {
+            let display_name = room_display_name.unwrap_or_else(|| room_id.clone());
+            Some(self.prepare_agent_room(&agent_id, &room_id, &display_name)?)
+        } else {
+            None
+        };
+
+        Ok(json!({
+            "status": "ready",
+            "agentId": agent_id,
+            "displayName": display_name,
+            "kind": kind,
+            "capabilities": capabilities_to_json(&capabilities),
+            "presence": if capabilities.presence { Some(presence.as_str()) } else { None },
+            "registrationRequestId": registration.request_id,
+            "presenceRequestId": presence_submission.map(|submission| submission.request_id),
+            "processed": {
+                "agents": processed_agents,
+                "rejected": rejected_agents,
+                "registeredAgents": registered_agents,
+                "heartbeatAgents": heartbeat_agents,
+                "messagesDelivered": messages_delivered,
+                "sessionsSynced": sessions_synced
+            },
+            "stream": stream,
+            "room": room,
             "contentsDisplayed": false
         }))
     }
@@ -789,6 +890,24 @@ impl McpServer {
                 ),
             ),
             tool(
+                "conu_prepare_agent",
+                "Register one local agent, mark it ready, and optionally prepare a stream or room for that agent.",
+                schema(
+                    json!({
+                        "agentId": { "type": "string" },
+                        "displayName": { "type": "string" },
+                        "kind": { "type": "string" },
+                        "capabilities": capability_schema(),
+                        "presence": { "type": "string", "enum": ["ready", "busy", "idle", "offline"] },
+                        "connectToAgentId": { "type": "string" },
+                        "streamKind": { "type": "string" },
+                        "roomId": { "type": "string" },
+                        "roomDisplayName": { "type": "string" }
+                    }),
+                    vec!["agentId", "displayName"],
+                ),
+            ),
+            tool(
                 "conu_set_presence",
                 "Publish a local agent presence heartbeat.",
                 schema(
@@ -1055,6 +1174,84 @@ impl McpServer {
         }
     }
 
+    fn prepare_agent_stream(
+        &self,
+        from_agent_id: &str,
+        to_agent_id: &str,
+        kind: &str,
+    ) -> Result<Value, String> {
+        let existing = self
+            .client
+            .list_streams()
+            .map_err(safe_sdk_error)?
+            .into_iter()
+            .find(|stream| {
+                stream.from_agent_id == from_agent_id
+                    && stream.to_agent_id == to_agent_id
+                    && stream.kind == kind
+                    && stream.state.as_str() == "open"
+            });
+        let (stream, created) = if let Some(stream) = existing {
+            (stream, false)
+        } else {
+            let report = self
+                .client
+                .open_stream(from_agent_id, to_agent_id, kind)
+                .map_err(safe_sdk_error)?;
+            (report.stream, true)
+        };
+
+        Ok(json!({
+            "created": created,
+            "stream": stream_to_json(&stream),
+            "contentsDisplayed": false
+        }))
+    }
+
+    fn prepare_agent_room(
+        &self,
+        agent_id: &str,
+        room_id: &str,
+        display_name: &str,
+    ) -> Result<Value, String> {
+        let existing = self
+            .client
+            .list_rooms()
+            .map_err(safe_sdk_error)?
+            .into_iter()
+            .find(|room| room.room_id == room_id);
+        let (room, created) = if let Some(room) = existing {
+            (room, false)
+        } else {
+            let report = self
+                .client
+                .create_room(room_id, display_name, agent_id)
+                .map_err(safe_sdk_error)?;
+            (report.room, true)
+        };
+        let agent_present = room
+            .participants
+            .iter()
+            .any(|participant| participant.agent_id == agent_id);
+        let (room, agent_joined) = if agent_present {
+            (room, false)
+        } else {
+            let report = self
+                .client
+                .join_room(room_id, agent_id)
+                .map_err(safe_sdk_error)?;
+            (report.room, report.joined)
+        };
+
+        Ok(json!({
+            "created": created,
+            "agentJoined": agent_joined,
+            "agentPresent": true,
+            "room": room_to_json(&room),
+            "contentsDisplayed": false
+        }))
+    }
+
     fn ensure_stream_owned(&self, stream_id: &str) -> Result<(), String> {
         let Some(bound_agent_id) = self.bound_agent_id.as_deref() else {
             return Ok(());
@@ -1205,7 +1402,12 @@ fn optional_u64(args: &Map<String, Value>, key: &'static str, default: u64) -> R
 }
 
 fn presence_from_args(args: &Map<String, Value>) -> Result<Presence, String> {
-    match required_string(args, "presence")?.as_str() {
+    let value = required_string(args, "presence")?;
+    presence_from_str(&value)
+}
+
+fn presence_from_str(value: &str) -> Result<Presence, String> {
+    match value {
         "ready" => Ok(Presence::Ready),
         "busy" => Ok(Presence::Busy),
         "idle" => Ok(Presence::Idle),
@@ -1215,7 +1417,23 @@ fn presence_from_args(args: &Map<String, Value>) -> Result<Presence, String> {
 }
 
 fn capabilities_from_args(args: &Map<String, Value>) -> Result<Capabilities, String> {
+    capabilities_from_args_with_default(args, Capabilities::basic())
+}
+
+fn prepared_capabilities_from_args(args: &Map<String, Value>) -> Result<Capabilities, String> {
     let mut capabilities = Capabilities::basic();
+    capabilities.messages = true;
+    capabilities.streams = true;
+    capabilities.rooms = true;
+    capabilities.files = false;
+    capabilities.presence = true;
+    capabilities_from_args_with_default(args, capabilities)
+}
+
+fn capabilities_from_args_with_default(
+    args: &Map<String, Value>,
+    mut capabilities: Capabilities,
+) -> Result<Capabilities, String> {
     let Some(value) = args.get("capabilities") else {
         return Ok(capabilities);
     };
@@ -1434,6 +1652,7 @@ mod tests {
         let body = response.to_string();
 
         assert!(body.contains("conu_register_agent"));
+        assert!(body.contains("conu_prepare_agent"));
         assert!(body.contains("conu_security_audit"));
         assert!(body.contains("conu_send_message"));
         assert!(body.contains("conu_receive_message"));
@@ -1616,6 +1835,85 @@ mod tests {
         assert!(!body.contains("secret_key_hex"));
         assert!(!body.contains("dpapi_hex"));
         assert!(!body.contains("private message contents"));
+    }
+
+    #[test]
+    fn prepare_agent_sets_default_collaboration_surfaces_metadata_only() {
+        let server = McpServer::with_home(test_home("prepare-agent"));
+        call_tool(
+            &server,
+            1,
+            "conu_prepare_agent",
+            json!({
+                "agentId": "agent.peer",
+                "displayName": "Peer Agent"
+            }),
+        );
+
+        let prepared = call_tool(
+            &server,
+            2,
+            "conu_prepare_agent",
+            json!({
+                "agentId": "agent.worker",
+                "displayName": "Worker Agent",
+                "connectToAgentId": "agent.peer",
+                "roomId": "room.workshop",
+                "roomDisplayName": "Workshop"
+            }),
+        );
+        let repeated = call_tool(
+            &server,
+            3,
+            "conu_prepare_agent",
+            json!({
+                "agentId": "agent.worker",
+                "displayName": "Worker Agent",
+                "connectToAgentId": "agent.peer",
+                "roomId": "room.workshop",
+                "roomDisplayName": "Workshop"
+            }),
+        );
+        let prepared_json: Value =
+            serde_json::from_str(&tool_text(&prepared)).expect("prepared json");
+        let repeated_json: Value =
+            serde_json::from_str(&tool_text(&repeated)).expect("repeated json");
+        let body = format!("{prepared}\n{repeated}");
+
+        assert_eq!(prepared_json["status"], Value::String("ready".to_string()));
+        assert_eq!(
+            prepared_json["agentId"],
+            Value::String("agent.worker".to_string())
+        );
+        assert_eq!(prepared_json["capabilities"]["messages"], Value::Bool(true));
+        assert_eq!(prepared_json["capabilities"]["streams"], Value::Bool(true));
+        assert_eq!(prepared_json["capabilities"]["rooms"], Value::Bool(true));
+        assert_eq!(prepared_json["capabilities"]["presence"], Value::Bool(true));
+        assert_eq!(prepared_json["processed"]["rejected"], Value::from(0));
+        assert_eq!(
+            prepared_json["processed"]["heartbeatAgents"][0],
+            Value::String("agent.worker".to_string())
+        );
+        assert_eq!(prepared_json["stream"]["created"], Value::Bool(true));
+        assert_eq!(
+            prepared_json["stream"]["stream"]["fromAgentId"],
+            Value::String("agent.worker".to_string())
+        );
+        assert_eq!(
+            prepared_json["stream"]["stream"]["toAgentId"],
+            Value::String("agent.peer".to_string())
+        );
+        assert_eq!(prepared_json["room"]["created"], Value::Bool(true));
+        assert_eq!(prepared_json["room"]["agentPresent"], Value::Bool(true));
+        assert_eq!(
+            prepared_json["room"]["room"]["participants"][0]["agentId"],
+            Value::String("agent.worker".to_string())
+        );
+        assert_eq!(prepared_json["contentsDisplayed"], Value::Bool(false));
+        assert_eq!(repeated_json["stream"]["created"], Value::Bool(false));
+        assert_eq!(repeated_json["room"]["created"], Value::Bool(false));
+        assert!(!body.contains("private message contents"));
+        assert!(!body.contains("payloadText"));
     }
 
     #[test]
@@ -1850,6 +2148,47 @@ mod tests {
         assert!(text.contains("\"payloadEncoding\": \"hex\""));
         assert!(text.contains("70726976617465206d65737361676520636f6e74656e7473"));
         assert!(!text.contains("private message contents"));
+    }
+
+    #[test]
+    fn prepare_agent_respects_bound_agent_id() {
+        let home = test_home("prepare-bound-agent");
+        let bound = McpServer::with_home_and_agent(home, "agent.runner");
+        let blocked = call_tool(
+            &bound,
+            1,
+            "conu_prepare_agent",
+            json!({
+                "agentId": "agent.other",
+                "displayName": "Other Agent"
+            }),
+        );
+        let allowed = call_tool(
+            &bound,
+            2,
+            "conu_prepare_agent",
+            json!({
+                "agentId": "agent.runner",
+                "displayName": "Runner Agent"
+            }),
+        );
+        let allowed_json: Value = serde_json::from_str(&tool_text(&allowed)).expect("allowed json");
+
+        assert_eq!(blocked["result"]["isError"], Value::Bool(true));
+        assert!(tool_text(&blocked).contains("bound to a different local agent id"));
+        assert_eq!(allowed_json["status"], Value::String("ready".to_string()));
+        assert_eq!(
+            allowed_json["agentId"],
+            Value::String("agent.runner".to_string())
+        );
+        assert_eq!(allowed_json["processed"]["rejected"], Value::from(0));
+        assert_eq!(
+            allowed_json["processed"]["heartbeatAgents"][0],
+            Value::String("agent.runner".to_string())
+        );
+        assert_eq!(allowed_json["contentsDisplayed"], Value::Bool(false));
+        assert!(!blocked.to_string().contains("private message contents"));
+        assert!(!allowed.to_string().contains("private message contents"));
     }
 
     #[test]
