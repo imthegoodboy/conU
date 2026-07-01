@@ -11,7 +11,7 @@ use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(test)]
 use std::process;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1175,21 +1175,35 @@ impl RelayWebSocketClient {
     pub fn connect(endpoint: &str, timeout: Duration) -> Result<Self, RelayFrameError> {
         let parsed = ParsedEndpoint::parse(endpoint)?;
         let connect_timeout = timeout.max(MIN_WEBSOCKET_CONNECT_TIMEOUT);
-        let stream = connect_relay_tcp(&parsed, connect_timeout)?;
-        let (mut socket, _response) =
+        let started = Instant::now();
+        let mut last_interrupted = None;
+
+        let mut socket = loop {
+            let remaining =
+                remaining_relay_connect_timeout(started, connect_timeout, last_interrupted.take())?;
+            let stream = connect_relay_tcp(&parsed, remaining)?;
             match tungstenite::client_tls_with_config(endpoint, stream, None, None) {
-                Ok(result) => result,
+                Ok((socket, _response)) => break socket,
+                Err(tungstenite::handshake::HandshakeError::Failure(tungstenite::Error::Io(
+                    error,
+                ))) if error.kind() == io::ErrorKind::Interrupted => {
+                    last_interrupted = Some(error);
+                    continue;
+                }
                 Err(tungstenite::handshake::HandshakeError::Failure(error)) => {
                     return Err(RelayFrameError::new(format!(
                         "connect relay websocket: {error}"
                     )));
                 }
                 Err(tungstenite::handshake::HandshakeError::Interrupted(_)) => {
-                    return Err(RelayFrameError::new(
-                        "connect relay websocket: handshake interrupted",
+                    last_interrupted = Some(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "relay websocket handshake interrupted",
                     ));
+                    continue;
                 }
-            };
+            }
+        };
         configure_websocket_timeouts(socket.get_mut(), timeout)?;
         Ok(Self { socket })
     }
@@ -1254,22 +1268,39 @@ fn connect_relay_tcp(
         .to_socket_addrs()
         .map_err(|error| RelayFrameError::io("resolve relay endpoint", error))?;
     let mut last_error = None;
+    let started = Instant::now();
 
     for address in addresses {
-        match TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => {
-                stream
-                    .set_read_timeout(Some(timeout))
-                    .map_err(|error| RelayFrameError::io("configure relay read timeout", error))?;
-                stream
-                    .set_write_timeout(Some(timeout))
-                    .map_err(|error| RelayFrameError::io("configure relay write timeout", error))?;
-                stream
-                    .set_nodelay(true)
-                    .map_err(|error| RelayFrameError::io("configure relay tcp nodelay", error))?;
-                return Ok(stream);
+        loop {
+            let remaining =
+                match remaining_relay_connect_timeout(started, timeout, last_error.take()) {
+                    Ok(remaining) => remaining,
+                    Err(error) => {
+                        return Err(error);
+                    }
+                };
+            match TcpStream::connect_timeout(&address, remaining) {
+                Ok(stream) => {
+                    stream.set_read_timeout(Some(timeout)).map_err(|error| {
+                        RelayFrameError::io("configure relay read timeout", error)
+                    })?;
+                    stream.set_write_timeout(Some(timeout)).map_err(|error| {
+                        RelayFrameError::io("configure relay write timeout", error)
+                    })?;
+                    stream.set_nodelay(true).map_err(|error| {
+                        RelayFrameError::io("configure relay tcp nodelay", error)
+                    })?;
+                    return Ok(stream);
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    last_error = Some(error);
+                    continue;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    break;
+                }
             }
-            Err(error) => last_error = Some(error),
         }
     }
 
@@ -1282,6 +1313,23 @@ fn connect_relay_tcp(
             )
         }),
     ))
+}
+
+fn remaining_relay_connect_timeout(
+    started: Instant,
+    timeout: Duration,
+    last_error: Option<io::Error>,
+) -> Result<Duration, RelayFrameError> {
+    let remaining = timeout.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Err(RelayFrameError::io(
+            "connect relay endpoint",
+            last_error.unwrap_or_else(|| {
+                io::Error::new(io::ErrorKind::TimedOut, "relay websocket connect timed out")
+            }),
+        ));
+    }
+    Ok(remaining)
 }
 
 fn configure_websocket_timeouts(
