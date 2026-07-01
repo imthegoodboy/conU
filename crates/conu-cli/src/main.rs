@@ -1,5 +1,5 @@
 use std::env;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 use std::process::ExitCode;
 
 const MAX_CLI_STDIN_PAYLOAD_BYTES: u64 = 64 * 1024;
@@ -13,6 +13,7 @@ struct StdinReadPlan {
 
 fn main() -> ExitCode {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    let interactive_menu = should_run_interactive_menu(&args);
     let stdin_payload = if let Some(plan) = stdin_read_plan(&args) {
         match read_bounded_stdin(io::stdin(), plan) {
             Ok(payload) => payload,
@@ -24,7 +25,17 @@ fn main() -> ExitCode {
     } else {
         Vec::new()
     };
-    let output = conu_cli::run_with_stdin(args, stdin_payload);
+    let output = if interactive_menu {
+        match conu_cli::run_terminal_menu() {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!("conU menu failed: {error}");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        conu_cli::run_with_stdin(args, stdin_payload)
+    };
 
     if !output.stdout.is_empty() {
         print!("{}", output.stdout);
@@ -34,6 +45,11 @@ fn main() -> ExitCode {
     }
 
     ExitCode::from(output.code as u8)
+}
+
+fn should_run_interactive_menu(args: &[String]) -> bool {
+    let menu_command = args.is_empty() || (args.len() == 1 && args[0] == "menu");
+    menu_command && io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
 fn read_bounded_stdin<R: Read>(mut reader: R, plan: StdinReadPlan) -> Result<Vec<u8>, String> {
@@ -156,6 +172,15 @@ mod tests {
             ]),
             None
         );
+    }
+
+    #[test]
+    fn interactive_menu_requires_tty_only_menu_invocations() {
+        assert!(!should_run_interactive_menu(&["dashboard".to_string()]));
+        assert!(!should_run_interactive_menu(&[
+            "menu".to_string(),
+            "--help".to_string()
+        ]));
     }
 
     #[test]
