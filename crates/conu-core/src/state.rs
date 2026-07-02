@@ -17,6 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use conu_protocol::PROTOCOL_VERSION;
 
+use crate::relay_endpoint::{self, RelayEndpointError};
+
 const NODE_FILE: &str = "node.toml";
 const CONFIG_FILE: &str = "config.toml";
 const TRUST_FILE: &str = "trust.toml";
@@ -243,6 +245,16 @@ impl StateSnapshot {
     }
 }
 
+/// Result of updating local relay configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayConfigUpdateReport {
+    pub paths: StatePaths,
+    pub default_relay: String,
+    pub relay_auto_sync: bool,
+    pub config_created: bool,
+    pub config_changed: bool,
+}
+
 /// Errors produced while reading or creating local state.
 #[derive(Debug)]
 pub enum StateError {
@@ -253,6 +265,10 @@ pub enum StateError {
         source: io::Error,
     },
     InvalidNodeIdentity {
+        path: PathBuf,
+        reason: String,
+    },
+    InvalidConfig {
         path: PathBuf,
         reason: String,
     },
@@ -286,6 +302,9 @@ impl fmt::Display for StateError {
                     "invalid node identity at {}: {reason}",
                     path.display()
                 )
+            }
+            Self::InvalidConfig { path, reason } => {
+                write!(formatter, "invalid config at {}: {reason}", path.display())
             }
         }
     }
@@ -337,6 +356,50 @@ pub fn init_state(home_override: Option<PathBuf>) -> Result<InitReport, StateErr
         config_created,
         trust_store_created,
         agent_registry_created,
+    })
+}
+
+/// Validate a relay endpoint for use in local config without writing state.
+pub fn validate_relay_config_endpoint(endpoint: &str) -> Result<String, StateError> {
+    validate_relay_config_endpoint_for_path(&PathBuf::from(CONFIG_FILE), endpoint)
+}
+
+/// Set the local default relay endpoint and relay auto-sync policy.
+pub fn configure_relay(
+    home_override: Option<PathBuf>,
+    endpoint: &str,
+    relay_auto_sync: bool,
+) -> Result<RelayConfigUpdateReport, StateError> {
+    let init = init_state(home_override)?;
+    let endpoint = validate_relay_config_endpoint_for_path(&init.paths.config, endpoint)?;
+    let existing = read_optional_regular_state_file(
+        &init.paths.config,
+        "inspect relay config",
+        "read relay config",
+    )?;
+    let config_created = init.config_created || existing.is_none();
+    let existing = existing.unwrap_or_else(|| render_config(&init.node));
+    let updated =
+        render_relay_config_update(&init.paths.config, &existing, &endpoint, relay_auto_sync)?;
+    let config_changed = updated != existing;
+
+    if config_changed {
+        write_regular_state_file(
+            &init.paths.config,
+            &updated,
+            "inspect relay config",
+            "create relay config",
+            "open relay config",
+            "write relay config",
+        )?;
+    }
+
+    Ok(RelayConfigUpdateReport {
+        paths: init.paths,
+        default_relay: endpoint,
+        relay_auto_sync,
+        config_created,
+        config_changed,
     })
 }
 
@@ -1266,6 +1329,102 @@ fn render_config(node: &NodeIdentity) -> String {
         "# conU local config\nversion = \"1\"\nruntime_name = \"{}\"\ndefault_relay = \"\"\nrelay_auto_sync = true\n",
         escape_file_value(&node.display_name)
     )
+}
+
+fn validate_relay_config_endpoint_for_path(
+    path: &Path,
+    endpoint: &str,
+) -> Result<String, StateError> {
+    relay_endpoint::validate_relay_endpoint(endpoint.to_string()).map_err(|error| {
+        StateError::InvalidConfig {
+            path: path.to_path_buf(),
+            reason: relay_endpoint_error_reason(error).to_string(),
+        }
+    })
+}
+
+fn relay_endpoint_error_reason(error: RelayEndpointError) -> &'static str {
+    match error {
+        RelayEndpointError::Empty => "relay endpoint cannot be empty",
+        RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+        RelayEndpointError::Invalid => "relay endpoint is invalid",
+    }
+}
+
+fn render_relay_config_update(
+    path: &Path,
+    contents: &str,
+    endpoint: &str,
+    relay_auto_sync: bool,
+) -> Result<String, StateError> {
+    let (contents, endpoint_seen) = upsert_config_line(
+        path,
+        contents,
+        "default_relay",
+        &quoted_config_value(endpoint),
+    )?;
+    let (mut contents, auto_sync_seen) = upsert_config_line(
+        path,
+        &contents,
+        "relay_auto_sync",
+        if relay_auto_sync { "true" } else { "false" },
+    )?;
+
+    if !endpoint_seen {
+        contents.push_str(&format!(
+            "default_relay = \"{}\"\n",
+            escape_file_value(endpoint)
+        ));
+    }
+    if !auto_sync_seen {
+        contents.push_str(&format!(
+            "relay_auto_sync = {}\n",
+            if relay_auto_sync { "true" } else { "false" }
+        ));
+    }
+
+    Ok(contents)
+}
+
+fn upsert_config_line(
+    path: &Path,
+    contents: &str,
+    key: &'static str,
+    rendered_value: &str,
+) -> Result<(String, bool), StateError> {
+    let mut seen = false;
+    let mut output = String::new();
+
+    for line in contents.lines() {
+        if config_line_key(line) == Some(key) {
+            if seen {
+                return Err(StateError::InvalidConfig {
+                    path: path.to_path_buf(),
+                    reason: format!("duplicate config key {key}"),
+                });
+            }
+            seen = true;
+            output.push_str(&format!("{key} = {rendered_value}\n"));
+        } else {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+
+    Ok((output, seen))
+}
+
+fn config_line_key(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let (key, _) = line.split_once('=')?;
+    Some(key.trim())
+}
+
+fn quoted_config_value(value: &str) -> String {
+    format!("\"{}\"", escape_file_value(value))
 }
 
 fn render_trust_store() -> String {

@@ -1135,6 +1135,7 @@ where
         "reply" => render_reply(&args[1..], home_override, stdin_payload),
         "chat" => render_chat(&args[1..], home_override, stdin_payload),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
+        "online" => render_online(&args[1..], home_override, stdin_payload),
         "relay" => render_relay(&args[1..], home_override, stdin_payload),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
         "rooms" => render_rooms(&args[1..], home_override, stdin_payload),
@@ -1142,6 +1143,8 @@ where
         "routes" => render_routes(&args[1..], home_override),
         "security" => render_security(&args[1..], home_override),
         "identity" => render_identity(&args[1..], home_override),
+        "invite" | "share" => render_pair(&args[1..], home_override),
+        "accept" => render_join(&args[1..], home_override),
         "pair" => render_pair(&args[1..], home_override),
         "join" => render_join(&args[1..], home_override),
         "connect" => render_connect(&args[1..], home_override),
@@ -7517,17 +7520,147 @@ fn render_routes_usage() -> String {
         .to_string()
 }
 
+fn render_online(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success(render_online_usage());
+    }
+
+    let setup_args = if args.first().is_none_or(|arg| arg.starts_with("--")) {
+        let Some(endpoint) = online_endpoint_from_env() else {
+            return CliOutput::failure(2, render_online_usage());
+        };
+        let mut setup_args = Vec::with_capacity(args.len() + 1);
+        setup_args.push(endpoint);
+        setup_args.extend(args.iter().cloned());
+        setup_args
+    } else {
+        args.to_vec()
+    };
+
+    render_relay_setup(&setup_args, home_override, stdin_payload)
+}
+
+fn online_endpoint_from_env() -> Option<String> {
+    env::var("CONU_RELAY_URL")
+        .or_else(|_| env::var("CONU_DEFAULT_RELAY_URL"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn render_relay(
     args: &[String],
     home_override: Option<PathBuf>,
     stdin_payload: Vec<u8>,
 ) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("setup") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_relay_setup_usage())
+        }
+        Some("setup") => render_relay_setup(&args[1..], home_override, stdin_payload),
         Some("sync") => render_relay_sync(&args[1..], home_override),
         Some("credential") => render_relay_credential(&args[1..], home_override, stdin_payload),
         Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_relay_usage()),
         _ => CliOutput::failure(2, render_relay_usage()),
     }
+}
+
+fn render_relay_setup(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let parsed = match parse_relay_setup_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let endpoint = match state::validate_relay_config_endpoint(&parsed.endpoint) {
+        Ok(endpoint) => endpoint,
+        Err(error) => return CliOutput::failure(2, format!("conU relay setup failed\n\n{error}")),
+    };
+    let token = if parsed.token_stdin {
+        match String::from_utf8(stdin_payload) {
+            Ok(token) => {
+                let token = token.trim().to_string();
+                if let Err(error) = security::validate_relay_credential_token(&token) {
+                    return CliOutput::failure(2, format!("conU relay setup failed\n\n{error}"));
+                }
+                Some(token)
+            }
+            Err(_) => {
+                return CliOutput::failure(
+                    2,
+                    "conU relay setup failed\n\nrelay token must be UTF-8; tokenDisplayed=false",
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    let config = match state::configure_relay(home_override.clone(), &endpoint, true) {
+        Ok(config) => config,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU relay setup failed\n\n{error}"));
+        }
+    };
+
+    let credential_status = if let Some(token) = token.as_deref() {
+        match security::store_relay_credential(home_override.clone(), token) {
+            Ok(status) => status,
+            Err(error) => {
+                return CliOutput::failure(
+                    1,
+                    format!("conU relay setup failed\n\nstore relay credential: {error}"),
+                );
+            }
+        }
+    } else {
+        match security::relay_credential_status(home_override.clone()) {
+            Ok(status) => status,
+            Err(error) => {
+                return CliOutput::failure(
+                    1,
+                    format!("conU relay setup failed\n\nread relay credential status: {error}"),
+                );
+            }
+        }
+    };
+
+    let sync = if parsed.verify {
+        match relay_delivery::sync_relay_once(home_override, Duration::from_millis(parsed.wait_ms))
+        {
+            Ok(report) => Some(report),
+            Err(error) => {
+                return CliOutput::failure(
+                    1,
+                    format!(
+                        "conU relay setup failed\n\nconfigured endpoint and credential, but verification failed: {error}\ncontentsDisplayed=false\ntokenDisplayed=false"
+                    ),
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    if parsed.json {
+        return CliOutput::success(render_relay_setup_json(
+            &config,
+            &credential_status,
+            sync.as_ref(),
+        ));
+    }
+
+    CliOutput::success(render_relay_setup_text(
+        &config,
+        &credential_status,
+        sync.as_ref(),
+    ))
 }
 
 fn render_relay_credential(
@@ -7671,6 +7804,116 @@ privacy
     )
 }
 
+fn render_relay_setup_json(
+    config: &state::RelayConfigUpdateReport,
+    credential: &security::RelayCredentialStatus,
+    sync: Option<&relay_delivery::RelaySyncReport>,
+) -> String {
+    let (verified, connected, sent, received, undelivered, rejected) = match sync {
+        Some(report) => (
+            "true".to_string(),
+            report.connected.to_string(),
+            report.sent.to_string(),
+            report.received.to_string(),
+            report.undelivered.to_string(),
+            report.rejected.to_string(),
+        ),
+        None => (
+            "false".to_string(),
+            "null".to_string(),
+            "null".to_string(),
+            "null".to_string(),
+            "null".to_string(),
+            "null".to_string(),
+        ),
+    };
+
+    format!(
+        r#"{{
+  "status": "configured",
+  "endpoint": "{}",
+  "relayAutoSync": {},
+  "configCreated": {},
+  "configChanged": {},
+  "credentialConfigured": {},
+  "secretStorageBackend": "{}",
+  "secretsOsProtected": {},
+  "verified": {},
+  "connected": {},
+  "sent": {},
+  "received": {},
+  "undelivered": {},
+  "rejected": {},
+  "contentsDisplayed": false,
+  "tokenDisplayed": false,
+  "endpointPathDisplayed": false
+}}"#,
+        json_escape(&display_network_endpoint(&config.default_relay)),
+        config.relay_auto_sync,
+        config.config_created,
+        config.config_changed,
+        credential.configured,
+        json_escape(&credential.secret_storage_backend),
+        credential.os_protected,
+        verified,
+        connected,
+        sent,
+        received,
+        undelivered,
+        rejected
+    )
+}
+
+fn render_relay_setup_text(
+    config: &state::RelayConfigUpdateReport,
+    credential: &security::RelayCredentialStatus,
+    sync: Option<&relay_delivery::RelaySyncReport>,
+) -> String {
+    let verify_line = match sync {
+        Some(report) => format!(
+            "verified: yes\nconnected: {}\nsent: {}\nreceived: {}\nundelivered: {}\nrejected: {}",
+            yes_no(report.connected),
+            report.sent,
+            report.received,
+            report.undelivered,
+            report.rejected
+        ),
+        None => "verified: skipped".to_string(),
+    };
+
+    format!(
+        r"conU relay setup
+
+status: configured
+endpoint: {}
+auto sync: {}
+config changed: {}
+credential: {}
+secret store: {}
+os protected: {}
+{verify_line}
+
+next
+  conu start
+  conu relay sync --wait-ms 5000
+
+privacy
+  token view     not displayed
+  payload view   contents are not displayed by conU
+  endpoint path  not displayed",
+        display_network_endpoint(&config.default_relay),
+        yes_no(config.relay_auto_sync),
+        yes_no(config.config_changed),
+        if credential.configured {
+            "configured"
+        } else {
+            "missing"
+        },
+        credential.secret_storage_backend,
+        yes_no(credential.os_protected)
+    )
+}
+
 fn render_relay_sync(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let parsed = match parse_relay_sync_args(args) {
         Ok(parsed) => parsed,
@@ -7738,6 +7981,14 @@ note
     ))
 }
 
+struct RelaySetupArgs {
+    endpoint: String,
+    token_stdin: bool,
+    verify: bool,
+    wait_ms: u64,
+    json: bool,
+}
+
 struct RelaySyncArgs {
     wait_ms: u64,
     json: bool,
@@ -7746,6 +7997,52 @@ struct RelaySyncArgs {
 struct RelayCredentialSetArgs {
     stdin: bool,
     json: bool,
+}
+
+fn parse_relay_setup_args(args: &[String]) -> Result<RelaySetupArgs, CliOutput> {
+    let mut endpoint = None;
+    let mut token_stdin = false;
+    let mut verify = false;
+    let mut wait_ms = 1000;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--token-stdin" => token_stdin = true,
+            "--verify" => verify = true,
+            "--json" => json = true,
+            "--wait-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_relay_setup_usage()));
+                };
+                wait_ms = match value.parse::<u64>() {
+                    Ok(value) if value <= 60_000 => value,
+                    _ => return Err(CliOutput::failure(2, render_relay_setup_usage())),
+                };
+                index += 1;
+            }
+            value if value.starts_with("--") => return Err(unknown_option_error()),
+            value => {
+                if endpoint.replace(value.to_string()).is_some() {
+                    return Err(CliOutput::failure(2, render_relay_setup_usage()));
+                }
+            }
+        }
+        index += 1;
+    }
+
+    let Some(endpoint) = endpoint else {
+        return Err(CliOutput::failure(2, render_relay_setup_usage()));
+    };
+
+    Ok(RelaySetupArgs {
+        endpoint,
+        token_stdin,
+        verify,
+        wait_ms,
+        json,
+    })
 }
 
 fn parse_relay_sync_args(args: &[String]) -> Result<RelaySyncArgs, CliOutput> {
@@ -7797,10 +8094,48 @@ fn parse_relay_credential_set_args(args: &[String]) -> Result<RelayCredentialSet
 
 fn render_relay_usage() -> String {
     r"usage:
+  conu relay setup <ws://host:port|wss://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
   conu relay credential status [--json]
   conu relay credential set --stdin [--json]
   conu relay credential clear [--json]"
+        .to_string()
+}
+
+fn render_online_usage() -> String {
+    r"usage: conu online [<ws://host:port|wss://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+
+simple:
+  printf <token> | conu online wss://relay.example.com/conu --token-stdin --verify
+
+env endpoint:
+  set CONU_RELAY_URL=wss://relay.example.com/conu
+  printf <token> | conu online --token-stdin --verify
+
+what it does:
+  stores the relay token safely
+  writes the default relay endpoint
+  enables automatic relay sync
+
+privacy:
+  token bytes are read from stdin, not command history
+  tokenDisplayed=false
+  contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_relay_setup_usage() -> String {
+    r"usage: conu relay setup <ws://host:port|wss://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+
+examples:
+  printf <token> | conu relay setup wss://relay.example.com/conu --token-stdin
+  printf <token> | conu relay setup wss://relay.example.com/conu --token-stdin --verify --wait-ms 5000
+
+privacy:
+  token bytes are read from stdin, not command history
+  stdout shows endpoint and credential status only
+  contentsDisplayed=false
+  tokenDisplayed=false"
         .to_string()
 }
 
@@ -17174,6 +17509,9 @@ Usage:
 Start:
   conu                  open the Up/Down menu in a terminal
   conu setup --start    create two local agents and start conUD
+  conu online <relay> --token-stdin --verify
+  conu invite           make a connection code
+  conu accept <code>    join another node
   conu ready <id> <name> register one agent and mark it ready
   conu connect          choose an agent action
   conu chat             send one private local message
@@ -17260,6 +17598,8 @@ Usage:
   conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receipts [--json]
+  conu online [<ws://host:port|wss://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+  conu relay setup <ws://host:port|wss://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
   conu relay credential status [--json]
   conu relay credential set --stdin [--json]
@@ -17293,6 +17633,8 @@ Usage:
   conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--json]
   conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]
   conu peers revoke <peer-node-id> [--json]
+  conu invite [--json]
+  conu accept <code> [--json]
   conu pair [--json]
   conu join <code> [--json]
   conu connect
@@ -21826,6 +22168,162 @@ mod tests {
         assert!(!status.stdout.contains(&token_text));
         assert!(!stored.stdout.contains("dpapi_hex"));
         assert!(!status.stdout.contains("token_hex"));
+    }
+
+    #[test]
+    fn relay_setup_configures_endpoint_and_credential_without_printing_token() {
+        let home = temp_home("relay-setup");
+        let token = b"setup-relay-token-1234567890".to_vec();
+        let token_text = String::from_utf8(token.clone()).expect("token utf8");
+
+        let setup = run_with_home_and_stdin(
+            [
+                "relay",
+                "setup",
+                "wss://relay.example.com/conu/private",
+                "--token-stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            token,
+        );
+        let status = run_with_home(
+            ["relay", "credential", "status", "--json"],
+            Some(home.clone()),
+        );
+        let config = fs::read_to_string(home.join("config.toml")).expect("config reads");
+
+        assert_eq!(setup.code, 0, "{}", setup.stderr);
+        assert_eq!(status.code, 0, "{}", status.stderr);
+        assert!(setup.stdout.contains("\"status\": \"configured\""));
+        assert!(
+            setup
+                .stdout
+                .contains("\"endpoint\": \"wss://relay.example.com; endpointPathDisplayed=false\"")
+        );
+        assert!(setup.stdout.contains("\"credentialConfigured\": true"));
+        assert!(setup.stdout.contains("\"relayAutoSync\": true"));
+        assert!(setup.stdout.contains("\"verified\": false"));
+        assert!(setup.stdout.contains("\"tokenDisplayed\": false"));
+        assert!(setup.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(status.stdout.contains("\"configured\": true"));
+        assert!(config.contains("default_relay = \"wss://relay.example.com/conu/private\""));
+        assert!(config.contains("relay_auto_sync = true"));
+        assert!(!setup.stdout.contains(&token_text));
+        assert!(!status.stdout.contains(&token_text));
+        assert!(!config.contains(&token_text));
+        assert!(!setup.stdout.contains("dpapi_hex"));
+        assert!(!setup.stdout.contains("token_hex"));
+    }
+
+    #[test]
+    fn relay_setup_rejects_secret_bearing_endpoint_before_storing_token() {
+        let home = temp_home("relay-setup-bad-endpoint");
+        let token = b"setup-relay-token-abcdef".to_vec();
+        let token_text = String::from_utf8(token.clone()).expect("token utf8");
+
+        let setup = run_with_home_and_stdin(
+            [
+                "relay",
+                "setup",
+                "wss://relay.example.com/conu?token=private",
+                "--token-stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            token,
+        );
+        let status = run_with_home(["relay", "credential", "status", "--json"], Some(home));
+
+        assert_eq!(setup.code, 2);
+        assert!(setup.stderr.contains("relay endpoint is invalid"));
+        assert!(!setup.stderr.contains(&token_text));
+        assert_eq!(status.code, 0, "{}", status.stderr);
+        assert!(status.stdout.contains("\"configured\": false"));
+        assert!(!status.stdout.contains(&token_text));
+    }
+
+    #[test]
+    fn relay_setup_rejects_duplicate_config_before_storing_token() {
+        let home = temp_home("relay-setup-duplicate-config");
+        state::init_state(Some(home.clone())).expect("state initializes");
+        fs::write(
+            home.join("config.toml"),
+            "version = \"1\"\ndefault_relay = \"wss://one.example.com/conu\"\ndefault_relay = \"wss://two.example.com/conu\"\nrelay_auto_sync = true\n",
+        )
+        .expect("config writes");
+        let token = b"duplicate-config-token-123456".to_vec();
+        let token_text = String::from_utf8(token.clone()).expect("token utf8");
+
+        let setup = run_with_home_and_stdin(
+            [
+                "relay",
+                "setup",
+                "wss://relay.example.com/conu",
+                "--token-stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            token,
+        );
+        let status = run_with_home(["relay", "credential", "status", "--json"], Some(home));
+
+        assert_eq!(setup.code, 1);
+        assert!(setup.stderr.contains("duplicate config key default_relay"));
+        assert!(!setup.stderr.contains(&token_text));
+        assert_eq!(status.code, 0, "{}", status.stderr);
+        assert!(status.stdout.contains("\"configured\": false"));
+        assert!(!status.stdout.contains(&token_text));
+    }
+
+    #[test]
+    fn online_alias_uses_simple_relay_setup_flow() {
+        let home = temp_home("online-alias");
+        let token = b"online-relay-token-1234567890".to_vec();
+        let token_text = String::from_utf8(token.clone()).expect("token utf8");
+
+        let setup = run_with_home_and_stdin(
+            [
+                "online",
+                "wss://relay.example.com/conu",
+                "--token-stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            token,
+        );
+        let status = run_with_home(["relay", "credential", "status", "--json"], Some(home));
+
+        assert_eq!(setup.code, 0, "{}", setup.stderr);
+        assert_eq!(status.code, 0, "{}", status.stderr);
+        assert!(setup.stdout.contains("\"status\": \"configured\""));
+        assert!(setup.stdout.contains("\"credentialConfigured\": true"));
+        assert!(status.stdout.contains("\"configured\": true"));
+        assert!(!setup.stdout.contains(&token_text));
+        assert!(!status.stdout.contains(&token_text));
+    }
+
+    #[test]
+    fn simple_connection_aliases_match_pair_and_join_surfaces() {
+        let home = temp_home("invite-accept-aliases");
+        let invite = run_with_home(["invite", "--json"], Some(home.clone()));
+        let pair = run_with_home(["pair", "--json"], Some(home.clone()));
+        let accept_help = run_with_home(["accept"], Some(home));
+
+        assert_eq!(invite.code, 0, "{}", invite.stderr);
+        assert_eq!(pair.code, 0, "{}", pair.stderr);
+        assert_eq!(accept_help.code, 2);
+        assert!(
+            invite
+                .stdout
+                .contains("\"status\": \"pairing_code_created\"")
+        );
+        assert!(pair.stdout.contains("\"status\": \"pairing_code_created\""));
+        assert!(invite.stdout.contains("\"code\":"));
+        assert!(pair.stdout.contains("\"code\":"));
+        assert!(accept_help.stderr.contains("usage: conu join <code>"));
+        assert!(!invite.stdout.contains("secret_key_hex"));
+        assert!(!pair.stdout.contains("secret_key_hex"));
     }
 
     #[test]
