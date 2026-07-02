@@ -344,6 +344,11 @@ pub fn store_relay_credential(
     store_relay_credential_from_paths(&init.paths, token)
 }
 
+/// Validate a relay client credential without storing or displaying it.
+pub fn validate_relay_credential_token(token: &str) -> Result<(), SecurityError> {
+    validate_relay_token(token)
+}
+
 /// Store the relay client credential from already resolved state paths.
 pub fn store_relay_credential_from_paths(
     paths: &StatePaths,
