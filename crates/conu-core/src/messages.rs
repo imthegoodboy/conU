@@ -434,7 +434,7 @@ fn sort_inbox_entries(entries: &mut [InboxEntry]) {
     entries.sort_by(|left, right| {
         left.delivered_at_unix
             .cmp(&right.delivered_at_unix)
-            .then_with(|| left.envelope_id.cmp(&right.envelope_id))
+            .then_with(|| compare_generated_ids(&left.envelope_id, &right.envelope_id))
     });
 }
 
@@ -442,8 +442,24 @@ fn sort_delivery_receipts(receipts: &mut [DeliveryReceipt]) {
     receipts.sort_by(|left, right| {
         left.delivered_at_unix
             .cmp(&right.delivered_at_unix)
-            .then_with(|| left.receipt_id.cmp(&right.receipt_id))
+            .then_with(|| compare_generated_ids(&left.receipt_id, &right.receipt_id))
     });
+}
+
+fn compare_generated_ids(left: &str, right: &str) -> std::cmp::Ordering {
+    match (
+        generated_id_time_suffix(left),
+        generated_id_time_suffix(right),
+    ) {
+        (Some(left_time), Some(right_time)) => {
+            left_time.cmp(&right_time).then_with(|| left.cmp(right))
+        }
+        _ => left.cmp(right),
+    }
+}
+
+fn generated_id_time_suffix(value: &str) -> Option<u128> {
+    value.rsplit('_').next()?.parse::<u128>().ok()
 }
 
 fn process_one_message_request(
@@ -1368,6 +1384,26 @@ mod tests {
     }
 
     #[test]
+    fn inbox_metadata_sorts_generated_ids_by_timestamp_suffix() {
+        let mut entries = vec![
+            test_inbox_metadata("env_9000_200", 20),
+            test_inbox_metadata("env_1000_300", 20),
+            test_inbox_metadata("env_8000_100", 20),
+        ];
+
+        sort_inbox_entries(&mut entries);
+
+        let envelope_ids: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.envelope_id.as_str())
+            .collect();
+        assert_eq!(
+            envelope_ids,
+            vec!["env_8000_100", "env_9000_200", "env_1000_300"]
+        );
+    }
+
+    #[test]
     fn delivery_receipts_sort_by_delivery_time_then_receipt_id() {
         let mut receipts = vec![
             test_delivery_receipt("rcpt.new", "env.new", 30),
@@ -1385,6 +1421,26 @@ mod tests {
         assert_eq!(
             receipt_ids,
             vec!["rcpt.old", "rcpt.same.a", "rcpt.same.b", "rcpt.new"]
+        );
+    }
+
+    #[test]
+    fn delivery_receipts_sort_generated_ids_by_timestamp_suffix() {
+        let mut receipts = vec![
+            test_delivery_receipt("rcpt_9000_200", "env_9000_200", 20),
+            test_delivery_receipt("rcpt_1000_300", "env_1000_300", 20),
+            test_delivery_receipt("rcpt_8000_100", "env_8000_100", 20),
+        ];
+
+        sort_delivery_receipts(&mut receipts);
+
+        let receipt_ids: Vec<&str> = receipts
+            .iter()
+            .map(|receipt| receipt.receipt_id.as_str())
+            .collect();
+        assert_eq!(
+            receipt_ids,
+            vec!["rcpt_8000_100", "rcpt_9000_200", "rcpt_1000_300"]
         );
     }
 
