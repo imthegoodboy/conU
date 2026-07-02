@@ -46,15 +46,17 @@ Supported Node.js lines: Node 22 LTS and Node 24 LTS.
 
 ```sh
 conu setup --start
+conu
 conu connect
 ```
 
-`conu setup --start` prepares local state, creates two reusable agents, verifies local delivery, and starts or attaches to `conUD`. `conu connect` opens the simple selector for the next useful action.
+`conu setup --start` prepares local state, creates two reusable agents, verifies local delivery, and starts or attaches to `conUD`. `conu` opens the Up/Down menu in a terminal, and `conu connect` opens the simple selector for the next useful action.
 
 Common commands:
 
 | Task | Command |
 | --- | --- |
+| Open the menu | `conu` |
 | Start the selector | `conu connect` |
 | Send one prompted message | `conu chat agent.alpha agent.beta` |
 | Send bytes from a file | `conu send agent.alpha agent.beta --file ./message.bin --json` |

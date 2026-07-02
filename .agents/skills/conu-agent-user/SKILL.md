@@ -97,29 +97,25 @@ Use `conu next <agent-id> --json` for a metadata-only agent readiness and inbox 
 
 A relay is needed for agents on different machines or networks unless direct QUIC is reachable.
 
-Store your assigned relay token:
+Prepare the local agents, store your assigned relay token, configure the relay endpoint, and start `conUD` in one command:
 
 ```sh
-cat ./node.token | conu relay credential set --stdin
+cat ./node.token | conu setup --relay https://relay.example.com --token-stdin --start
 ```
 
-Export your public peer card:
+If the token is already stored or the relay does not require one, omit `--token-stdin`. Export your public invite card:
+
+Advanced fallback: store only the relay credential with `cat ./node.token | conu relay credential set --stdin`, then run `conu setup --relay https://relay.example.com --start`.
 
 ```sh
-conu identity export --json
+conu invite --relay https://relay.example.com --json > invite.json
 ```
 
-Trust a peer's public card and grant policy:
+Trust a peer invite. `conu accept` grants default messages, streams, and rooms policy:
 
 ```sh
-conu peers trust <peer-node-id> "<peer name>" --exchange-key <hex> --relay wss://relay.example.com/conu --signing-key <hex> --signature <hex> --signature-key-id <id>
-conu peers policy <peer-node-id> --messages true --streams true --rooms true
-```
-
-Start the runtime:
-
-```sh
-conu start
+conu accept peer-invite.json
+conu sessions sync --json
 ```
 
 Send to a remote trusted peer:
