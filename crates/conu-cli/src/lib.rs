@@ -6231,10 +6231,21 @@ fn render_relay_credential(
     stdin_payload: Vec<u8>,
 ) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("set") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_relay_credential_set_usage())
+        }
+        Some("clear") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_relay_credential_clear_usage())
+        }
+        Some("status") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_relay_credential_status_usage())
+        }
         Some("set") => render_relay_credential_set(&args[1..], home_override, stdin_payload),
         Some("clear") => render_relay_credential_clear(&args[1..], home_override),
         Some("status") | None => render_relay_credential_status(&args[1..], home_override),
-        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_relay_usage()),
+        Some("--help") | Some("-h") | Some("help") => {
+            CliOutput::success(render_relay_credential_usage())
+        }
         _ => CliOutput::failure(2, render_relay_usage()),
     }
 }
@@ -6485,6 +6496,52 @@ fn render_relay_usage() -> String {
   conu relay credential status [--json]
   conu relay credential set --stdin [--json]
   conu relay credential clear [--json]"
+        .to_string()
+}
+
+fn render_relay_credential_usage() -> String {
+    r"usage:
+  conu relay credential status [--json]
+  conu relay credential set --stdin [--json]
+  conu relay credential clear [--json]
+
+privacy:
+  relay tokens are read from stdin for set
+  relay tokens are never displayed
+  CONU_RELAY_TOKEN overrides the stored credential at runtime"
+        .to_string()
+}
+
+fn render_relay_credential_set_usage() -> String {
+    r"usage: conu relay credential set --stdin [--json]
+
+example:
+  printf <token> | conu relay credential set --stdin
+
+privacy:
+  token bytes are read from stdin, not command history
+  stdout shows credential status only
+  contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_relay_credential_status_usage() -> String {
+    r"usage: conu relay credential status [--json]
+
+privacy:
+  token bytes are never displayed
+  status output reports only whether a stored credential exists
+  contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_relay_credential_clear_usage() -> String {
+    r"usage: conu relay credential clear [--json]
+
+privacy:
+  token bytes are removed without display
+  stdout shows credential status only
+  contentsDisplayed=false"
         .to_string()
 }
 
@@ -16962,11 +17019,40 @@ mod tests {
             vec!["relay", "-h"],
             vec!["relay", "help"],
             vec!["relay", "credential", "--help"],
+            vec!["relay", "credential", "set", "--help"],
+            vec!["relay", "credential", "status", "--help"],
+            vec!["relay", "credential", "clear", "--help"],
         ] {
             let output = run(args.clone());
 
             assert_eq!(output.code, 0, "{args:?} failed: {}", output.stderr);
             assert!(output.stdout.contains("usage:"));
+            assert!(output.stderr.is_empty());
+        }
+    }
+
+    #[test]
+    fn relay_credential_nested_help_is_specific_and_token_safe() {
+        for (args, expected) in [
+            (
+                vec!["relay", "credential", "set", "--help"],
+                "conu relay credential set --stdin",
+            ),
+            (
+                vec!["relay", "credential", "status", "--help"],
+                "conu relay credential status",
+            ),
+            (
+                vec!["relay", "credential", "clear", "--help"],
+                "conu relay credential clear",
+            ),
+        ] {
+            let output = run(args);
+
+            assert_eq!(output.code, 0, "{}", output.stderr);
+            assert!(output.stdout.contains(expected));
+            assert!(output.stdout.contains("contentsDisplayed=false"));
+            assert!(!output.stdout.contains("relay-secret-token"));
             assert!(output.stderr.is_empty());
         }
     }
