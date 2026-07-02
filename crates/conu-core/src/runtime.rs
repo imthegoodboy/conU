@@ -21,6 +21,8 @@ const LOCAL_ENDPOINT: &str = "file-ipc:runtime/ipc/inbox";
 const RELAY_PUMP_WAIT_MS: u64 = 850;
 const RELAY_PUMP_ERROR_BACKOFF_SECS: u64 = 5;
 const MAX_RUNTIME_CONTROL_FILE_BYTES: u64 = 1024 * 1024;
+const RUNTIME_STATUS_READ_RETRY_ATTEMPTS: usize = 6;
+const RUNTIME_STATUS_READ_RETRY_DELAY: Duration = Duration::from_millis(20);
 
 /// High-level state for the local conUD runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -645,6 +647,25 @@ pub fn request_runtime_stop(home_override: Option<PathBuf>) -> Result<StopReport
 }
 
 fn read_runtime_from_paths(paths: &StatePaths) -> Result<RuntimeStatus, RuntimeError> {
+    let mut last_error = None;
+    for attempt in 0..RUNTIME_STATUS_READ_RETRY_ATTEMPTS {
+        match read_runtime_from_paths_once(paths) {
+            Ok(status) => return Ok(status),
+            Err(error)
+                if runtime_status_read_error_is_retryable(&error)
+                    && attempt + 1 < RUNTIME_STATUS_READ_RETRY_ATTEMPTS =>
+            {
+                last_error = Some(error);
+                thread::sleep(RUNTIME_STATUS_READ_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(last_error.expect("runtime status retry loop records the last error"))
+}
+
+fn read_runtime_from_paths_once(paths: &StatePaths) -> Result<RuntimeStatus, RuntimeError> {
     if !state::state_directory_exists(&paths.home, "inspect state directory")? {
         return Ok(offline_status(paths));
     }
@@ -680,6 +701,18 @@ fn read_runtime_from_paths(paths: &StatePaths) -> Result<RuntimeStatus, RuntimeE
     }
 
     Ok(status)
+}
+
+fn runtime_status_read_error_is_retryable(error: &RuntimeError) -> bool {
+    let RuntimeError::Io { source, .. } = error else {
+        return false;
+    };
+    if source.kind() != io::ErrorKind::InvalidInput {
+        return false;
+    }
+    let message = source.to_string();
+    message.contains("runtime control path changed while reading")
+        || message.contains("runtime control path changed while opening")
 }
 
 fn write_status(paths: &StatePaths, status: &RuntimeStatus) -> Result<(), RuntimeError> {
@@ -1388,6 +1421,36 @@ mod tests {
             fs::read_to_string(&paths.runtime_status).expect("status reads"),
             "version = \"1\"\nstate = \"running\"\n"
         );
+    }
+
+    #[test]
+    fn runtime_status_read_retry_predicate_is_narrow() {
+        let changed = RuntimeError::io(
+            "read runtime status",
+            Path::new("status.toml"),
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "runtime control path changed while reading",
+            ),
+        );
+        assert!(runtime_status_read_error_is_retryable(&changed));
+
+        let symlink = RuntimeError::io(
+            "read runtime status",
+            Path::new("status.toml"),
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "runtime control path is not a regular file",
+            ),
+        );
+        assert!(!runtime_status_read_error_is_retryable(&symlink));
+
+        let missing = RuntimeError::io(
+            "read runtime status",
+            Path::new("status.toml"),
+            io::Error::new(io::ErrorKind::NotFound, "runtime control path is missing"),
+        );
+        assert!(!runtime_status_read_error_is_retryable(&missing));
     }
 
     #[cfg(unix)]
