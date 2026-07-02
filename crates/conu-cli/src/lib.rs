@@ -191,8 +191,7 @@ const MENU_ITEMS: &[MenuItem] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ConnectMenuAction {
     Command(Vec<String>),
-    Describe(String),
-    PromptLocalChat {
+    PromptChat {
         from_agent_id: String,
         to_agent_id: String,
     },
@@ -690,18 +689,17 @@ fn run_menu_item(item: MenuItem) -> CliOutput {
 fn run_connect_menu_item(item: ConnectMenuItem) -> CliOutput {
     match item.action {
         ConnectMenuAction::Command(args) => run(args),
-        ConnectMenuAction::Describe(output) => CliOutput::success(output),
-        ConnectMenuAction::PromptLocalChat {
+        ConnectMenuAction::PromptChat {
             from_agent_id,
             to_agent_id,
-        } => run_terminal_local_chat(&from_agent_id, &to_agent_id),
+        } => run_terminal_chat(&from_agent_id, &to_agent_id),
         ConnectMenuAction::Exit => {
             CliOutput::success("conU connect selector closed\ncontentsDisplayed=false")
         }
     }
 }
 
-fn run_terminal_local_chat(from_agent_id: &str, to_agent_id: &str) -> CliOutput {
+fn run_terminal_chat(from_agent_id: &str, to_agent_id: &str) -> CliOutput {
     let _ = crossterm::terminal::disable_raw_mode();
     let mut stdout = io::stdout();
     let _ = crossterm::execute!(
@@ -859,7 +857,7 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
                         title: "Local chat".to_string(),
                         command: command.clone(),
                         detail: "prompt one message".to_string(),
-                        action: ConnectMenuAction::PromptLocalChat {
+                        action: ConnectMenuAction::PromptChat {
                             from_agent_id: from.agent_id.clone(),
                             to_agent_id: to.agent_id.clone(),
                         },
@@ -936,20 +934,18 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
                 .iter()
                 .filter(|agent| agent.capabilities.messages)
             {
-                let command = format!(
-                    "conu send {} {} --file ./message.bin --json",
-                    local.agent_id, remote.agent_id
-                );
+                let command = format!("conu chat {} {}", local.agent_id, remote.agent_id);
                 push_connect_menu_item(
                     &mut items,
                     &mut seen,
                     ConnectMenuItem {
-                        title: "Remote send".to_string(),
+                        title: "Remote chat".to_string(),
                         command: command.clone(),
-                        detail: "prints file-send command".to_string(),
-                        action: ConnectMenuAction::Describe(render_remote_send_hint(
-                            local, remote, &command,
-                        )),
+                        detail: "prompt one remote message".to_string(),
+                        action: ConnectMenuAction::PromptChat {
+                            from_agent_id: local.agent_id.clone(),
+                            to_agent_id: remote.agent_id.clone(),
+                        },
                     },
                 );
                 added += 1;
@@ -1023,29 +1019,6 @@ fn push_connect_menu_item(
     if seen.insert(item.command.clone()) {
         items.push(item);
     }
-}
-
-fn render_remote_send_hint(
-    local: &LocalAgentRecord,
-    remote: &RemoteAgentRecord,
-    command: &str,
-) -> String {
-    format!(
-        r"conU connect remote
-
-ready command
-  {command}
-
-from: {}
-to: {}
-peer: {}
-
-privacy
-  payload source  stdin or file
-  payload view    contents are not displayed by conU
-  contentsDisplayed=false",
-        local.agent_id, remote.agent_id, remote.peer_node_id
-    )
 }
 
 fn abbreviate_for_terminal(value: &str, max_chars: usize) -> String {
@@ -10628,10 +10601,7 @@ fn connect_next_steps(
     }
 
     if let (Some(local), Some(remote)) = (local_agents.first(), remote_agents.first()) {
-        steps.push(format!(
-            "conu send {} {} --file ./message.bin --json",
-            local.agent_id, remote.agent_id
-        ));
+        steps.push(format!("conu chat {} {}", local.agent_id, remote.agent_id));
     } else {
         steps.push("conu pair".to_string());
         steps.push("conu join <code>".to_string());
@@ -18760,7 +18730,7 @@ mod tests {
                 && item.title == "Local chat"
                 && matches!(
                     item.action,
-                    ConnectMenuAction::PromptLocalChat {
+                    ConnectMenuAction::PromptChat {
                         ref from_agent_id,
                         ref to_agent_id
                     } if from_agent_id == "agent.alpha" && to_agent_id == "agent.beta"
@@ -18792,6 +18762,50 @@ mod tests {
                 .stdout
                 .contains("conu connect room room.dev agent.alpha")
         );
+    }
+
+    #[test]
+    fn connect_menu_items_offer_prompted_remote_chat_after_agent_card_sync() {
+        let alice_home = temp_home("connect-menu-remote-chat-alice");
+        let bob_home = temp_home("connect-menu-remote-chat-bob");
+        register_test_agent(&alice_home, "agent.alice");
+        register_test_agent(&bob_home, "agent.bob");
+        let bob_card = trust::export_peer_card(Some(bob_home.clone())).expect("bob card exports");
+        let bob_node_id = bob_card.node_id.clone();
+        trust::trust_peer_card(Some(alice_home.clone()), bob_card).expect("alice trusts bob");
+        policy::set_peer_policy(
+            Some(alice_home.clone()),
+            &bob_node_id,
+            PeerPolicyUpdate {
+                messages: Some(true),
+                ..PeerPolicyUpdate::empty()
+            },
+        )
+        .expect("messages policy grants");
+        let bob_agent_card =
+            agents::export_agent_card(Some(bob_home), "agent.bob").expect("agent card exports");
+        sessions::trust_remote_agent_card(Some(alice_home.clone()), bob_agent_card)
+            .expect("remote agent imports");
+
+        let items = connect_menu_items(Some(alice_home.clone()));
+        let remote_chat = items
+            .iter()
+            .find(|item| item.title == "Remote chat")
+            .expect("remote chat row exists");
+
+        assert_eq!(remote_chat.command, "conu chat agent.alice agent.bob");
+        assert!(matches!(
+            remote_chat.action,
+            ConnectMenuAction::PromptChat {
+                ref from_agent_id,
+                ref to_agent_id
+            } if from_agent_id == "agent.alice" && to_agent_id == "agent.bob"
+        ));
+
+        let selector = run_with_home(["connect"], Some(alice_home));
+        assert_eq!(selector.code, 0, "{}", selector.stderr);
+        assert!(selector.stdout.contains("conu chat agent.alice agent.bob"));
+        assert!(!selector.stdout.contains("agent.bob secret payload"));
     }
 
     #[test]
