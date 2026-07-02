@@ -1202,7 +1202,7 @@ next actions
   conu setup --start
   conu chat
   conu send agent.alpha agent.beta --stdin
-  conu inbox agent.beta
+  conu inbox
   conu history agent.beta
   conu wait agent.beta --process-ipc --timeout-ms 30000 --json
   conu start
@@ -2958,7 +2958,11 @@ fn render_message_inbox(args: &[String], home_override: Option<PathBuf>) -> CliO
         Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    let entries = match messages::list_agent_inbox(home_override, &parsed.agent_id) {
+    let Some(agent_id) = parsed.agent_id else {
+        return render_message_inbox_overview(home_override, parsed.json);
+    };
+
+    let entries = match messages::list_agent_inbox(home_override, &agent_id) {
         Ok(entries) => entries,
         Err(error) => {
             return CliOutput::failure(1, format!("conU messages inbox failed\n\n{error}"));
@@ -2966,10 +2970,39 @@ fn render_message_inbox(args: &[String], home_override: Option<PathBuf>) -> CliO
     };
 
     if parsed.json {
-        return CliOutput::success(render_inbox_json(&parsed.agent_id, &entries));
+        return CliOutput::success(render_inbox_json(&agent_id, &entries));
     }
 
-    CliOutput::success(render_inbox_text(&parsed.agent_id, &entries))
+    CliOutput::success(render_inbox_text(&agent_id, &entries))
+}
+
+fn render_message_inbox_overview(home_override: Option<PathBuf>, json: bool) -> CliOutput {
+    let local_agents = match agents::list_local_agents(home_override.clone()) {
+        Ok(agents) => agents,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU messages inbox failed\n\n{error}"));
+        }
+    };
+    let mut records = Vec::new();
+    for agent in local_agents {
+        let entries = match messages::list_agent_inbox(home_override.clone(), &agent.agent_id) {
+            Ok(entries) => entries,
+            Err(error) => {
+                return CliOutput::failure(1, format!("conU messages inbox failed\n\n{error}"));
+            }
+        };
+        records.push(InboxOverviewRecord {
+            agent_id: agent.agent_id,
+            message_count: entries.len(),
+            newest: entries.last().cloned(),
+        });
+    }
+
+    if json {
+        return CliOutput::success(render_inbox_overview_json(&records));
+    }
+
+    CliOutput::success(render_inbox_overview_text(&records))
 }
 
 fn render_message_history(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -3439,6 +3472,108 @@ fn render_inbox_json(agent_id: &str, entries: &[InboxEntry]) -> String {
     )
 }
 
+fn render_inbox_overview_json(records: &[InboxOverviewRecord]) -> String {
+    let agents = records
+        .iter()
+        .map(|record| {
+            let newest = record
+                .newest
+                .as_ref()
+                .map(render_inbox_overview_newest_json)
+                .unwrap_or_else(|| "null".to_string());
+            format!(
+                r#"    {{
+      "agentId": "{}",
+      "messageCount": {},
+      "newestMessage": {}
+    }}"#,
+                json_escape(&record.agent_id),
+                record.message_count,
+                newest
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let agents = if agents.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{agents}\n  ]")
+    };
+    let total_messages = records
+        .iter()
+        .map(|record| record.message_count)
+        .sum::<usize>();
+
+    format!(
+        r#"{{
+  "agents": {},
+  "totalAgents": {},
+  "totalMessages": {},
+  "contentsDisplayed": false
+}}"#,
+        agents,
+        records.len(),
+        total_messages
+    )
+}
+
+fn render_inbox_overview_newest_json(entry: &InboxEntry) -> String {
+    format!(
+        r#"{{"envelopeId":"{}","fromAgentId":"{}","toAgentId":"{}","kind":"{}","streamId":{},"receiptId":"{}","payloadBytes":{},"deliveredAtUnix":{}}}"#,
+        json_escape(&entry.envelope_id),
+        json_escape(&entry.from_agent_id),
+        json_escape(&entry.to_agent_id),
+        json_escape(&entry.kind),
+        optional_json_string(entry.stream_id.as_deref()),
+        json_escape(&entry.receipt_id),
+        entry.payload_bytes,
+        entry.delivered_at_unix
+    )
+}
+
+fn render_inbox_overview_text(records: &[InboxOverviewRecord]) -> String {
+    let agents = if records.is_empty() {
+        "  none registered yet".to_string()
+    } else {
+        records
+            .iter()
+            .map(|record| match record.newest.as_ref() {
+                Some(entry) => format!(
+                    "  {}  messages {}  newest {}  from {}  bytes {}",
+                    record.agent_id,
+                    record.message_count,
+                    entry.envelope_id,
+                    entry.from_agent_id,
+                    entry.payload_bytes
+                ),
+                None => format!(
+                    "  {}  messages {}  newest none",
+                    record.agent_id, record.message_count
+                ),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        r"conU messages inbox
+
+agent inboxes
+{agents}
+
+next
+  conu inbox
+  conu inbox <agent-id>
+  conu history <agent-id>
+  conu wait <agent-id> --process-ipc --timeout-ms 30000 --json
+  conu receive <agent-id> <envelope-id> --output <file>
+
+privacy
+  payload view  contents are not displayed by conU
+  contentsDisplayed=false"
+    )
+}
+
 fn render_inbox_text(agent_id: &str, entries: &[InboxEntry]) -> String {
     let messages = if entries.is_empty() {
         "  none delivered yet".to_string()
@@ -3738,8 +3873,14 @@ struct MessageSendArgs {
 }
 
 struct MessageInboxArgs {
-    agent_id: String,
+    agent_id: Option<String>,
     json: bool,
+}
+
+struct InboxOverviewRecord {
+    agent_id: String,
+    message_count: usize,
+    newest: Option<InboxEntry>,
 }
 
 struct MessageHistoryArgs {
@@ -3830,10 +3971,6 @@ fn parse_message_inbox_args(args: &[String]) -> Result<MessageInboxArgs, CliOutp
             }
         }
     }
-
-    let Some(agent_id) = agent_id else {
-        return Err(CliOutput::failure(2, render_messages_usage()));
-    };
 
     Ok(MessageInboxArgs { agent_id, json })
 }
@@ -4068,7 +4205,7 @@ fn render_messages_usage() -> String {
     r"usage:
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
-  conu messages inbox <agent-id> [--json]
+  conu messages inbox [agent-id] [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu messages reply <agent-id> <envelope-id> --stdin [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
@@ -4094,10 +4231,11 @@ privacy:
 
 fn render_inbox_usage() -> String {
     r"usage:
-  conu inbox <agent-id> [--json]
+  conu inbox [agent-id] [--json]
 
 shows:
-  delivered message metadata for one local agent
+  all local agent inbox counts when no agent is passed
+  delivered message metadata for one local agent when an agent is passed
   envelope ids, sender ids, byte counts, and delivery times only
   contentsDisplayed=false"
         .to_string()
@@ -15534,14 +15672,14 @@ Usage:
   conu chat <from-agent> <to-agent> --stdin [--json]
   conu send <from-agent> <to-agent> --stdin [--json]
   conu send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
-  conu inbox <agent-id> [--json]
+  conu inbox [agent-id] [--json]
   conu history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu receive <agent-id> <envelope-id> --output <file> [--json]
   conu reply <agent-id> <envelope-id> --stdin [--json]
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
-  conu messages inbox <agent-id> [--json]
+  conu messages inbox [agent-id] [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu messages reply <agent-id> <envelope-id> --stdin [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
@@ -20486,6 +20624,48 @@ mod tests {
         assert!(output.stdout.contains("\"fromAgentId\": \"agent.sender\""));
         assert!(output.stdout.contains("\"payloadBytes\": 3"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+    }
+
+    #[test]
+    fn messages_inbox_overview_lists_agent_counts_without_payload() {
+        let home = temp_home("message-inbox-overview");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private message contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+
+        let output = run_with_home(["inbox"], Some(home.clone()));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("agent inboxes"));
+        assert!(
+            output
+                .stdout
+                .contains("agent.sender  messages 0  newest none")
+        );
+        assert!(output.stdout.contains("agent.receiver  messages 1"));
+        assert!(output.stdout.contains("from agent.sender"));
+        assert!(output.stdout.contains("conu inbox <agent-id>"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(!output.stdout.contains("private message contents"));
+
+        let json = run_with_home(["messages", "inbox", "--json"], Some(home));
+
+        assert_eq!(json.code, 0, "{}", json.stderr);
+        assert!(json.stdout.contains("\"totalAgents\": 2"));
+        assert!(json.stdout.contains("\"totalMessages\": 1"));
+        assert!(json.stdout.contains("\"agentId\": \"agent.receiver\""));
+        assert!(json.stdout.contains("\"messageCount\": 1"));
+        assert!(json.stdout.contains("\"newestMessage\": {"));
+        assert!(json.stdout.contains("\"fromAgentId\":\"agent.sender\""));
+        assert!(json.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!json.stdout.contains("private message contents"));
     }
 
     #[test]
