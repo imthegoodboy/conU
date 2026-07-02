@@ -97,9 +97,9 @@ Two machines need the same relay URL when they are not on a direct local route. 
 | 4. Exchange files | Send `pc1-invite.json` to PC 2. Do not send private state or secrets. | Send `pc2-invite.json` to PC 1. Do not send private state or secrets. |
 | 5. Accept the peer | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
 | 6. Sync remote state | `conu sessions sync --json` | `conu sessions sync --json` |
-| 7. Send PC 1 to PC 2 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu listen agent.pc2 --json` |
+| 7. Send PC 1 to PC 2 | `conu send agent.pc1 agent.pc2 --file ./message.bin --json` | `conu listen agent.pc2 --json` |
 | 8. Read on PC 2 |  | `conu pull agent.pc2 --dir ./agent-inbox --process-ipc --json` |
-| 9. Send PC 2 to PC 1 | `conu listen agent.pc1 --json` | `conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --file ./message.bin --json` |
+| 9. Send PC 2 to PC 1 | `conu listen agent.pc1 --json` | `conu send agent.pc2 agent.pc1 --file ./message.bin --json` |
 | 10. Watch transport | `conu watch` | `conu watch` |
 
 Only the public invite file should be exchanged. `conu accept` writes local trust and grants messages, streams, and rooms by default; each machine keeps its private identity, local state, and payload files.
@@ -229,9 +229,9 @@ cargo run -p conu-relay -- --check
 | 4. 交换文件 | 把 `pc1-invite.json` 发给电脑 2。不要发送私有状态或密钥。 | 把 `pc2-invite.json` 发给电脑 1。不要发送私有状态或密钥。 |
 | 5. 接受对方 | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
 | 6. 同步远端状态 | `conu sessions sync --json` | `conu sessions sync --json` |
-| 7. 电脑 1 发给电脑 2 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu listen agent.pc2 --json` |
+| 7. 电脑 1 发给电脑 2 | `conu send agent.pc1 agent.pc2 --file ./message.bin --json` | `conu listen agent.pc2 --json` |
 | 8. 电脑 2 读取 |  | `conu pull agent.pc2 --dir ./agent-inbox --process-ipc --json` |
-| 9. 电脑 2 回复电脑 1 | `conu listen agent.pc1 --json` | `conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --file ./message.bin --json` |
+| 9. 电脑 2 回复电脑 1 | `conu listen agent.pc1 --json` | `conu send agent.pc2 agent.pc1 --file ./message.bin --json` |
 | 10. 查看传输 | `conu watch` | `conu watch` |
 
 只交换公开 invite 文件。`conu accept` 默认授予 messages、streams 和 rooms；私有身份、本地状态和 payload 文件都留在各自电脑上。
