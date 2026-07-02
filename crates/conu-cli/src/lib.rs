@@ -1160,6 +1160,8 @@ fn render_dashboard(home_override: Option<PathBuf>) -> String {
         .unwrap_or("unavailable");
     let local_preview = dashboard_local_agents(&local_agent_records);
     let remote_preview = dashboard_remote_agents(&remote_agent_records);
+    let next_actions =
+        dashboard_next_actions(&local_agent_records, &remote_agent_records, &room_records);
 
     format!(
         r"        ____ ___  _   _
@@ -1197,21 +1199,7 @@ recent room bus
   latest         {}
 
 next actions
-  conu menu
-  conu init
-  conu setup --start
-  conu chat
-  conu send agent.alpha agent.beta --stdin
-  conu inbox
-  conu history agent.beta
-  conu wait agent.beta --process-ipc --timeout-ms 30000 --json
-  conu start
-  conu doctor
-  conu smoke
-  conu agents
-  conu connect
-  conu watch
-  conu --help",
+{next_actions}",
         conu_core::PRODUCT_LAW,
         room_records.len(),
         selected_direct_route_count(&route_records),
@@ -1219,6 +1207,122 @@ next actions
         room_events.len(),
         latest_room_event_label(&room_events)
     )
+}
+
+fn dashboard_next_actions(
+    local_agents: &[LocalAgentRecord],
+    remote_agents: &[RemoteAgentRecord],
+    rooms: &[RoomRecord],
+) -> String {
+    let mut actions = Vec::new();
+    let mut seen = HashSet::new();
+
+    push_dashboard_action(&mut actions, &mut seen, "conu menu".to_string());
+
+    let message_agents = local_agents
+        .iter()
+        .filter(|agent| agent.capabilities.messages)
+        .collect::<Vec<_>>();
+    let room_agent = local_agents.iter().find(|agent| agent.capabilities.rooms);
+
+    if message_agents.len() >= 2 {
+        let from = message_agents[0];
+        let to = message_agents[1];
+        push_dashboard_action(&mut actions, &mut seen, "conu chat".to_string());
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!("conu chat {} {}", from.agent_id, to.agent_id),
+        );
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!(
+                "echo <payload> | conu send {} {} --stdin",
+                from.agent_id, to.agent_id
+            ),
+        );
+        push_dashboard_action(&mut actions, &mut seen, "conu inbox".to_string());
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!("conu inbox {}", to.agent_id),
+        );
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!("conu history {}", to.agent_id),
+        );
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!(
+                "conu wait {} --process-ipc --timeout-ms 30000 --json",
+                to.agent_id
+            ),
+        );
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!("conu connect local {} {}", from.agent_id, to.agent_id),
+        );
+    } else {
+        push_dashboard_action(&mut actions, &mut seen, "conu setup --start".to_string());
+        push_dashboard_action(&mut actions, &mut seen, "conu connect".to_string());
+    }
+
+    if let (Some(room), Some(agent)) = (rooms.first(), room_agent) {
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!(
+                "conu rooms publish {} {} <topic> --stdin",
+                room.room_id, agent.agent_id
+            ),
+        );
+    } else if let Some(agent) = room_agent {
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!(
+                "conu rooms create room.dev \"Dev Room\" --agent {}",
+                agent.agent_id
+            ),
+        );
+    }
+
+    if let (Some(local), Some(remote)) = (message_agents.first(), remote_agents.first()) {
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!(
+                "echo <payload> | conu send {} {} --peer {} --stdin",
+                local.agent_id, remote.agent_id, remote.peer_node_id
+            ),
+        );
+    } else {
+        push_dashboard_action(&mut actions, &mut seen, "conu pair".to_string());
+    }
+
+    push_dashboard_action(&mut actions, &mut seen, "conu start".to_string());
+    push_dashboard_action(&mut actions, &mut seen, "conu doctor".to_string());
+    push_dashboard_action(&mut actions, &mut seen, "conu smoke".to_string());
+    push_dashboard_action(&mut actions, &mut seen, "conu agents".to_string());
+    push_dashboard_action(&mut actions, &mut seen, "conu connect".to_string());
+    push_dashboard_action(&mut actions, &mut seen, "conu watch".to_string());
+    push_dashboard_action(&mut actions, &mut seen, "conu --help".to_string());
+
+    actions
+        .into_iter()
+        .map(|action| format!("  {action}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn push_dashboard_action(actions: &mut Vec<String>, seen: &mut HashSet<String>, action: String) {
+    if seen.insert(action.clone()) {
+        actions.push(action);
+    }
 }
 
 fn render_terminal_menu(selected: usize, home_override: Option<PathBuf>) -> String {
@@ -16114,14 +16218,42 @@ mod tests {
         assert!(output.stdout.contains("control room"));
         assert!(output.stdout.contains("next actions"));
         assert!(output.stdout.contains("conu menu"));
-        assert!(output.stdout.contains("conu init"));
         assert!(output.stdout.contains("conu setup --start"));
         assert!(output.stdout.contains("conu smoke"));
+        assert!(!output.stdout.contains("agent.beta"));
         assert!(!output.stdout.contains("conu update apply"));
         assert!(output.stderr.is_empty());
         assert_eq!(explicit.code, 0);
         assert!(explicit.stdout.contains("control room"));
         assert!(explicit.stderr.is_empty());
+    }
+
+    #[test]
+    fn dashboard_next_actions_use_registered_agents_after_setup() {
+        let home = temp_home("dashboard-ready");
+        let setup = run_with_home(["setup", "local"], Some(home.clone()));
+        assert_eq!(setup.code, 0, "{}", setup.stderr);
+
+        let output = run_with_home(["dashboard"], Some(home));
+
+        assert_eq!(output.code, 0);
+        assert!(output.stdout.contains("agent.alpha:ready"));
+        assert!(output.stdout.contains("agent.beta:ready"));
+        assert!(output.stdout.contains("conu chat agent.alpha agent.beta"));
+        assert!(
+            output
+                .stdout
+                .contains("echo <payload> | conu send agent.alpha agent.beta --stdin")
+        );
+        assert!(output.stdout.contains("conu inbox agent.beta"));
+        assert!(output.stdout.contains("conu history agent.beta"));
+        assert!(
+            output
+                .stdout
+                .contains("conu wait agent.beta --process-ipc --timeout-ms 30000 --json")
+        );
+        assert!(!output.stdout.contains("conu update apply"));
+        assert!(output.stderr.is_empty());
     }
 
     #[test]
