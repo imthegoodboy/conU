@@ -87,22 +87,22 @@ conu receive agent.beta <envelope-id> --output received.bin
 
 ## Two-PC Setup
 
-Two machines need the same relay URL when they are not on a direct local route. For quick testing, self-host `conu-relay` or deploy the Render Blueprint in `render.yaml`, then use the relay URL in both peer exports.
+Two machines need the same relay URL when they are not on a direct local route. For quick testing, self-host `conu-relay` or deploy the Render Blueprint in `render.yaml`, then use the relay URL in both invite files.
 
 | Step | PC 1 | PC 2 |
 | --- | --- | --- |
 | 1. Install | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
 | 2. Prepare local agent | `conu setup --from agent.pc1 --to agent.pc1.helper --room room.team --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --room room.team --start` |
-| 3. Export public peer card | `conu identity export --relay wss://<relay-host>/conu --json > pc1-peer.json` | `conu identity export --relay wss://<relay-host>/conu --json > pc2-peer.json` |
-| 4. Exchange files | Send `pc1-peer.json` to PC 2. Do not send private state or secrets. | Send `pc2-peer.json` to PC 1. Do not send private state or secrets. |
-| 5. Trust the peer | `conu peers trust --card pc2-peer.json` | `conu peers trust --card pc1-peer.json` |
-| 6. Allow traffic | `conu peers policy <pc2-node-id> --messages true --streams true --rooms true` | `conu peers policy <pc1-node-id> --messages true --streams true --rooms true` |
-| 7. Sync remote state | `conu sessions sync --json` | `conu sessions sync --json` |
-| 8. Send PC 1 to PC 2 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu wait agent.pc2 --process-ipc --timeout-ms 30000 --json` |
-| 9. Send PC 2 to PC 1 | `conu wait agent.pc1 --process-ipc --timeout-ms 30000 --json` | `conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --file ./message.bin --json` |
+| 3. Create public invite | `conu invite --relay wss://<relay-host>/conu --json > pc1-invite.json` | `conu invite --relay wss://<relay-host>/conu --json > pc2-invite.json` |
+| 4. Exchange files | Send `pc1-invite.json` to PC 2. Do not send private state or secrets. | Send `pc2-invite.json` to PC 1. Do not send private state or secrets. |
+| 5. Accept the peer | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
+| 6. Sync remote state | `conu sessions sync --json` | `conu sessions sync --json` |
+| 7. Send PC 1 to PC 2 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu listen agent.pc2 --json` |
+| 8. Read on PC 2 |  | `conu pull agent.pc2 --dir ./agent-inbox --process-ipc --json` |
+| 9. Send PC 2 to PC 1 | `conu listen agent.pc1 --json` | `conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --file ./message.bin --json` |
 | 10. Watch transport | `conu watch` | `conu watch` |
 
-Only the public peer card should be exchanged. Each machine keeps its private identity, local state, and payload files.
+Only the public invite file should be exchanged. `conu accept` writes local trust and grants messages, streams, and rooms by default; each machine keeps its private identity, local state, and payload files.
 
 ## Relay Hosting
 
@@ -219,22 +219,22 @@ cargo run -p conu-relay -- --check
 
 ## 两台电脑端到端
 
-如果两台机器不能直连，需要使用同一个 relay URL。测试时可以自托管 `conu-relay`，或使用 `render.yaml` 部署 relay，然后在两边导出 peer card 时使用同一个 relay URL。
+如果两台机器不能直连，需要使用同一个 relay URL。测试时可以自托管 `conu-relay`，或使用 `render.yaml` 部署 relay，然后在两边创建 invite 时使用同一个 relay URL。
 
 | 步骤 | 电脑 1 | 电脑 2 |
 | --- | --- | --- |
 | 1. 安装 | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
 | 2. 准备本地 agent | `conu setup --from agent.pc1 --to agent.pc1.helper --room room.team --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --room room.team --start` |
-| 3. 导出公开 peer card | `conu identity export --relay wss://<relay-host>/conu --json > pc1-peer.json` | `conu identity export --relay wss://<relay-host>/conu --json > pc2-peer.json` |
-| 4. 交换文件 | 把 `pc1-peer.json` 发给电脑 2。不要发送私有状态或密钥。 | 把 `pc2-peer.json` 发给电脑 1。不要发送私有状态或密钥。 |
-| 5. 信任对方 | `conu peers trust --card pc2-peer.json` | `conu peers trust --card pc1-peer.json` |
-| 6. 授权通信 | `conu peers policy <pc2-node-id> --messages true --streams true --rooms true` | `conu peers policy <pc1-node-id> --messages true --streams true --rooms true` |
-| 7. 同步远端状态 | `conu sessions sync --json` | `conu sessions sync --json` |
-| 8. 电脑 1 发给电脑 2 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu wait agent.pc2 --process-ipc --timeout-ms 30000 --json` |
-| 9. 电脑 2 回复电脑 1 | `conu wait agent.pc1 --process-ipc --timeout-ms 30000 --json` | `conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --file ./message.bin --json` |
+| 3. 创建公开 invite | `conu invite --relay wss://<relay-host>/conu --json > pc1-invite.json` | `conu invite --relay wss://<relay-host>/conu --json > pc2-invite.json` |
+| 4. 交换文件 | 把 `pc1-invite.json` 发给电脑 2。不要发送私有状态或密钥。 | 把 `pc2-invite.json` 发给电脑 1。不要发送私有状态或密钥。 |
+| 5. 接受对方 | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
+| 6. 同步远端状态 | `conu sessions sync --json` | `conu sessions sync --json` |
+| 7. 电脑 1 发给电脑 2 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu listen agent.pc2 --json` |
+| 8. 电脑 2 读取 |  | `conu pull agent.pc2 --dir ./agent-inbox --process-ipc --json` |
+| 9. 电脑 2 回复电脑 1 | `conu listen agent.pc1 --json` | `conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --file ./message.bin --json` |
 | 10. 查看传输 | `conu watch` | `conu watch` |
 
-只交换公开 peer card。私有身份、本地状态和 payload 文件都留在各自电脑上。
+只交换公开 invite 文件。`conu accept` 默认授予 messages、streams 和 rooms；私有身份、本地状态和 payload 文件都留在各自电脑上。
 
 ## 隐私规则
 
