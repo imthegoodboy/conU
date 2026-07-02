@@ -78,7 +78,7 @@ Remote peers need a reachable relay URL when they are not on the same local rout
 | Sync | `conu sessions sync --json` | `conu sessions sync --json` |
 | Chat | `conu chat agent.pc1 agent.pc2` | `conu listen agent.pc2 --json` |
 
-Only exchange public invite files. Do not share private identity files, relay tokens, payload files, or agent secrets.
+Only exchange public invite files. They contain public peer identity, route metadata, and public signed local agent cards so each PC can use the other PC's real agent ids after `conu accept`. Do not share private identity files, relay tokens, payload files, or agent secrets.
 
 If your relay requires a token, configure it through stdin so it does not land in shell history:
 
