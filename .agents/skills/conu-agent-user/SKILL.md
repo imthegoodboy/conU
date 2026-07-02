@@ -108,14 +108,14 @@ If the token is already stored or the relay does not require one, omit `--token-
 Advanced fallback: store only the relay credential with `cat ./node.token | conu relay credential set --stdin`, then run `conu setup --relay https://relay.example.com --start`.
 
 ```sh
-conu invite --relay https://relay.example.com --json > invite.json
+conu invite --json > invite.json
 ```
 
 Trust a peer invite. `conu accept` grants default messages, streams, and rooms policy:
 
 ```sh
 conu accept peer-invite.json
-conu sessions sync --json
+conu sync --json
 ```
 
 Send to a remote trusted peer:

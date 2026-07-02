@@ -1015,6 +1015,29 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
                 action: ConnectMenuAction::OnlineSetupPrompt,
             },
         );
+        push_connect_menu_item(
+            &mut items,
+            &mut seen,
+            ConnectMenuItem {
+                title: "Invite peer".to_string(),
+                command: "conu invite --json".to_string(),
+                detail: "print shareable public card".to_string(),
+                action: ConnectMenuAction::Command(vec![
+                    "invite".to_string(),
+                    "--json".to_string(),
+                ]),
+            },
+        );
+        push_connect_menu_item(
+            &mut items,
+            &mut seen,
+            ConnectMenuItem {
+                title: "Sync".to_string(),
+                command: "conu sync --json".to_string(),
+                detail: "refresh accepted peers".to_string(),
+                action: ConnectMenuAction::Command(vec!["sync".to_string(), "--json".to_string()]),
+            },
+        );
     }
 
     if message_agents.len() >= 2 {
@@ -1158,7 +1181,7 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
             ConnectMenuItem {
                 title: "Pair peer".to_string(),
                 command: "conu pair".to_string(),
-                detail: "create peer invite".to_string(),
+                detail: "local pairing code".to_string(),
                 action: ConnectMenuAction::Command(vec!["pair".to_string()]),
             },
         );
@@ -1309,6 +1332,7 @@ where
         "relay" => render_relay(&args[1..], home_override, stdin_payload),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
         "rooms" => render_rooms(&args[1..], home_override, stdin_payload),
+        "sync" => render_sync(&args[1..], home_override),
         "sessions" => render_sessions(&args[1..], home_override),
         "routes" => render_routes(&args[1..], home_override),
         "security" => render_security(&args[1..], home_override),
@@ -7183,6 +7207,26 @@ fn render_rooms_usage() -> String {
         .to_string()
 }
 
+fn render_sync(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success(render_sync_usage());
+    }
+    render_sessions_sync(args, home_override)
+}
+
+fn render_sync_usage() -> String {
+    r"usage: conu sync [--json]
+
+alias:
+  conu sessions sync [--json]
+
+privacy:
+  sync refreshes trusted peer/session metadata only
+  payload contents are never displayed
+  contentsDisplayed=false"
+        .to_string()
+}
+
 fn render_sessions(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_sessions_usage()),
@@ -7350,6 +7394,7 @@ next
 
 fn render_sessions_usage() -> String {
     r"usage:
+  conu sync [--json]
   conu sessions [--json]
   conu sessions sync [--json]"
         .to_string()
@@ -9285,19 +9330,21 @@ signed: {}
 agent cards: {}
 
 share
-  conu invite --relay {} --json > my-invite.json
+  conu invite --json > my-invite.json
   conu accept their-invite.json
+  conu sync
+  conu connect
 
 privacy
   card view     public identity, route metadata, and public signed agent cards only
-  payload view  contents are not displayed by conU",
+  payload view  contents are not displayed by conU
+  contentsDisplayed=false",
         card.node_id,
         card.display_name,
         display_optional_network_endpoint(Some(&card.relay_endpoint), "not configured"),
         display_optional_network_endpoint(card.direct_quic_endpoint.as_deref(), "not configured"),
         card.signature_hex.is_some(),
-        agent_cards.len(),
-        card.relay_endpoint
+        agent_cards.len()
     ))
 }
 
@@ -9341,9 +9388,13 @@ fn render_invite_usage() -> String {
     r"usage: conu invite [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--json]
 
 examples:
-  conu invite --relay wss://relay.example.com/conu --json > my-invite.json
-  conu invite --relay https://conu-relay.onrender.com --json > my-invite.json
+  conu setup --relay https://conu-relay.onrender.com --token-stdin --start
+  conu invite --json > my-invite.json
   conu accept their-invite.json
+  conu sync
+
+advanced:
+  conu invite --relay wss://relay.example.com/conu --json > my-invite.json
 
 privacy:
   invite exports a signed public peer card only
@@ -9605,13 +9656,15 @@ agent cards imported: {}
 
 next
   conu start
+  conu sync
   conu connect
-  conu peers
-  conu listen <agent-id>
+  conu chat <local-agent> <remote-agent>
+  conu listen <local-agent> --json
 
 privacy
   card view     public identity and route metadata only
-  payload view  contents are not displayed by conU",
+  payload view  contents are not displayed by conU
+  contentsDisplayed=false",
         peer.status.as_str(),
         peer.peer_node_id,
         peer.display_name,
@@ -9634,6 +9687,7 @@ examples:
   conu accept their-invite.json
   type their-invite.json | conu accept -
   conu accept their-invite.json --files true --json
+  conu sync
 
 defaults:
   messages=true, streams=true, rooms=true, files=false, mailbox=false
@@ -11053,8 +11107,13 @@ fn connect_next_steps(
         steps.push(format!("conu chat {} {}", local.agent_id, remote.agent_id));
     } else {
         steps.push("conu setup --relay <relay-url> --token-stdin --start".to_string());
-        steps.push("conu pair".to_string());
-        steps.push("conu join <code>".to_string());
+        steps.push("conu invite --json > my-invite.json".to_string());
+        steps.push("conu accept their-invite.json".to_string());
+        steps.push("conu sync".to_string());
+        if let Some(local) = local_agents.first() {
+            steps.push(format!("conu chat {} <remote-agent-id>", local.agent_id));
+            steps.push(format!("conu listen {} --json", local.agent_id));
+        }
     }
 
     steps.push("conu watch".to_string());
@@ -18520,6 +18579,7 @@ Start:
   conu setup --relay <relay> --token-stdin --start
   conu invite --json    export a public invite card
   conu accept <file>    trust a public invite card
+  conu sync             refresh accepted peers
   conu ready <id> <name> register one agent and mark it ready
   conu connect          choose an agent action
   conu chat             send one private local message
@@ -18620,6 +18680,7 @@ Usage:
   conu rooms publish <room-id> <from-agent> <topic> --stdin [--json]
   conu rooms policy [<room-id> <agent-id> <topic> [--publish <true|false>] [--subscribe <true|false>]] [--json]
   conu rooms events [--json]
+  conu sync [--json]
   conu sessions [--json]
   conu sessions sync [--json]
   conu routes [--json]
@@ -19259,6 +19320,7 @@ mod tests {
                     .stdout
                     .contains("conu setup --relay <relay> --token-stdin --start")
             );
+            assert!(output.stdout.contains("conu sync"));
             assert!(output.stdout.contains("conu listen <agent-id> --json"));
             assert!(output.stdout.contains("conu help commands"));
             assert!(output.stdout.contains("contentsDisplayed=false"));
@@ -19281,6 +19343,7 @@ mod tests {
                     .contains("conu setup [local] [--start] [--relay")
             );
             assert!(output.stdout.contains("[--token-stdin] [--verify]"));
+            assert!(output.stdout.contains("conu sync [--json]"));
             assert!(output.stdout.contains("conu relay credential set --stdin"));
             assert!(output.stdout.contains("payload contents remain hidden"));
             assert!(output.stderr.is_empty());
@@ -19303,6 +19366,16 @@ mod tests {
                 .any(|item| item.command == "conu setup --relay <url> --start"
                     && item.title == "Online setup"
                     && matches!(item.action, ConnectMenuAction::OnlineSetupPrompt))
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item.command == "conu invite --json" && item.title == "Invite peer")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item.command == "conu sync --json" && item.title == "Sync")
         );
         assert!(
             items
@@ -19333,8 +19406,14 @@ mod tests {
                 .stdout
                 .contains("conu setup --relay <relay-url> --token-stdin --start")
         );
-        assert!(output.stdout.contains("conu pair"));
-        assert!(output.stdout.contains("conu join <code>"));
+        assert!(
+            output
+                .stdout
+                .contains("conu invite --json > my-invite.json")
+        );
+        assert!(output.stdout.contains("conu accept their-invite.json"));
+        assert!(output.stdout.contains("conu sync"));
+        assert!(!output.stdout.contains("conu join <code>"));
         assert!(output.stdout.contains("contentsDisplayed=false"));
         assert!(output.stderr.is_empty());
     }
@@ -19958,7 +20037,10 @@ mod tests {
         assert!(empty.stdout.contains("conu setup --start"));
         assert!(!empty.stdout.contains("conu agents prepare agent.alpha"));
         assert!(!empty.stdout.contains("conu agents prepare agent.beta"));
-        assert!(empty.stdout.contains("conu pair"));
+        assert!(empty.stdout.contains("conu invite --json > my-invite.json"));
+        assert!(empty.stdout.contains("conu accept their-invite.json"));
+        assert!(empty.stdout.contains("conu sync"));
+        assert!(!empty.stdout.contains("conu join <code>"));
 
         register_test_agent(&home, "agent.alpha");
         register_test_agent(&home, "agent.beta");
@@ -19989,6 +20071,7 @@ mod tests {
             "agents",
             "streams",
             "rooms",
+            "sync",
             "sessions",
             "security",
             "pair",
@@ -20057,6 +20140,7 @@ mod tests {
             vec!["rooms", "publish", "--help"],
             vec!["rooms", "events", "--help"],
             vec!["rooms", "policy", "--help"],
+            vec!["sync", "--help"],
             vec!["sessions", "--help"],
             vec!["sessions", "sync", "--help"],
             vec!["routes", "--help"],
@@ -22915,13 +22999,17 @@ mod tests {
         let code = pairing_code_from_output(&pair.stdout);
         let join = run_with_home(["join", &code], Some(home.clone()));
         let sync = run_with_home(["sessions", "sync"], Some(home.clone()));
+        let sync_alias = run_with_home(["sync", "--json"], Some(home.clone()));
         let sessions = run_with_home(["sessions"], Some(home.clone()));
         let agents = run_with_home(["agents", "--json"], Some(home.clone()));
         let status = run_with_home(["status", "--json"], Some(home));
 
         assert_eq!(join.code, 0, "{}", join.stderr);
         assert_eq!(sync.code, 0, "{}", sync.stderr);
+        assert_eq!(sync_alias.code, 0, "{}", sync_alias.stderr);
         assert!(sync.stdout.contains("remote agents: 1"));
+        assert!(sync_alias.stdout.contains("\"remoteAgentsSynced\": 1"));
+        assert!(sync_alias.stdout.contains("\"contentsDisplayed\": false"));
         assert!(sessions.stdout.contains("connected"));
         assert!(agents.stdout.contains("\"remote\": ["));
         assert!(agents.stdout.contains("agent.remote."));
