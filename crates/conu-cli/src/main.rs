@@ -46,7 +46,7 @@ fn main() -> ExitCode {
             }
         }
     } else if interactive_chat {
-        match run_interactive_chat() {
+        match run_interactive_chat(&args) {
             Ok(output) => output,
             Err(error) => {
                 eprintln!("conU chat failed: {error}");
@@ -90,17 +90,27 @@ fn is_interactive_connect_invocation(args: &[String]) -> bool {
 }
 
 fn is_interactive_chat_invocation(args: &[String]) -> bool {
-    args.len() == 1 && args[0] == "chat"
+    matches!(args, [command] if command == "chat")
+        || matches!(args, [command, from, to]
+            if command == "chat" && !from.trim().is_empty() && !to.trim().is_empty())
 }
 
-fn run_interactive_chat() -> Result<conu_cli::CliOutput, String> {
+fn run_interactive_chat(args: &[String]) -> Result<conu_cli::CliOutput, String> {
     println!("conU chat");
     println!("one private agent message");
     println!();
 
-    let from = prompt_required("from agent: ")?;
-    let to = prompt_required("to agent: ")?;
-    let peer = prompt_optional("peer node (optional, Enter for local): ")?;
+    let (from, to, peer) = if args.len() == 3 {
+        println!("from agent: {}", args[1]);
+        println!("to agent: {}", args[2]);
+        (args[1].clone(), args[2].clone(), None)
+    } else {
+        (
+            prompt_required("from agent: ")?,
+            prompt_required("to agent: ")?,
+            prompt_optional("peer node (optional, Enter for local): ")?,
+        )
+    };
     let message = prompt_message("message: ")?;
 
     let mut args = vec!["chat".to_string(), from, to];
@@ -433,10 +443,22 @@ mod tests {
     #[test]
     fn interactive_chat_requires_plain_chat_invocation() {
         assert!(is_interactive_chat_invocation(&["chat".to_string()]));
+        assert!(is_interactive_chat_invocation(&[
+            "chat".to_string(),
+            "agent.a".to_string(),
+            "agent.b".to_string(),
+        ]));
         assert!(!is_interactive_chat_invocation(&[]));
         assert!(!is_interactive_chat_invocation(&[
             "chat".to_string(),
             "--help".to_string()
+        ]));
+        assert!(!is_interactive_chat_invocation(&[
+            "chat".to_string(),
+            "agent.a".to_string(),
+            "agent.b".to_string(),
+            "--peer".to_string(),
+            "node.remote".to_string(),
         ]));
         assert!(!is_interactive_chat_invocation(&[
             "chat".to_string(),
@@ -449,6 +471,13 @@ mod tests {
         assert!(!should_run_interactive_chat(&[
             "chat".to_string(),
             "--help".to_string()
+        ]));
+        assert!(!should_run_interactive_chat(&[
+            "chat".to_string(),
+            "agent.a".to_string(),
+            "agent.b".to_string(),
+            "--peer".to_string(),
+            "node.remote".to_string(),
         ]));
         assert!(!should_run_interactive_chat(&[
             "chat".to_string(),

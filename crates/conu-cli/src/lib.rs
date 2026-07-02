@@ -137,6 +137,12 @@ const MENU_ITEMS: &[MenuItem] = &[
         action: MenuAction::Command(&["agents"]),
     },
     MenuItem {
+        title: "Chat",
+        command: "conu connect",
+        detail: "pick agents and message",
+        action: MenuAction::ConnectSelector,
+    },
+    MenuItem {
         title: "Connect",
         command: "conu connect",
         detail: "agent connection selector",
@@ -172,6 +178,10 @@ const MENU_ITEMS: &[MenuItem] = &[
 enum ConnectMenuAction {
     Command(Vec<String>),
     Describe(String),
+    PromptLocalChat {
+        from_agent_id: String,
+        to_agent_id: String,
+    },
     Exit,
 }
 
@@ -187,6 +197,7 @@ const CONNECT_MENU_MAX_LOCAL_STREAMS: usize = 8;
 const CONNECT_MENU_MAX_LOCAL_CHAT_HINTS: usize = 4;
 const CONNECT_MENU_MAX_ROOM_JOINS: usize = 8;
 const CONNECT_MENU_MAX_REMOTE_HINTS: usize = 4;
+const TERMINAL_CHAT_MAX_BYTES: usize = 64 * 1024;
 
 struct TerminalMenuStatus {
     node: String,
@@ -665,10 +676,71 @@ fn run_connect_menu_item(item: ConnectMenuItem) -> CliOutput {
     match item.action {
         ConnectMenuAction::Command(args) => run(args),
         ConnectMenuAction::Describe(output) => CliOutput::success(output),
+        ConnectMenuAction::PromptLocalChat {
+            from_agent_id,
+            to_agent_id,
+        } => run_terminal_local_chat(&from_agent_id, &to_agent_id),
         ConnectMenuAction::Exit => {
             CliOutput::success("conU connect selector closed\ncontentsDisplayed=false")
         }
     }
+}
+
+fn run_terminal_local_chat(from_agent_id: &str, to_agent_id: &str) -> CliOutput {
+    let _ = crossterm::terminal::disable_raw_mode();
+    let mut stdout = io::stdout();
+    let _ = crossterm::execute!(
+        stdout,
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+
+    println!("conU chat");
+    println!("from: {from_agent_id}");
+    println!("to: {to_agent_id}");
+    println!("payload view: private, never displayed by conU");
+    println!();
+
+    let payload = match prompt_terminal_chat_payload("message: ") {
+        Ok(payload) => payload,
+        Err(error) => {
+            return CliOutput::failure(1, format!("conU chat failed\n\n{error}"));
+        }
+    };
+
+    render_chat(
+        &[
+            from_agent_id.to_string(),
+            to_agent_id.to_string(),
+            "--stdin".to_string(),
+        ],
+        None,
+        payload,
+    )
+}
+
+fn prompt_terminal_chat_payload(prompt: &str) -> Result<Vec<u8>, String> {
+    print!("{prompt}");
+    io::stdout().flush().map_err(|error| error.to_string())?;
+    let mut value = String::new();
+    io::stdin()
+        .read_line(&mut value)
+        .map_err(|error| error.to_string())?;
+    terminal_chat_payload_from_line(&value)
+}
+
+fn terminal_chat_payload_from_line(value: &str) -> Result<Vec<u8>, String> {
+    let value = value.trim_end_matches(['\r', '\n']);
+    if value.is_empty() {
+        return Err("message was empty; contentsDisplayed=false".to_string());
+    }
+    if value.len() > TERMINAL_CHAT_MAX_BYTES {
+        return Err(format!(
+            "message exceeds {} bytes; contentsDisplayed=false",
+            TERMINAL_CHAT_MAX_BYTES
+        ));
+    }
+    Ok(value.as_bytes().to_vec())
 }
 
 fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
@@ -742,17 +814,18 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
                 if from.agent_id == to.agent_id {
                     continue;
                 }
-                let command = format!("conu chat {} {} --stdin", from.agent_id, to.agent_id);
+                let command = format!("conu chat {} {}", from.agent_id, to.agent_id);
                 push_connect_menu_item(
                     &mut items,
                     &mut seen,
                     ConnectMenuItem {
                         title: "Local chat".to_string(),
                         command: command.clone(),
-                        detail: "send stdin message".to_string(),
-                        action: ConnectMenuAction::Describe(render_local_chat_hint(
-                            from, to, &command,
-                        )),
+                        detail: "prompt one message".to_string(),
+                        action: ConnectMenuAction::PromptLocalChat {
+                            from_agent_id: from.agent_id.clone(),
+                            to_agent_id: to.agent_id.clone(),
+                        },
                     },
                 );
                 added += 1;
@@ -935,27 +1008,6 @@ privacy
   payload view    contents are not displayed by conU
   contentsDisplayed=false",
         local.agent_id, remote.agent_id, remote.peer_node_id
-    )
-}
-
-fn render_local_chat_hint(from: &LocalAgentRecord, to: &LocalAgentRecord, command: &str) -> String {
-    format!(
-        r"conU connect local chat
-
-ready command
-  echo <payload> | {command}
-
-from: {}
-to: {}
-
-or run:
-  conu chat
-
-privacy
-  payload source  stdin or interactive chat prompt
-  payload view    contents are not displayed by conU
-  contentsDisplayed=false",
-        from.agent_id, to.agent_id
     )
 }
 
@@ -4094,11 +4146,13 @@ example:
 fn render_chat_usage() -> String {
     r"usage:
   conu chat
+  conu chat <from-agent> <to-agent>
   conu chat <from-agent> <to-agent> --stdin [--json]
   conu chat <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
 
 interactive:
   run plain `conu chat` in a terminal to enter sender, receiver, optional peer node, and one message.
+  run `conu chat <from-agent> <to-agent>` in a terminal to prompt for one local message.
 
 privacy:
   interactive chat sends one message through the same opaque inbox path
@@ -8131,7 +8185,7 @@ fn connect_next_steps(
             local_agents[0].agent_id, local_agents[1].agent_id
         ));
         steps.push(format!(
-            "conu chat {} {} --stdin",
+            "conu chat {} {}",
             local_agents[0].agent_id, local_agents[1].agent_id
         ));
     }
@@ -15476,6 +15530,7 @@ Usage:
   conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id> [--json]
   conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
   conu chat
+  conu chat <from-agent> <to-agent>
   conu chat <from-agent> <to-agent> --stdin [--json]
   conu send <from-agent> <to-agent> --stdin [--json]
   conu send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
@@ -15941,6 +15996,7 @@ mod tests {
         assert!(output.stdout.contains("conu dashboard"));
         assert!(output.stdout.contains("conu setup --start"));
         assert!(output.stdout.contains("conu smoke"));
+        assert!(output.stdout.contains("pick agents and message"));
         assert!(output.stdout.contains("conu connect"));
         assert!(output.stdout.contains("contentsDisplayed=false"));
         assert!(!output.stdout.contains("private message contents"));
@@ -15975,6 +16031,25 @@ mod tests {
     }
 
     #[test]
+    fn terminal_chat_prompt_payload_is_bounded_without_echoing_contents() {
+        assert_eq!(
+            terminal_chat_payload_from_line("hello agent\n").expect("payload accepted"),
+            b"hello agent"
+        );
+
+        let empty = terminal_chat_payload_from_line("\r\n").expect_err("empty payload fails");
+        assert!(empty.contains("message was empty"));
+        assert!(!empty.contains("\r\n"));
+
+        let secret_marker = "private-terminal-chat-marker";
+        let mut oversized = secret_marker.to_string();
+        oversized.push_str(&"a".repeat(TERMINAL_CHAT_MAX_BYTES));
+        let error = terminal_chat_payload_from_line(&oversized).expect_err("oversized fails");
+        assert!(error.contains("message exceeds"));
+        assert!(!error.contains(secret_marker));
+    }
+
+    #[test]
     fn connect_menu_items_offer_real_local_actions_after_setup() {
         let home = temp_home("connect-menu-ready");
         let setup = run_with_home(["setup", "local"], Some(home.clone()));
@@ -15992,7 +16067,15 @@ mod tests {
                 && item.title == "Local stream"
         }));
         assert!(items.iter().any(|item| {
-            item.command == "conu chat agent.alpha agent.beta --stdin" && item.title == "Local chat"
+            item.command == "conu chat agent.alpha agent.beta"
+                && item.title == "Local chat"
+                && matches!(
+                    item.action,
+                    ConnectMenuAction::PromptLocalChat {
+                        ref from_agent_id,
+                        ref to_agent_id
+                    } if from_agent_id == "agent.alpha" && to_agent_id == "agent.beta"
+                )
         }));
         assert!(items.iter().any(|item| {
             item.command == "conu connect room room.dev agent.third" && item.title == "Room join"
@@ -16010,11 +16093,7 @@ mod tests {
                 .stdout
                 .contains("conu connect room room.dev agent.third")
         );
-        assert!(
-            selector
-                .stdout
-                .contains("conu chat agent.alpha agent.beta --stdin")
-        );
+        assert!(selector.stdout.contains("conu chat agent.alpha agent.beta"));
         assert!(
             !selector
                 .stdout
