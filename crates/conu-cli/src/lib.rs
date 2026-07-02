@@ -40,6 +40,8 @@ use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
 use sha2::{Digest, Sha256};
 
+const MAX_CLI_PAYLOAD_FILE_BYTES: u64 = 64 * 1024;
+
 /// A rendered CLI command result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CliOutput {
@@ -906,7 +908,7 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
                 .filter(|agent| agent.capabilities.messages)
             {
                 let command = format!(
-                    "conu send {} {} --peer {} --stdin",
+                    "conu send {} {} --peer {} --file ./message.bin --json",
                     local.agent_id, remote.agent_id, remote.peer_node_id
                 );
                 push_connect_menu_item(
@@ -915,7 +917,7 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
                     ConnectMenuItem {
                         title: "Remote send".to_string(),
                         command: command.clone(),
-                        detail: "prints stdin command".to_string(),
+                        detail: "prints file-send command".to_string(),
                         action: ConnectMenuAction::Describe(render_remote_send_hint(
                             local, remote, &command,
                         )),
@@ -1003,14 +1005,14 @@ fn render_remote_send_hint(
         r"conU connect remote
 
 ready command
-  echo <payload> | {command}
+  {command}
 
 from: {}
 to: {}
 peer: {}
 
 privacy
-  payload source  stdin only
+  payload source  stdin or file
   payload view    contents are not displayed by conU
   contentsDisplayed=false",
         local.agent_id, remote.agent_id, remote.peer_node_id
@@ -1247,7 +1249,7 @@ fn dashboard_next_actions(
             &mut actions,
             &mut seen,
             format!(
-                "echo <payload> | conu send {} {} --stdin",
+                "conu send {} {} --file ./message.bin --json",
                 from.agent_id, to.agent_id
             ),
         );
@@ -1305,7 +1307,7 @@ fn dashboard_next_actions(
             &mut actions,
             &mut seen,
             format!(
-                "echo <payload> | conu send {} {} --peer {} --stdin",
+                "conu send {} {} --peer {} --file ./message.bin --json",
                 local.agent_id, remote.agent_id, remote.peer_node_id
             ),
         );
@@ -2917,26 +2919,24 @@ fn render_message_send(
         Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    if !parsed.stdin {
-        return CliOutput::failure(2, render_messages_usage());
-    }
-    if stdin_payload.is_empty() {
-        return CliOutput::failure(2, "stdin payload is empty");
-    }
+    let payload = match read_message_input_payload(parsed.payload_input.as_ref(), stdin_payload) {
+        Ok(payload) => payload,
+        Err(error) => return error,
+    };
 
     if let Some(peer_node_id) = parsed.peer_node_id.clone() {
-        return render_remote_message_send(parsed, &peer_node_id, home_override, stdin_payload);
+        return render_remote_message_send(parsed, &peer_node_id, home_override, payload);
     }
 
     if let Err(error) = agents::process_gateway_requests(home_override.clone()) {
         return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
     }
     let before = inbox_ids(home_override.clone(), &parsed.to_agent_id);
-    let payload_bytes = stdin_payload.len();
+    let payload_bytes = payload.len();
     let message = match LocalMessage::new(
         &parsed.from_agent_id,
         &parsed.to_agent_id,
-        OpaquePayload::from_bytes(stdin_payload),
+        OpaquePayload::from_bytes(payload),
     ) {
         Ok(message) => message,
         Err(error) => {
@@ -2977,6 +2977,7 @@ fn render_message_send(
   "requestId": "{}",
   "envelopeId": {},
   "payloadBytes": {},
+  "pathDisplayed": false,
   "contentsDisplayed": false
 }}"#,
             status,
@@ -3004,6 +3005,7 @@ request: {}
 bytes: {}
 
 privacy
+  input path    pathDisplayed=false
   payload view  contents are not displayed by conU",
         parsed.from_agent_id, parsed.to_agent_id, submission.request_id, payload_bytes
     ))
@@ -3013,14 +3015,14 @@ fn render_remote_message_send(
     parsed: MessageSendArgs,
     peer_node_id: &str,
     home_override: Option<PathBuf>,
-    stdin_payload: Vec<u8>,
+    payload: Vec<u8>,
 ) -> CliOutput {
-    let payload_bytes = stdin_payload.len();
+    let payload_bytes = payload.len();
     let message = match RemoteMessage::new(
         &parsed.from_agent_id,
         &parsed.to_agent_id,
         peer_node_id,
-        OpaquePayload::from_bytes(stdin_payload),
+        OpaquePayload::from_bytes(payload),
     ) {
         Ok(message) => message,
         Err(error) => {
@@ -3046,6 +3048,7 @@ fn render_remote_message_send(
   "envelopeId": "{}",
   "payloadBytes": {},
   "route": "direct-quic",
+  "pathDisplayed": false,
   "contentsDisplayed": false
 }}"#,
                         json_escape(&parsed.from_agent_id),
@@ -3068,6 +3071,7 @@ bytes: {}
 route: direct-quic
 
 privacy
+  input path    pathDisplayed=false
   payload view  contents are not displayed by conU",
                     parsed.from_agent_id,
                     parsed.to_agent_id,
@@ -3101,6 +3105,7 @@ privacy
   "envelopeId": "{}",
   "payloadBytes": {},
   "route": "relay-websocket",
+  "pathDisplayed": false,
   "contentsDisplayed": false
 }}"#,
             json_escape(&parsed.from_agent_id),
@@ -3129,6 +3134,7 @@ next
   optional manual flush: conu relay sync --wait-ms 3000
 
 privacy
+  input path    pathDisplayed=false
   payload view  contents are not displayed by conU",
         parsed.from_agent_id,
         parsed.to_agent_id,
@@ -3227,12 +3233,10 @@ fn render_message_reply(
         Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    if !parsed.stdin {
-        return CliOutput::failure(2, render_messages_usage());
-    }
-    if stdin_payload.is_empty() {
-        return CliOutput::failure(2, "stdin payload is empty");
-    }
+    let payload = match read_message_input_payload(parsed.payload_input.as_ref(), stdin_payload) {
+        Ok(payload) => payload,
+        Err(error) => return error,
+    };
 
     let target =
         match reply_target_entry(home_override.clone(), &parsed.agent_id, &parsed.envelope_id) {
@@ -3240,11 +3244,11 @@ fn render_message_reply(
             Err(error) => return CliOutput::failure(1, error),
         };
     let before = inbox_ids(home_override.clone(), &target.from_agent_id);
-    let payload_bytes = stdin_payload.len();
+    let payload_bytes = payload.len();
     let message = match LocalMessage::new(
         &parsed.agent_id,
         &target.from_agent_id,
-        OpaquePayload::from_bytes(stdin_payload),
+        OpaquePayload::from_bytes(payload),
     ) {
         Ok(message) => message,
         Err(error) => {
@@ -3286,6 +3290,7 @@ fn render_message_reply(
   "requestId": "{}",
   "envelopeId": {},
   "payloadBytes": {},
+  "pathDisplayed": false,
   "contentsDisplayed": false
 }}"#,
             status,
@@ -3315,6 +3320,7 @@ request: {}
 bytes: {}
 
 privacy
+  input path    pathDisplayed=false
   payload view  contentsDisplayed=false",
         parsed.agent_id,
         target.from_agent_id,
@@ -4393,8 +4399,85 @@ struct MessageSendArgs {
     from_agent_id: String,
     to_agent_id: String,
     peer_node_id: Option<String>,
-    stdin: bool,
+    payload_input: Option<MessagePayloadInput>,
     json: bool,
+}
+
+enum MessagePayloadInput {
+    Stdin,
+    File(PathBuf),
+}
+
+fn read_message_input_payload(
+    input: Option<&MessagePayloadInput>,
+    stdin_payload: Vec<u8>,
+) -> Result<Vec<u8>, CliOutput> {
+    match input {
+        Some(MessagePayloadInput::Stdin) => {
+            if stdin_payload.is_empty() {
+                Err(CliOutput::failure(2, "stdin payload is empty"))
+            } else {
+                Ok(stdin_payload)
+            }
+        }
+        Some(MessagePayloadInput::File(path)) => read_message_payload_file(path).map_err(|error| {
+            CliOutput::failure(2, format!("payload file could not be read\n\n{error}"))
+        }),
+        None => Err(CliOutput::failure(2, render_messages_usage())),
+    }
+}
+
+fn read_message_payload_file(path: &Path) -> Result<Vec<u8>, String> {
+    if path.as_os_str().is_empty() {
+        return Err(
+            "payload file path is empty; pathDisplayed=false contentsDisplayed=false".to_string(),
+        );
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "payload file is not readable; pathDisplayed=false contentsDisplayed=false")?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(
+            "payload input is not a regular file; pathDisplayed=false contentsDisplayed=false"
+                .to_string(),
+        );
+    }
+    if metadata.len() == 0 {
+        return Err(
+            "payload file is empty; pathDisplayed=false contentsDisplayed=false".to_string(),
+        );
+    }
+    if metadata.len() > MAX_CLI_PAYLOAD_FILE_BYTES {
+        return Err(format!(
+            "payload file exceeds {MAX_CLI_PAYLOAD_FILE_BYTES} bytes; pathDisplayed=false contentsDisplayed=false"
+        ));
+    }
+
+    let mut file = fs::File::open(path)
+        .map_err(|_| "payload file is not readable; pathDisplayed=false contentsDisplayed=false")?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|_| "payload file is not readable; pathDisplayed=false contentsDisplayed=false")?;
+    if !opened_metadata.is_file() || opened_metadata.len() > MAX_CLI_PAYLOAD_FILE_BYTES {
+        return Err("payload file changed before it could be read; pathDisplayed=false contentsDisplayed=false".to_string());
+    }
+
+    let mut payload = Vec::new();
+    let limit = MAX_CLI_PAYLOAD_FILE_BYTES.saturating_add(1);
+    Read::by_ref(&mut file)
+        .take(limit)
+        .read_to_end(&mut payload)
+        .map_err(|_| "payload file is not readable; pathDisplayed=false contentsDisplayed=false")?;
+    if payload.is_empty() {
+        return Err(
+            "payload file is empty; pathDisplayed=false contentsDisplayed=false".to_string(),
+        );
+    }
+    if payload.len() as u64 > MAX_CLI_PAYLOAD_FILE_BYTES {
+        return Err(format!(
+            "payload file exceeds {MAX_CLI_PAYLOAD_FILE_BYTES} bytes; pathDisplayed=false contentsDisplayed=false"
+        ));
+    }
+    Ok(payload)
 }
 
 struct MessageInboxArgs {
@@ -4419,7 +4502,7 @@ struct MessageHistoryArgs {
 struct MessageReplyArgs {
     agent_id: String,
     envelope_id: String,
-    stdin: bool,
+    payload_input: Option<MessagePayloadInput>,
     json: bool,
 }
 
@@ -4456,7 +4539,7 @@ struct MessagePullArgs {
 
 fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput> {
     let mut json = false;
-    let mut stdin = false;
+    let mut payload_input = None;
     let mut peer_node_id = None;
     let mut positional = Vec::new();
     let mut index = 0;
@@ -4464,7 +4547,17 @@ fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
-            "--stdin" => stdin = true,
+            "--stdin" => set_payload_input(&mut payload_input, MessagePayloadInput::Stdin)?,
+            "--file" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                set_payload_input(
+                    &mut payload_input,
+                    MessagePayloadInput::File(PathBuf::from(value)),
+                )?;
+                index += 1;
+            }
             "--peer" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err(CliOutput::failure(2, render_messages_usage()));
@@ -4488,7 +4581,7 @@ fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput
         from_agent_id: positional.remove(0),
         to_agent_id: positional.remove(0),
         peer_node_id,
-        stdin,
+        payload_input,
         json,
     })
 }
@@ -4575,18 +4668,30 @@ fn parse_message_history_args(args: &[String]) -> Result<MessageHistoryArgs, Cli
 
 fn parse_message_reply_args(args: &[String]) -> Result<MessageReplyArgs, CliOutput> {
     let mut json = false;
-    let mut stdin = false;
+    let mut payload_input = None;
     let mut positional = Vec::new();
+    let mut index = 0;
 
-    for arg in args {
-        match arg.as_str() {
+    while index < args.len() {
+        match args[index].as_str() {
             "--json" => json = true,
-            "--stdin" => stdin = true,
+            "--stdin" => set_payload_input(&mut payload_input, MessagePayloadInput::Stdin)?,
+            "--file" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                set_payload_input(
+                    &mut payload_input,
+                    MessagePayloadInput::File(PathBuf::from(value)),
+                )?;
+                index += 1;
+            }
             value if value.starts_with("--") => {
                 return Err(unknown_option_error());
             }
             value => positional.push(value.to_string()),
         }
+        index += 1;
     }
 
     if positional.len() != 2 {
@@ -4596,9 +4701,23 @@ fn parse_message_reply_args(args: &[String]) -> Result<MessageReplyArgs, CliOutp
     Ok(MessageReplyArgs {
         agent_id: positional.remove(0),
         envelope_id: positional.remove(0),
-        stdin,
+        payload_input,
         json,
     })
+}
+
+fn set_payload_input(
+    target: &mut Option<MessagePayloadInput>,
+    value: MessagePayloadInput,
+) -> Result<(), CliOutput> {
+    if target.is_some() {
+        return Err(CliOutput::failure(
+            2,
+            "choose exactly one of --stdin or --file; pathDisplayed=false contentsDisplayed=false",
+        ));
+    }
+    *target = Some(value);
+    Ok(())
 }
 
 fn parse_message_wait_args(args: &[String]) -> Result<MessageWaitArgs, CliOutput> {
@@ -4887,11 +5006,11 @@ fn write_message_receive_output(path: &Path, payload: &[u8]) -> Result<(), Strin
 
 fn render_messages_usage() -> String {
     r"usage:
-  conu messages send <from-agent> <to-agent> --stdin [--json]
-  conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
+  conu messages send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
+  conu messages send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
   conu messages inbox [agent-id] [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
-  conu messages reply <agent-id> <envelope-id> --stdin [--json]
+  conu messages reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
@@ -4902,16 +5021,17 @@ fn render_messages_usage() -> String {
 
 fn render_send_usage() -> String {
     r"usage:
-  conu send <from-agent> <to-agent> --stdin [--json]
-  conu send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
+  conu send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
+  conu send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
 
 example:
   echo <message> | conu send agent.alpha agent.beta --stdin
+  conu send agent.alpha agent.beta --file ./message.bin --json
 
 privacy:
-  message bytes are read from stdin, not command history
+  message bytes are read from stdin or a local file
   stdout shows metadata only
-  contentsDisplayed=false"
+  pathDisplayed=false contentsDisplayed=false"
         .to_string()
 }
 
@@ -5004,10 +5124,11 @@ fn render_messages_pull_usage() -> String {
 
 fn render_reply_usage() -> String {
     r"usage:
-  conu reply <agent-id> <envelope-id> --stdin [--json]
+  conu reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
 
 example:
-  echo <reply> | conu reply agent.beta <envelope-id> --stdin"
+  echo <reply> | conu reply agent.beta <envelope-id> --stdin
+  conu reply agent.beta <envelope-id> --file ./reply.bin --json"
         .to_string()
 }
 
@@ -5020,7 +5141,9 @@ fn render_chat_usage() -> String {
   conu chat
   conu chat <from-agent> <to-agent>
   conu chat <from-agent> <to-agent> --stdin [--json]
+  conu chat <from-agent> <to-agent> --file <path> [--json]
   conu chat <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
+  conu chat <from-agent> <to-agent> --peer <peer-node-id> --file <path> [--json]
 
 interactive:
   run plain `conu chat` in a terminal to enter sender, receiver, optional peer node, and one message.
@@ -9148,7 +9271,7 @@ fn connect_next_steps(
 
     if let (Some(local), Some(remote)) = (local_agents.first(), remote_agents.first()) {
         steps.push(format!(
-            "conu send {} {} --peer {} --stdin",
+            "conu send {} {} --peer {} --file ./message.bin --json",
             local.agent_id, remote.agent_id, remote.peer_node_id
         ));
     } else {
@@ -14846,6 +14969,7 @@ bytes: {}
 next
   conu agents register <agent-id> <display-name> --messages true
   echo <payload> | conu send <from-agent> <to-agent> --stdin
+  conu send <from-agent> <to-agent> --file ./message.bin --json
   conu wait <to-agent> --process-ipc --timeout-ms 30000 --json
 
 privacy
@@ -15772,7 +15896,7 @@ runtime: {}
 next
   conu connect local {} {}
   conu chat
-  echo <payload> | conu send {} {} --stdin
+  conu send {} {} --file ./message.bin --json
   conu wait {} --process-ipc --timeout-ms 30000 --json
   conu inbox {}
   conu history {}
@@ -16512,21 +16636,21 @@ Usage:
   conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
   conu chat
   conu chat <from-agent> <to-agent>
-  conu chat <from-agent> <to-agent> --stdin [--json]
-  conu send <from-agent> <to-agent> --stdin [--json]
-  conu send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
+  conu chat <from-agent> <to-agent> (--stdin|--file <path>) [--json]
+  conu send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
+  conu send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
   conu inbox [agent-id] [--json]
   conu history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu receive <agent-id> <envelope-id> --output <file> [--json]
   conu receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
-  conu reply <agent-id> <envelope-id> --stdin [--json]
-  conu messages send <from-agent> <to-agent> --stdin [--json]
-  conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
+  conu reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
+  conu messages send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
+  conu messages send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
   conu messages inbox [agent-id] [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
-  conu messages reply <agent-id> <envelope-id> --stdin [--json]
+  conu messages reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
@@ -16986,7 +17110,7 @@ mod tests {
         assert!(
             output
                 .stdout
-                .contains("echo <payload> | conu send agent.alpha agent.beta --stdin")
+                .contains("conu send agent.alpha agent.beta --file ./message.bin --json")
         );
         assert!(output.stdout.contains("conu inbox agent.beta"));
         assert!(output.stdout.contains("conu history agent.beta"));
@@ -21514,6 +21638,130 @@ mod tests {
                 && receipt.status == "delivered_local"
                 && receipt.payload_bytes == 24
         }));
+    }
+
+    #[test]
+    fn messages_send_reads_payload_file_without_displaying_path_or_contents() {
+        let home = temp_home("message-send-file");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let payload_path = home.join("private-message.bin");
+        fs::write(&payload_path, b"private file message").expect("payload file writes");
+
+        let output = run_with_home(
+            [
+                "send",
+                "agent.sender",
+                "agent.receiver",
+                "--file",
+                payload_path.to_str().expect("path utf8"),
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let payload =
+            messages::read_message_payload(Some(home), "agent.receiver", &inbox[0].envelope_id)
+                .expect("payload reads");
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(payload.as_bytes(), b"private file message");
+        assert!(output.stdout.contains("\"status\": \"delivered\""));
+        assert!(output.stdout.contains("\"payloadBytes\": 20"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private file message"));
+        assert!(
+            !output
+                .stdout
+                .contains(payload_path.to_str().expect("path utf8"))
+        );
+    }
+
+    #[test]
+    fn messages_send_file_errors_do_not_display_path_or_contents() {
+        let home = temp_home("message-send-file-error");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let payload_path = home.join("oversized-secret-message.bin");
+        fs::write(
+            &payload_path,
+            vec![b's'; (MAX_CLI_PAYLOAD_FILE_BYTES + 1) as usize],
+        )
+        .expect("oversized payload file writes");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "send",
+                "agent.sender",
+                "agent.receiver",
+                "--file",
+                payload_path.to_str().expect("path utf8"),
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 2);
+        assert!(output.stderr.contains("payload file exceeds"));
+        assert!(output.stderr.contains("pathDisplayed=false"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(
+            !output
+                .stderr
+                .contains(payload_path.to_str().expect("path utf8"))
+        );
+        assert!(!output.stderr.contains("oversized-secret-message"));
+    }
+
+    #[test]
+    fn messages_reply_reads_payload_file_without_displaying_path_or_contents() {
+        let home = temp_home("message-reply-file");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private original message",
+        );
+        let receiver_inbox = messages::list_agent_inbox(Some(home.clone()), "agent.receiver")
+            .expect("receiver inbox reads");
+        let payload_path = home.join("private-reply.bin");
+        fs::write(&payload_path, b"private file reply").expect("reply file writes");
+
+        let output = run_with_home(
+            [
+                "reply",
+                "agent.receiver",
+                &receiver_inbox[0].envelope_id,
+                "--file",
+                payload_path.to_str().expect("path utf8"),
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.sender").expect("inbox reads");
+        let payload =
+            messages::read_message_payload(Some(home), "agent.sender", &inbox[0].envelope_id)
+                .expect("reply payload reads");
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(payload.as_bytes(), b"private file reply");
+        assert!(output.stdout.contains("\"status\": \"delivered\""));
+        assert!(output.stdout.contains("\"payloadBytes\": 18"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private file reply"));
+        assert!(!output.stdout.contains("private original message"));
+        assert!(
+            !output
+                .stdout
+                .contains(payload_path.to_str().expect("path utf8"))
+        );
     }
 
     #[test]

@@ -70,15 +70,16 @@ conud --process-ipc
 
 ## Send Local Messages
 
-Payloads go through stdin, not command arguments.
+Payloads go through stdin or a bounded local file, not command arguments.
 
 ```sh
 printf "private bytes" | conu send agent.mybot agent.other --stdin
+conu send agent.mybot agent.other --file ./message.bin --json
 conu wait agent.other --process-ipc --timeout-ms 30000 --json
 conu messages receipts --json
 ```
 
-Backward-compatible form: `conu messages send agent.mybot agent.other --stdin`.
+Backward-compatible long form: `conu messages send agent.mybot agent.other --stdin` or `conu messages send agent.mybot agent.other --file ./message.bin --json`.
 
 Read inbox metadata or wait for the next addressed envelope:
 
@@ -123,6 +124,7 @@ Send to a remote trusted peer:
 
 ```sh
 printf "private bytes" | conu send agent.mybot agent.remote --peer <peer-node-id> --stdin
+conu send agent.mybot agent.remote --peer <peer-node-id> --file ./message.bin --json
 ```
 
 Manual relay flush/debug:
