@@ -90,9 +90,11 @@ Supported commands:
 
 ```txt
 conu messages send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
+conu next <agent-id> [--json]
 conu messages inbox <agent-id> [--json]
 conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
 conu messages reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
+conu messages reply <agent-id> --latest (--stdin|--file <path>) [--json]
 conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
 conu messages receive <agent-id> <envelope-id> --output <file> [--json]
 conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
