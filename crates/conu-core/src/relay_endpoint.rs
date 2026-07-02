@@ -8,12 +8,9 @@ pub(crate) enum RelayEndpointError {
 }
 
 pub(crate) fn validate_relay_endpoint(value: String) -> Result<String, RelayEndpointError> {
-    let value = value.trim().to_string();
+    let value = normalize_relay_endpoint_scheme(value.trim())?;
     if value.is_empty() {
         return Err(RelayEndpointError::Empty);
-    }
-    if !value.starts_with("ws://") && !value.starts_with("wss://") {
-        return Err(RelayEndpointError::Scheme);
     }
     if value.len() > 220
         || value.chars().any(char::is_whitespace)
@@ -33,6 +30,19 @@ pub(crate) fn validate_relay_endpoint(value: String) -> Result<String, RelayEndp
     validate_authority(authority)?;
     validate_path(path)?;
     Ok(value)
+}
+
+fn normalize_relay_endpoint_scheme(value: &str) -> Result<String, RelayEndpointError> {
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if value.starts_with("ws://") || value.starts_with("wss://") {
+        return Ok(value.to_string());
+    }
+    if let Some(rest) = value.strip_prefix("https://") {
+        return Ok(format!("wss://{rest}"));
+    }
+    Err(RelayEndpointError::Scheme)
 }
 
 pub(crate) fn metadata_relay_endpoint(value: &str) -> Result<String, RelayEndpointError> {
@@ -126,15 +136,26 @@ mod tests {
 
     #[test]
     fn relay_endpoint_validation_accepts_supported_shapes() {
-        for endpoint in [
-            "ws://127.0.0.1:8787",
-            "wss://relay.example.com/conu",
-            "wss://relay.example.com",
-            "ws://[::1]:8787/relay",
+        for (endpoint, expected) in [
+            ("ws://127.0.0.1:8787", "ws://127.0.0.1:8787"),
+            (
+                "wss://relay.example.com/conu",
+                "wss://relay.example.com/conu",
+            ),
+            ("wss://relay.example.com", "wss://relay.example.com"),
+            (
+                "https://relay.example.com/conu",
+                "wss://relay.example.com/conu",
+            ),
+            (
+                "https://conu-relay.onrender.com",
+                "wss://conu-relay.onrender.com",
+            ),
+            ("ws://[::1]:8787/relay", "ws://[::1]:8787/relay"),
         ] {
             assert_eq!(
                 validate_relay_endpoint(endpoint.to_string()).as_deref(),
-                Ok(endpoint)
+                Ok(expected)
             );
         }
     }
@@ -143,9 +164,11 @@ mod tests {
     fn relay_endpoint_validation_rejects_secret_bearing_or_malformed_urls() {
         for endpoint in [
             "",
-            "https://relay.example.com/conu",
+            "http://relay.example.com/conu",
             "wss://user:secret@relay.example.com/conu",
+            "https://user:secret@relay.example.com/conu",
             "wss://relay.example.com/conu?token=secret",
+            "https://relay.example.com/conu?token=secret",
             "wss://relay.example.com/conu#secret",
             "wss://relay.example.com:",
             "wss://relay.example.com:notaport",
@@ -163,7 +186,7 @@ mod tests {
             Err(RelayEndpointError::Empty)
         );
         assert_eq!(
-            validate_relay_endpoint("https://relay.example.com".to_string()),
+            validate_relay_endpoint("ftp://relay.example.com".to_string()),
             Err(RelayEndpointError::Scheme)
         );
     }
@@ -173,6 +196,10 @@ mod tests {
         assert_eq!(
             metadata_relay_endpoint("wss://relay.example.com/conu/private-token").as_deref(),
             Ok("wss://relay.example.com")
+        );
+        assert_eq!(
+            metadata_relay_endpoint("https://conu-relay.onrender.com/conu").as_deref(),
+            Ok("wss://conu-relay.onrender.com")
         );
         assert_eq!(
             metadata_relay_endpoint("ws://[::1]:8787/relay").as_deref(),

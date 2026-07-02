@@ -13,6 +13,7 @@ conu-relay
   Dockerfile: packaging/docker/relay.Dockerfile
   public endpoint: https://<service>.onrender.com
   WebSocket endpoint for conU clients: wss://<service>.onrender.com/conu
+  accepted client input: https://<service>.onrender.com
   default storage: ephemeral container filesystem
   optional persistent disk: /var/lib/conu-relay
 ```
@@ -85,6 +86,7 @@ wss://<service>.onrender.com/conu
 ```
 
 Render terminates TLS for the public `https://` endpoint. conU clients use the same host with `wss://`.
+Current clients also accept the copied Render `https://<service>.onrender.com` URL and normalize it to `wss://<service>.onrender.com`.
 
 ## Render CLI Direct Service
 
