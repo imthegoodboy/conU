@@ -937,8 +937,8 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
                 .filter(|agent| agent.capabilities.messages)
             {
                 let command = format!(
-                    "conu send {} {} --peer {} --file ./message.bin --json",
-                    local.agent_id, remote.agent_id, remote.peer_node_id
+                    "conu send {} {} --file ./message.bin --json",
+                    local.agent_id, remote.agent_id
                 );
                 push_connect_menu_item(
                     &mut items,
@@ -1343,8 +1343,8 @@ fn dashboard_next_actions(
             &mut actions,
             &mut seen,
             format!(
-                "conu send {} {} --peer {} --file ./message.bin --json",
-                local.agent_id, remote.agent_id, remote.peer_node_id
+                "conu send {} {} --file ./message.bin --json",
+                local.agent_id, remote.agent_id
             ),
         );
     } else {
@@ -3111,13 +3111,22 @@ fn render_message_send(
         Err(error) => return error,
     };
 
+    if let Err(error) = agents::process_gateway_requests(home_override.clone()) {
+        return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
+    }
+
     if let Some(peer_node_id) = parsed.peer_node_id.clone() {
         return render_remote_message_send(parsed, &peer_node_id, home_override, payload);
     }
 
-    if let Err(error) = agents::process_gateway_requests(home_override.clone()) {
-        return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
+    match resolve_implicit_remote_send_peer(&parsed, home_override.clone()) {
+        Ok(Some(peer_node_id)) => {
+            return render_remote_message_send(parsed, &peer_node_id, home_override, payload);
+        }
+        Ok(None) => {}
+        Err(error) => return error,
     }
+
     let before = inbox_ids(home_override.clone(), &parsed.to_agent_id);
     let payload_bytes = payload.len();
     let message = match LocalMessage::new(
@@ -3196,6 +3205,72 @@ privacy
   payload view  contents are not displayed by conU",
         parsed.from_agent_id, parsed.to_agent_id, submission.request_id, payload_bytes
     ))
+}
+
+fn resolve_implicit_remote_send_peer(
+    parsed: &MessageSendArgs,
+    home_override: Option<PathBuf>,
+) -> Result<Option<String>, CliOutput> {
+    let local_agents = agents::list_local_agents(home_override.clone())
+        .map_err(|error| CliOutput::failure(1, format!("conU messages send failed\n\n{error}")))?;
+
+    if !local_agents
+        .iter()
+        .any(|agent| agent.agent_id == parsed.from_agent_id)
+    {
+        return Err(CliOutput::failure(
+            2,
+            "conU messages send failed\n\nsender is not a registered local agent\ncontentsDisplayed=false",
+        ));
+    }
+
+    if local_agents
+        .iter()
+        .any(|agent| agent.agent_id == parsed.to_agent_id)
+    {
+        return Ok(None);
+    }
+
+    let remote_agents = sessions::list_remote_agents(home_override)
+        .map_err(|error| CliOutput::failure(1, format!("conU messages send failed\n\n{error}")))?;
+    let mut matches = remote_agents
+        .iter()
+        .filter(|agent| agent.agent_id == parsed.to_agent_id)
+        .collect::<Vec<_>>();
+
+    if matches.is_empty() {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "conU messages send failed\n\nrecipient is not a registered local agent or trusted remote agent\n\nnext\n  conu agents\n  conu sessions sync\n  conu send {} {} --peer <peer-node-id> (--stdin|--file <path>)\n\ncontentsDisplayed=false",
+                parsed.from_agent_id, parsed.to_agent_id
+            ),
+        ));
+    }
+
+    if matches.len() > 1 {
+        matches.sort_by(|left, right| left.peer_node_id.cmp(&right.peer_node_id));
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "conU messages send failed\n\nremote agent id matches more than one peer; pass --peer <peer-node-id>\n\nagent: {}\ncontentsDisplayed=false",
+                parsed.to_agent_id
+            ),
+        ));
+    }
+
+    let remote = matches[0];
+    if !remote.capabilities.messages {
+        return Err(CliOutput::failure(
+            2,
+            format!(
+                "conU messages send failed\n\ntrusted remote agent is not allowed to receive messages\n\nagent: {}\ncontentsDisplayed=false",
+                parsed.to_agent_id
+            ),
+        ));
+    }
+
+    Ok(Some(remote.peer_node_id.clone()))
 }
 
 fn render_remote_message_send(
@@ -5576,8 +5651,7 @@ fn write_message_receive_output(path: &Path, payload: &[u8]) -> Result<(), Strin
 
 fn render_messages_usage() -> String {
     r"usage:
-  conu messages send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
-  conu messages send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
+  conu messages send <from-agent> <to-agent> [--peer <peer-node-id>] (--stdin|--file <path>) [--json]
   conu messages inbox [agent-id] [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu messages reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
@@ -5592,12 +5666,12 @@ fn render_messages_usage() -> String {
 
 fn render_send_usage() -> String {
     r"usage:
-  conu send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
-  conu send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
+  conu send <from-agent> <to-agent> [--peer <peer-node-id>] (--stdin|--file <path>) [--json]
 
 example:
   echo <message> | conu send agent.alpha agent.beta --stdin
   conu send agent.alpha agent.beta --file ./message.bin --json
+  conu send agent.pc1 agent.pc2 --file ./message.bin --json
 
 privacy:
   message bytes are read from stdin or a local file
@@ -10555,8 +10629,8 @@ fn connect_next_steps(
 
     if let (Some(local), Some(remote)) = (local_agents.first(), remote_agents.first()) {
         steps.push(format!(
-            "conu send {} {} --peer {} --file ./message.bin --json",
-            local.agent_id, remote.agent_id, remote.peer_node_id
+            "conu send {} {} --file ./message.bin --json",
+            local.agent_id, remote.agent_id
         ));
     } else {
         steps.push("conu pair".to_string());
@@ -17926,8 +18000,7 @@ Usage:
   conu chat
   conu chat <from-agent> <to-agent>
   conu chat <from-agent> <to-agent> (--stdin|--file <path>) [--json]
-  conu send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
-  conu send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
+  conu send <from-agent> <to-agent> [--peer <peer-node-id>] (--stdin|--file <path>) [--json]
   conu inbox [agent-id] [--json]
   conu next <agent-id> [--json]
   conu listen <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--no-process-ipc] [--json]
@@ -17938,8 +18011,7 @@ Usage:
   conu pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
   conu reply <agent-id> --latest (--stdin|--file <path>) [--json]
-  conu messages send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
-  conu messages send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
+  conu messages send <from-agent> <to-agent> [--peer <peer-node-id>] (--stdin|--file <path>) [--json]
   conu messages inbox [agent-id] [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu messages reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
@@ -23680,6 +23752,73 @@ mod tests {
         assert!(request_text.contains("payload_privacy = \"peer_encrypted\""));
         assert!(request_text.contains("payload_ciphertext_hex"));
         assert!(!request_text.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_send_resolves_unique_remote_agent_without_peer_flag() {
+        let alice_home = temp_home("remote-message-auto-peer-alice");
+        let bob_home = temp_home("remote-message-auto-peer-bob");
+        register_test_agent(&alice_home, "agent.sender");
+        register_test_agent(&bob_home, "agent.bob");
+        let bob_card = trust::export_peer_card(Some(bob_home.clone())).expect("bob card exports");
+        let bob_node_id = bob_card.node_id.clone();
+        trust::trust_peer_card(Some(alice_home.clone()), bob_card).expect("alice trusts bob");
+        policy::set_peer_policy(
+            Some(alice_home.clone()),
+            &bob_node_id,
+            PeerPolicyUpdate {
+                messages: Some(true),
+                ..PeerPolicyUpdate::empty()
+            },
+        )
+        .expect("messages policy grants");
+        let bob_agent_card =
+            agents::export_agent_card(Some(bob_home), "agent.bob").expect("agent card exports");
+        sessions::trust_remote_agent_card(Some(alice_home.clone()), bob_agent_card)
+            .expect("remote agent imports");
+
+        let sent = run_with_home_and_stdin(
+            ["send", "agent.sender", "agent.bob", "--stdin", "--json"],
+            Some(alice_home.clone()),
+            b"private message contents".to_vec(),
+        );
+        let request = std::fs::read_dir(state::StatePaths::from_home(alice_home).relay_outbox_dir)
+            .expect("relay outbox reads")
+            .next()
+            .expect("relay request exists")
+            .expect("relay request entry");
+        let request_text = std::fs::read_to_string(request.path()).expect("request reads");
+
+        assert_eq!(sent.code, 0, "{}", sent.stderr);
+        assert!(sent.stdout.contains("\"status\": \"queued_remote\""));
+        assert!(
+            sent.stdout
+                .contains(&format!("\"peerNodeId\": \"{bob_node_id}\""))
+        );
+        assert!(request_text.contains("payload_privacy = \"peer_encrypted\""));
+        assert!(!request_text.contains("private message contents"));
+    }
+
+    #[test]
+    fn messages_send_unknown_recipient_fails_before_local_queue() {
+        let home = temp_home("message-send-unknown-recipient");
+        register_test_agent(&home, "agent.sender");
+
+        let output = run_with_home_and_stdin(
+            ["send", "agent.sender", "agent.missing", "--stdin", "--json"],
+            Some(home),
+            b"private message contents".to_vec(),
+        );
+
+        assert_eq!(output.code, 2);
+        assert!(
+            output
+                .stderr
+                .contains("recipient is not a registered local agent or trusted remote agent")
+        );
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(!output.stderr.contains("private message contents"));
+        assert!(!output.stdout.contains("\"status\": \"queued\""));
     }
 
     #[test]

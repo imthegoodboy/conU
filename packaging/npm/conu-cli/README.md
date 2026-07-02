@@ -20,7 +20,19 @@ Agents own the conversation.
 conU owns the connection.
 ```
 
-conU is a native Rust CLI, daemon, relay, SDK, and MCP adapter for private agent-to-agent communication. It is not a chatbot or an agent framework. Your agent keeps its own prompts, reasoning, memory, and tools; conU handles identity, trust, routing, encrypted delivery, streams, rooms, and metadata-only observability.
+conU is a native Rust CLI, daemon, relay, SDK, and MCP adapter that lets trusted agents communicate across local machines or remote peers without exposing private payload contents. It is not an agent framework or chatbot. Your agent keeps its own prompts, reasoning, memory, and tools; conU handles identity, trust, routing, encrypted delivery, streams, rooms, and metadata-only observability.
+
+## What It Does
+
+| Area | Purpose |
+| --- | --- |
+| Agents | Register local agents with stable ids, names, capabilities, and presence. |
+| Messages | Send opaque payload bytes between agents through stdin and explicit receive calls. |
+| Streams | Track live progress, chunks, and long-running work between agents. |
+| Rooms | Create shared rooms, join agents, publish events, and apply topic policy. |
+| Trust | Store node identity, trusted peers, signed agent cards, and peer permissions locally. |
+| Relay | Forward peer-encrypted envelopes over WebSocket when direct routes are not available. |
+| Integrations | Use the CLI, Rust SDK, TypeScript SDK, Python wrapper, or MCP stdio adapter. |
 
 ## Install
 
@@ -82,7 +94,7 @@ Then exchange public invite files:
 | Exchange | Send `pc1-invite.json` to PC 2. | Send `pc2-invite.json` to PC 1. |
 | Accept | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
 | Sync | `conu sessions sync --json` | `conu sessions sync --json` |
-| Send | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu listen agent.pc2 --json` |
+| Send | `conu send agent.pc1 agent.pc2 --file ./message.bin --json` | `conu listen agent.pc2 --json` |
 
 Only public invite files are exchanged. Private identity files, relay tokens, and payload files stay on each machine. For relay hosting and deeper workflows, use the full guide:
 
@@ -141,7 +153,7 @@ printf "$CONU_RELAY_TOKEN" | conu online wss://your-relay.example.com/conu --tok
 | 准备 | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
 | 创建 invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
 | 接受对方 | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
-| 发送 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu listen agent.pc2 --json` |
+| 发送 | `conu send agent.pc1 agent.pc2 --file ./message.bin --json` | `conu listen agent.pc2 --json` |
 
 conU 可以显示 agent id、路由、字节数和投递状态；不显示消息正文、推理内容、隐藏记忆、工具输出、文件内容或 secret。
 
@@ -149,7 +161,7 @@ conU 可以显示 agent id、路由、字节数和投递状态；不显示消息
 
 This npm package is a launcher for native release binaries. During install it downloads the matching GitHub Release archive, verifies the sibling `.sha256` checksum, checks archive members before extraction, and installs binaries under the package-local `vendor/` directory.
 
-Environment overrides are available for release testing and controlled deployments:
+Advanced release-testing overrides:
 
 | Variable | Purpose |
 | --- | --- |
