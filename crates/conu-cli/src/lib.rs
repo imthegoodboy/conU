@@ -119,6 +119,30 @@ const MENU_ITEMS: &[MenuItem] = &[
         action: MenuAction::Command(&["doctor"]),
     },
     MenuItem {
+        title: "Connect",
+        command: "conu connect",
+        detail: "agent selector",
+        action: MenuAction::ConnectSelector,
+    },
+    MenuItem {
+        title: "Inbox",
+        command: "conu inbox",
+        detail: "message overview",
+        action: MenuAction::Command(&["inbox"]),
+    },
+    MenuItem {
+        title: "Agents",
+        command: "conu agents",
+        detail: "local and remote agent list",
+        action: MenuAction::Command(&["agents"]),
+    },
+    MenuItem {
+        title: "Status",
+        command: "conu status",
+        detail: "runtime health",
+        action: MenuAction::Command(&["status"]),
+    },
+    MenuItem {
         title: "Smoke",
         command: "conu smoke",
         detail: "local delivery check",
@@ -129,24 +153,6 @@ const MENU_ITEMS: &[MenuItem] = &[
         command: "conu start",
         detail: "launch conUD runtime",
         action: MenuAction::Command(&["start"]),
-    },
-    MenuItem {
-        title: "Agents",
-        command: "conu agents",
-        detail: "local and remote agent list",
-        action: MenuAction::Command(&["agents"]),
-    },
-    MenuItem {
-        title: "Chat",
-        command: "conu connect",
-        detail: "pick agents and message",
-        action: MenuAction::ConnectSelector,
-    },
-    MenuItem {
-        title: "Connect",
-        command: "conu connect",
-        detail: "agent connection selector",
-        action: MenuAction::ConnectSelector,
     },
     MenuItem {
         title: "Watch",
@@ -163,7 +169,7 @@ const MENU_ITEMS: &[MenuItem] = &[
     MenuItem {
         title: "Help",
         command: "conu --help",
-        detail: "all commands",
+        detail: "quick guide",
         action: MenuAction::Command(&["--help"]),
     },
     MenuItem {
@@ -1114,7 +1120,8 @@ where
         "components" => render_components(&args[1..]),
         "start" => render_start(&args[1..], home_override),
         "stop" => render_stop(&args[1..], home_override),
-        "--help" | "-h" | "help" => CliOutput::success(render_help()),
+        "--help" | "-h" => CliOutput::success(render_help()),
+        "help" => render_help_command(&args[1..]),
         "--version" | "-V" => CliOutput::success(format!("conu {}", env!("CARGO_PKG_VERSION"))),
         _unknown => unknown_command_error(),
     }
@@ -15859,7 +15866,55 @@ fn render_status_json(view: &StatusView<'_>) -> String {
 }
 
 fn render_help() -> String {
-    r"conu - agent-native encrypted communication fabric
+    r"conu - private agent-to-agent communication
+
+Usage:
+  conu [command]
+
+Start:
+  conu                  open the Up/Down menu in a terminal
+  conu setup --start    create two local agents and start conUD
+  conu connect          choose an agent action
+  conu chat             send one private local message
+
+Messages:
+  conu inbox [agent-id]
+  conu history <agent-id>
+  conu wait <agent-id> --process-ipc --timeout-ms 30000 --json
+  conu receive <agent-id> <envelope-id> --output <file>
+
+Runtime:
+  conu dashboard
+  conu status
+  conu agents
+  conu watch
+  conu doctor
+
+Reference:
+  conu help commands    full command list
+  conu <command> --help command-specific help
+  conu --version
+
+privacy:
+  payload bytes are private and not displayed
+  contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_help_command(args: &[String]) -> CliOutput {
+    if args.is_empty() || matches!(args, [arg] if matches!(arg.as_str(), "--help" | "-h")) {
+        return CliOutput::success(render_help());
+    }
+
+    if matches!(args, [arg] if matches!(arg.as_str(), "commands" | "all")) {
+        return CliOutput::success(render_command_reference());
+    }
+
+    CliOutput::failure(2, "usage: conu help [commands]\ncontentsDisplayed=false")
+}
+
+fn render_command_reference() -> String {
+    r"conu command reference
 
 Usage:
   conu
@@ -16367,12 +16422,43 @@ mod tests {
         assert!(output.stdout.contains("Use Up/Down"));
         assert!(output.stdout.contains("conu dashboard"));
         assert!(output.stdout.contains("conu setup --start"));
-        assert!(output.stdout.contains("conu smoke"));
-        assert!(output.stdout.contains("pick agents and message"));
         assert!(output.stdout.contains("conu connect"));
+        assert!(output.stdout.contains("conu inbox"));
+        assert!(output.stdout.contains("conu status"));
+        assert!(output.stdout.contains("conu smoke"));
+        assert_eq!(output.stdout.matches("conu connect").count(), 1);
         assert!(output.stdout.contains("contentsDisplayed=false"));
         assert!(!output.stdout.contains("private message contents"));
         assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn default_help_is_short_and_points_to_command_reference() {
+        for args in [vec!["--help"], vec!["help"]] {
+            let output = run(args);
+
+            assert_eq!(output.code, 0, "{}", output.stderr);
+            assert!(output.stdout.contains("Start:"));
+            assert!(output.stdout.contains("conu setup --start"));
+            assert!(output.stdout.contains("conu help commands"));
+            assert!(output.stdout.contains("contentsDisplayed=false"));
+            assert!(!output.stdout.contains("conu agents prepare <agent-id>"));
+            assert!(output.stderr.is_empty());
+        }
+    }
+
+    #[test]
+    fn help_commands_keeps_full_command_reference() {
+        for args in [vec!["help", "commands"], vec!["help", "all"]] {
+            let output = run(args);
+
+            assert_eq!(output.code, 0, "{}", output.stderr);
+            assert!(output.stdout.contains("conu command reference"));
+            assert!(output.stdout.contains("conu agents prepare <agent-id>"));
+            assert!(output.stdout.contains("conu relay credential set --stdin"));
+            assert!(output.stdout.contains("payload contents remain hidden"));
+            assert!(output.stderr.is_empty());
+        }
     }
 
     #[test]
