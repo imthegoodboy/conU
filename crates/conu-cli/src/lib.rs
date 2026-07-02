@@ -194,6 +194,7 @@ const MENU_ITEMS: &[MenuItem] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ConnectMenuAction {
     Command(Vec<String>),
+    OnlineSetupPrompt,
     PromptChat {
         from_agent_id: String,
         to_agent_id: String,
@@ -856,6 +857,7 @@ fn prompt_hidden_optional_line(prompt: &str) -> io::Result<Option<Vec<u8>>> {
 fn run_connect_menu_item(item: ConnectMenuItem) -> CliOutput {
     match item.action {
         ConnectMenuAction::Command(args) => run(args),
+        ConnectMenuAction::OnlineSetupPrompt => run_terminal_online_setup_prompt(),
         ConnectMenuAction::PromptChat {
             from_agent_id,
             to_agent_id,
@@ -866,14 +868,19 @@ fn run_connect_menu_item(item: ConnectMenuItem) -> CliOutput {
     }
 }
 
+fn run_terminal_online_setup_prompt() -> CliOutput {
+    restore_terminal_for_prompt();
+    match prompt_online_setup() {
+        Ok(output) => output,
+        Err(error) => CliOutput::failure(
+            1,
+            format!("conU online setup failed\n\n{error}; contentsDisplayed=false"),
+        ),
+    }
+}
+
 fn run_terminal_chat(from_agent_id: &str, to_agent_id: &str) -> CliOutput {
-    let _ = crossterm::terminal::disable_raw_mode();
-    let mut stdout = io::stdout();
-    let _ = crossterm::execute!(
-        stdout,
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::cursor::Show
-    );
+    restore_terminal_for_prompt();
 
     println!("conU chat");
     println!("from: {from_agent_id}");
@@ -897,6 +904,16 @@ fn run_terminal_chat(from_agent_id: &str, to_agent_id: &str) -> CliOutput {
         None,
         payload,
     )
+}
+
+fn restore_terminal_for_prompt() {
+    let _ = crossterm::terminal::disable_raw_mode();
+    let mut stdout = io::stdout();
+    let _ = crossterm::execute!(
+        stdout,
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
 }
 
 fn prompt_terminal_chat_payload(prompt: &str) -> Result<Vec<u8>, String> {
@@ -983,6 +1000,19 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
                     "setup".to_string(),
                     "--start".to_string(),
                 ]),
+            },
+        );
+    }
+
+    if remote_agents.is_empty() {
+        push_connect_menu_item(
+            &mut items,
+            &mut seen,
+            ConnectMenuItem {
+                title: "Online setup".to_string(),
+                command: "conu setup --relay <url> --start".to_string(),
+                detail: "prompt relay URL and token".to_string(),
+                action: ConnectMenuAction::OnlineSetupPrompt,
             },
         );
     }
@@ -11022,6 +11052,7 @@ fn connect_next_steps(
     if let (Some(local), Some(remote)) = (local_agents.first(), remote_agents.first()) {
         steps.push(format!("conu chat {} {}", local.agent_id, remote.agent_id));
     } else {
+        steps.push("conu setup --relay <relay-url> --token-stdin --start".to_string());
         steps.push("conu pair".to_string());
         steps.push("conu join <code>".to_string());
     }
@@ -18616,7 +18647,7 @@ Usage:
   conu connect local <from-agent> <to-agent> [--kind <kind>] [--json]
   conu connect room <room-id> <agent-id> [--json]
   conu watch
-  conu setup [local] [--start] [--from <agent-id>] [--to <agent-id>] [--from-name <display-name>] [--to-name <display-name>] [--from-kind <kind>] [--to-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--json]
+  conu setup [local] [--start] [--relay <ws://host:port|wss://host/path|https://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--from <agent-id>] [--to <agent-id>] [--from-name <display-name>] [--to-name <display-name>] [--from-kind <kind>] [--to-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--json]
   conu doctor [--json]
   conu smoke [local] [--json]
   conu start [--json]
@@ -19244,6 +19275,12 @@ mod tests {
             assert_eq!(output.code, 0, "{}", output.stderr);
             assert!(output.stdout.contains("conu command reference"));
             assert!(output.stdout.contains("conu agents prepare <agent-id>"));
+            assert!(
+                output
+                    .stdout
+                    .contains("conu setup [local] [--start] [--relay")
+            );
+            assert!(output.stdout.contains("[--token-stdin] [--verify]"));
             assert!(output.stdout.contains("conu relay credential set --stdin"));
             assert!(output.stdout.contains("payload contents remain hidden"));
             assert!(output.stderr.is_empty());
@@ -19263,6 +19300,13 @@ mod tests {
         assert!(
             items
                 .iter()
+                .any(|item| item.command == "conu setup --relay <url> --start"
+                    && item.title == "Online setup"
+                    && matches!(item.action, ConnectMenuAction::OnlineSetupPrompt))
+        );
+        assert!(
+            items
+                .iter()
                 .any(|item| item.command == "conu pair" && item.title == "Pair peer")
         );
         assert!(
@@ -19275,6 +19319,24 @@ mod tests {
                 .iter()
                 .all(|item| !item.command.contains("private payload"))
         );
+    }
+
+    #[test]
+    fn connect_static_selector_points_to_hosted_setup_when_no_remote_is_visible() {
+        let home = temp_home("connect-menu-hosted-setup");
+        let output = run_with_home(["connect"], Some(home));
+
+        assert_eq!(output.code, 0);
+        assert!(output.stdout.contains("conU connect"));
+        assert!(
+            output
+                .stdout
+                .contains("conu setup --relay <relay-url> --token-stdin --start")
+        );
+        assert!(output.stdout.contains("conu pair"));
+        assert!(output.stdout.contains("conu join <code>"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(output.stderr.is_empty());
     }
 
     #[test]
