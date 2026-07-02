@@ -1037,7 +1037,9 @@ fn validate_endpoint(value: String) -> Result<String, RouteError> {
     relay_endpoint::validate_relay_endpoint(value).map_err(|error| {
         let reason = match error {
             RelayEndpointError::Empty => "endpoint cannot be empty",
-            RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+            RelayEndpointError::Scheme => {
+                "relay endpoint must start with ws://, wss://, or https://"
+            }
             RelayEndpointError::Invalid => "relay endpoint is invalid",
         };
         RouteError::InvalidRecord {
@@ -1070,7 +1072,9 @@ fn metadata_route_endpoint(value: String, transport: RouteTransport) -> Result<S
             relay_endpoint::metadata_relay_endpoint(&value).map_err(|error| {
                 let reason = match error {
                     RelayEndpointError::Empty => "endpoint cannot be empty",
-                    RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+                    RelayEndpointError::Scheme => {
+                        "relay endpoint must start with ws://, wss://, or https://"
+                    }
                     RelayEndpointError::Invalid => "relay endpoint is invalid",
                 };
                 RouteError::InvalidRecord {

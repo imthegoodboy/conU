@@ -2156,22 +2156,25 @@ enum RelayScheme {
 
 impl ParsedEndpoint {
     fn parse(endpoint: &str) -> Result<Self, RelayFrameError> {
-        relay_endpoint::validate_relay_endpoint(endpoint.to_string()).map_err(|error| {
-            let reason = match error {
-                RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
-                RelayEndpointError::Empty | RelayEndpointError::Invalid => {
-                    "relay endpoint is invalid"
-                }
-            };
-            RelayFrameError::new(reason)
-        })?;
+        let endpoint =
+            relay_endpoint::validate_relay_endpoint(endpoint.to_string()).map_err(|error| {
+                let reason = match error {
+                    RelayEndpointError::Scheme => {
+                        "relay endpoint must start with ws://, wss://, or https://"
+                    }
+                    RelayEndpointError::Empty | RelayEndpointError::Invalid => {
+                        "relay endpoint is invalid"
+                    }
+                };
+                RelayFrameError::new(reason)
+            })?;
         let (scheme, rest, default_port) = if let Some(rest) = endpoint.strip_prefix("ws://") {
             (RelayScheme::Ws, rest, 80)
         } else if let Some(rest) = endpoint.strip_prefix("wss://") {
             (RelayScheme::Wss, rest, 443)
         } else {
             return Err(RelayFrameError::new(
-                "relay endpoint must start with ws:// or wss://",
+                "relay endpoint must start with ws://, wss://, or https://",
             ));
         };
         let (authority, path) = match rest.split_once('/') {
@@ -3122,11 +3125,22 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_parser_rejects_non_websocket_schemes() {
-        let error = ParsedEndpoint::parse("https://relay.example.com")
-            .expect_err("non websocket endpoint fails");
+    fn endpoint_parser_normalizes_https_to_wss() {
+        let endpoint =
+            ParsedEndpoint::parse("https://relay.example.com/conu").expect("endpoint parses");
 
-        assert!(error.to_string().contains("ws:// or wss://"));
+        assert_eq!(endpoint.scheme, RelayScheme::Wss);
+        assert_eq!(endpoint.host, "relay.example.com");
+        assert_eq!(endpoint.port, 443);
+        assert_eq!(endpoint.path, "/conu");
+    }
+
+    #[test]
+    fn endpoint_parser_rejects_unsupported_schemes() {
+        let error =
+            ParsedEndpoint::parse("http://relay.example.com").expect_err("http endpoint fails");
+
+        assert!(error.to_string().contains("ws://, wss://, or https://"));
     }
 
     #[test]

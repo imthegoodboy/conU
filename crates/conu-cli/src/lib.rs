@@ -8141,7 +8141,7 @@ fn parse_relay_credential_set_args(args: &[String]) -> Result<RelayCredentialSet
 
 fn render_relay_usage() -> String {
     r"usage:
-  conu relay setup <ws://host:port|wss://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+  conu relay setup <ws://host:port|wss://host/path|https://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
   conu relay credential status [--json]
   conu relay credential set --stdin [--json]
@@ -8150,13 +8150,14 @@ fn render_relay_usage() -> String {
 }
 
 fn render_online_usage() -> String {
-    r"usage: conu online [<ws://host:port|wss://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+    r"usage: conu online [<ws://host:port|wss://host/path|https://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
 
 simple:
   printf <token> | conu online wss://relay.example.com/conu --token-stdin --verify
+  printf <token> | conu online https://conu-relay.onrender.com --token-stdin --verify
 
 env endpoint:
-  set CONU_RELAY_URL=wss://relay.example.com/conu
+  set CONU_RELAY_URL=https://conu-relay.onrender.com
   printf <token> | conu online --token-stdin --verify
 
 what it does:
@@ -8172,10 +8173,11 @@ privacy:
 }
 
 fn render_relay_setup_usage() -> String {
-    r"usage: conu relay setup <ws://host:port|wss://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+    r"usage: conu relay setup <ws://host:port|wss://host/path|https://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
 
 examples:
   printf <token> | conu relay setup wss://relay.example.com/conu --token-stdin
+  printf <token> | conu relay setup https://conu-relay.onrender.com --token-stdin
   printf <token> | conu relay setup wss://relay.example.com/conu --token-stdin --verify --wait-ms 5000
 
 privacy:
@@ -8941,7 +8943,7 @@ fn indent_json_array_items(contents: &str, spaces: usize) -> String {
 
 fn render_identity_usage() -> String {
     r"usage:
-  conu identity export [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+  conu identity export [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--json]
 
 privacy:
   identity commands show public peer-card material only
@@ -9082,10 +9084,11 @@ fn parse_invite_args(args: &[String]) -> Result<IdentityExportArgs, CliOutput> {
 }
 
 fn render_invite_usage() -> String {
-    r"usage: conu invite [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+    r"usage: conu invite [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--json]
 
 examples:
   conu invite --relay wss://relay.example.com/conu --json > my-invite.json
+  conu invite --relay https://conu-relay.onrender.com --json > my-invite.json
   conu accept their-invite.json
 
 privacy:
@@ -9739,7 +9742,7 @@ next
   conu join <code>
   conu identity export --json > peer-card.json
   conu peers trust --card peer-card.json
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>]
   conu peers policy <peer-node-id> --messages true --streams true
   conu peers revoke <peer-node-id>"
     )
@@ -9748,8 +9751,8 @@ next
 fn render_peers_usage() -> String {
     r"usage:
   conu peers [--json]
-  conu peers trust --card <file|-> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+  conu peers trust --card <file|-> [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--json]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--json]
   conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]
   conu peers revoke <peer-node-id> [--json]
 
@@ -10118,7 +10121,7 @@ fn parse_peer_trust_args(args: &[String]) -> Result<PeerTrustArgs, CliOutput> {
 }
 
 fn render_peer_trust_usage() -> String {
-    "usage: conu peers trust --card <file|-> [--json]\n       conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--signature-algorithm <algorithm>] [--json]".to_string()
+    "usage: conu peers trust --card <file|-> [--json]\n       conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--signature-algorithm <algorithm>] [--json]".to_string()
 }
 
 fn render_peer_revoke_usage() -> String {
@@ -18183,8 +18186,8 @@ Usage:
   conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receipts [--json]
-  conu online [<ws://host:port|wss://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
-  conu relay setup <ws://host:port|wss://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+  conu online [<ws://host:port|wss://host/path|https://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+  conu relay setup <ws://host:port|wss://host/path|https://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
   conu relay credential status [--json]
   conu relay credential set --stdin [--json]
@@ -18212,13 +18215,13 @@ Usage:
   conu security rotate identity --confirm-peer-refresh [--json]
   conu security retire identity --confirm-peer-refresh-complete [--json]
   conu security retire storage --confirm [--json]
-  conu identity export [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+  conu identity export [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--json]
   conu peers [--json]
   conu peers trust --card <file|-> [--json]
-  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--json]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--json]
   conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]
   conu peers revoke <peer-node-id> [--json]
-  conu invite [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+  conu invite [--relay <ws://host:port|wss://host/path|https://host/path>] [--direct <quic://host:port>] [--json]
   conu accept <invite-card-file|-> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--no-policy] [--json]
   conu pair [--json]
   conu join <code> [--json]
@@ -23055,6 +23058,42 @@ mod tests {
     }
 
     #[test]
+    fn relay_setup_normalizes_render_https_endpoint() {
+        let home = temp_home("relay-setup-render-https");
+        let token = b"setup-relay-token-render-123456".to_vec();
+        let token_text = String::from_utf8(token.clone()).expect("token utf8");
+
+        let setup = run_with_home_and_stdin(
+            [
+                "relay",
+                "setup",
+                "https://conu-relay.onrender.com",
+                "--token-stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            token,
+        );
+        let config = fs::read_to_string(home.join("config.toml")).expect("config reads");
+
+        assert_eq!(setup.code, 0, "{}", setup.stderr);
+        assert!(setup.stdout.contains("\"status\": \"configured\""));
+        assert!(
+            setup
+                .stdout
+                .contains("\"endpoint\": \"wss://conu-relay.onrender.com\"")
+        );
+        assert!(setup.stdout.contains("\"credentialConfigured\": true"));
+        assert!(setup.stdout.contains("\"tokenDisplayed\": false"));
+        assert!(setup.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(config.contains("default_relay = \"wss://conu-relay.onrender.com\""));
+        assert!(!setup.stdout.contains("https://conu-relay.onrender.com"));
+        assert!(!config.contains("https://conu-relay.onrender.com"));
+        assert!(!setup.stdout.contains(&token_text));
+        assert!(!config.contains(&token_text));
+    }
+
+    #[test]
     fn relay_setup_rejects_secret_bearing_endpoint_before_storing_token() {
         let home = temp_home("relay-setup-bad-endpoint");
         let token = b"setup-relay-token-abcdef".to_vec();
@@ -23139,6 +23178,31 @@ mod tests {
         assert!(status.stdout.contains("\"configured\": true"));
         assert!(!setup.stdout.contains(&token_text));
         assert!(!status.stdout.contains(&token_text));
+    }
+
+    #[test]
+    fn invite_export_normalizes_https_relay_endpoint() {
+        let home = temp_home("invite-render-https");
+
+        let invite = run_with_home(
+            [
+                "invite",
+                "--relay",
+                "https://conu-relay.onrender.com",
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(invite.code, 0, "{}", invite.stderr);
+        assert!(
+            invite
+                .stdout
+                .contains("\"relayEndpoint\": \"wss://conu-relay.onrender.com\"")
+        );
+        assert!(invite.stdout.contains("\"peerCardSigned\": true"));
+        assert!(invite.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!invite.stdout.contains("https://conu-relay.onrender.com"));
     }
 
     #[test]

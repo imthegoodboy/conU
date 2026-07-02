@@ -87,13 +87,13 @@ conu receive agent.beta <envelope-id> --output received.bin
 
 ## Two-PC Setup
 
-Two machines need the same relay URL when they are not on a direct local route. For quick testing, self-host `conu-relay` or deploy the Render Blueprint in `render.yaml`, then use the relay URL in both invite files.
+Two machines need the same relay URL when they are not on a direct local route. For quick testing, self-host `conu-relay` or deploy the Render Blueprint in `render.yaml`, then use the relay URL in both invite files. Render shows an `https://...onrender.com` service URL; conU accepts that form and stores the matching `wss://` relay endpoint.
 
 | Step | PC 1 | PC 2 |
 | --- | --- | --- |
 | 1. Install | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
 | 2. Prepare local agent | `conu setup --from agent.pc1 --to agent.pc1.helper --room room.team --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --room room.team --start` |
-| 3. Create public invite | `conu invite --relay wss://<relay-host>/conu --json > pc1-invite.json` | `conu invite --relay wss://<relay-host>/conu --json > pc2-invite.json` |
+| 3. Create public invite | `conu invite --relay https://<relay-host> --json > pc1-invite.json` | `conu invite --relay https://<relay-host> --json > pc2-invite.json` |
 | 4. Exchange files | Send `pc1-invite.json` to PC 2. Do not send private state or secrets. | Send `pc2-invite.json` to PC 1. Do not send private state or secrets. |
 | 5. Accept the peer | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
 | 6. Sync remote state | `conu sessions sync --json` | `conu sessions sync --json` |

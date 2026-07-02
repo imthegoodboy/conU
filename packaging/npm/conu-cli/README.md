@@ -66,13 +66,13 @@ Common commands:
 
 ## Two PCs
 
-Remote peers need a reachable relay URL when they are not on the same local route. You can self-host `conu-relay` or deploy the repository Render Blueprint.
+Remote peers need a reachable relay URL when they are not on the same local route. You can self-host `conu-relay` or deploy the repository Render Blueprint. Render shows an `https://...onrender.com` service URL; conU accepts that form and stores the matching `wss://` relay endpoint.
 
 | Step | PC 1 | PC 2 |
 | --- | --- | --- |
 | Install | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
 | Prepare | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
-| Create invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
+| Create invite | `conu invite --relay https://your-relay.example.com --json > pc1-invite.json` | `conu invite --relay https://your-relay.example.com --json > pc2-invite.json` |
 | Exchange | Send `pc1-invite.json` to PC 2. | Send `pc2-invite.json` to PC 1. |
 | Trust peer | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
 | Sync | `conu sessions sync --json` | `conu sessions sync --json` |
@@ -83,7 +83,7 @@ Only exchange public invite files. They contain public peer identity, route meta
 If your relay requires a token, configure it through stdin so it does not land in shell history:
 
 ```sh
-printf "$CONU_RELAY_TOKEN" | conu online wss://your-relay.example.com/conu --token-stdin --verify
+printf "$CONU_RELAY_TOKEN" | conu online https://your-relay.example.com --token-stdin --verify
 ```
 
 ## Relay

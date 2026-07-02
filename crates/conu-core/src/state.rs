@@ -1346,7 +1346,7 @@ fn validate_relay_config_endpoint_for_path(
 fn relay_endpoint_error_reason(error: RelayEndpointError) -> &'static str {
     match error {
         RelayEndpointError::Empty => "relay endpoint cannot be empty",
-        RelayEndpointError::Scheme => "relay endpoint must start with ws:// or wss://",
+        RelayEndpointError::Scheme => "relay endpoint must start with ws://, wss://, or https://",
         RelayEndpointError::Invalid => "relay endpoint is invalid",
     }
 }
