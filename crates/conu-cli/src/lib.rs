@@ -1143,8 +1143,8 @@ where
         "routes" => render_routes(&args[1..], home_override),
         "security" => render_security(&args[1..], home_override),
         "identity" => render_identity(&args[1..], home_override),
-        "invite" | "share" => render_pair(&args[1..], home_override),
-        "accept" => render_join(&args[1..], home_override),
+        "invite" | "share" => render_invite(&args[1..], home_override),
+        "accept" => render_accept(&args[1..], home_override, stdin_payload),
         "pair" => render_pair(&args[1..], home_override),
         "join" => render_join(&args[1..], home_override),
         "connect" => render_connect(&args[1..], home_override),
@@ -8776,31 +8776,7 @@ fn render_identity_export(args: &[String], home_override: Option<PathBuf>) -> Cl
     };
 
     if parsed.json {
-        return CliOutput::success(format!(
-            r#"{{
-  "nodeId": "{}",
-  "displayName": "{}",
-  "exchangePublicKeyHex": "{}",
-  "relayEndpoint": "{}",
-  "directQuicEndpoint": "{}",
-  "signingPublicKeyHex": "{}",
-  "signatureAlgorithm": "{}",
-  "signatureKeyId": "{}",
-  "signatureHex": "{}",
-  "peerCardSigned": {},
-  "contentsDisplayed": false
-}}"#,
-            json_escape(&card.node_id),
-            json_escape(&card.display_name),
-            json_escape(&card.exchange_public_key_hex),
-            json_escape(&card.relay_endpoint),
-            json_escape(card.direct_quic_endpoint.as_deref().unwrap_or("")),
-            json_escape(card.signing_public_key_hex.as_deref().unwrap_or("")),
-            json_escape(card.signature_algorithm.as_deref().unwrap_or("")),
-            json_escape(card.signature_key_id.as_deref().unwrap_or("")),
-            json_escape(card.signature_hex.as_deref().unwrap_or("")),
-            card.signature_hex.is_some()
-        ));
+        return CliOutput::success(render_peer_card_json(&card));
     }
 
     CliOutput::success(format!(
@@ -8837,6 +8813,34 @@ privacy
         card.signature_hex.as_deref().unwrap_or("not available"),
         card.relay_endpoint
     ))
+}
+
+fn render_peer_card_json(card: &PeerCard) -> String {
+    format!(
+        r#"{{
+  "nodeId": "{}",
+  "displayName": "{}",
+  "exchangePublicKeyHex": "{}",
+  "relayEndpoint": "{}",
+  "directQuicEndpoint": "{}",
+  "signingPublicKeyHex": "{}",
+  "signatureAlgorithm": "{}",
+  "signatureKeyId": "{}",
+  "signatureHex": "{}",
+  "peerCardSigned": {},
+  "contentsDisplayed": false
+}}"#,
+        json_escape(&card.node_id),
+        json_escape(&card.display_name),
+        json_escape(&card.exchange_public_key_hex),
+        json_escape(&card.relay_endpoint),
+        json_escape(card.direct_quic_endpoint.as_deref().unwrap_or("")),
+        json_escape(card.signing_public_key_hex.as_deref().unwrap_or("")),
+        json_escape(card.signature_algorithm.as_deref().unwrap_or("")),
+        json_escape(card.signature_key_id.as_deref().unwrap_or("")),
+        json_escape(card.signature_hex.as_deref().unwrap_or("")),
+        card.signature_hex.is_some()
+    )
 }
 
 fn render_identity_usage() -> String {
@@ -8890,6 +8894,353 @@ fn parse_identity_export_args(args: &[String]) -> Result<IdentityExportArgs, Cli
         relay_endpoint,
         direct_endpoint,
     })
+}
+
+fn render_invite(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success(render_invite_usage());
+    }
+    let parsed = match parse_invite_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let card = match trust::export_peer_card_with_endpoints(
+        home_override,
+        parsed.relay_endpoint,
+        parsed.direct_endpoint,
+    ) {
+        Ok(card) => card,
+        Err(error) => return CliOutput::failure(1, format!("conU invite failed\n\n{error}")),
+    };
+
+    if parsed.json {
+        return CliOutput::success(render_peer_card_json(&card));
+    }
+
+    CliOutput::success(format!(
+        r"conU invite
+
+status: public invite card ready
+node: {}
+name: {}
+relay: {}
+direct QUIC: {}
+signed: {}
+
+share
+  conu invite --relay {} --json > my-invite.json
+  conu accept their-invite.json
+
+privacy
+  card view     public identity and route metadata only
+  payload view  contents are not displayed by conU",
+        card.node_id,
+        card.display_name,
+        display_optional_network_endpoint(Some(&card.relay_endpoint), "not configured"),
+        display_optional_network_endpoint(card.direct_quic_endpoint.as_deref(), "not configured"),
+        card.signature_hex.is_some(),
+        card.relay_endpoint
+    ))
+}
+
+fn parse_invite_args(args: &[String]) -> Result<IdentityExportArgs, CliOutput> {
+    let mut json = false;
+    let mut relay_endpoint = None;
+    let mut direct_endpoint = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--relay" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_invite_usage()));
+                };
+                relay_endpoint = Some(value.clone());
+                index += 1;
+            }
+            "--direct" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_invite_usage()));
+                };
+                direct_endpoint = Some(value.clone());
+                index += 1;
+            }
+            value if value.starts_with("--") => return Err(unknown_option_error()),
+            _ => return Err(CliOutput::failure(2, render_invite_usage())),
+        }
+        index += 1;
+    }
+
+    Ok(IdentityExportArgs {
+        json,
+        relay_endpoint,
+        direct_endpoint,
+    })
+}
+
+fn render_invite_usage() -> String {
+    r"usage: conu invite [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+
+examples:
+  conu invite --relay wss://relay.example.com/conu --json > my-invite.json
+  conu accept their-invite.json
+
+privacy:
+  invite exports a signed public peer card only
+  private keys, relay tokens, and payload contents are never displayed
+  contentsDisplayed=false"
+        .to_string()
+}
+
+struct AcceptInviteArgs {
+    source: PeerCardSource,
+    policy: PeerPolicyUpdate,
+    grant_policy: bool,
+    json: bool,
+}
+
+fn render_accept(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success(render_accept_usage());
+    }
+    let parsed = match parse_accept_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let card = match peer_card_from_source(&parsed.source, stdin_payload, None, None) {
+        Ok(card) => card,
+        Err(error) => return error,
+    };
+    let peer = match trust::trust_peer_card(home_override.clone(), card) {
+        Ok(peer) => peer,
+        Err(error) => return CliOutput::failure(1, format!("conU accept failed\n\n{error}")),
+    };
+    let policy_record = if parsed.grant_policy {
+        match policy::set_peer_policy(home_override, &peer.peer_node_id, parsed.policy) {
+            Ok(record) => Some(record),
+            Err(error) => {
+                return CliOutput::failure(
+                    1,
+                    format!(
+                        "conU accept failed\n\ntrusted peer, but policy update failed: {error}"
+                    ),
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    if parsed.json {
+        return CliOutput::success(render_accept_json(&peer, policy_record.as_ref()));
+    }
+
+    CliOutput::success(render_accept_text(&peer, policy_record.as_ref()))
+}
+
+fn parse_accept_args(args: &[String]) -> Result<AcceptInviteArgs, CliOutput> {
+    let mut json = false;
+    let mut source = None;
+    let mut grant_policy = true;
+    let mut policy = default_accept_policy_update();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--no-policy" => {
+                grant_policy = false;
+                policy = PeerPolicyUpdate::empty();
+                index += 1;
+            }
+            "--messages" => {
+                ensure_accept_policy_allowed(grant_policy)?;
+                policy.messages =
+                    Some(parse_accept_policy_bool(args.get(index + 1), "--messages")?);
+                index += 2;
+            }
+            "--streams" => {
+                ensure_accept_policy_allowed(grant_policy)?;
+                policy.streams = Some(parse_accept_policy_bool(args.get(index + 1), "--streams")?);
+                index += 2;
+            }
+            "--rooms" => {
+                ensure_accept_policy_allowed(grant_policy)?;
+                policy.rooms = Some(parse_accept_policy_bool(args.get(index + 1), "--rooms")?);
+                index += 2;
+            }
+            "--files" => {
+                ensure_accept_policy_allowed(grant_policy)?;
+                policy.files = Some(parse_accept_policy_bool(args.get(index + 1), "--files")?);
+                index += 2;
+            }
+            "--mailbox" => {
+                ensure_accept_policy_allowed(grant_policy)?;
+                policy.mailbox = Some(parse_accept_policy_bool(args.get(index + 1), "--mailbox")?);
+                index += 2;
+            }
+            value if value.starts_with("--") => return Err(unknown_option_error()),
+            value => {
+                if source.is_some() {
+                    return Err(CliOutput::failure(2, render_accept_usage()));
+                }
+                source = Some(if value == "-" {
+                    PeerCardSource::Stdin
+                } else {
+                    PeerCardSource::File(PathBuf::from(value))
+                });
+                index += 1;
+            }
+        }
+    }
+
+    let Some(source) = source else {
+        return Err(CliOutput::failure(2, render_accept_usage()));
+    };
+
+    Ok(AcceptInviteArgs {
+        source,
+        policy,
+        grant_policy,
+        json,
+    })
+}
+
+fn ensure_accept_policy_allowed(grant_policy: bool) -> Result<(), CliOutput> {
+    if grant_policy {
+        Ok(())
+    } else {
+        Err(CliOutput::failure(2, render_accept_usage()))
+    }
+}
+
+fn default_accept_policy_update() -> PeerPolicyUpdate {
+    PeerPolicyUpdate {
+        messages: Some(true),
+        streams: Some(true),
+        rooms: Some(true),
+        files: Some(false),
+        mailbox: Some(false),
+    }
+}
+
+fn parse_accept_policy_bool(
+    value: Option<&String>,
+    option: &'static str,
+) -> Result<bool, CliOutput> {
+    parse_bool_option(value, option, render_accept_usage())
+}
+
+fn render_accept_json(peer: &TrustedPeer, policy: Option<&PeerPolicyRecord>) -> String {
+    let policy_json = match policy {
+        Some(policy) => format!(
+            r#"{{
+    "messages": {},
+    "streams": {},
+    "rooms": {},
+    "files": {},
+    "mailbox": {}
+  }}"#,
+            policy.messages, policy.streams, policy.rooms, policy.files, policy.mailbox
+        ),
+        None => "null".to_string(),
+    };
+
+    format!(
+        r#"{{
+  "status": "{}",
+  "peerNodeId": "{}",
+  "displayName": "{}",
+  "peerCardSigned": {},
+  "relayEndpoint": "{}",
+  "directQuicEndpoint": "{}",
+  "policyConfigured": {},
+  "policy": {},
+  "contentsDisplayed": false
+}}"#,
+        peer.status.as_str(),
+        json_escape(&peer.peer_node_id),
+        json_escape(&peer.display_name),
+        peer.signature_hex.is_some(),
+        json_escape(&display_optional_network_endpoint(
+            peer.relay_endpoint.as_deref(),
+            ""
+        )),
+        json_escape(&display_optional_network_endpoint(
+            peer.direct_quic_endpoint.as_deref(),
+            ""
+        )),
+        policy.is_some(),
+        policy_json
+    )
+}
+
+fn render_accept_text(peer: &TrustedPeer, policy: Option<&PeerPolicyRecord>) -> String {
+    let policy_text = match policy {
+        Some(policy) => format!(
+            "messages={} streams={} rooms={} files={} mailbox={}",
+            policy.messages, policy.streams, policy.rooms, policy.files, policy.mailbox
+        ),
+        None => "not changed".to_string(),
+    };
+
+    format!(
+        r"conU accept
+
+status: {}
+peer: {}
+name: {}
+peer card signature: {}
+relay: {}
+direct QUIC: {}
+policy: {}
+
+next
+  conu start
+  conu peers
+  conu listen <agent-id>
+
+privacy
+  card view     public identity and route metadata only
+  payload view  contents are not displayed by conU",
+        peer.status.as_str(),
+        peer.peer_node_id,
+        peer.display_name,
+        if peer.signature_hex.is_some() {
+            "verified"
+        } else {
+            "not provided"
+        },
+        display_optional_network_endpoint(peer.relay_endpoint.as_deref(), "not configured"),
+        display_optional_network_endpoint(peer.direct_quic_endpoint.as_deref(), "not configured"),
+        policy_text
+    )
+}
+
+fn render_accept_usage() -> String {
+    r"usage: conu accept <invite-card-file|-> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--no-policy] [--json]
+
+examples:
+  conu accept their-invite.json
+  type their-invite.json | conu accept -
+  conu accept their-invite.json --files true --json
+
+defaults:
+  messages=true, streams=true, rooms=true, files=false, mailbox=false
+
+privacy:
+  accept imports a public peer card and writes local trust/policy metadata only
+  private keys, relay tokens, and payload contents are never displayed
+  contentsDisplayed=false"
+        .to_string()
 }
 
 fn inbox_ids(home_override: Option<PathBuf>, agent_id: &str) -> HashSet<String> {
@@ -17510,8 +17861,8 @@ Start:
   conu                  open the Up/Down menu in a terminal
   conu setup --start    create two local agents and start conUD
   conu online <relay> --token-stdin --verify
-  conu invite           make a connection code
-  conu accept <code>    join another node
+  conu invite --json    export a public invite card
+  conu accept <file>    trust a public invite card
   conu ready <id> <name> register one agent and mark it ready
   conu connect          choose an agent action
   conu chat             send one private local message
@@ -17633,8 +17984,8 @@ Usage:
   conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--json]
   conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]
   conu peers revoke <peer-node-id> [--json]
-  conu invite [--json]
-  conu accept <code> [--json]
+  conu invite [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+  conu accept <invite-card-file|-> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>] [--no-policy] [--json]
   conu pair [--json]
   conu join <code> [--json]
   conu connect
@@ -21362,6 +21713,104 @@ mod tests {
     }
 
     #[test]
+    fn invite_accept_imports_public_card_and_grants_default_policy() {
+        let alice_home = temp_home("invite-accept-alice");
+        let bob_home = temp_home("invite-accept-bob");
+        fs::create_dir_all(&alice_home).expect("alice fixture dir creates");
+
+        let invite = run_with_home(
+            [
+                "invite",
+                "--relay",
+                "wss://relay.example.com/conu",
+                "--json",
+            ],
+            Some(bob_home),
+        );
+        assert_eq!(invite.code, 0, "{}", invite.stderr);
+        assert!(invite.stdout.contains("\"peerCardSigned\": true"));
+        assert!(invite.stdout.contains("\"contentsDisplayed\": false"));
+
+        let invite_path = alice_home.join("bob-invite.json");
+        fs::write(&invite_path, &invite.stdout).expect("invite card writes");
+        let accept = run_with_home(
+            vec![
+                "accept".to_string(),
+                invite_path.display().to_string(),
+                "--json".to_string(),
+            ],
+            Some(alice_home.clone()),
+        );
+        let peers = trust::list_peers(Some(alice_home.clone())).expect("trusted peers read");
+        let policies = policy::list_peer_policies(Some(alice_home)).expect("peer policies read");
+
+        assert_eq!(accept.code, 0, "{}", accept.stderr);
+        assert!(accept.stdout.contains("\"status\": \"trusted\""));
+        assert!(accept.stdout.contains("\"peerCardSigned\": true"));
+        assert!(accept.stdout.contains("\"policyConfigured\": true"));
+        assert!(accept.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!accept.stdout.contains("private message contents"));
+        assert!(!accept.stdout.contains("signatureHex"));
+        assert_eq!(peers.len(), 1);
+        assert_eq!(
+            peers[0].relay_endpoint.as_deref(),
+            Some("wss://relay.example.com/conu")
+        );
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0].peer_node_id, peers[0].peer_node_id);
+        assert!(policies[0].messages);
+        assert!(policies[0].streams);
+        assert!(policies[0].rooms);
+        assert!(!policies[0].files);
+        assert!(!policies[0].mailbox);
+    }
+
+    #[test]
+    fn accept_imports_public_card_from_stdin_with_custom_policy() {
+        let alice_home = temp_home("invite-accept-stdin-alice");
+        let bob_home = temp_home("invite-accept-stdin-bob");
+        let invite = run_with_home(
+            [
+                "invite",
+                "--relay",
+                "wss://relay.example.com/conu",
+                "--json",
+            ],
+            Some(bob_home),
+        );
+        assert_eq!(invite.code, 0, "{}", invite.stderr);
+
+        let accept = run_with_home_and_stdin(
+            [
+                "accept",
+                "-",
+                "--streams",
+                "false",
+                "--files",
+                "true",
+                "--mailbox",
+                "true",
+                "--json",
+            ],
+            Some(alice_home.clone()),
+            invite.stdout.into_bytes(),
+        );
+        let policies = policy::list_peer_policies(Some(alice_home)).expect("peer policies read");
+
+        assert_eq!(accept.code, 0, "{}", accept.stderr);
+        assert!(accept.stdout.contains("\"policyConfigured\": true"));
+        assert!(accept.stdout.contains("\"streams\": false"));
+        assert!(accept.stdout.contains("\"files\": true"));
+        assert!(accept.stdout.contains("\"mailbox\": true"));
+        assert_eq!(policies.len(), 1);
+        assert!(policies[0].messages);
+        assert!(!policies[0].streams);
+        assert!(policies[0].rooms);
+        assert!(policies[0].files);
+        assert!(policies[0].mailbox);
+    }
+
+    #[test]
     fn signed_peer_card_cli_imports_json_file_without_payloads() {
         let alice_home = temp_home("signed-peer-card-file-alice");
         let bob_home = temp_home("signed-peer-card-file-bob");
@@ -22304,25 +22753,35 @@ mod tests {
     }
 
     #[test]
-    fn simple_connection_aliases_match_pair_and_join_surfaces() {
+    fn simple_invite_accept_are_portable_and_pair_join_stay_local() {
         let home = temp_home("invite-accept-aliases");
         let invite = run_with_home(["invite", "--json"], Some(home.clone()));
+        let share = run_with_home(["share", "--json"], Some(home.clone()));
         let pair = run_with_home(["pair", "--json"], Some(home.clone()));
-        let accept_help = run_with_home(["accept"], Some(home));
+        let accept_help = run_with_home(["accept"], Some(home.clone()));
+        let join_help = run_with_home(["join"], Some(home));
 
         assert_eq!(invite.code, 0, "{}", invite.stderr);
+        assert_eq!(share.code, 0, "{}", share.stderr);
         assert_eq!(pair.code, 0, "{}", pair.stderr);
         assert_eq!(accept_help.code, 2);
-        assert!(
-            invite
-                .stdout
-                .contains("\"status\": \"pairing_code_created\"")
-        );
+        assert_eq!(join_help.code, 2);
+        assert!(invite.stdout.contains("\"nodeId\":"));
+        assert!(invite.stdout.contains("\"peerCardSigned\": true"));
+        assert!(share.stdout.contains("\"nodeId\":"));
+        assert!(share.stdout.contains("\"peerCardSigned\": true"));
+        assert!(!invite.stdout.contains("\"code\":"));
+        assert!(!share.stdout.contains("\"code\":"));
         assert!(pair.stdout.contains("\"status\": \"pairing_code_created\""));
-        assert!(invite.stdout.contains("\"code\":"));
         assert!(pair.stdout.contains("\"code\":"));
-        assert!(accept_help.stderr.contains("usage: conu join <code>"));
+        assert!(
+            accept_help
+                .stderr
+                .contains("usage: conu accept <invite-card-file|->")
+        );
+        assert!(join_help.stderr.contains("usage: conu join <code>"));
         assert!(!invite.stdout.contains("secret_key_hex"));
+        assert!(!share.stdout.contains("secret_key_hex"));
         assert!(!pair.stdout.contains("secret_key_hex"));
     }
 

@@ -73,15 +73,18 @@ If both machines use a shared relay, configure it once on each PC:
 printf "$CONU_RELAY_TOKEN" | conu online wss://your-relay.example.com/conu --token-stdin --verify
 ```
 
-Then exchange connection codes:
+Then exchange public invite files:
 
-| PC 1 | PC 2 |
-| --- | --- |
-| `conu invite` |  |
-| Send the code to PC 2. | `conu accept <code>` |
-| `conu sessions sync --json` | `conu sessions sync --json` |
+| Step | PC 1 | PC 2 |
+| --- | --- | --- |
+| Prepare | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
+| Create invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
+| Exchange | Send `pc1-invite.json` to PC 2. | Send `pc2-invite.json` to PC 1. |
+| Accept | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
+| Sync | `conu sessions sync --json` | `conu sessions sync --json` |
+| Send | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu listen agent.pc2 --json` |
 
-For public peer-card workflows and relay hosting, use the full guide:
+Only public invite files are exchanged. Private identity files, relay tokens, and payload files stay on each machine. For relay hosting and deeper workflows, use the full guide:
 
 ```txt
 https://github.com/imthegoodboy/conU/blob/main/docs/user-install-and-agent-guide.md
@@ -130,6 +133,15 @@ conu connect
 ```sh
 printf "$CONU_RELAY_TOKEN" | conu online wss://your-relay.example.com/conu --token-stdin --verify
 ```
+
+然后交换公开 invite 文件：
+
+| 步骤 | 电脑 1 | 电脑 2 |
+| --- | --- | --- |
+| 准备 | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
+| 创建 invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
+| 接受对方 | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
+| 发送 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu listen agent.pc2 --json` |
 
 conU 可以显示 agent id、路由、字节数和投递状态；不显示消息正文、推理内容、隐藏记忆、工具输出、文件内容或 secret。
 
