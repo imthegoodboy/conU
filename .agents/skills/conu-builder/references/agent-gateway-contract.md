@@ -95,6 +95,8 @@ conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--ne
 conu messages reply <agent-id> <envelope-id> --stdin [--json]
 conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
 conu messages receive <agent-id> <envelope-id> --output <file> [--json]
+conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+conu messages pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
 conu messages receipts [--json]
 ```
 

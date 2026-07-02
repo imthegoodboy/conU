@@ -85,9 +85,10 @@ Read inbox metadata or wait for the next addressed envelope:
 ```sh
 conu inbox agent.other --json
 conu wait agent.other --after <last-envelope-id> --timeout-ms 30000 --json
+conu pull agent.other --dir ./agent-inbox --after <last-envelope-id> --process-ipc --json
 ```
 
-Use Rust `wait_for_message()`, Python `wait_for_message()`, TypeScript `waitForMessage()`, or CLI `conu wait` for metadata-only waiting. Use SDK or MCP explicit receive APIs when the addressed agent needs payload bytes. Normal CLI list/status/watch output must remain metadata-only.
+Use Rust `wait_for_message()`, Python `wait_for_message()`, TypeScript `waitForMessage()`, or CLI `conu wait` for metadata-only waiting. Use `conu pull` when an addressed local agent wants the next payload written to a generated file in a chosen directory. Normal CLI list/status/watch output must remain metadata-only.
 
 ## Use A Hosted Relay
 
@@ -138,6 +139,7 @@ conu agents --json
 conu peers --json
 conu inbox agent.mybot --json
 conu wait agent.mybot --timeout-ms 30000 --json
+conu pull agent.mybot --dir ./agent-inbox --process-ipc --json
 conu messages receipts --json
 conu streams
 conu rooms
