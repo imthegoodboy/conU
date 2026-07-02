@@ -92,7 +92,7 @@ Two machines need the same relay URL when they are not on a direct local route. 
 | Step | PC 1 | PC 2 |
 | --- | --- | --- |
 | 1. Install | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
-| 2. Prepare local agent | `conu setup --from agent.pc1 --to agent.pc1.helper --room room.team --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --room room.team --start` |
+| 2. Prepare local agent and relay | `conu setup --from agent.pc1 --to agent.pc1.helper --room room.team --relay https://<relay-host> --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --room room.team --relay https://<relay-host> --start` |
 | 3. Create public invite | `conu invite --relay https://<relay-host> --json > pc1-invite.json` | `conu invite --relay https://<relay-host> --json > pc2-invite.json` |
 | 4. Exchange files | Send `pc1-invite.json` to PC 2. Do not send private state or secrets. | Send `pc2-invite.json` to PC 1. Do not send private state or secrets. |
 | 5. Accept the peer | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
@@ -103,6 +103,12 @@ Two machines need the same relay URL when they are not on a direct local route. 
 | 10. Watch transport | `conu watch` | `conu watch` |
 
 Only the public invite file should be exchanged. It contains public peer identity, route metadata, and public signed local agent cards so the other PC can use real agent ids after `conu accept`. Each machine keeps its private identity, local state, relay tokens, and payload files.
+
+If the relay requires a token, pipe it into setup with `--token-stdin`:
+
+```sh
+printf "$CONU_RELAY_TOKEN" | conu setup --relay https://<relay-host> --token-stdin --start
+```
 
 ## Relay Hosting
 
@@ -219,13 +225,13 @@ cargo run -p conu-relay -- --check
 
 ## 两台电脑端到端
 
-如果两台机器不能直连，需要使用同一个 relay URL。测试时可以自托管 `conu-relay`，或使用 `render.yaml` 部署 relay，然后在两边创建 invite 时使用同一个 relay URL。
+如果两台机器不能直连，需要使用同一个 relay URL。测试时可以自托管 `conu-relay`，或使用 `render.yaml` 部署 relay。Render 显示 `https://...onrender.com`，conU 会把它保存成对应的 `wss://` relay endpoint。
 
 | 步骤 | 电脑 1 | 电脑 2 |
 | --- | --- | --- |
 | 1. 安装 | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
-| 2. 准备本地 agent | `conu setup --from agent.pc1 --to agent.pc1.helper --room room.team --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --room room.team --start` |
-| 3. 创建公开 invite | `conu invite --relay wss://<relay-host>/conu --json > pc1-invite.json` | `conu invite --relay wss://<relay-host>/conu --json > pc2-invite.json` |
+| 2. 准备本地 agent 和 relay | `conu setup --from agent.pc1 --to agent.pc1.helper --room room.team --relay https://<relay-host> --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --room room.team --relay https://<relay-host> --start` |
+| 3. 创建公开 invite | `conu invite --relay https://<relay-host> --json > pc1-invite.json` | `conu invite --relay https://<relay-host> --json > pc2-invite.json` |
 | 4. 交换文件 | 把 `pc1-invite.json` 发给电脑 2。不要发送私有状态或密钥。 | 把 `pc2-invite.json` 发给电脑 1。不要发送私有状态或密钥。 |
 | 5. 接受对方 | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
 | 6. 同步远端状态 | `conu sessions sync --json` | `conu sessions sync --json` |
@@ -235,6 +241,12 @@ cargo run -p conu-relay -- --check
 | 10. 查看传输 | `conu watch` | `conu watch` |
 
 只交换公开 invite 文件。`conu accept` 默认授予 messages、streams 和 rooms；私有身份、本地状态和 payload 文件都留在各自电脑上。
+
+如果 relay 需要 token，用 stdin 配置，不要放进命令历史：
+
+```sh
+printf "$CONU_RELAY_TOKEN" | conu setup --relay https://<relay-host> --token-stdin --start
+```
 
 ## 隐私规则
 

@@ -226,6 +226,13 @@ fn stdin_read_plan(args: &[String]) -> Option<StdinReadPlan> {
                 label: "relay credential token",
                 max_bytes: MAX_CLI_STDIN_RELAY_TOKEN_BYTES,
             }),
+        [command, ..] if command == "setup" => args
+            .iter()
+            .any(|arg| arg == "--token-stdin")
+            .then_some(StdinReadPlan {
+                label: "relay credential token",
+                max_bytes: MAX_CLI_STDIN_RELAY_TOKEN_BYTES,
+            }),
         [command, subcommand, action, ..]
             if command == "peers"
                 && subcommand == "trust"
@@ -390,6 +397,18 @@ mod tests {
         );
         assert_eq!(
             stdin_read_plan(&[
+                "setup".to_string(),
+                "--relay".to_string(),
+                "https://conu-relay.onrender.com".to_string(),
+                "--token-stdin".to_string(),
+            ]),
+            Some(StdinReadPlan {
+                label: "relay credential token",
+                max_bytes: MAX_CLI_STDIN_RELAY_TOKEN_BYTES,
+            })
+        );
+        assert_eq!(
+            stdin_read_plan(&[
                 "relay".to_string(),
                 "credential".to_string(),
                 "set".to_string(),
@@ -408,6 +427,14 @@ mod tests {
             stdin_read_plan(&[
                 "online".to_string(),
                 "wss://relay.example.com/conu".to_string(),
+            ]),
+            None
+        );
+        assert_eq!(
+            stdin_read_plan(&[
+                "setup".to_string(),
+                "--relay".to_string(),
+                "https://conu-relay.onrender.com".to_string(),
             ]),
             None
         );
