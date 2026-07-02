@@ -1,6 +1,6 @@
 {
   "name": "@conu/sdk",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Dependency-free Node.js SDK wrapper for local conU CLI, conUD, and conU MCP binaries.",
   "homepage": "https://github.com/imthegoodboy/conU#readme",
   "repository": {

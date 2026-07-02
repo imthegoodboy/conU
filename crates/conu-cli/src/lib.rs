@@ -1098,6 +1098,7 @@ where
         "history" => render_history(&args[1..], home_override),
         "wait" => render_wait(&args[1..], home_override),
         "receive" => render_receive(&args[1..], home_override),
+        "pull" => render_pull(&args[1..], home_override),
         "reply" => render_reply(&args[1..], home_override, stdin_payload),
         "chat" => render_chat(&args[1..], home_override, stdin_payload),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
@@ -2763,6 +2764,9 @@ fn render_messages(
         Some("receive") if is_help_request(&args[1..]) => {
             CliOutput::success(render_messages_receive_usage())
         }
+        Some("pull") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_messages_pull_usage())
+        }
         Some("receipts") if is_help_request(&args[1..]) => {
             CliOutput::success(render_messages_usage())
         }
@@ -2772,6 +2776,7 @@ fn render_messages(
         Some("reply") => render_message_reply(&args[1..], home_override, stdin_payload),
         Some("wait") => render_message_wait(&args[1..], home_override),
         Some("receive") => render_message_receive(&args[1..], home_override),
+        Some("pull") => render_message_pull(&args[1..], home_override),
         Some("receipts") => render_message_receipts(&args[1..], home_override),
         Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_messages_usage()),
         _ => CliOutput::failure(2, render_messages_usage()),
@@ -2869,6 +2874,19 @@ fn render_receive(args: &[String], home_override: Option<PathBuf>) -> CliOutput 
         render_message_receive(args, home_override),
         "conU messages receive",
         "conU receive",
+        &usage,
+    )
+}
+
+fn render_pull(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let usage = render_pull_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    retitle_output(
+        render_message_pull(args, home_override),
+        "conU messages pull",
+        "conU pull",
         &usage,
     )
 }
@@ -3466,6 +3484,192 @@ privacy
         envelope_id,
         payload.len()
     ))
+}
+
+fn render_message_pull(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let parsed = match parse_message_pull_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let started = std::time::Instant::now();
+
+    loop {
+        if parsed.process_ipc
+            && let Err(error) = process_wait_ipc(home_override.clone())
+        {
+            return CliOutput::failure(1, format!("conU messages pull failed\n\n{error}"));
+        }
+
+        let entries = match messages::list_agent_inbox(home_override.clone(), &parsed.agent_id) {
+            Ok(entries) => entries,
+            Err(error) => {
+                return CliOutput::failure(1, format!("conU messages pull failed\n\n{error}"));
+            }
+        };
+        match newest_wait_entry(&entries, parsed.after_envelope_id.as_deref()) {
+            WaitEntrySearch::Found(entry) => {
+                return write_pull_entry(parsed, home_override, entry, started);
+            }
+            WaitEntrySearch::MissingAfter => {
+                return CliOutput::failure(
+                    1,
+                    "conU messages pull failed\n\nafter envelope was not found in this agent inbox; contentsDisplayed=false pathDisplayed=false",
+                );
+            }
+            WaitEntrySearch::None => {}
+        }
+
+        let elapsed = waited_millis(started);
+        if elapsed >= parsed.timeout_ms {
+            return render_pull_timeout(&parsed, elapsed);
+        }
+
+        let remaining = parsed.timeout_ms.saturating_sub(elapsed);
+        thread::sleep(Duration::from_millis(
+            parsed.interval_ms.min(remaining).max(1),
+        ));
+    }
+}
+
+fn write_pull_entry(
+    parsed: MessagePullArgs,
+    home_override: Option<PathBuf>,
+    entry: InboxEntry,
+    started: std::time::Instant,
+) -> CliOutput {
+    let payload = match messages::read_message_payload(
+        home_override,
+        &parsed.agent_id,
+        &entry.envelope_id,
+    ) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return CliOutput::failure(
+                1,
+                "conU messages pull failed\n\npayload could not be read for the addressed local agent; pathDisplayed=false contentsDisplayed=false".to_string(),
+            );
+        }
+    };
+    let file_name = pull_output_file_name(&entry);
+    if let Err(error) = ensure_pull_output_dir(&parsed.output_dir) {
+        return CliOutput::failure(1, format!("conU messages pull failed\n\n{error}"));
+    }
+    let output_path = parsed.output_dir.join(&file_name);
+    if let Err(error) = write_message_receive_output(&output_path, payload.as_bytes()) {
+        return CliOutput::failure(1, format!("conU messages pull failed\n\n{error}"));
+    }
+    let waited_ms = waited_millis(started);
+
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "written",
+  "mode": "pull",
+  "agentId": "{}",
+  "envelopeId": "{}",
+  "fromAgentId": "{}",
+  "fileName": "{}",
+  "payloadBytes": {},
+  "waitedMs": {},
+  "processIpc": {},
+  "outputDirDisplayed": false,
+  "pathDisplayed": false,
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&parsed.agent_id),
+            json_escape(&entry.envelope_id),
+            json_escape(&entry.from_agent_id),
+            json_escape(&file_name),
+            payload.len(),
+            waited_ms,
+            parsed.process_ipc
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU messages pull
+
+status: written
+mode: pull
+agent: {}
+from: {}
+envelope: {}
+file: {}
+bytes: {}
+waitedMs: {}
+output: local directory; outputDirDisplayed=false pathDisplayed=false
+
+privacy
+  payload view  contentsDisplayed=false",
+        parsed.agent_id,
+        entry.from_agent_id,
+        entry.envelope_id,
+        file_name,
+        payload.len(),
+        waited_ms
+    ))
+}
+
+fn render_pull_timeout(parsed: &MessagePullArgs, waited_ms: u64) -> CliOutput {
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "timeout",
+  "mode": "pull",
+  "agentId": "{}",
+  "envelopeId": null,
+  "waitedMs": {},
+  "processIpc": {},
+  "outputWritten": false,
+  "outputDirDisplayed": false,
+  "pathDisplayed": false,
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&parsed.agent_id),
+            waited_ms,
+            parsed.process_ipc
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU messages pull
+
+status: timeout
+mode: pull
+agent: {}
+waitedMs: {}
+output: not written; outputDirDisplayed=false pathDisplayed=false
+
+privacy
+  payload view  contentsDisplayed=false",
+        parsed.agent_id, waited_ms
+    ))
+}
+
+fn pull_output_file_name(entry: &InboxEntry) -> String {
+    format!("conu-message-{}.bin", entry.envelope_id)
+}
+
+fn ensure_pull_output_dir(path: &Path) -> Result<(), String> {
+    if path.as_os_str().is_empty() {
+        return Err(
+            "output directory is empty; outputDirDisplayed=false pathDisplayed=false contentsDisplayed=false"
+                .to_string(),
+        );
+    }
+    if path.exists() {
+        if !path.is_dir() {
+            return Err(
+                "output directory is not a directory; outputDirDisplayed=false pathDisplayed=false contentsDisplayed=false"
+                    .to_string(),
+            );
+        }
+        return Ok(());
+    }
+    fs::create_dir_all(path).map_err(|_| {
+        "could not create output directory; outputDirDisplayed=false pathDisplayed=false contentsDisplayed=false"
+            .to_string()
+    })
 }
 
 fn render_message_receive_latest(
@@ -4240,6 +4444,16 @@ struct MessageReceiveArgs {
     json: bool,
 }
 
+struct MessagePullArgs {
+    agent_id: String,
+    output_dir: PathBuf,
+    after_envelope_id: Option<String>,
+    timeout_ms: u64,
+    interval_ms: u64,
+    process_ipc: bool,
+    json: bool,
+}
+
 fn parse_message_send_args(args: &[String]) -> Result<MessageSendArgs, CliOutput> {
     let mut json = false;
     let mut stdin = false;
@@ -4558,6 +4772,88 @@ fn parse_message_receive_args(args: &[String]) -> Result<MessageReceiveArgs, Cli
     })
 }
 
+fn parse_message_pull_args(args: &[String]) -> Result<MessagePullArgs, CliOutput> {
+    const MAX_TIMEOUT_MS: u64 = 300_000;
+    const MAX_INTERVAL_MS: u64 = 10_000;
+
+    let mut json = false;
+    let mut process_ipc = false;
+    let mut timeout_ms = 30_000;
+    let mut interval_ms = 250;
+    let mut after_envelope_id = None;
+    let mut output_dir = None;
+    let mut agent_id = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--process-ipc" => process_ipc = true,
+            "--after" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                after_envelope_id = Some(value.clone());
+                index += 1;
+            }
+            "--timeout-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                timeout_ms = match value.parse::<u64>() {
+                    Ok(value) if value <= MAX_TIMEOUT_MS => value,
+                    _ => return Err(CliOutput::failure(2, render_messages_usage())),
+                };
+                index += 1;
+            }
+            "--interval-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                interval_ms = match value.parse::<u64>() {
+                    Ok(value) if (1..=MAX_INTERVAL_MS).contains(&value) => value,
+                    _ => return Err(CliOutput::failure(2, render_messages_usage())),
+                };
+                index += 1;
+            }
+            "--dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                output_dir = Some(PathBuf::from(value));
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            value => {
+                if agent_id.is_some() {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                }
+                agent_id = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    let Some(agent_id) = agent_id else {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    };
+    let Some(output_dir) = output_dir else {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    };
+
+    Ok(MessagePullArgs {
+        agent_id,
+        output_dir,
+        after_envelope_id,
+        timeout_ms,
+        interval_ms,
+        process_ipc,
+        json,
+    })
+}
+
 fn write_message_receive_output(path: &Path, payload: &[u8]) -> Result<(), String> {
     if path.as_os_str().is_empty() {
         return Err(
@@ -4599,6 +4895,7 @@ fn render_messages_usage() -> String {
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+  conu messages pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receipts [--json]"
         .to_string()
 }
@@ -4682,8 +4979,27 @@ purpose:
         .to_string()
 }
 
+fn render_pull_usage() -> String {
+    r"usage:
+  conu pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+
+example:
+  conu pull agent.beta --dir ./agent-inbox --process-ipc --json
+
+purpose:
+  wait for the newest addressed payload, or the next one after --after
+  write bytes to <directory>/conu-message-<envelope-id>.bin
+  stdout still shows metadata and the generated file name only
+  outputDirDisplayed=false pathDisplayed=false contentsDisplayed=false"
+        .to_string()
+}
+
 fn render_messages_receive_usage() -> String {
     render_receive_usage().replace("conu receive", "conu messages receive")
+}
+
+fn render_messages_pull_usage() -> String {
+    render_pull_usage().replace("conu pull", "conu messages pull")
 }
 
 fn render_reply_usage() -> String {
@@ -16146,6 +16462,7 @@ Messages:
   conu wait <agent-id> --process-ipc --timeout-ms 30000 --json
   conu receive <agent-id> <envelope-id> --output <file>
   conu receive <agent-id> --latest --output <file> --process-ipc
+  conu pull <agent-id> --dir ./agent-inbox --process-ipc
 
 Runtime:
   conu dashboard
@@ -16203,6 +16520,7 @@ Usage:
   conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu receive <agent-id> <envelope-id> --output <file> [--json]
   conu receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+  conu pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu reply <agent-id> <envelope-id> --stdin [--json]
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
@@ -16211,6 +16529,8 @@ Usage:
   conu messages reply <agent-id> <envelope-id> --stdin [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
+  conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+  conu messages pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receipts [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
   conu relay credential status [--json]
@@ -21835,6 +22155,156 @@ mod tests {
         assert_eq!(output.code, 2);
         assert!(output.stderr.contains("conu receive <agent-id> --latest"));
         assert!(output.stdout.is_empty());
+    }
+
+    #[test]
+    fn pull_processes_queue_and_writes_named_payload_without_displaying_contents() {
+        let home = temp_home("message-pull-output");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private pull contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        let output_dir = home.join("pulled");
+
+        let output = run_with_home(
+            [
+                "pull",
+                "agent.receiver",
+                "--dir",
+                output_dir.to_str().expect("path utf8"),
+                "--process-ipc",
+                "--timeout-ms",
+                "1000",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let file_name = pull_output_file_name(&inbox[0]);
+        let output_path = output_dir.join(&file_name);
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(
+            fs::read(&output_path).expect("pulled output reads"),
+            b"private pull contents"
+        );
+        assert!(output.stdout.contains("\"status\": \"written\""));
+        assert!(output.stdout.contains("\"mode\": \"pull\""));
+        assert!(output.stdout.contains("\"fromAgentId\": \"agent.sender\""));
+        assert!(
+            output
+                .stdout
+                .contains(&format!("\"fileName\": \"{file_name}\""))
+        );
+        assert!(output.stdout.contains("\"payloadBytes\": 21"));
+        assert!(output.stdout.contains("\"processIpc\": true"));
+        assert!(output.stdout.contains("\"outputDirDisplayed\": false"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(
+            !output
+                .stdout
+                .contains(output_dir.to_str().expect("path utf8"))
+        );
+        assert!(
+            !output
+                .stdout
+                .contains(output_path.to_str().expect("path utf8"))
+        );
+        assert!(!output.stdout.contains("private pull contents"));
+    }
+
+    #[test]
+    fn pull_timeout_does_not_create_output_dir_or_display_path() {
+        let home = temp_home("message-pull-timeout");
+        register_test_agent(&home, "agent.receiver");
+        let output_dir = home.join("pull-timeout");
+
+        let output = run_with_home(
+            [
+                "messages",
+                "pull",
+                "agent.receiver",
+                "--dir",
+                output_dir.to_str().expect("path utf8"),
+                "--timeout-ms",
+                "0",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(!output_dir.exists());
+        assert!(output.stdout.contains("\"status\": \"timeout\""));
+        assert!(output.stdout.contains("\"mode\": \"pull\""));
+        assert!(output.stdout.contains("\"outputWritten\": false"));
+        assert!(output.stdout.contains("\"outputDirDisplayed\": false"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(
+            !output
+                .stdout
+                .contains(output_dir.to_str().expect("path utf8"))
+        );
+        assert!(!output.stdout.contains(home.to_str().expect("path utf8")));
+    }
+
+    #[test]
+    fn pull_rejects_existing_named_output_without_payload_or_path() {
+        let home = temp_home("message-pull-existing-output");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private pull contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        messages::process_message_requests(Some(home.clone())).expect("message processes");
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let output_dir = home.join("pulled");
+        fs::create_dir_all(&output_dir).expect("output dir creates");
+        let output_path = output_dir.join(pull_output_file_name(&inbox[0]));
+        fs::write(&output_path, b"existing").expect("existing output writes");
+
+        let output = run_with_home(
+            [
+                "pull",
+                "agent.receiver",
+                "--dir",
+                output_dir.to_str().expect("path utf8"),
+                "--json",
+            ],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 1);
+        assert_eq!(
+            fs::read(&output_path).expect("existing output reads"),
+            b"existing"
+        );
+        assert!(output.stderr.contains("pathDisplayed=false"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(
+            !output
+                .stderr
+                .contains(output_dir.to_str().expect("path utf8"))
+        );
+        assert!(
+            !output
+                .stderr
+                .contains(output_path.to_str().expect("path utf8"))
+        );
+        assert!(!output.stderr.contains("private pull contents"));
     }
 
     #[test]
