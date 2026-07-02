@@ -8890,6 +8890,55 @@ fn render_peer_card_json(card: &PeerCard) -> String {
     )
 }
 
+fn render_invite_card_json(card: &PeerCard, agent_cards: &[SignedAgentCard]) -> String {
+    let agent_cards_json = agent_cards
+        .iter()
+        .map(render_signed_agent_card_json)
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!(
+        r#"{{
+  "nodeId": "{}",
+  "displayName": "{}",
+  "exchangePublicKeyHex": "{}",
+  "relayEndpoint": "{}",
+  "directQuicEndpoint": "{}",
+  "signingPublicKeyHex": "{}",
+  "signatureAlgorithm": "{}",
+  "signatureKeyId": "{}",
+  "signatureHex": "{}",
+  "peerCardSigned": {},
+  "agentCards": [
+{}
+  ],
+  "contentsDisplayed": false
+}}"#,
+        json_escape(&card.node_id),
+        json_escape(&card.display_name),
+        json_escape(&card.exchange_public_key_hex),
+        json_escape(&card.relay_endpoint),
+        json_escape(card.direct_quic_endpoint.as_deref().unwrap_or("")),
+        json_escape(card.signing_public_key_hex.as_deref().unwrap_or("")),
+        json_escape(card.signature_algorithm.as_deref().unwrap_or("")),
+        json_escape(card.signature_key_id.as_deref().unwrap_or("")),
+        json_escape(card.signature_hex.as_deref().unwrap_or("")),
+        card.signature_hex.is_some(),
+        indent_json_array_items(&agent_cards_json, 4)
+    )
+}
+
+fn indent_json_array_items(contents: &str, spaces: usize) -> String {
+    if contents.is_empty() {
+        return String::new();
+    }
+    let padding = " ".repeat(spaces);
+    contents
+        .lines()
+        .map(|line| format!("{padding}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_identity_usage() -> String {
     r"usage:
   conu identity export [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
@@ -8952,16 +9001,20 @@ fn render_invite(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
         Err(error) => return error,
     };
     let card = match trust::export_peer_card_with_endpoints(
-        home_override,
+        home_override.clone(),
         parsed.relay_endpoint,
         parsed.direct_endpoint,
     ) {
         Ok(card) => card,
         Err(error) => return CliOutput::failure(1, format!("conU invite failed\n\n{error}")),
     };
+    let agent_cards = match agents::export_agent_cards(home_override) {
+        Ok(cards) => cards,
+        Err(error) => return CliOutput::failure(1, format!("conU invite failed\n\n{error}")),
+    };
 
     if parsed.json {
-        return CliOutput::success(render_peer_card_json(&card));
+        return CliOutput::success(render_invite_card_json(&card, &agent_cards));
     }
 
     CliOutput::success(format!(
@@ -8973,19 +9026,21 @@ name: {}
 relay: {}
 direct QUIC: {}
 signed: {}
+agent cards: {}
 
 share
   conu invite --relay {} --json > my-invite.json
   conu accept their-invite.json
 
 privacy
-  card view     public identity and route metadata only
+  card view     public identity, route metadata, and public signed agent cards only
   payload view  contents are not displayed by conU",
         card.node_id,
         card.display_name,
         display_optional_network_endpoint(Some(&card.relay_endpoint), "not configured"),
         display_optional_network_endpoint(card.direct_quic_endpoint.as_deref(), "not configured"),
         card.signature_hex.is_some(),
+        agent_cards.len(),
         card.relay_endpoint
     ))
 }
@@ -9047,6 +9102,11 @@ struct AcceptInviteArgs {
     json: bool,
 }
 
+struct InviteCard {
+    peer_card: PeerCard,
+    agent_cards: Vec<SignedAgentCard>,
+}
+
 fn render_accept(
     args: &[String],
     home_override: Option<PathBuf>,
@@ -9059,16 +9119,16 @@ fn render_accept(
         Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    let card = match peer_card_from_source(&parsed.source, stdin_payload, None, None) {
-        Ok(card) => card,
+    let invite = match invite_card_from_source(&parsed.source, stdin_payload, None, None) {
+        Ok(invite) => invite,
         Err(error) => return error,
     };
-    let peer = match trust::trust_peer_card(home_override.clone(), card) {
+    let peer = match trust::trust_peer_card(home_override.clone(), invite.peer_card) {
         Ok(peer) => peer,
         Err(error) => return CliOutput::failure(1, format!("conU accept failed\n\n{error}")),
     };
     let policy_record = if parsed.grant_policy {
-        match policy::set_peer_policy(home_override, &peer.peer_node_id, parsed.policy) {
+        match policy::set_peer_policy(home_override.clone(), &peer.peer_node_id, parsed.policy) {
             Ok(record) => Some(record),
             Err(error) => {
                 return CliOutput::failure(
@@ -9082,12 +9142,25 @@ fn render_accept(
     } else {
         None
     };
+    let imported_agent_cards =
+        match import_invite_agent_cards(home_override.clone(), &invite.agent_cards) {
+            Ok(count) => count,
+            Err(error) => return CliOutput::failure(1, format!("conU accept failed\n\n{error}")),
+        };
 
     if parsed.json {
-        return CliOutput::success(render_accept_json(&peer, policy_record.as_ref()));
+        return CliOutput::success(render_accept_json(
+            &peer,
+            policy_record.as_ref(),
+            imported_agent_cards,
+        ));
     }
 
-    CliOutput::success(render_accept_text(&peer, policy_record.as_ref()))
+    CliOutput::success(render_accept_text(
+        &peer,
+        policy_record.as_ref(),
+        imported_agent_cards,
+    ))
 }
 
 fn parse_accept_args(args: &[String]) -> Result<AcceptInviteArgs, CliOutput> {
@@ -9186,7 +9259,23 @@ fn parse_accept_policy_bool(
     parse_bool_option(value, option, render_accept_usage())
 }
 
-fn render_accept_json(peer: &TrustedPeer, policy: Option<&PeerPolicyRecord>) -> String {
+fn import_invite_agent_cards(
+    home_override: Option<PathBuf>,
+    cards: &[SignedAgentCard],
+) -> Result<usize, sessions::SessionError> {
+    let mut imported = 0;
+    for card in cards {
+        sessions::trust_remote_agent_card(home_override.clone(), card.clone())?;
+        imported += 1;
+    }
+    Ok(imported)
+}
+
+fn render_accept_json(
+    peer: &TrustedPeer,
+    policy: Option<&PeerPolicyRecord>,
+    imported_agent_cards: usize,
+) -> String {
     let policy_json = match policy {
         Some(policy) => format!(
             r#"{{
@@ -9210,6 +9299,7 @@ fn render_accept_json(peer: &TrustedPeer, policy: Option<&PeerPolicyRecord>) -> 
   "relayEndpoint": "{}",
   "directQuicEndpoint": "{}",
   "policyConfigured": {},
+  "agentCardsImported": {},
   "policy": {},
   "contentsDisplayed": false
 }}"#,
@@ -9226,11 +9316,16 @@ fn render_accept_json(peer: &TrustedPeer, policy: Option<&PeerPolicyRecord>) -> 
             ""
         )),
         policy.is_some(),
+        imported_agent_cards,
         policy_json
     )
 }
 
-fn render_accept_text(peer: &TrustedPeer, policy: Option<&PeerPolicyRecord>) -> String {
+fn render_accept_text(
+    peer: &TrustedPeer,
+    policy: Option<&PeerPolicyRecord>,
+    imported_agent_cards: usize,
+) -> String {
     let policy_text = match policy {
         Some(policy) => format!(
             "messages={} streams={} rooms={} files={} mailbox={}",
@@ -9249,9 +9344,11 @@ peer card signature: {}
 relay: {}
 direct QUIC: {}
 policy: {}
+agent cards imported: {}
 
 next
   conu start
+  conu connect
   conu peers
   conu listen <agent-id>
 
@@ -9268,7 +9365,8 @@ privacy
         },
         display_optional_network_endpoint(peer.relay_endpoint.as_deref(), "not configured"),
         display_optional_network_endpoint(peer.direct_quic_endpoint.as_deref(), "not configured"),
-        policy_text
+        policy_text,
+        imported_agent_cards
     )
 }
 
@@ -10033,7 +10131,50 @@ fn peer_card_from_source(
     relay_override: Option<String>,
     direct_override: Option<String>,
 ) -> Result<PeerCard, CliOutput> {
-    let bytes = match source {
+    invite_card_from_source(source, stdin_payload, relay_override, direct_override)
+        .map(|invite| invite.peer_card)
+}
+
+fn invite_card_from_source(
+    source: &PeerCardSource,
+    stdin_payload: Vec<u8>,
+    relay_override: Option<String>,
+    direct_override: Option<String>,
+) -> Result<InviteCard, CliOutput> {
+    let bytes = peer_card_source_bytes(source, stdin_payload)?;
+
+    let mut invite = parse_invite_card_json(&bytes).map_err(|error| {
+        CliOutput::failure(2, format!("conU peer card import failed\n\n{error}"))
+    })?;
+    let signed = peer_card_has_signature_fields(&invite.peer_card);
+    if let Some(relay_endpoint) = relay_override {
+        if signed && relay_endpoint != invite.peer_card.relay_endpoint {
+            return Err(CliOutput::failure(
+                2,
+                "signed peer-card relay overrides are not supported; re-export with conu identity export --relay <endpoint> --json\ncontentsDisplayed=false",
+            ));
+        }
+        invite.peer_card.relay_endpoint = relay_endpoint;
+    }
+    if let Some(direct_endpoint) = direct_override {
+        if signed
+            && invite.peer_card.direct_quic_endpoint.as_deref() != Some(direct_endpoint.as_str())
+        {
+            return Err(CliOutput::failure(
+                2,
+                "signed peer-card direct endpoint overrides are not supported; re-export with conu identity export --direct <quic://host:port> --json\ncontentsDisplayed=false",
+            ));
+        }
+        invite.peer_card.direct_quic_endpoint = Some(direct_endpoint);
+    }
+    Ok(invite)
+}
+
+fn peer_card_source_bytes(
+    source: &PeerCardSource,
+    stdin_payload: Vec<u8>,
+) -> Result<Vec<u8>, CliOutput> {
+    Ok(match source {
         PeerCardSource::Stdin => {
             if stdin_payload.is_empty() {
                 return Err(CliOutput::failure(
@@ -10052,31 +10193,7 @@ fn peer_card_from_source(
             stdin_payload
         }
         PeerCardSource::File(path) => read_peer_card_file(path)?,
-    };
-
-    let mut card = parse_peer_card_json(&bytes).map_err(|error| {
-        CliOutput::failure(2, format!("conU peer card import failed\n\n{error}"))
-    })?;
-    let signed = peer_card_has_signature_fields(&card);
-    if let Some(relay_endpoint) = relay_override {
-        if signed && relay_endpoint != card.relay_endpoint {
-            return Err(CliOutput::failure(
-                2,
-                "signed peer-card relay overrides are not supported; re-export with conu identity export --relay <endpoint> --json\ncontentsDisplayed=false",
-            ));
-        }
-        card.relay_endpoint = relay_endpoint;
-    }
-    if let Some(direct_endpoint) = direct_override {
-        if signed && card.direct_quic_endpoint.as_deref() != Some(direct_endpoint.as_str()) {
-            return Err(CliOutput::failure(
-                2,
-                "signed peer-card direct endpoint overrides are not supported; re-export with conu identity export --direct <quic://host:port> --json\ncontentsDisplayed=false",
-            ));
-        }
-        card.direct_quic_endpoint = Some(direct_endpoint);
-    }
-    Ok(card)
+    })
 }
 
 fn peer_card_has_signature_fields(card: &PeerCard) -> bool {
@@ -10155,7 +10272,7 @@ fn read_peer_card_file(path: &Path) -> Result<Vec<u8>, CliOutput> {
     Ok(bytes)
 }
 
-fn parse_peer_card_json(bytes: &[u8]) -> Result<PeerCard, String> {
+fn parse_invite_card_json(bytes: &[u8]) -> Result<InviteCard, String> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = DuplicateKeyCheckedJson
         .deserialize(&mut deserializer)
@@ -10167,6 +10284,15 @@ fn parse_peer_card_json(bytes: &[u8]) -> Result<PeerCard, String> {
         .as_object()
         .ok_or_else(|| "peer card JSON must be an object; contentsDisplayed=false".to_string())?;
 
+    let peer_card = parse_peer_card_object(object)?;
+    let agent_cards = parse_invite_agent_cards(object.get("agentCards"))?;
+    Ok(InviteCard {
+        peer_card,
+        agent_cards,
+    })
+}
+
+fn parse_peer_card_object(object: &Map<String, Value>) -> Result<PeerCard, String> {
     Ok(PeerCard {
         node_id: peer_card_required_string(object, "nodeId")?,
         display_name: peer_card_required_string(object, "displayName")?,
@@ -10177,6 +10303,63 @@ fn parse_peer_card_json(bytes: &[u8]) -> Result<PeerCard, String> {
         signature_algorithm: peer_card_optional_string(object, "signatureAlgorithm")?,
         signature_key_id: peer_card_optional_string(object, "signatureKeyId")?,
         signature_hex: peer_card_optional_string(object, "signatureHex")?,
+    })
+}
+
+fn parse_invite_agent_cards(value: Option<&Value>) -> Result<Vec<SignedAgentCard>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let Some(cards) = value.as_array() else {
+        return Err(
+            "peer card field agentCards must be an array; contentsDisplayed=false".to_string(),
+        );
+    };
+    if cards.len() > 128 {
+        return Err(
+            "peer card field agentCards has too many entries; contentsDisplayed=false".to_string(),
+        );
+    }
+
+    cards
+        .iter()
+        .map(|value| {
+            let object = value.as_object().ok_or_else(|| {
+                "peer card field agentCards entries must be objects; contentsDisplayed=false"
+                    .to_string()
+            })?;
+            parse_invite_agent_card_object(object)
+        })
+        .collect()
+}
+
+fn parse_invite_agent_card_object(object: &Map<String, Value>) -> Result<SignedAgentCard, String> {
+    let capabilities = object
+        .get("capabilities")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "agent card is missing capabilities object; contentsDisplayed=false".to_string()
+        })?;
+
+    Ok(SignedAgentCard {
+        agent_id: peer_card_required_string(object, "agentId")?,
+        display_name: peer_card_required_string(object, "displayName")?,
+        node_id: peer_card_required_string(object, "nodeId")?,
+        kind: peer_card_required_string(object, "kind")?,
+        capabilities: AgentCapabilities {
+            messages: peer_card_required_bool(capabilities, "messages")?,
+            streams: peer_card_required_bool(capabilities, "streams")?,
+            rooms: peer_card_required_bool(capabilities, "rooms")?,
+            files: peer_card_required_bool(capabilities, "files")?,
+            presence: peer_card_required_bool(capabilities, "presence")?,
+        },
+        signature_algorithm: peer_card_required_string(object, "signatureAlgorithm")?,
+        signature_key_id: peer_card_required_string(object, "signatureKeyId")?,
+        signing_public_key_hex: peer_card_required_string(object, "signingPublicKeyHex")?,
+        signature_hex: peer_card_required_string(object, "signatureHex")?,
     })
 }
 
@@ -10192,6 +10375,15 @@ fn peer_card_required_string(
         .ok_or_else(|| {
             format!("peer card is missing non-empty string field {field}; contentsDisplayed=false")
         })
+}
+
+fn peer_card_required_bool(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<bool, String> {
+    object.get(field).and_then(Value::as_bool).ok_or_else(|| {
+        format!("agent card field {field} must be a boolean; contentsDisplayed=false")
+    })
 }
 
 fn peer_card_optional_string(
@@ -21815,6 +22007,7 @@ mod tests {
         );
         assert_eq!(invite.code, 0, "{}", invite.stderr);
         assert!(invite.stdout.contains("\"peerCardSigned\": true"));
+        assert!(invite.stdout.contains("\"agentCards\": ["));
         assert!(invite.stdout.contains("\"contentsDisplayed\": false"));
 
         let invite_path = alice_home.join("bob-invite.json");
@@ -21834,6 +22027,7 @@ mod tests {
         assert!(accept.stdout.contains("\"status\": \"trusted\""));
         assert!(accept.stdout.contains("\"peerCardSigned\": true"));
         assert!(accept.stdout.contains("\"policyConfigured\": true"));
+        assert!(accept.stdout.contains("\"agentCardsImported\": 0"));
         assert!(accept.stdout.contains("\"contentsDisplayed\": false"));
         assert!(!accept.stdout.contains("private message contents"));
         assert!(!accept.stdout.contains("signatureHex"));
@@ -21849,6 +22043,115 @@ mod tests {
         assert!(policies[0].rooms);
         assert!(!policies[0].files);
         assert!(!policies[0].mailbox);
+    }
+
+    #[test]
+    fn invite_accept_imports_signed_agent_cards_for_real_remote_chat() {
+        let alice_home = temp_home("invite-accept-agent-card-alice");
+        let bob_home = temp_home("invite-accept-agent-card-bob");
+        fs::create_dir_all(&alice_home).expect("alice fixture dir creates");
+        register_test_agent(&alice_home, "agent.alice");
+        register_test_agent(&bob_home, "agent.bob");
+
+        let invite = run_with_home(
+            [
+                "invite",
+                "--relay",
+                "wss://relay.example.com/conu",
+                "--json",
+            ],
+            Some(bob_home),
+        );
+        assert_eq!(invite.code, 0, "{}", invite.stderr);
+        assert!(invite.stdout.contains("\"agentCards\": ["));
+        assert!(invite.stdout.contains("\"agentId\": \"agent.bob\""));
+        assert!(!invite.stdout.contains("private invite payload"));
+
+        let invite_path = alice_home.join("bob-invite.json");
+        fs::write(&invite_path, &invite.stdout).expect("invite card writes");
+        let accept = run_with_home(
+            vec![
+                "accept".to_string(),
+                invite_path.display().to_string(),
+                "--json".to_string(),
+            ],
+            Some(alice_home.clone()),
+        );
+        assert_eq!(accept.code, 0, "{}", accept.stderr);
+        assert!(accept.stdout.contains("\"agentCardsImported\": 1"));
+        assert!(accept.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!accept.stdout.contains("private invite payload"));
+        assert!(!accept.stdout.contains("signatureHex"));
+
+        let remote_agents =
+            sessions::list_remote_agents(Some(alice_home.clone())).expect("remote agents read");
+        assert_eq!(remote_agents.len(), 1);
+        assert_eq!(remote_agents[0].agent_id, "agent.bob");
+        assert!(remote_agents[0].agent_card_signed());
+
+        let selector = run_with_home(["connect"], Some(alice_home.clone()));
+        assert_eq!(selector.code, 0, "{}", selector.stderr);
+        assert!(selector.stdout.contains("conu chat agent.alice agent.bob"));
+
+        let payload_path = alice_home.join("remote-message.bin");
+        fs::write(&payload_path, b"private invite payload").expect("payload writes");
+        let chat = run_with_home(
+            vec![
+                "chat".to_string(),
+                "agent.alice".to_string(),
+                "agent.bob".to_string(),
+                "--file".to_string(),
+                payload_path.display().to_string(),
+                "--json".to_string(),
+            ],
+            Some(alice_home),
+        );
+        assert_eq!(chat.code, 0, "{}", chat.stderr);
+        assert!(chat.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!chat.stdout.contains("private invite payload"));
+        assert!(
+            !chat
+                .stdout
+                .contains(payload_path.display().to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn accept_keeps_legacy_peer_card_json_compatible() {
+        let alice_home = temp_home("accept-legacy-peer-card-alice");
+        let bob_home = temp_home("accept-legacy-peer-card-bob");
+        fs::create_dir_all(&alice_home).expect("alice fixture dir creates");
+
+        let exported = run_with_home(
+            [
+                "identity",
+                "export",
+                "--relay",
+                "wss://relay.example.com/conu",
+                "--json",
+            ],
+            Some(bob_home),
+        );
+        assert_eq!(exported.code, 0, "{}", exported.stderr);
+        assert!(!exported.stdout.contains("\"agentCards\""));
+
+        let card_path = alice_home.join("legacy-peer-card.json");
+        fs::write(&card_path, exported.stdout).expect("legacy card writes");
+        let accept = run_with_home(
+            vec![
+                "accept".to_string(),
+                card_path.display().to_string(),
+                "--json".to_string(),
+            ],
+            Some(alice_home.clone()),
+        );
+        let remote_agents =
+            sessions::list_remote_agents(Some(alice_home)).expect("remote agents read");
+
+        assert_eq!(accept.code, 0, "{}", accept.stderr);
+        assert!(accept.stdout.contains("\"status\": \"trusted\""));
+        assert!(accept.stdout.contains("\"agentCardsImported\": 0"));
+        assert!(remote_agents.is_empty());
     }
 
     #[test]

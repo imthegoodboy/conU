@@ -102,7 +102,7 @@ Two machines need the same relay URL when they are not on a direct local route. 
 | 9. Send PC 2 to PC 1 | `conu listen agent.pc1 --json` | `conu send agent.pc2 agent.pc1 --file ./message.bin --json` |
 | 10. Watch transport | `conu watch` | `conu watch` |
 
-Only the public invite file should be exchanged. `conu accept` writes local trust and grants messages, streams, and rooms by default; each machine keeps its private identity, local state, and payload files.
+Only the public invite file should be exchanged. It contains public peer identity, route metadata, and public signed local agent cards so the other PC can use real agent ids after `conu accept`. Each machine keeps its private identity, local state, relay tokens, and payload files.
 
 ## Relay Hosting
 
