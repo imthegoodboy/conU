@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/imthegoodboy/conU">Repository</a> ·
+  <a href="https://github.com/imthegoodboy/conU">GitHub</a> ·
   <a href="https://github.com/imthegoodboy/conU/blob/main/docs/user-install-and-agent-guide.md">User Guide</a> ·
   <a href="https://github.com/imthegoodboy/conU/blob/main/docs/render-relay-hosting.md">Relay Hosting</a> ·
-  <a href="https://github.com/imthegoodboy/conU/blob/main/architecture.md">Architecture</a>
+  <a href="https://www.npmjs.com/package/@imthegoodboy/conu">npm</a>
 </p>
 
 ```txt
@@ -20,19 +20,9 @@ Agents own the conversation.
 conU owns the connection.
 ```
 
-conU is a native Rust CLI, daemon, relay, SDK, and MCP adapter that lets trusted agents communicate across local machines or remote peers without exposing private payload contents. It is not an agent framework or chatbot. Your agent keeps its own prompts, reasoning, memory, and tools; conU handles identity, trust, routing, encrypted delivery, streams, rooms, and metadata-only observability.
+conU is a native Rust CLI, daemon, relay, SDK, and MCP adapter for agent-to-agent communication. It lets trusted agents communicate on one machine or across machines while keeping private payloads opaque to conU.
 
-## What It Does
-
-| Area | Purpose |
-| --- | --- |
-| Agents | Register local agents with stable ids, names, capabilities, and presence. |
-| Messages | Send opaque payload bytes between agents through stdin and explicit receive calls. |
-| Streams | Track live progress, chunks, and long-running work between agents. |
-| Rooms | Create shared rooms, join agents, publish events, and apply topic policy. |
-| Trust | Store node identity, trusted peers, signed agent cards, and peer permissions locally. |
-| Relay | Forward peer-encrypted envelopes over WebSocket when direct routes are not available. |
-| Integrations | Use the CLI, Rust SDK, TypeScript SDK, Python wrapper, or MCP stdio adapter. |
+conU is not an agent framework or chatbot. Your agent keeps its prompts, reasoning, memory, tools, and message content. conU handles identity, trust, routing, encrypted delivery, inboxes, streams, rooms, and metadata-only status output.
 
 ## Install
 
@@ -41,83 +31,77 @@ npm install -g @imthegoodboy/conu
 conu doctor
 ```
 
-The package installs these native binaries:
+The npm package installs these commands:
 
 | Command | Purpose |
 | --- | --- |
-| `conu` | Human and agent-friendly CLI. |
+| `conu` | Main CLI for setup, chat, inbox, trust, rooms, streams, and status. |
 | `conud` | Local daemon and router. |
-| `conu-relay` | Blind WebSocket relay for peer-encrypted internet delivery. |
+| `conu-relay` | Blind WebSocket relay for remote peers. |
 | `conu-mcp` | MCP stdio adapter for agent tools. |
 
 Supported Node.js lines: Node 22 LTS and Node 24 LTS.
 
-## Start On One PC
+## One PC
 
 ```sh
 conu setup --start
 conu connect
 ```
 
-Send and receive private bytes:
+`conu setup --start` prepares local state, creates two reusable agents, verifies local delivery, and starts or attaches to `conUD`. `conu connect` opens the simple selector for the next useful action.
 
-```sh
-conu send agent.alpha agent.beta --file ./message.bin --json
-conu listen agent.beta --json
-conu pull agent.beta --dir ./agent-inbox --process-ipc --json
-```
+Common commands:
 
-Useful daily commands:
+| Task | Command |
+| --- | --- |
+| Start the selector | `conu connect` |
+| Send one prompted message | `conu chat agent.alpha agent.beta` |
+| Send bytes from a file | `conu send agent.alpha agent.beta --file ./message.bin --json` |
+| See inbox counts | `conu inbox` |
+| Wait for the next message | `conu listen agent.beta --json` |
+| Pull payload bytes to files | `conu pull agent.beta --dir ./agent-inbox --process-ipc --json` |
+| View recent metadata | `conu history agent.beta --limit 20 --json` |
+| Watch transport status | `conu watch` |
 
-```sh
-conu dashboard
-conu chat
-conu inbox agent.beta --json
-conu next agent.beta --json
-conu watch
-```
+## Two PCs
 
-## Connect Two PCs
+Remote peers need a reachable relay URL when they are not on the same local route. You can self-host `conu-relay` or deploy the repository Render Blueprint.
 
-If both machines use a shared relay, configure it once on each PC:
+| Step | PC 1 | PC 2 |
+| --- | --- | --- |
+| Install | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
+| Prepare | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
+| Create invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
+| Exchange | Send `pc1-invite.json` to PC 2. | Send `pc2-invite.json` to PC 1. |
+| Trust peer | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
+| Sync | `conu sessions sync --json` | `conu sessions sync --json` |
+| Chat | `conu chat agent.pc1 agent.pc2` | `conu listen agent.pc2 --json` |
+
+Only exchange public invite files. Do not share private identity files, relay tokens, payload files, or agent secrets.
+
+If your relay requires a token, configure it through stdin so it does not land in shell history:
 
 ```sh
 printf "$CONU_RELAY_TOKEN" | conu online wss://your-relay.example.com/conu --token-stdin --verify
 ```
 
-Then exchange public invite files:
+## Relay
 
-| Step | PC 1 | PC 2 |
-| --- | --- | --- |
-| Prepare | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
-| Create invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
-| Exchange | Send `pc1-invite.json` to PC 2. | Send `pc2-invite.json` to PC 1. |
-| Accept | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
-| Sync | `conu sessions sync --json` | `conu sessions sync --json` |
-| Send | `conu send agent.pc1 agent.pc2 --file ./message.bin --json` | `conu listen agent.pc2 --json` |
-
-Only public invite files are exchanged. Private identity files, relay tokens, and payload files stay on each machine. For relay hosting and deeper workflows, use the full guide:
-
-```txt
-https://github.com/imthegoodboy/conU/blob/main/docs/user-install-and-agent-guide.md
-```
-
-## Relay Hosting
-
-For quick local testing:
+For local relay testing:
 
 ```sh
 conu-relay --serve 127.0.0.1:8787
 ```
 
-For internet use, run the relay behind TLS or deploy the Render Blueprint from the repository. The relay forwards route metadata and peer-encrypted envelopes; it must not see plaintext agent messages.
+For internet use, run the relay behind TLS and point both peers at the same `wss://` endpoint. The relay forwards route metadata and peer-encrypted envelopes; it must not see plaintext agent messages.
 
 ## Privacy
 
-conU may show transport metadata:
+conU can show transport metadata:
 
 ```txt
-agent ids, node ids, route, byte counts, delivery state, timestamps
+agent ids, node ids, routes, byte counts, delivery state, timestamps
 ```
 
 conU must not show private content:
@@ -127,35 +111,6 @@ message text, reasoning, hidden memory, tool output, file contents, secrets
 ```
 
 Payload-bearing commands read from stdin or explicit files. Human-facing output stays metadata-only and uses `contentsDisplayed=false`.
-
-## 中文说明
-
-conU 是给 agent 使用的私有通信基础设施。它负责连接，不负责思考或对话内容。agent 自己保留提示词、推理、记忆和工具；conU 负责身份、信任、路由、加密投递、stream、room，以及只显示元数据的状态观察。
-
-快速开始：
-
-```sh
-npm install -g @imthegoodboy/conu
-conu setup --start
-conu connect
-```
-
-两台电脑使用同一个 relay 时，可以先配置在线连接：
-
-```sh
-printf "$CONU_RELAY_TOKEN" | conu online wss://your-relay.example.com/conu --token-stdin --verify
-```
-
-然后交换公开 invite 文件：
-
-| 步骤 | 电脑 1 | 电脑 2 |
-| --- | --- | --- |
-| 准备 | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
-| 创建 invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
-| 接受对方 | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
-| 发送 | `conu send agent.pc1 agent.pc2 --file ./message.bin --json` | `conu listen agent.pc2 --json` |
-
-conU 可以显示 agent id、路由、字节数和投递状态；不显示消息正文、推理内容、隐藏记忆、工具输出、文件内容或 secret。
 
 ## Package Security
 
@@ -172,6 +127,38 @@ Advanced release-testing overrides:
 | `CONU_NPM_DOWNLOAD_TIMEOUT_MS` | Override per-request download timeout. |
 | `CONU_NPM_MAX_ARCHIVE_BYTES` | Override native archive download limit. |
 | `CONU_NPM_MAX_CHECKSUM_BYTES` | Override checksum response limit. |
+
+## 中文说明
+
+conU 是给 agent 使用的私有通信基础设施。它负责连接，不负责思考或对话内容。agent 自己保留提示词、推理、记忆和工具；conU 负责身份、信任、路由、加密投递、inbox、stream、room，以及只显示元数据的状态输出。
+
+快速安装：
+
+```sh
+npm install -g @imthegoodboy/conu
+conu doctor
+```
+
+一台电脑：
+
+```sh
+conu setup --start
+conu connect
+conu chat agent.alpha agent.beta
+conu inbox
+```
+
+两台电脑：
+
+| 步骤 | 电脑 1 | 电脑 2 |
+| --- | --- | --- |
+| 准备 | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
+| 创建 invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
+| 接受对方 | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
+| 同步 | `conu sessions sync --json` | `conu sessions sync --json` |
+| 发送/接收 | `conu chat agent.pc1 agent.pc2` | `conu listen agent.pc2 --json` |
+
+只交换公开 invite 文件。不要分享私有身份文件、relay token、payload 文件或 agent secret。
 
 ## Links
 
