@@ -2702,6 +2702,27 @@ fn render_messages(
     stdin_payload: Vec<u8>,
 ) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("send") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_messages_send_usage())
+        }
+        Some("inbox") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_messages_inbox_usage())
+        }
+        Some("history") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_messages_history_usage())
+        }
+        Some("reply") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_messages_reply_usage())
+        }
+        Some("wait") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_messages_wait_usage())
+        }
+        Some("receive") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_messages_receive_usage())
+        }
+        Some("receipts") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_messages_usage())
+        }
         Some("send") => render_message_send(&args[1..], home_override, stdin_payload),
         Some("inbox") => render_message_inbox(&args[1..], home_override),
         Some("history") => render_message_history(&args[1..], home_override),
@@ -4333,6 +4354,10 @@ privacy:
         .to_string()
 }
 
+fn render_messages_send_usage() -> String {
+    render_send_usage().replace("conu send", "conu messages send")
+}
+
 fn render_inbox_usage() -> String {
     r"usage:
   conu inbox [agent-id] [--json]
@@ -4343,6 +4368,10 @@ shows:
   envelope ids, sender ids, byte counts, and delivery times only
   contentsDisplayed=false"
         .to_string()
+}
+
+fn render_messages_inbox_usage() -> String {
+    render_inbox_usage().replace("conu inbox", "conu messages inbox")
 }
 
 fn render_history_usage() -> String {
@@ -4356,6 +4385,10 @@ shows:
         .to_string()
 }
 
+fn render_messages_history_usage() -> String {
+    render_history_usage().replace("conu history", "conu messages history")
+}
+
 fn render_wait_usage() -> String {
     r"usage:
   conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
@@ -4363,6 +4396,10 @@ fn render_wait_usage() -> String {
 example:
   conu wait agent.beta --process-ipc --timeout-ms 30000 --json"
         .to_string()
+}
+
+fn render_messages_wait_usage() -> String {
+    render_wait_usage().replace("conu wait", "conu messages wait")
 }
 
 fn render_receive_usage() -> String {
@@ -4376,6 +4413,10 @@ purpose:
         .to_string()
 }
 
+fn render_messages_receive_usage() -> String {
+    render_receive_usage().replace("conu receive", "conu messages receive")
+}
+
 fn render_reply_usage() -> String {
     r"usage:
   conu reply <agent-id> <envelope-id> --stdin [--json]
@@ -4383,6 +4424,10 @@ fn render_reply_usage() -> String {
 example:
   echo <reply> | conu reply agent.beta <envelope-id> --stdin"
         .to_string()
+}
+
+fn render_messages_reply_usage() -> String {
+    render_reply_usage().replace("conu reply", "conu messages reply")
 }
 
 fn render_chat_usage() -> String {
@@ -16906,6 +16951,13 @@ mod tests {
             vec!["messages", "--help"],
             vec!["messages", "-h"],
             vec!["messages", "help"],
+            vec!["messages", "send", "--help"],
+            vec!["messages", "inbox", "--help"],
+            vec!["messages", "history", "--help"],
+            vec!["messages", "reply", "--help"],
+            vec!["messages", "wait", "--help"],
+            vec!["messages", "receive", "--help"],
+            vec!["messages", "receipts", "--help"],
             vec!["relay", "--help"],
             vec!["relay", "-h"],
             vec!["relay", "help"],
