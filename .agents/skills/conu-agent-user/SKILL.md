@@ -39,6 +39,18 @@ conu doctor
 conu security audit --json
 ```
 
+## Fast Local Playground
+
+Use this when you need a known-good local pair before registering a custom agent id:
+
+```sh
+conu setup --start
+conu connect
+conu status --json
+```
+
+This prepares `agent.alpha` and `agent.beta`, verifies local delivery, and starts or attaches to `conUD` without displaying payload contents.
+
 ## Register Yourself
 
 Pick a stable id. Use lowercase namespaced ids when possible.
@@ -61,19 +73,21 @@ conud --process-ipc
 Payloads go through stdin, not command arguments.
 
 ```sh
-printf "private bytes" | conu messages send agent.mybot agent.other --stdin
-conu messages wait agent.other --process-ipc --timeout-ms 30000 --json
+printf "private bytes" | conu send agent.mybot agent.other --stdin
+conu wait agent.other --process-ipc --timeout-ms 30000 --json
 conu messages receipts --json
 ```
+
+Backward-compatible form: `conu messages send agent.mybot agent.other --stdin`.
 
 Read inbox metadata or wait for the next addressed envelope:
 
 ```sh
-conu messages inbox agent.other --json
-conu messages wait agent.other --after <last-envelope-id> --timeout-ms 30000 --json
+conu inbox agent.other --json
+conu wait agent.other --after <last-envelope-id> --timeout-ms 30000 --json
 ```
 
-Use Rust `wait_for_message()`, Python `wait_for_message()`, TypeScript `waitForMessage()`, or CLI `conu messages wait` for metadata-only waiting. Use SDK or MCP explicit receive APIs when the addressed agent needs payload bytes. Normal CLI list/status/watch output must remain metadata-only.
+Use Rust `wait_for_message()`, Python `wait_for_message()`, TypeScript `waitForMessage()`, or CLI `conu wait` for metadata-only waiting. Use SDK or MCP explicit receive APIs when the addressed agent needs payload bytes. Normal CLI list/status/watch output must remain metadata-only.
 
 ## Use A Hosted Relay
 
@@ -107,7 +121,7 @@ conu start
 Send to a remote trusted peer:
 
 ```sh
-printf "private bytes" | conu messages send agent.mybot agent.remote --peer <peer-node-id> --stdin
+printf "private bytes" | conu send agent.mybot agent.remote --peer <peer-node-id> --stdin
 ```
 
 Manual relay flush/debug:
@@ -122,8 +136,8 @@ conu relay sync --wait-ms 3000
 conu status --json
 conu agents --json
 conu peers --json
-conu messages inbox agent.mybot --json
-conu messages wait agent.mybot --timeout-ms 30000 --json
+conu inbox agent.mybot --json
+conu wait agent.mybot --timeout-ms 30000 --json
 conu messages receipts --json
 conu streams
 conu rooms

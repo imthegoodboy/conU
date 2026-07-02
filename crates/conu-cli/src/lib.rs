@@ -87,6 +87,7 @@ fn unexpected_argument_error() -> CliOutput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuAction {
     Command(&'static [&'static str]),
+    ConnectSelector,
     Exit,
 }
 
@@ -107,9 +108,9 @@ const MENU_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         title: "Setup",
-        command: "conu setup",
-        detail: "prepare local agent playground",
-        action: MenuAction::Command(&["setup"]),
+        command: "conu setup --start",
+        detail: "prepare agents and runtime",
+        action: MenuAction::Command(&["setup", "--start"]),
     },
     MenuItem {
         title: "Doctor",
@@ -139,7 +140,7 @@ const MENU_ITEMS: &[MenuItem] = &[
         title: "Connect",
         command: "conu connect",
         detail: "agent connection selector",
-        action: MenuAction::Command(&["connect"]),
+        action: MenuAction::ConnectSelector,
     },
     MenuItem {
         title: "Watch",
@@ -167,6 +168,26 @@ const MENU_ITEMS: &[MenuItem] = &[
     },
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConnectMenuAction {
+    Command(Vec<String>),
+    Describe(String),
+    Exit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConnectMenuItem {
+    title: String,
+    command: String,
+    detail: String,
+    action: ConnectMenuAction,
+}
+
+const CONNECT_MENU_MAX_LOCAL_STREAMS: usize = 8;
+const CONNECT_MENU_MAX_LOCAL_CHAT_HINTS: usize = 4;
+const CONNECT_MENU_MAX_ROOM_JOINS: usize = 8;
+const CONNECT_MENU_MAX_REMOTE_HINTS: usize = 4;
+
 struct TerminalMenuStatus {
     node: String,
     state: String,
@@ -191,6 +212,8 @@ struct LocalSetupReport {
     node_created: bool,
     from_agent_id: String,
     to_agent_id: String,
+    from_agent_kind: String,
+    to_agent_kind: String,
     registered_agents: usize,
     local_agents: usize,
     stream_id: String,
@@ -204,6 +227,7 @@ struct LocalSetupReport {
     payload_bytes: usize,
     request_id: String,
     envelope_id: String,
+    runtime: Option<StartRuntimeReport>,
 }
 
 struct LocalSetupOptions {
@@ -211,12 +235,23 @@ struct LocalSetupOptions {
     to_agent_id: String,
     from_display_name: String,
     to_display_name: String,
+    from_agent_kind: String,
+    to_agent_kind: String,
     from_display_name_explicit: bool,
     to_display_name_explicit: bool,
+    from_agent_kind_explicit: bool,
+    to_agent_kind_explicit: bool,
     room_id: String,
     room_display_name: String,
     room_display_name_explicit: bool,
+    start_runtime: bool,
     json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StartRuntimeReport {
+    status: RuntimeStatus,
+    launched: bool,
 }
 
 struct SmokeHome {
@@ -273,7 +308,11 @@ pub fn run_terminal_menu() -> io::Result<CliOutput> {
                     code: crossterm::event::KeyCode::Enter,
                     ..
                 } => {
-                    return Ok(run_menu_item(MENU_ITEMS[selected]));
+                    let item = MENU_ITEMS[selected];
+                    if item.action == MenuAction::ConnectSelector {
+                        return run_connect_terminal_selector_loop(&mut stdout);
+                    }
+                    return Ok(run_menu_item(item));
                 }
                 crossterm::event::KeyEvent {
                     code: crossterm::event::KeyCode::Esc,
@@ -294,6 +333,87 @@ pub fn run_terminal_menu() -> io::Result<CliOutput> {
                 } => {
                     return Ok(CliOutput::success(
                         "conU menu closed\ncontentsDisplayed=false",
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Run the human connect selector. Non-TTY callers should keep using
+/// `conu connect`, which renders a static metadata-only selector.
+pub fn run_connect_terminal_selector() -> io::Result<CliOutput> {
+    crossterm::terminal::enable_raw_mode()?;
+    let _guard = TerminalMenuGuard;
+    let mut stdout = io::stdout();
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::cursor::Hide
+    )?;
+
+    run_connect_terminal_selector_loop(&mut stdout)
+}
+
+fn run_connect_terminal_selector_loop(mut stdout: &mut impl Write) -> io::Result<CliOutput> {
+    let mut selected = 0usize;
+    loop {
+        let item_count = connect_menu_items(None).len();
+        if item_count > 0 && selected >= item_count {
+            selected = item_count - 1;
+        }
+        draw_connect_terminal_selector(&mut stdout, selected)?;
+        if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+            match key {
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Up,
+                    ..
+                } => {
+                    selected = if selected == 0 {
+                        item_count.saturating_sub(1)
+                    } else {
+                        selected - 1
+                    };
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Down,
+                    ..
+                } => {
+                    selected = if item_count == 0 {
+                        0
+                    } else {
+                        (selected + 1) % item_count
+                    };
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Enter,
+                    ..
+                } => {
+                    let items = connect_menu_items(None);
+                    if let Some(item) = items.get(selected).cloned() {
+                        return Ok(run_connect_menu_item(item));
+                    }
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Esc,
+                    ..
+                }
+                | crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('q'),
+                    ..
+                }
+                | crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('Q'),
+                    ..
+                }
+                | crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('c'),
+                    modifiers: crossterm::event::KeyModifiers::CONTROL,
+                    ..
+                } => {
+                    return Ok(CliOutput::success(
+                        "conU connect selector closed\ncontentsDisplayed=false",
                     ));
                 }
                 _ => {}
@@ -400,6 +520,113 @@ fn draw_terminal_menu(stdout: &mut impl Write, selected: usize) -> io::Result<()
     stdout.flush()
 }
 
+fn draw_connect_terminal_selector(stdout: &mut impl Write, selected: usize) -> io::Result<()> {
+    let status = terminal_menu_status(None);
+    let route_records = routes::list_routes(None).unwrap_or_default();
+    let room_count = rooms::list_rooms(None).unwrap_or_default().len();
+    let items = connect_menu_items(None);
+    let selected = selected.min(items.len().saturating_sub(1));
+
+    crossterm::queue!(
+        stdout,
+        crossterm::cursor::MoveTo(0, 0),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::style::SetForegroundColor(crossterm::style::Color::Cyan),
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Bold),
+        crossterm::style::Print("conU connect\n"),
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset),
+        crossterm::style::SetForegroundColor(crossterm::style::Color::Magenta),
+        crossterm::style::Print("agent connection selector\n\n"),
+        crossterm::style::ResetColor
+    )?;
+
+    queue_menu_status_line(
+        stdout,
+        "runtime",
+        &status.runtime_state,
+        runtime_menu_color(&status.runtime_state),
+    )?;
+    queue_menu_status_line(
+        stdout,
+        "local agents",
+        &status.local_agents.to_string(),
+        crossterm::style::Color::Green,
+    )?;
+    queue_menu_status_line(
+        stdout,
+        "remote agents",
+        &status.remote_agents.to_string(),
+        crossterm::style::Color::Yellow,
+    )?;
+    queue_menu_status_line(
+        stdout,
+        "rooms",
+        &room_count.to_string(),
+        crossterm::style::Color::Blue,
+    )?;
+    queue_menu_status_line(
+        stdout,
+        "routes",
+        &format!(
+            "direct {} | relay {}",
+            selected_direct_route_count(&route_records),
+            selected_relay_route_count(&route_records)
+        ),
+        crossterm::style::Color::DarkGrey,
+    )?;
+
+    crossterm::queue!(
+        stdout,
+        crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
+        crossterm::style::Print("\nUse Up/Down to choose, Enter to run, q or Esc to close.\n\n"),
+        crossterm::style::ResetColor
+    )?;
+
+    for (index, item) in items.iter().enumerate() {
+        let command = abbreviate_for_terminal(&item.command, 44);
+        let detail = abbreviate_for_terminal(&item.detail, 36);
+        if index == selected {
+            crossterm::queue!(
+                stdout,
+                crossterm::style::SetBackgroundColor(crossterm::style::Color::DarkCyan),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::White),
+                crossterm::style::SetAttribute(crossterm::style::Attribute::Bold),
+                crossterm::style::Print(format!("> {:<15} ", item.title)),
+                crossterm::style::SetAttribute(crossterm::style::Attribute::Reset),
+                crossterm::style::SetBackgroundColor(crossterm::style::Color::DarkCyan),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::Cyan),
+                crossterm::style::Print(format!("{command:<44} ")),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::White),
+                crossterm::style::Print(detail),
+                crossterm::style::ResetColor,
+                crossterm::style::Print("\n")
+            )?;
+        } else {
+            crossterm::queue!(
+                stdout,
+                crossterm::style::SetForegroundColor(crossterm::style::Color::White),
+                crossterm::style::Print(format!("  {:<15} ", item.title)),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::Blue),
+                crossterm::style::Print(format!("{command:<44} ")),
+                crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
+                crossterm::style::Print(detail),
+                crossterm::style::ResetColor,
+                crossterm::style::Print("\n")
+            )?;
+        }
+    }
+
+    crossterm::queue!(
+        stdout,
+        crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
+        crossterm::style::Print(
+            "\nprivacy\n  selector shows metadata and commands only\n  payload view  private, never displayed\n  contentsDisplayed=false"
+        ),
+        crossterm::style::ResetColor
+    )?;
+    stdout.flush()
+}
+
 fn queue_menu_status_line(
     stdout: &mut impl Write,
     label: &str,
@@ -429,8 +656,318 @@ fn runtime_menu_color(runtime_state: &str) -> crossterm::style::Color {
 fn run_menu_item(item: MenuItem) -> CliOutput {
     match item.action {
         MenuAction::Command(args) => run(args.iter().copied()),
+        MenuAction::ConnectSelector => run(["connect"]),
         MenuAction::Exit => CliOutput::success("conU menu closed\ncontentsDisplayed=false"),
     }
+}
+
+fn run_connect_menu_item(item: ConnectMenuItem) -> CliOutput {
+    match item.action {
+        ConnectMenuAction::Command(args) => run(args),
+        ConnectMenuAction::Describe(output) => CliOutput::success(output),
+        ConnectMenuAction::Exit => {
+            CliOutput::success("conU connect selector closed\ncontentsDisplayed=false")
+        }
+    }
+}
+
+fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
+    let local_agents = agents::list_local_agents(home_override.clone()).unwrap_or_default();
+    let remote_agents = sessions::list_remote_agents(home_override.clone()).unwrap_or_default();
+    let rooms = rooms::list_rooms(home_override).unwrap_or_default();
+    let mut items = Vec::new();
+    let mut seen = HashSet::new();
+
+    let stream_agents = local_agents
+        .iter()
+        .filter(|agent| agent.capabilities.streams)
+        .collect::<Vec<_>>();
+    let room_agents = local_agents
+        .iter()
+        .filter(|agent| agent.capabilities.rooms)
+        .collect::<Vec<_>>();
+    let message_agents = local_agents
+        .iter()
+        .filter(|agent| agent.capabilities.messages)
+        .collect::<Vec<_>>();
+
+    if stream_agents.len() >= 2 {
+        let mut added = 0usize;
+        'streams: for from in stream_agents.iter() {
+            for to in stream_agents.iter() {
+                if from.agent_id == to.agent_id {
+                    continue;
+                }
+                push_connect_menu_item(
+                    &mut items,
+                    &mut seen,
+                    ConnectMenuItem {
+                        title: "Local stream".to_string(),
+                        command: format!("conu connect local {} {}", from.agent_id, to.agent_id),
+                        detail: "open private local stream".to_string(),
+                        action: ConnectMenuAction::Command(vec![
+                            "connect".to_string(),
+                            "local".to_string(),
+                            from.agent_id.clone(),
+                            to.agent_id.clone(),
+                        ]),
+                    },
+                );
+                added += 1;
+                if added >= CONNECT_MENU_MAX_LOCAL_STREAMS {
+                    break 'streams;
+                }
+            }
+        }
+    } else {
+        push_connect_menu_item(
+            &mut items,
+            &mut seen,
+            ConnectMenuItem {
+                title: "Setup".to_string(),
+                command: "conu setup --start".to_string(),
+                detail: "prepare agents and runtime".to_string(),
+                action: ConnectMenuAction::Command(vec![
+                    "setup".to_string(),
+                    "--start".to_string(),
+                ]),
+            },
+        );
+    }
+
+    if message_agents.len() >= 2 {
+        let mut added = 0usize;
+        'messages: for from in message_agents.iter() {
+            for to in message_agents.iter() {
+                if from.agent_id == to.agent_id {
+                    continue;
+                }
+                let command = format!("conu chat {} {} --stdin", from.agent_id, to.agent_id);
+                push_connect_menu_item(
+                    &mut items,
+                    &mut seen,
+                    ConnectMenuItem {
+                        title: "Local chat".to_string(),
+                        command: command.clone(),
+                        detail: "send stdin message".to_string(),
+                        action: ConnectMenuAction::Describe(render_local_chat_hint(
+                            from, to, &command,
+                        )),
+                    },
+                );
+                added += 1;
+                if added >= CONNECT_MENU_MAX_LOCAL_CHAT_HINTS {
+                    break 'messages;
+                }
+            }
+        }
+    }
+
+    if !rooms.is_empty() && !room_agents.is_empty() {
+        let mut added = 0usize;
+        'rooms: for room in rooms.iter() {
+            for agent in room_agents.iter() {
+                let already_joined = room
+                    .participants
+                    .iter()
+                    .any(|participant| participant.agent_id == agent.agent_id);
+                if already_joined {
+                    continue;
+                }
+                push_connect_menu_item(
+                    &mut items,
+                    &mut seen,
+                    ConnectMenuItem {
+                        title: "Room join".to_string(),
+                        command: format!("conu connect room {} {}", room.room_id, agent.agent_id),
+                        detail: "join agent to room bus".to_string(),
+                        action: ConnectMenuAction::Command(vec![
+                            "connect".to_string(),
+                            "room".to_string(),
+                            room.room_id.clone(),
+                            agent.agent_id.clone(),
+                        ]),
+                    },
+                );
+                added += 1;
+                if added >= CONNECT_MENU_MAX_ROOM_JOINS {
+                    break 'rooms;
+                }
+            }
+        }
+    } else if !room_agents.is_empty() {
+        let agent = room_agents[0];
+        push_connect_menu_item(
+            &mut items,
+            &mut seen,
+            ConnectMenuItem {
+                title: "Create room".to_string(),
+                command: format!(
+                    "conu rooms create room.dev \"Dev Room\" --agent {}",
+                    agent.agent_id
+                ),
+                detail: "create shared local room".to_string(),
+                action: ConnectMenuAction::Command(vec![
+                    "rooms".to_string(),
+                    "create".to_string(),
+                    "room.dev".to_string(),
+                    "Dev Room".to_string(),
+                    "--agent".to_string(),
+                    agent.agent_id.clone(),
+                ]),
+            },
+        );
+    }
+
+    if !message_agents.is_empty() && !remote_agents.is_empty() {
+        let mut added = 0usize;
+        'remote: for local in message_agents.iter() {
+            for remote in remote_agents
+                .iter()
+                .filter(|agent| agent.capabilities.messages)
+            {
+                let command = format!(
+                    "conu send {} {} --peer {} --stdin",
+                    local.agent_id, remote.agent_id, remote.peer_node_id
+                );
+                push_connect_menu_item(
+                    &mut items,
+                    &mut seen,
+                    ConnectMenuItem {
+                        title: "Remote send".to_string(),
+                        command: command.clone(),
+                        detail: "prints stdin command".to_string(),
+                        action: ConnectMenuAction::Describe(render_remote_send_hint(
+                            local, remote, &command,
+                        )),
+                    },
+                );
+                added += 1;
+                if added >= CONNECT_MENU_MAX_REMOTE_HINTS {
+                    break 'remote;
+                }
+            }
+        }
+    } else {
+        push_connect_menu_item(
+            &mut items,
+            &mut seen,
+            ConnectMenuItem {
+                title: "Pair peer".to_string(),
+                command: "conu pair".to_string(),
+                detail: "create peer invite".to_string(),
+                action: ConnectMenuAction::Command(vec!["pair".to_string()]),
+            },
+        );
+    }
+
+    push_connect_menu_item(
+        &mut items,
+        &mut seen,
+        ConnectMenuItem {
+            title: "Start runtime".to_string(),
+            command: "conu start".to_string(),
+            detail: "launch local daemon".to_string(),
+            action: ConnectMenuAction::Command(vec!["start".to_string()]),
+        },
+    );
+    push_connect_menu_item(
+        &mut items,
+        &mut seen,
+        ConnectMenuItem {
+            title: "Watch".to_string(),
+            command: "conu watch".to_string(),
+            detail: "private transport view".to_string(),
+            action: ConnectMenuAction::Command(vec!["watch".to_string()]),
+        },
+    );
+    push_connect_menu_item(
+        &mut items,
+        &mut seen,
+        ConnectMenuItem {
+            title: "Dashboard".to_string(),
+            command: "conu dashboard".to_string(),
+            detail: "return to control room".to_string(),
+            action: ConnectMenuAction::Command(vec!["dashboard".to_string()]),
+        },
+    );
+    push_connect_menu_item(
+        &mut items,
+        &mut seen,
+        ConnectMenuItem {
+            title: "Exit".to_string(),
+            command: "close selector".to_string(),
+            detail: "return to terminal".to_string(),
+            action: ConnectMenuAction::Exit,
+        },
+    );
+
+    items
+}
+
+fn push_connect_menu_item(
+    items: &mut Vec<ConnectMenuItem>,
+    seen: &mut HashSet<String>,
+    item: ConnectMenuItem,
+) {
+    if seen.insert(item.command.clone()) {
+        items.push(item);
+    }
+}
+
+fn render_remote_send_hint(
+    local: &LocalAgentRecord,
+    remote: &RemoteAgentRecord,
+    command: &str,
+) -> String {
+    format!(
+        r"conU connect remote
+
+ready command
+  echo <payload> | {command}
+
+from: {}
+to: {}
+peer: {}
+
+privacy
+  payload source  stdin only
+  payload view    contents are not displayed by conU
+  contentsDisplayed=false",
+        local.agent_id, remote.agent_id, remote.peer_node_id
+    )
+}
+
+fn render_local_chat_hint(from: &LocalAgentRecord, to: &LocalAgentRecord, command: &str) -> String {
+    format!(
+        r"conU connect local chat
+
+ready command
+  echo <payload> | {command}
+
+from: {}
+to: {}
+
+or run:
+  conu chat
+
+privacy
+  payload source  stdin or interactive chat prompt
+  payload view    contents are not displayed by conU
+  contentsDisplayed=false",
+        from.agent_id, to.agent_id
+    )
+}
+
+fn abbreviate_for_terminal(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let keep = max_chars.saturating_sub(3);
+    let mut abbreviated = value.chars().take(keep).collect::<String>();
+    abbreviated.push_str("...");
+    abbreviated
 }
 
 /// Dispatch a conU CLI invocation.
@@ -497,6 +1034,13 @@ where
         "status" => render_status(&args[1..], home_override),
         "agents" => render_agents(&args[1..], home_override),
         "peers" => render_peers(&args[1..], home_override, stdin_payload),
+        "send" => render_send(&args[1..], home_override, stdin_payload),
+        "inbox" => render_inbox(&args[1..], home_override),
+        "history" => render_history(&args[1..], home_override),
+        "wait" => render_wait(&args[1..], home_override),
+        "receive" => render_receive(&args[1..], home_override),
+        "reply" => render_reply(&args[1..], home_override, stdin_payload),
+        "chat" => render_chat(&args[1..], home_override, stdin_payload),
         "messages" => render_messages(&args[1..], home_override, stdin_payload),
         "relay" => render_relay(&args[1..], home_override, stdin_payload),
         "streams" => render_streams(&args[1..], home_override, stdin_payload),
@@ -603,7 +1147,12 @@ recent room bus
 next actions
   conu menu
   conu init
-  conu setup
+  conu setup --start
+  conu chat
+  conu send agent.alpha agent.beta --stdin
+  conu inbox agent.beta
+  conu history agent.beta
+  conu wait agent.beta --process-ipc --timeout-ms 30000 --json
   conu start
   conu doctor
   conu smoke
@@ -735,6 +1284,9 @@ fn latest_room_event_label(events: &[RoomEvent]) -> String {
 }
 
 fn render_init(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu init");
+    }
     if let Some(error) = reject_args(args) {
         return error;
     }
@@ -749,6 +1301,9 @@ fn render_init(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
 }
 
 fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu status [--json]");
+    }
     let snapshot = match state::read_state(home_override.clone()) {
         Ok(snapshot) => snapshot,
         Err(error) => return CliOutput::failure(1, format!("conU status failed\n\n{error}")),
@@ -809,6 +1364,22 @@ fn render_status(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
 
 fn render_agents(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_agents_usage()),
+        Some("register") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_agents_register_usage())
+        }
+        Some("prepare") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_agents_prepare_usage())
+        }
+        Some("heartbeat") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_agents_heartbeat_usage())
+        }
+        Some("export") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_agents_export_usage())
+        }
+        Some("trust") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_agents_trust_usage())
+        }
         Some("register") => render_agent_register(&args[1..], home_override),
         Some("prepare") => render_agent_prepare(&args[1..], home_override),
         Some("heartbeat") => render_agent_heartbeat(&args[1..], home_override),
@@ -1251,6 +1822,26 @@ next
   conu sessions sync",
         registry, registry_path
     )
+}
+
+fn render_agents_usage() -> String {
+    r"usage:
+  conu agents [--json]
+  conu agents prepare <agent-id> <display-name> [--kind <kind>] [--presence <ready|busy|idle|offline>] [--connect <agent-id>] [--stream-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence-capability <true|false>] [--json]
+  conu agents register <agent-id> <display-name> [--kind <kind>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--json]
+  conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
+  conu agents export <agent-id> [--json]
+  conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--signature-algorithm <algorithm>] [--json]
+
+quick start:
+  conu setup --start
+  conu connect
+
+privacy:
+  agent commands show ids, presence, capabilities, signatures, and delivery metadata only
+  payload contents are never displayed
+  contentsDisplayed=false"
+        .to_string()
 }
 
 struct RegisterArgs {
@@ -1821,6 +2412,11 @@ fn render_agents_prepare_usage() -> String {
     "usage: conu agents prepare <agent-id> <display-name> [--kind <kind>] [--presence <ready|busy|idle|offline>] [--connect <agent-id>] [--stream-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence-capability <true|false>] [--json]".to_string()
 }
 
+fn render_agents_heartbeat_usage() -> String {
+    "usage: conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]"
+        .to_string()
+}
+
 fn capabilities_summary(capabilities: &AgentCapabilities) -> String {
     format!(
         "messages={} streams={} rooms={} files={} presence={}",
@@ -1962,6 +2558,118 @@ fn render_messages(
     }
 }
 
+fn retitle_output(mut output: CliOutput, old: &str, new: &str, simple_usage: &str) -> CliOutput {
+    output.stdout = output.stdout.replace(old, new);
+    output.stderr = output.stderr.replace(old, new);
+    if output.stderr.trim_end() == render_messages_usage() {
+        output.stderr = finish(simple_usage.to_string());
+    }
+    output
+}
+
+fn render_send(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let usage = render_send_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    retitle_output(
+        render_message_send(args, home_override, stdin_payload),
+        "conU messages send",
+        "conU send",
+        &usage,
+    )
+}
+
+fn render_inbox(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let usage = render_inbox_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    retitle_output(
+        render_message_inbox(args, home_override),
+        "conU messages inbox",
+        "conU inbox",
+        &usage,
+    )
+}
+
+fn render_history(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let usage = render_history_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    retitle_output(
+        render_message_history(args, home_override),
+        "conU messages history",
+        "conU history",
+        &usage,
+    )
+}
+
+fn render_reply(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let usage = render_reply_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    retitle_output(
+        render_message_reply(args, home_override, stdin_payload),
+        "conU messages reply",
+        "conU reply",
+        &usage,
+    )
+}
+
+fn render_wait(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let usage = render_wait_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    retitle_output(
+        render_message_wait(args, home_override),
+        "conU messages wait",
+        "conU wait",
+        &usage,
+    )
+}
+
+fn render_receive(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let usage = render_receive_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    retitle_output(
+        render_message_receive(args, home_override),
+        "conU messages receive",
+        "conU receive",
+        &usage,
+    )
+}
+
+fn render_chat(
+    args: &[String],
+    home_override: Option<PathBuf>,
+    stdin_payload: Vec<u8>,
+) -> CliOutput {
+    let usage = render_chat_usage();
+    if is_help_request(args) || args.is_empty() {
+        return CliOutput::success(usage);
+    }
+    retitle_output(
+        render_message_send(args, home_override, stdin_payload),
+        "conU messages send",
+        "conU chat",
+        &usage,
+    )
+}
+
 fn render_message_send(
     args: &[String],
     home_override: Option<PathBuf>,
@@ -1982,6 +2690,9 @@ fn render_message_send(
         return render_remote_message_send(parsed, &peer_node_id, home_override, stdin_payload);
     }
 
+    if let Err(error) = agents::process_gateway_requests(home_override.clone()) {
+        return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
+    }
     let before = inbox_ids(home_override.clone(), &parsed.to_agent_id);
     let payload_bytes = stdin_payload.len();
     let message = match LocalMessage::new(
@@ -2000,6 +2711,9 @@ fn render_message_send(
             return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
         }
     };
+    if let Err(error) = messages::process_message_requests(home_override.clone()) {
+        return CliOutput::failure(1, format!("conU messages send failed\n\n{error}"));
+    }
     let delivered = wait_for_message_delivery(
         home_override,
         &parsed.to_agent_id,
@@ -2272,6 +2986,9 @@ fn render_message_reply(
             return CliOutput::failure(1, format!("conU messages reply failed\n\n{error}"));
         }
     };
+    if let Err(error) = messages::process_message_requests(home_override.clone()) {
+        return CliOutput::failure(1, format!("conU messages reply failed\n\n{error}"));
+    }
     let delivered = wait_for_message_delivery(
         home_override,
         &target.from_agent_id,
@@ -2502,36 +3219,22 @@ enum WaitEntrySearch {
 fn newest_wait_entry(entries: &[InboxEntry], after_envelope_id: Option<&str>) -> WaitEntrySearch {
     let Some(after_envelope_id) = after_envelope_id else {
         return entries
-            .iter()
-            .max_by(|left, right| {
-                left.delivered_at_unix
-                    .cmp(&right.delivered_at_unix)
-                    .then_with(|| left.envelope_id.cmp(&right.envelope_id))
-            })
+            .last()
             .cloned()
             .map(WaitEntrySearch::Found)
             .unwrap_or(WaitEntrySearch::None);
     };
 
-    let Some(after) = entries
+    let Some(position) = entries
         .iter()
-        .find(|entry| entry.envelope_id == after_envelope_id)
+        .position(|entry| entry.envelope_id == after_envelope_id)
     else {
         return WaitEntrySearch::MissingAfter;
     };
 
     entries
-        .iter()
-        .filter(|entry| {
-            entry.delivered_at_unix > after.delivered_at_unix
-                || (entry.delivered_at_unix == after.delivered_at_unix
-                    && entry.envelope_id.as_str() > after.envelope_id.as_str())
-        })
-        .max_by(|left, right| {
-            left.delivered_at_unix
-                .cmp(&right.delivered_at_unix)
-                .then_with(|| left.envelope_id.cmp(&right.envelope_id))
-        })
+        .get(position + 1..)
+        .and_then(|entries| entries.last())
         .cloned()
         .map(WaitEntrySearch::Found)
         .unwrap_or(WaitEntrySearch::None)
@@ -3322,12 +4025,98 @@ fn render_messages_usage() -> String {
         .to_string()
 }
 
+fn render_send_usage() -> String {
+    r"usage:
+  conu send <from-agent> <to-agent> --stdin [--json]
+  conu send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
+
+example:
+  echo <message> | conu send agent.alpha agent.beta --stdin
+
+privacy:
+  message bytes are read from stdin, not command history
+  stdout shows metadata only
+  contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_inbox_usage() -> String {
+    r"usage:
+  conu inbox <agent-id> [--json]
+
+shows:
+  delivered message metadata for one local agent
+  envelope ids, sender ids, byte counts, and delivery times only
+  contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_history_usage() -> String {
+    r"usage:
+  conu history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
+
+shows:
+  persisted inbox history for one local agent
+  message contents are never printed
+  contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_wait_usage() -> String {
+    r"usage:
+  conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+
+example:
+  conu wait agent.beta --process-ipc --timeout-ms 30000 --json"
+        .to_string()
+}
+
+fn render_receive_usage() -> String {
+    r"usage:
+  conu receive <agent-id> <envelope-id> --output <file> [--json]
+
+purpose:
+  write addressed local payload bytes to a new file
+  stdout still shows metadata only
+  pathDisplayed=false contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_reply_usage() -> String {
+    r"usage:
+  conu reply <agent-id> <envelope-id> --stdin [--json]
+
+example:
+  echo <reply> | conu reply agent.beta <envelope-id> --stdin"
+        .to_string()
+}
+
+fn render_chat_usage() -> String {
+    r"usage:
+  conu chat
+  conu chat <from-agent> <to-agent> --stdin [--json]
+  conu chat <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
+
+interactive:
+  run plain `conu chat` in a terminal to enter sender, receiver, optional peer node, and one message.
+
+privacy:
+  interactive chat sends one message through the same opaque inbox path
+  message bytes are not printed by conU
+  contentsDisplayed=false"
+        .to_string()
+}
+
 fn render_streams(
     args: &[String],
     home_override: Option<PathBuf>,
     stdin_payload: Vec<u8>,
 ) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_streams_usage()),
+        Some("open") if is_help_request(&args[1..]) => CliOutput::success(render_streams_usage()),
+        Some("write") if is_help_request(&args[1..]) => CliOutput::success(render_streams_usage()),
+        Some("close") if is_help_request(&args[1..]) => CliOutput::success(render_streams_usage()),
         Some("open") => render_stream_open(&args[1..], home_override),
         Some("write") => render_stream_write(&args[1..], home_override, stdin_payload),
         Some("close") => render_stream_close(&args[1..], home_override),
@@ -3699,6 +4488,12 @@ fn render_rooms(
     stdin_payload: Vec<u8>,
 ) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_rooms_usage()),
+        Some("create") if is_help_request(&args[1..]) => CliOutput::success(render_rooms_usage()),
+        Some("join") if is_help_request(&args[1..]) => CliOutput::success(render_rooms_usage()),
+        Some("publish") if is_help_request(&args[1..]) => CliOutput::success(render_rooms_usage()),
+        Some("events") if is_help_request(&args[1..]) => CliOutput::success(render_rooms_usage()),
+        Some("policy") if is_help_request(&args[1..]) => CliOutput::success(render_rooms_usage()),
         Some("create") => render_room_create(&args[1..], home_override),
         Some("join") => render_room_join(&args[1..], home_override),
         Some("publish") => render_room_publish(&args[1..], home_override, stdin_payload),
@@ -4497,6 +5292,8 @@ fn render_rooms_usage() -> String {
 
 fn render_sessions(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_sessions_usage()),
+        Some("sync") if is_help_request(&args[1..]) => CliOutput::success(render_sessions_usage()),
         Some("sync") => render_sessions_sync(&args[1..], home_override),
         _ => render_sessions_list(args, home_override),
     }
@@ -4658,6 +5455,13 @@ next
     )
 }
 
+fn render_sessions_usage() -> String {
+    r"usage:
+  conu sessions [--json]
+  conu sessions sync [--json]"
+        .to_string()
+}
+
 fn render_sessions_report_json(report: &SessionSyncReport) -> String {
     format!(
         r#"{{
@@ -4700,6 +5504,9 @@ privacy
 
 fn render_routes(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_routes_usage()),
+        Some("sync") if is_help_request(&args[1..]) => CliOutput::success(render_routes_usage()),
+        Some("probes") if is_help_request(&args[1..]) => CliOutput::success(render_routes_usage()),
         Some("sync") => render_routes_sync(&args[1..], home_override),
         Some("probes") => render_route_probes(&args[1..], home_override),
         None | Some("--json") => render_routes_list(args, home_override),
@@ -5905,6 +6712,10 @@ fn render_security_usage() -> String {
 
 fn render_identity(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_identity_usage()),
+        Some("export") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_identity_usage())
+        }
         Some("export") => render_identity_export(&args[1..], home_override),
         _ => CliOutput::failure(2, render_identity_usage()),
     }
@@ -5991,7 +6802,14 @@ privacy
 }
 
 fn render_identity_usage() -> String {
-    "usage: conu identity export [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]".to_string()
+    r"usage:
+  conu identity export [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+
+privacy:
+  identity commands show public peer-card material only
+  private keys, relay tokens, and payload contents are never displayed
+  contentsDisplayed=false"
+        .to_string()
 }
 
 struct IdentityExportArgs {
@@ -6053,11 +6871,12 @@ fn wait_for_message_delivery(
     before: HashSet<String>,
     payload_bytes: usize,
 ) -> Option<InboxEntry> {
-    if !runtime_is_live(home_override.clone()) {
-        return None;
-    }
-
-    for _ in 0..40 {
+    let attempts = if runtime_is_live(home_override.clone()) {
+        40
+    } else {
+        1
+    };
+    for attempt in 0..attempts {
         if let Ok(entries) = messages::list_agent_inbox(home_override.clone(), to_agent_id)
             && let Some(entry) = entries.into_iter().find(|entry| {
                 !before.contains(&entry.envelope_id) && entry.payload_bytes == payload_bytes
@@ -6065,7 +6884,9 @@ fn wait_for_message_delivery(
         {
             return Some(entry);
         }
-        thread::sleep(Duration::from_millis(100));
+        if attempt + 1 < attempts {
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     None
@@ -6077,8 +6898,18 @@ fn render_peers(
     stdin_payload: Vec<u8>,
 ) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_peers_usage()),
+        Some("policy") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_peer_policy_usage())
+        }
         Some("policy") => render_peer_policy(&args[1..], home_override),
+        Some("revoke") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_peer_revoke_usage())
+        }
         Some("revoke") => render_peer_revoke(&args[1..], home_override),
+        Some("trust") if is_help_request(&args[1..]) => {
+            CliOutput::success(render_peer_trust_usage())
+        }
         Some("trust") => render_peer_trust(&args[1..], home_override, stdin_payload),
         _ => render_peer_list(args, home_override),
     }
@@ -6378,6 +7209,26 @@ next
   conu peers policy <peer-node-id> --messages true --streams true
   conu peers revoke <peer-node-id>"
     )
+}
+
+fn render_peers_usage() -> String {
+    r"usage:
+  conu peers [--json]
+  conu peers trust --card <file|-> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+  conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--json]
+  conu peers policy [<peer-node-id> [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--mailbox <true|false>]] [--json]
+  conu peers revoke <peer-node-id> [--json]
+
+quick start:
+  conu identity export --json > my-peer-card.json
+  conu peers trust --card their-peer-card.json
+  conu peers policy <peer-node-id> --messages true --streams true --rooms true
+
+privacy:
+  peer commands show public card, trust, route, and policy metadata only
+  payload contents, private keys, and relay tokens are never displayed
+  contentsDisplayed=false"
+        .to_string()
 }
 
 fn render_peer_policy_json(record: &PeerPolicyRecord, status: &str) -> String {
@@ -6736,6 +7587,10 @@ fn render_peer_trust_usage() -> String {
     "usage: conu peers trust --card <file|-> [--json]\n       conu peers trust <peer-node-id> <display-name> --exchange-key <hex> [--relay <ws://host:port|wss://host/path>] [--direct <quic://host:port>] [--signing-key <hex> --signature <hex> --signature-key-id <id>] [--signature-algorithm <algorithm>] [--json]".to_string()
 }
 
+fn render_peer_revoke_usage() -> String {
+    "usage: conu peers revoke <peer-node-id> [--json]".to_string()
+}
+
 fn peer_card_from_source(
     source: &PeerCardSource,
     stdin_payload: Vec<u8>,
@@ -6938,10 +7793,7 @@ fn parse_peer_revoke_args(args: &[String]) -> Result<(String, bool), CliOutput> 
             }
             value => {
                 if peer.is_some() {
-                    return Err(CliOutput::failure(
-                        2,
-                        "usage: conu peers revoke <peer-node-id> [--json]",
-                    ));
+                    return Err(CliOutput::failure(2, render_peer_revoke_usage()));
                 }
                 peer = Some(value.to_string());
             }
@@ -6949,16 +7801,16 @@ fn parse_peer_revoke_args(args: &[String]) -> Result<(String, bool), CliOutput> 
     }
 
     let Some(peer) = peer else {
-        return Err(CliOutput::failure(
-            2,
-            "usage: conu peers revoke <peer-node-id> [--json]",
-        ));
+        return Err(CliOutput::failure(2, render_peer_revoke_usage()));
     };
 
     Ok((peer, json))
 }
 
 fn render_pair(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu pair [--json]");
+    }
     match json_flag(args) {
         Ok(json) => match trust::create_pairing_invite(home_override) {
             Ok(invite) => {
@@ -6999,6 +7851,9 @@ next
 }
 
 fn render_join(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu join <code> [--json]");
+    }
     let json = args.iter().any(|arg| arg == "--json");
 
     match join_code(args) {
@@ -7038,6 +7893,9 @@ next
 
 fn render_connect(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     match args.first().map(String::as_str) {
+        Some("--help") | Some("-h") | Some("help") => CliOutput::success(render_connect_usage()),
+        Some("local") if is_help_request(&args[1..]) => CliOutput::success(render_connect_usage()),
+        Some("room") if is_help_request(&args[1..]) => CliOutput::success(render_connect_usage()),
         Some("local") => render_connect_local(&args[1..], home_override),
         Some("room") => render_connect_room(&args[1..], home_override),
         Some(value) if value.starts_with("--") => {
@@ -7110,6 +7968,7 @@ route: {}
 
 privacy
   payload view  contents are not displayed by conU
+  contentsDisplayed=false
 
 next
   conu streams write {} --stdin",
@@ -7165,6 +8024,7 @@ participants: {}
 
 privacy
   payload view  contents are not displayed by conU
+  contentsDisplayed=false
 
 next
   conu rooms publish {} {} <topic> --stdin",
@@ -7249,7 +8109,8 @@ next
 {next_steps}
 
 privacy
-  payload view  contents are not displayed by conU",
+  payload view  contents are not displayed by conU
+  contentsDisplayed=false",
         selected_direct_route_count(&route_records),
         selected_relay_route_count(&route_records)
     ))
@@ -7263,20 +8124,36 @@ fn connect_next_steps(
     let mut steps = Vec::new();
 
     if local_agents.len() < 2 {
-        steps.push("conu agents prepare agent.alpha Alpha --room room.dev".to_string());
-        steps.push(
-            "conu agents prepare agent.beta Beta --connect agent.alpha --room room.dev".to_string(),
-        );
+        steps.push("conu setup --start".to_string());
     } else {
         steps.push(format!(
             "conu connect local {} {}",
             local_agents[0].agent_id, local_agents[1].agent_id
         ));
+        steps.push(format!(
+            "conu chat {} {} --stdin",
+            local_agents[0].agent_id, local_agents[1].agent_id
+        ));
     }
 
-    if let (Some(room), Some(agent)) = (rooms.first(), local_agents.first()) {
+    if let Some((room, agent)) = rooms.iter().find_map(|room| {
+        local_agents
+            .iter()
+            .find(|agent| {
+                !room
+                    .participants
+                    .iter()
+                    .any(|participant| participant.agent_id == agent.agent_id)
+            })
+            .map(|agent| (room, agent))
+    }) {
         steps.push(format!(
             "conu connect room {} {}",
+            room.room_id, agent.agent_id
+        ));
+    } else if let (Some(room), Some(agent)) = (rooms.first(), local_agents.first()) {
+        steps.push(format!(
+            "conu rooms publish {} {} <topic> --stdin",
             room.room_id, agent.agent_id
         ));
     } else if let Some(agent) = local_agents.first() {
@@ -7288,7 +8165,7 @@ fn connect_next_steps(
 
     if let (Some(local), Some(remote)) = (local_agents.first(), remote_agents.first()) {
         steps.push(format!(
-            "conu messages send {} {} --peer {} --stdin",
+            "conu send {} {} --peer {} --stdin",
             local.agent_id, remote.agent_id, remote.peer_node_id
         ));
     } else {
@@ -7383,11 +8260,23 @@ fn render_connect_usage() -> String {
     r"usage:
   conu connect
   conu connect local <from-agent> <to-agent> [--kind <kind>] [--json]
-  conu connect room <room-id> <agent-id> [--json]"
+  conu connect room <room-id> <agent-id> [--json]
+
+quick start:
+  conu setup --start
+  conu connect
+
+privacy:
+  connect shows agents, rooms, routes, and commands only
+  payload contents are never displayed
+  contentsDisplayed=false"
         .to_string()
 }
 
 fn render_watch(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu watch");
+    }
     if let Some(error) = reject_args(args) {
         return error;
     }
@@ -7493,6 +8382,9 @@ status: metadata animation only",
 }
 
 fn render_components(args: &[String]) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu components");
+    }
     if let Some(error) = reject_args(args) {
         return error;
     }
@@ -12588,6 +13480,9 @@ struct DoctorLogScan {
 }
 
 fn render_doctor(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu doctor [--json]");
+    }
     let json = match json_flag(args) {
         Ok(json) => json,
         Err(error) => return error,
@@ -12771,10 +13666,11 @@ privacy
 const LOCAL_SMOKE_FROM_AGENT: &str = "agent.alpha";
 const LOCAL_SMOKE_TO_AGENT: &str = "agent.beta";
 const LOCAL_SMOKE_PAYLOAD: &[u8] = &[b'Z'; 32];
-const LOCAL_SETUP_FROM_AGENT: &str = "agent.builder";
-const LOCAL_SETUP_TO_AGENT: &str = "agent.helper";
-const LOCAL_SETUP_FROM_DISPLAY: &str = "Builder Agent";
-const LOCAL_SETUP_TO_DISPLAY: &str = "Helper Agent";
+const LOCAL_SETUP_FROM_AGENT: &str = "agent.alpha";
+const LOCAL_SETUP_TO_AGENT: &str = "agent.beta";
+const LOCAL_SETUP_FROM_DISPLAY: &str = "Alpha Agent";
+const LOCAL_SETUP_TO_DISPLAY: &str = "Beta Agent";
+const LOCAL_SETUP_AGENT_KIND: &str = "local-agent";
 const LOCAL_SETUP_ROOM: &str = "room.dev";
 const LOCAL_SETUP_ROOM_DISPLAY: &str = "Dev Room";
 const LOCAL_SETUP_PAYLOAD: &[u8] = &[0xA5; 32];
@@ -12786,11 +13682,16 @@ impl Default for LocalSetupOptions {
             to_agent_id: LOCAL_SETUP_TO_AGENT.to_string(),
             from_display_name: LOCAL_SETUP_FROM_DISPLAY.to_string(),
             to_display_name: LOCAL_SETUP_TO_DISPLAY.to_string(),
+            from_agent_kind: LOCAL_SETUP_AGENT_KIND.to_string(),
+            to_agent_kind: LOCAL_SETUP_AGENT_KIND.to_string(),
             from_display_name_explicit: false,
             to_display_name_explicit: false,
+            from_agent_kind_explicit: false,
+            to_agent_kind_explicit: false,
             room_id: LOCAL_SETUP_ROOM.to_string(),
             room_display_name: LOCAL_SETUP_ROOM_DISPLAY.to_string(),
             room_display_name_explicit: false,
+            start_runtime: false,
             json: false,
         }
     }
@@ -12961,8 +13862,8 @@ bytes: {}
 
 next
   conu agents register <agent-id> <display-name> --messages true
-  echo <payload> | conu messages send <from-agent> <to-agent> --stdin
-  conu messages wait <to-agent> --process-ipc --timeout-ms 30000 --json
+  echo <payload> | conu send <from-agent> <to-agent> --stdin
+  conu wait <to-agent> --process-ipc --timeout-ms 30000 --json
 
 privacy
   temp state    removed after smoke
@@ -13005,9 +13906,22 @@ fn render_setup_local(args: &[String], home_override: Option<PathBuf>) -> CliOut
         Err(error) => return error,
     };
 
-    match run_local_setup(home_override, &options) {
-        Ok(report) if options.json => CliOutput::success(render_local_setup_json(&report)),
-        Ok(report) => CliOutput::success(render_local_setup_text(&report)),
+    match run_local_setup(home_override.clone(), &options) {
+        Ok(mut report) => {
+            if options.start_runtime {
+                match start_conud_runtime(home_override) {
+                    Ok(runtime) => report.runtime = Some(runtime),
+                    Err(error) => {
+                        return CliOutput::failure(1, format!("conU setup failed\n\n{error}"));
+                    }
+                }
+            }
+            if options.json {
+                CliOutput::success(render_local_setup_json(&report))
+            } else {
+                CliOutput::success(render_local_setup_text(&report))
+            }
+        }
         Err(error) => CliOutput::failure(1, format!("conU setup failed\n\n{error}")),
     }
 }
@@ -13020,6 +13934,10 @@ fn parse_setup_local_args(args: &[String]) -> Result<LocalSetupOptions, CliOutpu
         match args[index].as_str() {
             "--json" => {
                 options.json = true;
+                index += 1;
+            }
+            "--start" => {
+                options.start_runtime = true;
                 index += 1;
             }
             "--from" => {
@@ -13038,6 +13956,16 @@ fn parse_setup_local_args(args: &[String]) -> Result<LocalSetupOptions, CliOutpu
             "--to-name" => {
                 options.to_display_name = parse_setup_option_value(args, index, "--to-name")?;
                 options.to_display_name_explicit = true;
+                index += 2;
+            }
+            "--from-kind" => {
+                options.from_agent_kind = parse_setup_option_value(args, index, "--from-kind")?;
+                options.from_agent_kind_explicit = true;
+                index += 2;
+            }
+            "--to-kind" => {
+                options.to_agent_kind = parse_setup_option_value(args, index, "--to-kind")?;
+                options.to_agent_kind_explicit = true;
                 index += 2;
             }
             "--room" => {
@@ -13121,9 +14049,31 @@ fn run_local_setup(
         &options.to_display_name,
         options.to_display_name_explicit,
     );
+    let from_agent_kind = setup_agent_kind(
+        &existing_agents,
+        &options.from_agent_id,
+        &options.from_agent_kind,
+        options.from_agent_kind_explicit,
+    );
+    let to_agent_kind = setup_agent_kind(
+        &existing_agents,
+        &options.to_agent_id,
+        &options.to_agent_kind,
+        options.to_agent_kind_explicit,
+    );
 
-    submit_setup_agent(&home, &options.from_agent_id, &from_display_name)?;
-    submit_setup_agent(&home, &options.to_agent_id, &to_display_name)?;
+    submit_setup_agent(
+        &home,
+        &options.from_agent_id,
+        &from_display_name,
+        &from_agent_kind,
+    )?;
+    submit_setup_agent(
+        &home,
+        &options.to_agent_id,
+        &to_display_name,
+        &to_agent_kind,
+    )?;
     let gateway = agents::process_gateway_requests(Some(home.clone()))
         .map_err(|error| format!("process local agent gateway: {error}"))?;
 
@@ -13189,6 +14139,8 @@ fn run_local_setup(
         node_created: init.node_created,
         from_agent_id: options.from_agent_id.clone(),
         to_agent_id: options.to_agent_id.clone(),
+        from_agent_kind,
+        to_agent_kind,
         registered_agents: gateway.registered_agents.len(),
         local_agents: local_agents.len(),
         stream_id: stream.stream_id,
@@ -13202,6 +14154,7 @@ fn run_local_setup(
         payload_bytes: submission.payload_bytes,
         request_id: submission.request_id,
         envelope_id: delivered.envelope_id.clone(),
+        runtime: None,
     })
 }
 
@@ -13319,8 +14272,13 @@ fn run_agent_prepare(
     })
 }
 
-fn submit_setup_agent(home: &Path, agent_id: &str, display_name: &str) -> Result<(), String> {
-    let mut registration = AgentRegistration::new(agent_id, display_name, "coding-agent")
+fn submit_setup_agent(
+    home: &Path,
+    agent_id: &str,
+    display_name: &str,
+    kind: &str,
+) -> Result<(), String> {
+    let mut registration = AgentRegistration::new(agent_id, display_name, kind)
         .map_err(|error| format!("build setup agent metadata: {error}"))?;
     registration.capabilities = setup_agent_capabilities();
     agents::submit_registration(Some(home.to_path_buf()), registration)
@@ -13343,6 +14301,23 @@ fn setup_agent_display_name(
         .find(|agent| agent.agent_id == agent_id)
         .map(|agent| agent.display_name.clone())
         .unwrap_or_else(|| default_display_name.to_string())
+}
+
+fn setup_agent_kind(
+    existing_agents: &[LocalAgentRecord],
+    agent_id: &str,
+    default_kind: &str,
+    explicit: bool,
+) -> String {
+    if explicit {
+        return default_kind.to_string();
+    }
+
+    existing_agents
+        .iter()
+        .find(|agent| agent.agent_id == agent_id)
+        .map(|agent| agent.kind.clone())
+        .unwrap_or_else(|| default_kind.to_string())
 }
 
 fn setup_agent_capabilities() -> AgentCapabilities {
@@ -13720,6 +14695,8 @@ fn render_local_setup_json(report: &LocalSetupReport) -> String {
   "agents": {{
     "from": "{}",
     "to": "{}",
+    "fromKind": "{}",
+    "toKind": "{}",
     "registeredThisRun": {},
     "localTotal": {}
   }},
@@ -13740,6 +14717,7 @@ fn render_local_setup_json(report: &LocalSetupReport) -> String {
     "inboxEntries": {},
     "receipts": {}
   }},
+  "runtime": {},
   "persistentState": true,
   "contentsDisplayed": false
 }}"#,
@@ -13748,6 +14726,8 @@ fn render_local_setup_json(report: &LocalSetupReport) -> String {
         report.node_created,
         json_escape(&report.from_agent_id),
         json_escape(&report.to_agent_id),
+        json_escape(&report.from_agent_kind),
+        json_escape(&report.to_agent_kind),
         report.registered_agents,
         report.local_agents,
         json_escape(&report.stream_id),
@@ -13760,7 +14740,28 @@ fn render_local_setup_json(report: &LocalSetupReport) -> String {
         json_escape(&report.envelope_id),
         report.payload_bytes,
         report.inbox_entries,
-        report.receipts
+        report.receipts,
+        render_local_setup_runtime_json(report.runtime.as_ref())
+    )
+}
+
+fn render_local_setup_runtime_json(runtime: Option<&StartRuntimeReport>) -> String {
+    let Some(runtime) = runtime else {
+        return "null".to_string();
+    };
+
+    format!(
+        r#"{{
+    "requested": true,
+    "status": "{}",
+    "launched": {},
+    "pid": {},
+    "health": "{}"
+  }}"#,
+        runtime.status.state.as_str(),
+        runtime.launched,
+        json_u32(runtime.status.pid),
+        json_escape(runtime_health_label(&runtime.status))
     )
 }
 
@@ -13775,6 +14776,7 @@ node: {}
 agents: {} -> {}
 registered this run: {}
 local agents total: {}
+agent kinds: {} -> {}
 stream: {} ({})
 room: {} ({} participants, {})
 message: delivered
@@ -13782,11 +14784,15 @@ request: {}
 envelope: {}
 bytes: {}
 receipts: {}
+runtime: {}
 
 next
   conu connect local {} {}
-  echo <payload> | conu messages send {} {} --stdin
-  conu messages wait {} --process-ipc --timeout-ms 30000 --json
+  conu chat
+  echo <payload> | conu send {} {} --stdin
+  conu wait {} --process-ipc --timeout-ms 30000 --json
+  conu inbox {}
+  conu history {}
   conu rooms publish {} {} build --stdin
   conu watch
 
@@ -13800,6 +14806,8 @@ privacy
         report.to_agent_id,
         report.registered_agents,
         report.local_agents,
+        report.from_agent_kind,
+        report.to_agent_kind,
         report.stream_id,
         if report.stream_created {
             "created"
@@ -13819,9 +14827,12 @@ privacy
         report.envelope_id,
         report.payload_bytes,
         report.receipts,
+        local_setup_runtime_label(report.runtime.as_ref()),
         report.from_agent_id,
         report.to_agent_id,
         report.from_agent_id,
+        report.to_agent_id,
+        report.to_agent_id,
         report.to_agent_id,
         report.to_agent_id,
         report.room_id,
@@ -13829,8 +14840,37 @@ privacy
     )
 }
 
+fn local_setup_runtime_label(runtime: Option<&StartRuntimeReport>) -> String {
+    runtime
+        .map(|runtime| {
+            format!(
+                "{} ({}, pid {})",
+                runtime_state_label(&runtime.status),
+                if runtime.launched {
+                    "launched"
+                } else {
+                    "already running"
+                },
+                runtime_pid_label(&runtime.status)
+            )
+        })
+        .unwrap_or_else(|| "not started; run conu setup --start or conu start".to_string())
+}
+
 fn render_setup_usage() -> String {
-    "usage: conu setup [local] [--from <agent-id>] [--to <agent-id>] [--from-name <display-name>] [--to-name <display-name>] [--room <room-id>] [--room-name <display-name>] [--json]".to_string()
+    r"usage:
+  conu setup [local] [--start] [--from <agent-id>] [--to <agent-id>] [--from-name <display-name>] [--to-name <display-name>] [--from-kind <kind>] [--to-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--json]
+
+defaults:
+  from agent  agent.alpha (local-agent)
+  to agent    agent.beta (local-agent)
+  room        room.dev
+
+privacy:
+  setup verifies delivery with opaque bytes only
+  payload contents are never displayed
+  contentsDisplayed=false"
+        .to_string()
 }
 
 fn doctor_status(
@@ -14068,56 +15108,96 @@ const FORBIDDEN_LOG_TERMS: &[&str] = &[
     "secret_key_hex",
 ];
 const MAX_DOCTOR_LOG_SCAN_BYTES: u64 = 1024 * 1024;
+const RUNTIME_START_POLL_ATTEMPTS: usize = 30;
+const RUNTIME_START_READ_RETRY_ATTEMPTS: usize = 5;
+const RUNTIME_START_READ_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 fn render_start(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu start [--json]");
+    }
     let json = match json_flag(args) {
         Ok(json) => json,
         Err(error) => return error,
     };
 
-    let current = match runtime::read_runtime(home_override.clone()) {
-        Ok(status) => status,
-        Err(error) => return CliOutput::failure(1, format!("conU start failed\n\n{error}")),
-    };
+    match start_conud_runtime(home_override) {
+        Ok(report) => CliOutput::success(render_start_report(&report, json)),
+        Err(error) => CliOutput::failure(1, format!("conU start failed\n\n{error}")),
+    }
+}
+
+fn start_conud_runtime(home_override: Option<PathBuf>) -> Result<StartRuntimeReport, String> {
+    let current = read_runtime_for_start(home_override.clone())?;
     if current.is_live() {
-        return CliOutput::success(render_start_report(&current, false, json));
+        return Ok(StartRuntimeReport {
+            status: current,
+            launched: false,
+        });
     }
 
     let daemon = resolve_conud_executable();
     let child = match spawn_conud_daemon(&daemon, home_override.as_ref()) {
         Ok(child) => child,
         Err(error) => {
-            return CliOutput::failure(
-                1,
-                format!(
-                    "conU start failed\n\ncould not launch conUD at {}: {error}\nset CONUD_EXE to the conud binary path if it is not beside conu",
-                    daemon.display()
-                ),
-            );
+            return Err(format!(
+                "could not launch conUD at {}: {error}\nset CONUD_EXE to the conud binary path if it is not beside conu",
+                daemon.display()
+            ));
         }
     };
 
-    for _ in 0..30 {
+    for _ in 0..RUNTIME_START_POLL_ATTEMPTS {
         thread::sleep(Duration::from_millis(100));
-        match runtime::read_runtime(home_override.clone()) {
+        match read_runtime_for_start(home_override.clone()) {
             Ok(status) if status.is_live() => {
-                return CliOutput::success(render_start_report(&status, true, json));
+                return Ok(StartRuntimeReport {
+                    status,
+                    launched: true,
+                });
             }
             Ok(_) => {}
-            Err(error) => return CliOutput::failure(1, format!("conU start failed\n\n{error}")),
+            Err(error) => return Err(error),
         }
     }
 
-    CliOutput::failure(
-        1,
-        format!(
-            "conU start launched pid {} but no fresh conUD heartbeat was detected",
-            child.id()
-        ),
-    )
+    Err(format!(
+        "launched pid {} but no fresh conUD heartbeat was detected",
+        child.id()
+    ))
+}
+
+fn read_runtime_for_start(home_override: Option<PathBuf>) -> Result<RuntimeStatus, String> {
+    let mut last_error = None;
+    for attempt in 0..RUNTIME_START_READ_RETRY_ATTEMPTS {
+        match runtime::read_runtime(home_override.clone()) {
+            Ok(status) => return Ok(status),
+            Err(error) => {
+                let message = error.to_string();
+                if runtime_start_read_error_is_retryable(&message)
+                    && attempt + 1 < RUNTIME_START_READ_RETRY_ATTEMPTS
+                {
+                    last_error = Some(message);
+                    thread::sleep(RUNTIME_START_READ_RETRY_DELAY);
+                    continue;
+                }
+                return Err(message);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "runtime status could not be read".to_string()))
+}
+
+fn runtime_start_read_error_is_retryable(message: &str) -> bool {
+    message.contains("runtime control path changed while reading")
+        || message.contains("runtime control path changed while opening")
 }
 
 fn render_stop(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if is_help_request(args) {
+        return CliOutput::success("usage: conu stop [--json]");
+    }
     let json = match json_flag(args) {
         Ok(json) => json,
         Err(error) => return error,
@@ -14395,6 +15475,15 @@ Usage:
   conu agents export <agent-id> [--json]
   conu agents trust <agent-id> <display-name> --node <peer-node-id> --kind <kind> --signing-key <hex> --signature <hex> --signature-key-id <id> [--json]
   conu agents heartbeat <agent-id> [--presence <ready|busy|idle|offline>] [--json]
+  conu chat
+  conu chat <from-agent> <to-agent> --stdin [--json]
+  conu send <from-agent> <to-agent> --stdin [--json]
+  conu send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
+  conu inbox <agent-id> [--json]
+  conu history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
+  conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+  conu receive <agent-id> <envelope-id> --output <file> [--json]
+  conu reply <agent-id> <envelope-id> --stdin [--json]
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
   conu messages inbox <agent-id> [--json]
@@ -14442,7 +15531,7 @@ Usage:
   conu connect local <from-agent> <to-agent> [--kind <kind>] [--json]
   conu connect room <room-id> <agent-id> [--json]
   conu watch
-  conu setup [local] [--from <agent-id>] [--to <agent-id>] [--from-name <display-name>] [--to-name <display-name>] [--room <room-id>] [--room-name <display-name>] [--json]
+  conu setup [local] [--start] [--from <agent-id>] [--to <agent-id>] [--from-name <display-name>] [--to-name <display-name>] [--from-kind <kind>] [--to-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--json]
   conu doctor [--json]
   conu smoke [local] [--json]
   conu start [--json]
@@ -14451,11 +15540,18 @@ Usage:
   conu --help
   conu --version
 
+Interactive TTY:
+  conu         opens the Up/Down menu
+  conu connect opens the connection selector
+  conu chat    asks for sender, receiver, and one message
+
 conU carries local and relay-backed peer-encrypted messages while payload contents remain hidden. conUD pumps configured relay routes automatically."
         .to_string()
 }
 
-fn render_start_report(status: &RuntimeStatus, launched: bool, json: bool) -> String {
+fn render_start_report(report: &StartRuntimeReport, json: bool) -> String {
+    let status = &report.status;
+
     if json {
         return format!(
             r#"{{
@@ -14467,13 +15563,13 @@ fn render_start_report(status: &RuntimeStatus, launched: bool, json: bool) -> St
   "contentsDisplayed": false
 }}"#,
             status.state.as_str(),
-            launched,
+            report.launched,
             json_u32(status.pid),
             json_escape(runtime_health_label(status))
         );
     }
 
-    let action = if launched {
+    let action = if report.launched {
         "launched"
     } else {
         "already running"
@@ -14762,6 +15858,10 @@ fn optional_json_string(value: Option<&str>) -> String {
     value.map(json_string).unwrap_or_else(|| "null".to_string())
 }
 
+fn is_help_request(args: &[String]) -> bool {
+    matches!(args, [arg] if matches!(arg.as_str(), "--help" | "-h" | "help"))
+}
+
 fn json_flag(args: &[String]) -> Result<bool, CliOutput> {
     let mut json = false;
     for arg in args {
@@ -14822,7 +15922,7 @@ mod tests {
         assert!(output.stdout.contains("next actions"));
         assert!(output.stdout.contains("conu menu"));
         assert!(output.stdout.contains("conu init"));
-        assert!(output.stdout.contains("conu setup"));
+        assert!(output.stdout.contains("conu setup --start"));
         assert!(output.stdout.contains("conu smoke"));
         assert!(!output.stdout.contains("conu update apply"));
         assert!(output.stderr.is_empty());
@@ -14839,12 +15939,87 @@ mod tests {
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("Use Up/Down"));
         assert!(output.stdout.contains("conu dashboard"));
-        assert!(output.stdout.contains("conu setup"));
+        assert!(output.stdout.contains("conu setup --start"));
         assert!(output.stdout.contains("conu smoke"));
         assert!(output.stdout.contains("conu connect"));
         assert!(output.stdout.contains("contentsDisplayed=false"));
         assert!(!output.stdout.contains("private message contents"));
         assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn connect_menu_items_offer_setup_for_empty_state() {
+        let home = temp_home("connect-menu-empty");
+        let items = connect_menu_items(Some(home.clone()));
+
+        assert!(
+            items
+                .iter()
+                .any(|item| item.command == "conu setup --start" && item.title == "Setup")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item.command == "conu pair" && item.title == "Pair peer")
+        );
+        assert!(
+            items
+                .iter()
+                .any(|item| item.command == "conu watch" && item.title == "Watch")
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| !item.command.contains("private payload"))
+        );
+    }
+
+    #[test]
+    fn connect_menu_items_offer_real_local_actions_after_setup() {
+        let home = temp_home("connect-menu-ready");
+        let setup = run_with_home(["setup", "local"], Some(home.clone()));
+        assert_eq!(setup.code, 0, "{}", setup.stderr);
+        let prepared = run_with_home(
+            ["agents", "prepare", "agent.third", "Third"],
+            Some(home.clone()),
+        );
+        assert_eq!(prepared.code, 0, "{}", prepared.stderr);
+
+        let items = connect_menu_items(Some(home.clone()));
+
+        assert!(items.iter().any(|item| {
+            item.command == "conu connect local agent.alpha agent.beta"
+                && item.title == "Local stream"
+        }));
+        assert!(items.iter().any(|item| {
+            item.command == "conu chat agent.alpha agent.beta --stdin" && item.title == "Local chat"
+        }));
+        assert!(items.iter().any(|item| {
+            item.command == "conu connect room room.dev agent.third" && item.title == "Room join"
+        }));
+        assert!(items.iter().all(|item| {
+            !item
+                .command
+                .contains("local setup private payload contents")
+        }));
+
+        let selector = run_with_home(["connect"], Some(home));
+        assert_eq!(selector.code, 0, "{}", selector.stderr);
+        assert!(
+            selector
+                .stdout
+                .contains("conu connect room room.dev agent.third")
+        );
+        assert!(
+            selector
+                .stdout
+                .contains("conu chat agent.alpha agent.beta --stdin")
+        );
+        assert!(
+            !selector
+                .stdout
+                .contains("conu connect room room.dev agent.alpha")
+        );
     }
 
     #[test]
@@ -14901,12 +16076,17 @@ mod tests {
         assert_eq!(output.code, 0, "{}", output.stderr);
         assert!(output.stdout.contains("status: ready"));
         assert!(output.stdout.contains("mode: reusable local state"));
-        assert!(output.stdout.contains("agent.builder -> agent.helper"));
+        assert!(output.stdout.contains("agent.alpha -> agent.beta"));
+        assert!(
+            output
+                .stdout
+                .contains("agent kinds: local-agent -> local-agent")
+        );
         assert!(output.stdout.contains("message: delivered"));
         assert!(
             output
                 .stdout
-                .contains("conu connect local agent.builder agent.helper")
+                .contains("conu connect local agent.alpha agent.beta")
         );
         assert!(output.stdout.contains("contentsDisplayed=false"));
         assert!(
@@ -14940,8 +16120,10 @@ mod tests {
         assert!(second.stdout.contains("\"status\": \"ready\""));
         assert!(second.stdout.contains("\"persistentState\": true"));
         assert!(second.stdout.contains("\"contentsDisplayed\": false"));
-        assert!(second.stdout.contains("\"from\": \"agent.builder\""));
-        assert!(second.stdout.contains("\"to\": \"agent.helper\""));
+        assert!(second.stdout.contains("\"from\": \"agent.alpha\""));
+        assert!(second.stdout.contains("\"to\": \"agent.beta\""));
+        assert!(second.stdout.contains("\"fromKind\": \"local-agent\""));
+        assert!(second.stdout.contains("\"toKind\": \"local-agent\""));
         assert!(second.stdout.contains("\"toAgentJoined\": false"));
         assert!(second.stdout.contains("\"created\": false"));
         assert!(
@@ -14950,6 +16132,35 @@ mod tests {
                 .contains("local setup private payload contents")
         );
         assert!(second.stderr.is_empty());
+    }
+
+    #[test]
+    fn setup_local_can_include_existing_runtime_status() {
+        let home = temp_home("setup-local-start");
+        let _lease = runtime::acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let output = run_with_home(["setup", "--start"], Some(home.clone()));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("status: ready"));
+        assert!(output.stdout.contains("runtime: running (already running"));
+        assert!(output.stdout.contains("pid "));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(
+            !output
+                .stdout
+                .contains("local setup private payload contents")
+        );
+        assert!(output.stderr.is_empty());
+
+        let json = run_with_home(["setup", "local", "--start", "--json"], Some(home));
+        assert_eq!(json.code, 0, "{}", json.stderr);
+        assert!(json.stdout.contains("\"runtime\": {"));
+        assert!(json.stdout.contains("\"requested\": true"));
+        assert!(json.stdout.contains("\"status\": \"running\""));
+        assert!(json.stdout.contains("\"launched\": false"));
+        assert!(json.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!json.stdout.contains("local setup private payload contents"));
+        assert!(json.stderr.is_empty());
     }
 
     #[test]
@@ -14967,6 +16178,10 @@ mod tests {
                 "Frontend Agent",
                 "--to-name",
                 "QA Agent",
+                "--from-kind",
+                "browser-agent",
+                "--to-kind",
+                "test-agent",
                 "--room",
                 "room.release",
                 "--room-name",
@@ -14977,20 +16192,25 @@ mod tests {
 
         assert_eq!(output.code, 0, "{}", output.stderr);
         assert!(output.stdout.contains("agent.frontend -> agent.qa"));
+        assert!(
+            output
+                .stdout
+                .contains("agent kinds: browser-agent -> test-agent")
+        );
         assert!(output.stdout.contains("room: room.release"));
         assert!(
             output
                 .stdout
                 .contains("conu connect local agent.frontend agent.qa")
         );
-        assert!(output.stdout.contains("conu messages wait agent.qa"));
+        assert!(output.stdout.contains("conu wait agent.qa"));
         assert!(
             output
                 .stdout
                 .contains("conu rooms publish room.release agent.frontend build")
         );
-        assert!(!output.stdout.contains("agent.builder"));
-        assert!(!output.stdout.contains("agent.helper"));
+        assert!(!output.stdout.contains("agent.alpha"));
+        assert!(!output.stdout.contains("agent.beta"));
         assert!(output.stdout.contains("contentsDisplayed=false"));
         assert!(output.stderr.is_empty());
 
@@ -14998,6 +16218,7 @@ mod tests {
         assert!(agents.iter().any(|agent| {
             agent.agent_id == "agent.frontend"
                 && agent.display_name == "Frontend Agent"
+                && agent.kind == "browser-agent"
                 && agent.capabilities.messages
                 && agent.capabilities.streams
                 && agent.capabilities.rooms
@@ -15005,6 +16226,7 @@ mod tests {
         assert!(agents.iter().any(|agent| {
             agent.agent_id == "agent.qa"
                 && agent.display_name == "QA Agent"
+                && agent.kind == "test-agent"
                 && agent.capabilities.messages
                 && agent.capabilities.streams
                 && agent.capabilities.rooms
@@ -15034,6 +16256,8 @@ mod tests {
         assert_eq!(json.code, 0, "{}", json.stderr);
         assert!(json.stdout.contains("\"from\": \"agent.frontend\""));
         assert!(json.stdout.contains("\"to\": \"agent.qa\""));
+        assert!(json.stdout.contains("\"fromKind\": \"browser-agent\""));
+        assert!(json.stdout.contains("\"toKind\": \"test-agent\""));
         assert!(json.stdout.contains("\"roomId\": \"room.release\""));
         assert!(json.stdout.contains("\"toAgentJoined\": false"));
         assert!(json.stdout.contains("\"contentsDisplayed\": false"));
@@ -15043,13 +16267,160 @@ mod tests {
         let agents_after_repeat =
             agents::list_local_agents(Some(home)).expect("agents read after repeat setup");
         assert!(agents_after_repeat.iter().any(|agent| {
-            agent.agent_id == "agent.frontend" && agent.display_name == "Frontend Agent"
+            agent.agent_id == "agent.frontend"
+                && agent.display_name == "Frontend Agent"
+                && agent.kind == "browser-agent"
         }));
-        assert!(
-            agents_after_repeat
-                .iter()
-                .any(|agent| agent.agent_id == "agent.qa" && agent.display_name == "QA Agent")
+        assert!(agents_after_repeat.iter().any(|agent| {
+            agent.agent_id == "agent.qa"
+                && agent.display_name == "QA Agent"
+                && agent.kind == "test-agent"
+        }));
+    }
+
+    #[test]
+    fn simple_agent_messenger_commands_work_end_to_end() {
+        let home = temp_home("simple-agent-messenger");
+        let setup = run_with_home(["setup", "local"], Some(home.clone()));
+        assert_eq!(setup.code, 0, "{}", setup.stderr);
+
+        let send_secret = b"private short send payload";
+        let send = run_with_home_and_stdin(
+            ["send", "agent.alpha", "agent.beta", "--stdin"],
+            Some(home.clone()),
+            send_secret.to_vec(),
         );
+        assert_eq!(send.code, 0, "{}", send.stderr);
+        assert!(send.stdout.contains("conU send"));
+        assert!(!send.stdout.contains("private short send payload"));
+        assert!(send.stderr.is_empty());
+
+        let wait = run_with_home(
+            [
+                "wait",
+                "agent.beta",
+                "--process-ipc",
+                "--timeout-ms",
+                "1000",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        assert_eq!(wait.code, 0, "{}", wait.stderr);
+        assert!(!wait.stdout.contains("private short send payload"));
+        let wait_json: Value = serde_json::from_str(&wait.stdout).expect("wait json parses");
+        let first_envelope = wait_json
+            .get("message")
+            .and_then(Value::as_object)
+            .and_then(|message| message.get("envelopeId"))
+            .and_then(Value::as_str)
+            .expect("wait returns envelope")
+            .to_string();
+
+        let inbox = run_with_home(["inbox", "agent.beta", "--json"], Some(home.clone()));
+        assert_eq!(inbox.code, 0, "{}", inbox.stderr);
+        assert!(inbox.stdout.contains("\"agentId\": \"agent.beta\""));
+        assert!(inbox.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!inbox.stdout.contains("private short send payload"));
+
+        let history = run_with_home(
+            ["history", "agent.beta", "--limit", "20", "--json"],
+            Some(home.clone()),
+        );
+        assert_eq!(history.code, 0, "{}", history.stderr);
+        assert!(history.stdout.contains("\"totalMessages\""));
+        assert!(history.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!history.stdout.contains("private short send payload"));
+
+        let receive_path = home.join("received-short.bin");
+        let receive = run_with_home(
+            vec![
+                "receive".to_string(),
+                "agent.beta".to_string(),
+                first_envelope.clone(),
+                "--output".to_string(),
+                receive_path.display().to_string(),
+                "--json".to_string(),
+            ],
+            Some(home.clone()),
+        );
+        assert_eq!(receive.code, 0, "{}", receive.stderr);
+        assert!(receive.stdout.contains("\"status\": \"written\""));
+        assert!(receive.stdout.contains("\"pathDisplayed\": false"));
+        assert!(!receive.stdout.contains(&receive_path.display().to_string()));
+        assert_eq!(
+            fs::read(&receive_path).expect("received payload reads"),
+            send_secret
+        );
+
+        let chat_secret = b"private chat prompt payload";
+        let chat = run_with_home_and_stdin(
+            ["chat", "agent.alpha", "agent.beta", "--stdin"],
+            Some(home.clone()),
+            chat_secret.to_vec(),
+        );
+        assert_eq!(chat.code, 0, "{}", chat.stderr);
+        assert!(chat.stdout.contains("conU chat"));
+        assert!(!chat.stdout.contains("private chat prompt payload"));
+
+        let chat_wait = run_with_home(
+            [
+                "wait",
+                "agent.beta",
+                "--after",
+                &first_envelope,
+                "--process-ipc",
+                "--timeout-ms",
+                "1000",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        assert_eq!(chat_wait.code, 0, "{}", chat_wait.stderr);
+        let chat_wait_json: Value =
+            serde_json::from_str(&chat_wait.stdout).expect("chat wait json parses");
+        let chat_envelope = chat_wait_json
+            .get("message")
+            .and_then(Value::as_object)
+            .and_then(|message| message.get("envelopeId"))
+            .and_then(Value::as_str)
+            .expect("chat wait returns envelope")
+            .to_string();
+
+        let reply_secret = b"private reply payload";
+        let reply = run_with_home_and_stdin(
+            vec![
+                "reply".to_string(),
+                "agent.beta".to_string(),
+                chat_envelope,
+                "--stdin".to_string(),
+                "--json".to_string(),
+            ],
+            Some(home.clone()),
+            reply_secret.to_vec(),
+        );
+        assert_eq!(reply.code, 0, "{}", reply.stderr);
+        assert!(!reply.stdout.contains("private reply payload"));
+
+        let alpha_wait = run_with_home(
+            [
+                "wait",
+                "agent.alpha",
+                "--process-ipc",
+                "--timeout-ms",
+                "1000",
+                "--json",
+            ],
+            Some(home),
+        );
+        assert_eq!(alpha_wait.code, 0, "{}", alpha_wait.stderr);
+        assert!(
+            alpha_wait
+                .stdout
+                .contains("\"fromAgentId\": \"agent.beta\"")
+        );
+        assert!(alpha_wait.stdout.contains("\"toAgentId\": \"agent.alpha\""));
+        assert!(!alpha_wait.stdout.contains("private reply payload"));
     }
 
     #[test]
@@ -15062,7 +16433,7 @@ mod tests {
 
         assert_eq!(output.code, 2);
         assert!(output.stderr.contains("--from and --to must be different"));
-        assert!(output.stderr.contains("usage: conu setup"));
+        assert!(output.stderr.contains("usage:"));
         assert!(output.stdout.is_empty());
     }
 
@@ -15072,8 +16443,9 @@ mod tests {
         let empty = run_with_home(["connect"], Some(home.clone()));
 
         assert_eq!(empty.code, 0);
-        assert!(empty.stdout.contains("conu agents prepare agent.alpha"));
-        assert!(empty.stdout.contains("conu agents prepare agent.beta"));
+        assert!(empty.stdout.contains("conu setup --start"));
+        assert!(!empty.stdout.contains("conu agents prepare agent.alpha"));
+        assert!(!empty.stdout.contains("conu agents prepare agent.beta"));
         assert!(empty.stdout.contains("conu pair"));
 
         register_test_agent(&home, "agent.alpha");
@@ -15128,6 +16500,60 @@ mod tests {
     #[test]
     fn command_group_help_exits_successfully() {
         for args in [
+            vec!["init", "--help"],
+            vec!["status", "--help"],
+            vec!["agents", "--help"],
+            vec!["agents", "-h"],
+            vec!["agents", "help"],
+            vec!["agents", "register", "--help"],
+            vec!["agents", "prepare", "--help"],
+            vec!["agents", "heartbeat", "--help"],
+            vec!["agents", "export", "--help"],
+            vec!["agents", "trust", "--help"],
+            vec!["identity", "--help"],
+            vec!["identity", "-h"],
+            vec!["identity", "help"],
+            vec!["identity", "export", "--help"],
+            vec!["peers", "--help"],
+            vec!["peers", "-h"],
+            vec!["peers", "help"],
+            vec!["peers", "trust", "--help"],
+            vec!["peers", "policy", "--help"],
+            vec!["peers", "revoke", "--help"],
+            vec!["send", "--help"],
+            vec!["chat", "--help"],
+            vec!["inbox", "--help"],
+            vec!["history", "--help"],
+            vec!["wait", "--help"],
+            vec!["receive", "--help"],
+            vec!["reply", "--help"],
+            vec!["connect", "--help"],
+            vec!["connect", "-h"],
+            vec!["connect", "help"],
+            vec!["connect", "local", "--help"],
+            vec!["connect", "room", "--help"],
+            vec!["streams", "--help"],
+            vec!["streams", "open", "--help"],
+            vec!["streams", "write", "--help"],
+            vec!["streams", "close", "--help"],
+            vec!["rooms", "--help"],
+            vec!["rooms", "create", "--help"],
+            vec!["rooms", "join", "--help"],
+            vec!["rooms", "publish", "--help"],
+            vec!["rooms", "events", "--help"],
+            vec!["rooms", "policy", "--help"],
+            vec!["sessions", "--help"],
+            vec!["sessions", "sync", "--help"],
+            vec!["routes", "--help"],
+            vec!["routes", "sync", "--help"],
+            vec!["routes", "probes", "--help"],
+            vec!["pair", "--help"],
+            vec!["join", "--help"],
+            vec!["watch", "--help"],
+            vec!["doctor", "--help"],
+            vec!["components", "--help"],
+            vec!["start", "--help"],
+            vec!["stop", "--help"],
             vec!["messages", "--help"],
             vec!["messages", "-h"],
             vec!["messages", "help"],
@@ -18833,8 +20259,10 @@ mod tests {
     }
 
     #[test]
-    fn messages_send_queues_opaque_stdin_payload() {
-        let home = temp_home("message-send-queued");
+    fn messages_send_delivers_opaque_stdin_payload() {
+        let home = temp_home("message-send-delivered");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
 
         let output = run_with_home_and_stdin(
             [
@@ -18847,22 +20275,24 @@ mod tests {
             Some(home.clone()),
             b"private message contents".to_vec(),
         );
-        let request = std::fs::read_dir(state::StatePaths::from_home(home).message_ipc_inbox_dir)
-            .expect("message inbox reads")
-            .next()
-            .expect("message request exists")
-            .expect("message request entry");
-        let request_text = std::fs::read_to_string(request.path()).expect("request reads");
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+        let receipts = messages::list_receipts(Some(home)).expect("receipts read");
 
         assert_eq!(output.code, 0, "{}", output.stderr);
-        assert!(output.stdout.contains("status: queued"));
+        assert!(output.stdout.contains("status: delivered"));
+        assert!(output.stdout.contains("envelope: env_"));
         assert!(output.stdout.contains("bytes: 24"));
         assert!(!output.stdout.contains("private message contents"));
-        assert!(request_text.contains("payload_len = 24"));
-        assert!(request_text.contains("payload_privacy = \"encrypted_at_rest\""));
-        assert!(request_text.contains("payload_ciphertext_hex"));
-        assert!(!request_text.contains("payload_hex"));
-        assert!(!request_text.contains("private message contents"));
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].from_agent_id, "agent.sender");
+        assert_eq!(inbox[0].to_agent_id, "agent.receiver");
+        assert_eq!(inbox[0].payload_bytes, 24);
+        assert!(receipts.iter().any(|receipt| {
+            receipt.envelope_id == inbox[0].envelope_id
+                && receipt.status == "delivered_local"
+                && receipt.payload_bytes == 24
+        }));
     }
 
     #[test]
@@ -19149,8 +20579,8 @@ mod tests {
     }
 
     #[test]
-    fn messages_reply_queues_to_original_sender_without_original_payload() {
-        let home = temp_home("message-reply-queued");
+    fn messages_reply_delivers_to_original_sender_without_original_payload() {
+        let home = temp_home("message-reply-delivered");
         register_test_agent(&home, "agent.sender");
         register_test_agent(&home, "agent.receiver");
         deliver_test_message(
@@ -19174,15 +20604,11 @@ mod tests {
             Some(home.clone()),
             b"private reply contents".to_vec(),
         );
-        let request = fs::read_dir(state::StatePaths::from_home(home).message_ipc_inbox_dir)
-            .expect("message inbox reads")
-            .next()
-            .expect("reply request exists")
-            .expect("reply request entry");
-        let request_text = fs::read_to_string(request.path()).expect("request reads");
+        let sender_inbox =
+            messages::list_agent_inbox(Some(home), "agent.sender").expect("sender inbox reads");
 
         assert_eq!(output.code, 0, "{}", output.stderr);
-        assert!(output.stdout.contains("\"status\": \"queued\""));
+        assert!(output.stdout.contains("\"status\": \"delivered\""));
         assert!(
             output
                 .stdout
@@ -19192,14 +20618,13 @@ mod tests {
         assert!(output.stdout.contains("\"inReplyToEnvelopeId\""));
         assert!(output.stdout.contains("\"payloadBytes\": 22"));
         assert!(output.stdout.contains("\"contentsDisplayed\": false"));
-        assert!(request_text.contains("from_agent_id = \"agent.receiver\""));
-        assert!(request_text.contains("to_agent_id = \"agent.sender\""));
-        assert!(request_text.contains("payload_len = 22"));
-        assert!(request_text.contains("payload_privacy = \"encrypted_at_rest\""));
+        assert!(sender_inbox.iter().any(|entry| {
+            entry.from_agent_id == "agent.receiver"
+                && entry.to_agent_id == "agent.sender"
+                && entry.payload_bytes == 22
+        }));
         assert!(!output.stdout.contains("original private message"));
         assert!(!output.stdout.contains("private reply contents"));
-        assert!(!request_text.contains("original private message"));
-        assert!(!request_text.contains("private reply contents"));
     }
 
     #[test]
@@ -19477,8 +20902,8 @@ mod tests {
     }
 
     #[test]
-    fn messages_wait_process_ipc_delivers_queued_local_message() {
-        let home = temp_home("message-wait-process-ipc");
+    fn messages_send_processes_pending_agents_before_local_delivery() {
+        let home = temp_home("message-send-processes-agents");
         let sender = run_with_home(
             [
                 "agents",
@@ -19532,7 +20957,7 @@ mod tests {
         );
 
         assert_eq!(sent.code, 0, "{}", sent.stderr);
-        assert!(sent.stdout.contains("\"status\": \"queued\""));
+        assert!(sent.stdout.contains("\"status\": \"delivered\""));
         assert_eq!(waited.code, 0, "{}", waited.stderr);
         assert!(waited.stdout.contains("\"status\": \"delivered\""));
         assert!(waited.stdout.contains("\"processIpc\": true"));
@@ -19606,6 +21031,22 @@ mod tests {
 
         assert_eq!(start.code, 0, "{}", start.stderr);
         assert!(start.stdout.contains("status: already running"));
+    }
+
+    #[test]
+    fn runtime_start_retries_only_transient_control_file_races() {
+        assert!(runtime_start_read_error_is_retryable(
+            "read runtime status at status.toml: runtime control path changed while reading"
+        ));
+        assert!(runtime_start_read_error_is_retryable(
+            "inspect runtime status at status.toml: runtime control path changed while opening"
+        ));
+        assert!(!runtime_start_read_error_is_retryable(
+            "read runtime status at status.toml: runtime control file exceeds 1048576 bytes"
+        ));
+        assert!(!runtime_start_read_error_is_retryable(
+            "read runtime status at status.toml: runtime control path is missing"
+        ));
     }
 
     #[test]
