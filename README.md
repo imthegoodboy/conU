@@ -60,7 +60,7 @@ cargo +stable-x86_64-pc-windows-gnu test --workspace
 
 ## Fast Path On One PC
 
-`conu setup --start` creates local state, prepares two reusable agents, opens a stream, creates a room, verifies local delivery, and starts or attaches to `conUD`. Payload commands read bytes from stdin; replace `your-agent-command` with the agent or script that produces the private bytes.
+`conu setup --start` creates local state, prepares two reusable agents, opens a stream, creates a room, verifies local delivery, and starts or attaches to `conUD`. Payload commands read bytes from stdin or a bounded local file; use `--file ./message.bin` when you want a simple one-command send.
 
 | Step | Command |
 | --- | --- |
@@ -68,7 +68,7 @@ cargo +stable-x86_64-pc-windows-gnu test --workspace
 | 2. Check the install | `conu doctor` |
 | 3. Prepare and start | `conu setup --start` |
 | 4. Open the selector | `conu connect` |
-| 5. Send private bytes | `your-agent-command \| conu send agent.alpha agent.beta --stdin` |
+| 5. Send private bytes | `conu send agent.alpha agent.beta --file ./message.bin --json` |
 | 6. Wait for delivery | `conu wait agent.beta --process-ipc --timeout-ms 30000 --json` |
 | 7. Watch metadata | `conu watch` |
 
@@ -98,8 +98,8 @@ Two machines need the same relay URL when they are not on a direct local route. 
 | 5. Trust the peer | `conu peers trust --card pc2-peer.json` | `conu peers trust --card pc1-peer.json` |
 | 6. Allow traffic | `conu peers policy <pc2-node-id> --messages true --streams true --rooms true` | `conu peers policy <pc1-node-id> --messages true --streams true --rooms true` |
 | 7. Sync remote state | `conu sessions sync --json` | `conu sessions sync --json` |
-| 8. Send PC 1 to PC 2 | `your-agent-command \| conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --stdin` | `conu wait agent.pc2 --process-ipc --timeout-ms 30000 --json` |
-| 9. Send PC 2 to PC 1 | `conu wait agent.pc1 --process-ipc --timeout-ms 30000 --json` | `your-agent-command \| conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --stdin` |
+| 8. Send PC 1 to PC 2 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu wait agent.pc2 --process-ipc --timeout-ms 30000 --json` |
+| 9. Send PC 2 to PC 1 | `conu wait agent.pc1 --process-ipc --timeout-ms 30000 --json` | `conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --file ./message.bin --json` |
 | 10. Watch transport | `conu watch` | `conu watch` |
 
 Only the public peer card should be exchanged. Each machine keeps its private identity, local state, and payload files.
@@ -205,7 +205,7 @@ cargo run -p conu-relay -- --check
 
 ## 一台电脑快速开始
 
-`conu setup --start` 会创建本地状态、准备两个可复用 agent、打开 stream、创建 room、验证本地消息投递，并启动或连接到 `conUD`。Payload 命令从 stdin 读取字节；请把 `your-agent-command` 换成真正产生私有字节的 agent 或脚本。
+`conu setup --start` 会创建本地状态、准备两个可复用 agent、打开 stream、创建 room、验证本地消息投递，并启动或连接到 `conUD`。Payload 命令可以从 stdin 或受限本地文件读取字节；需要简单命令时使用 `--file ./message.bin`。
 
 | 步骤 | 命令 |
 | --- | --- |
@@ -213,7 +213,7 @@ cargo run -p conu-relay -- --check
 | 2. 检查安装 | `conu doctor` |
 | 3. 准备并启动 | `conu setup --start` |
 | 4. 打开连接选择器 | `conu connect` |
-| 5. 发送私有字节 | `your-agent-command \| conu send agent.alpha agent.beta --stdin` |
+| 5. 发送私有字节 | `conu send agent.alpha agent.beta --file ./message.bin --json` |
 | 6. 等待投递 | `conu wait agent.beta --process-ipc --timeout-ms 30000 --json` |
 | 7. 查看元数据 | `conu watch` |
 
@@ -230,8 +230,8 @@ cargo run -p conu-relay -- --check
 | 5. 信任对方 | `conu peers trust --card pc2-peer.json` | `conu peers trust --card pc1-peer.json` |
 | 6. 授权通信 | `conu peers policy <pc2-node-id> --messages true --streams true --rooms true` | `conu peers policy <pc1-node-id> --messages true --streams true --rooms true` |
 | 7. 同步远端状态 | `conu sessions sync --json` | `conu sessions sync --json` |
-| 8. 电脑 1 发给电脑 2 | `your-agent-command \| conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --stdin` | `conu wait agent.pc2 --process-ipc --timeout-ms 30000 --json` |
-| 9. 电脑 2 回复电脑 1 | `conu wait agent.pc1 --process-ipc --timeout-ms 30000 --json` | `your-agent-command \| conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --stdin` |
+| 8. 电脑 1 发给电脑 2 | `conu send agent.pc1 agent.pc2 --peer <pc2-node-id> --file ./message.bin --json` | `conu wait agent.pc2 --process-ipc --timeout-ms 30000 --json` |
+| 9. 电脑 2 回复电脑 1 | `conu wait agent.pc1 --process-ipc --timeout-ms 30000 --json` | `conu send agent.pc2 agent.pc1 --peer <pc1-node-id> --file ./message.bin --json` |
 | 10. 查看传输 | `conu watch` | `conu watch` |
 
 只交换公开 peer card。私有身份、本地状态和 payload 文件都留在各自电脑上。
