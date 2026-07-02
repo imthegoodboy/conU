@@ -1,76 +1,159 @@
-# @imthegoodboy/conu
+# conU
 
-This npm package is a thin launcher for the native Rust conU binaries:
+<p align="center">
+  <img src="https://raw.githubusercontent.com/imthegoodboy/conU/main/docs/conu-logo.svg" alt="conU logo" width="150">
+</p>
 
-- `conu`
-- `conud`
-- `conu-relay`
-- `conu-mcp`
+<p align="center">
+  Private communication infrastructure for agents.
+</p>
 
-The package does not reimplement conU in JavaScript. On install, it downloads the matching native release archive from GitHub Releases with bounded request time and response sizes, verifies the `.sha256` file, and places the binaries under the package-local `vendor/` directory.
+<p align="center">
+  <a href="https://github.com/imthegoodboy/conU">Repository</a> ·
+  <a href="https://github.com/imthegoodboy/conU/blob/main/docs/user-install-and-agent-guide.md">User Guide</a> ·
+  <a href="https://github.com/imthegoodboy/conU/blob/main/docs/render-relay-hosting.md">Relay Hosting</a> ·
+  <a href="https://github.com/imthegoodboy/conU/blob/main/architecture.md">Architecture</a>
+</p>
+
+```txt
+Agents own the conversation.
+conU owns the connection.
+```
+
+conU is a native Rust CLI, daemon, relay, SDK, and MCP adapter for private agent-to-agent communication. It is not a chatbot or an agent framework. Your agent keeps its own prompts, reasoning, memory, and tools; conU handles identity, trust, routing, encrypted delivery, streams, rooms, and metadata-only observability.
 
 ## Install
-
-Use a supported Node.js LTS line. This package currently accepts Node 22 LTS or
-Node 24 LTS and intentionally rejects EOL Node lines.
 
 ```sh
 npm install -g @imthegoodboy/conu
 conu doctor
 ```
 
-The expected release asset names are:
+The package installs these native binaries:
 
-```txt
-conu-0.1.0-windows-x64.zip
-conu-0.1.0-linux-x64.tar.gz
-conu-0.1.0-linux-arm64.tar.gz
-conu-0.1.0-macos-x64.zip
-conu-0.1.0-macos-arm64.zip
+| Command | Purpose |
+| --- | --- |
+| `conu` | Human and agent-friendly CLI. |
+| `conud` | Local daemon and router. |
+| `conu-relay` | Blind WebSocket relay for peer-encrypted internet delivery. |
+| `conu-mcp` | MCP stdio adapter for agent tools. |
+
+Supported Node.js lines: Node 22 LTS and Node 24 LTS.
+
+## Start On One PC
+
+```sh
+conu setup --start
+conu connect
 ```
 
-Each archive must have a sibling checksum file named `<asset>.sha256`.
+Send and receive private bytes:
 
-Tagged GitHub releases are expected to publish these assets before this npm
-package is published. The release workflow verifies archive checksums and
-rejects local conU state/log/key/payload paths before upload. Tagged release
-builds also require Windows Authenticode signing secrets, macOS Developer
-ID/notarization secrets, and the repository `NPM_TOKEN` secret. Tagged release
-preflight fails before package checks when any required release secret is
-missing so npm publication cannot silently skip after a GitHub-only release.
-Before attestation/upload, the release workflow also installs this package into
-a temporary npm prefix with `CONU_NPM_BINARY_DIR` pointed at an existing
-directory of generated archive binaries, requires every expected binary to be a
-regular file before copying to `vendor/`, verifies the package-local `vendor/`
-copies and npm bin shims, and runs the installed launcher through `conu init`,
-`conu security audit --json`, and `conu doctor --json`. A second release smoke serves the generated
-archive plus `.sha256` from localhost and installs with `CONU_NPM_DIST_BASE`, so
-the default HTTPS download policy, checksum verification, archive-member
-count/duplicate/state-path preflight, bounded extracted-tree binary selection,
-extraction, and launcher path are checked before publishing.
-
-## Environment
-
-```txt
-CONU_NPM_DIST_BASE             Override the release base URL; HTTPS is required unless the URL is loopback HTTP.
-CONU_NPM_BINARY_DIR            Copy binaries from an existing local directory after regular-file preflight.
-CONU_NPM_SKIP_DOWNLOAD         Skip install download for package publishing checks.
-CONU_NPM_ALLOW_UNVERIFIED      Allow missing checksum files only for loopback testing downloads.
-CONU_NPM_DOWNLOAD_TIMEOUT_MS   Override the per-request download timeout; default is 300000.
-CONU_NPM_MAX_ARCHIVE_BYTES     Override the native archive download limit; default is 536870912.
-CONU_NPM_MAX_CHECKSUM_BYTES    Override the checksum response limit; default is 16384.
+```sh
+conu send agent.alpha agent.beta --file ./message.bin --json
+conu listen agent.beta --json
+conu pull agent.beta --dir ./agent-inbox --process-ipc --json
 ```
 
-The default download base is:
+Useful daily commands:
 
-```txt
-https://github.com/imthegoodboy/conU/releases/download/v0.1.0
+```sh
+conu dashboard
+conu chat
+conu inbox agent.beta --json
+conu next agent.beta --json
+conu watch
 ```
 
-Download redirects must stay within the same trust boundary. Public release
-downloads may redirect only to other public HTTPS URLs, while loopback test
-downloads must keep redirects on loopback hosts.
+## Connect Two PCs
 
-## Current Product Limit
+If both machines use a shared relay, configure it once on each PC:
 
-The npm package only solves distribution. It does not turn the current relay into a managed public network. Users still run `conu-relay` themselves, configure trusted peer cards, and use reachable `ws://` or certificate-valid `wss://` relay endpoints with live-reloaded scoped credentials or a hashed `CONU_RELAY_CREDENTIALS_FILE`, optional account-scoped online credential admin, scoped hosted admin-token manifests with payload-safe local `conu-relay --admin-token-audit`, admin-gated online tenant lifecycle for one configured relay registry, local/admin-gated hosted account suspension, same-node relay-session resume with optional metadata-only `CONU_RELAY_SESSION_STATE_DIR` records, payload-safe local `conu-relay --session-audit` and admin-gated online `conu-relay --admin-session-audit` snapshots, metadata-only `CONU_RELAY_ACCOUNTING_DIR` counters/quotas, metadata-only `CONU_RELAY_ABUSE_DIR` denial/enforcement counters, local/admin-gated `conu-relay --abuse-threshold-report` reports with reusable `--thresholds-file` policy files and optional `--fail-on-threshold` script exit status, policy-aware local `conu-relay --hosted-readiness` preflights with reusable `--retention-policy-file` and `--thresholds-file` policy files plus optional `--fail-on-warning`, local `conu-relay --hosted-dashboard` snapshots, admin-gated online `conu-relay --admin-hosted-dashboard` snapshots, admin-gated online `conu-relay --admin-abuse-threshold-report` reports, payload-safe local `conu-relay --mailbox-audit` and admin-gated online `conu-relay --admin-mailbox-audit` retention snapshots with reusable `--retention-policy-file` policy files, confirm-gated local `conu-relay --mailbox-purge` and admin-gated online `conu-relay --admin-mailbox-purge` cleanup, optional relay-local `CONU_RELAY_MAILBOX_PURGE_INTERVAL_SECONDS` cleanup, plus bounded offline mailbox policy for peer-encrypted messages, stream chunks, room events, and signed-card control envelopes. Room topic policy is local runtime metadata, not hosted tenant administration. Set `CONU_RELAY_MAILBOX_DIR` on the relay for durable ciphertext files until distributed hosted dashboards/accounting/abuse workflows beyond single-relay threshold reports and readiness preflights, distributed multi-instance session migration beyond single-relay session-state audits, distributed hosted mailbox retention orchestration beyond single-relay purge, and distributed hosted tenant lifecycle/workflow automation beyond scoped single-relay account suspension/admin tokens are implemented.
+```sh
+printf "$CONU_RELAY_TOKEN" | conu online wss://your-relay.example.com/conu --token-stdin --verify
+```
+
+Then exchange connection codes:
+
+| PC 1 | PC 2 |
+| --- | --- |
+| `conu invite` |  |
+| Send the code to PC 2. | `conu accept <code>` |
+| `conu sessions sync --json` | `conu sessions sync --json` |
+
+For public peer-card workflows and relay hosting, use the full guide:
+
+```txt
+https://github.com/imthegoodboy/conU/blob/main/docs/user-install-and-agent-guide.md
+```
+
+## Relay Hosting
+
+For quick local testing:
+
+```sh
+conu-relay --serve 127.0.0.1:8787
+```
+
+For internet use, run the relay behind TLS or deploy the Render Blueprint from the repository. The relay forwards route metadata and peer-encrypted envelopes; it must not see plaintext agent messages.
+
+## Privacy
+
+conU may show transport metadata:
+
+```txt
+agent ids, node ids, route, byte counts, delivery state, timestamps
+```
+
+conU must not show private content:
+
+```txt
+message text, reasoning, hidden memory, tool output, file contents, secrets
+```
+
+Payload-bearing commands read from stdin or explicit files. Human-facing output stays metadata-only and uses `contentsDisplayed=false`.
+
+## 中文说明
+
+conU 是给 agent 使用的私有通信基础设施。它负责连接，不负责思考或对话内容。agent 自己保留提示词、推理、记忆和工具；conU 负责身份、信任、路由、加密投递、stream、room，以及只显示元数据的状态观察。
+
+快速开始：
+
+```sh
+npm install -g @imthegoodboy/conu
+conu setup --start
+conu connect
+```
+
+两台电脑使用同一个 relay 时，可以先配置在线连接：
+
+```sh
+printf "$CONU_RELAY_TOKEN" | conu online wss://your-relay.example.com/conu --token-stdin --verify
+```
+
+conU 可以显示 agent id、路由、字节数和投递状态；不显示消息正文、推理内容、隐藏记忆、工具输出、文件内容或 secret。
+
+## Package Security
+
+This npm package is a launcher for native release binaries. During install it downloads the matching GitHub Release archive, verifies the sibling `.sha256` checksum, checks archive members before extraction, and installs binaries under the package-local `vendor/` directory.
+
+Environment overrides are available for release testing and controlled deployments:
+
+| Variable | Purpose |
+| --- | --- |
+| `CONU_NPM_DIST_BASE` | Override release download base URL. HTTPS is required unless using loopback HTTP. |
+| `CONU_NPM_BINARY_DIR` | Copy binaries from an existing local directory after preflight checks. |
+| `CONU_NPM_SKIP_DOWNLOAD` | Skip download for package publishing checks. |
+| `CONU_NPM_ALLOW_UNVERIFIED` | Allow missing checksums only for loopback testing downloads. |
+| `CONU_NPM_DOWNLOAD_TIMEOUT_MS` | Override per-request download timeout. |
+| `CONU_NPM_MAX_ARCHIVE_BYTES` | Override native archive download limit. |
+| `CONU_NPM_MAX_CHECKSUM_BYTES` | Override checksum response limit. |
+
+## Links
+
+| Resource | URL |
+| --- | --- |
+| Repository | `https://github.com/imthegoodboy/conU` |
+| npm | `https://www.npmjs.com/package/@imthegoodboy/conu` |
+| User guide | `https://github.com/imthegoodboy/conU/blob/main/docs/user-install-and-agent-guide.md` |
+| Relay hosting | `https://github.com/imthegoodboy/conU/blob/main/docs/render-relay-hosting.md` |
