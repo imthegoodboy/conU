@@ -133,6 +133,12 @@ const MENU_ITEMS: &[MenuItem] = &[
         action: MenuAction::Command(&["inbox"]),
     },
     MenuItem {
+        title: "Listen",
+        command: "conu listen <agent>",
+        detail: "choose agent listener",
+        action: MenuAction::ConnectSelector,
+    },
+    MenuItem {
         title: "Agents",
         command: "conu agents",
         detail: "local and remote agent list",
@@ -202,6 +208,7 @@ struct ConnectMenuItem {
 }
 
 const CONNECT_MENU_MAX_LOCAL_STREAMS: usize = 8;
+const CONNECT_MENU_MAX_AGENT_LISTEN_HINTS: usize = 4;
 const CONNECT_MENU_MAX_LOCAL_CHAT_HINTS: usize = 4;
 const CONNECT_MENU_MAX_ROOM_JOINS: usize = 8;
 const CONNECT_MENU_MAX_REMOTE_HINTS: usize = 4;
@@ -817,6 +824,28 @@ fn connect_menu_items(home_override: Option<PathBuf>) -> Vec<ConnectMenuItem> {
 
     if message_agents.len() >= 2 {
         let mut added = 0usize;
+        for agent in message_agents.iter() {
+            push_connect_menu_item(
+                &mut items,
+                &mut seen,
+                ConnectMenuItem {
+                    title: "Agent listen".to_string(),
+                    command: format!("conu listen {} --json", agent.agent_id),
+                    detail: "wait for next inbox item".to_string(),
+                    action: ConnectMenuAction::Command(vec![
+                        "listen".to_string(),
+                        agent.agent_id.clone(),
+                        "--json".to_string(),
+                    ]),
+                },
+            );
+            added += 1;
+            if added >= CONNECT_MENU_MAX_AGENT_LISTEN_HINTS {
+                break;
+            }
+        }
+
+        let mut added = 0usize;
         'messages: for from in message_agents.iter() {
             for to in message_agents.iter() {
                 if from.agent_id == to.agent_id {
@@ -1099,6 +1128,7 @@ where
         "inbox" => render_inbox(&args[1..], home_override),
         "history" => render_history(&args[1..], home_override),
         "next" => render_next(&args[1..], home_override),
+        "listen" => render_listen(&args[1..], home_override),
         "wait" => render_wait(&args[1..], home_override),
         "receive" => render_receive(&args[1..], home_override),
         "pull" => render_pull(&args[1..], home_override),
@@ -1268,15 +1298,12 @@ fn dashboard_next_actions(
         push_dashboard_action(
             &mut actions,
             &mut seen,
-            format!("conu history {}", to.agent_id),
+            format!("conu listen {} --json", to.agent_id),
         );
         push_dashboard_action(
             &mut actions,
             &mut seen,
-            format!(
-                "conu wait {} --process-ipc --timeout-ms 30000 --json",
-                to.agent_id
-            ),
+            format!("conu history {}", to.agent_id),
         );
         push_dashboard_action(
             &mut actions,
@@ -2901,6 +2928,116 @@ fn render_next(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     ))
 }
 
+fn render_listen(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let usage = render_listen_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    let parsed = match parse_agent_listen_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let agents = match agents::list_local_agents(home_override.clone()) {
+        Ok(agents) => agents,
+        Err(error) => return CliOutput::failure(1, format!("conU listen failed\n\n{error}")),
+    };
+    let registered = agents.iter().any(|agent| agent.agent_id == parsed.agent_id);
+    if !registered {
+        let commands = next_commands(&parsed.agent_id, false, false);
+        if parsed.json {
+            return CliOutput::success(render_listen_json(
+                &parsed.agent_id,
+                None,
+                "not_registered",
+                0,
+                false,
+                &commands,
+            ));
+        }
+        return CliOutput::success(render_listen_text(
+            &parsed.agent_id,
+            None,
+            "not_registered",
+            0,
+            false,
+            &commands,
+        ));
+    }
+
+    let started = std::time::Instant::now();
+    loop {
+        if parsed.process_ipc
+            && let Err(error) = process_wait_ipc(home_override.clone())
+        {
+            return CliOutput::failure(1, format!("conU listen failed\n\n{error}"));
+        }
+
+        let entries = match messages::list_agent_inbox(home_override.clone(), &parsed.agent_id) {
+            Ok(entries) => entries,
+            Err(error) => return CliOutput::failure(1, format!("conU listen failed\n\n{error}")),
+        };
+        match newest_wait_entry(&entries, parsed.after_envelope_id.as_deref()) {
+            WaitEntrySearch::Found(entry) => {
+                let waited_ms = waited_millis(started);
+                let commands = listen_commands(&parsed.agent_id, true);
+                if parsed.json {
+                    return CliOutput::success(render_listen_json(
+                        &parsed.agent_id,
+                        Some(&entry),
+                        "delivered",
+                        waited_ms,
+                        parsed.process_ipc,
+                        &commands,
+                    ));
+                }
+                return CliOutput::success(render_listen_text(
+                    &parsed.agent_id,
+                    Some(&entry),
+                    "delivered",
+                    waited_ms,
+                    parsed.process_ipc,
+                    &commands,
+                ));
+            }
+            WaitEntrySearch::MissingAfter => {
+                return CliOutput::failure(
+                    1,
+                    "conU listen failed\n\nafter envelope was not found in this agent inbox; contentsDisplayed=false",
+                );
+            }
+            WaitEntrySearch::None => {}
+        }
+
+        let elapsed = waited_millis(started);
+        if elapsed >= parsed.timeout_ms {
+            let commands = listen_commands(&parsed.agent_id, false);
+            if parsed.json {
+                return CliOutput::success(render_listen_json(
+                    &parsed.agent_id,
+                    None,
+                    "timeout",
+                    elapsed,
+                    parsed.process_ipc,
+                    &commands,
+                ));
+            }
+            return CliOutput::success(render_listen_text(
+                &parsed.agent_id,
+                None,
+                "timeout",
+                elapsed,
+                parsed.process_ipc,
+                &commands,
+            ));
+        }
+
+        let remaining = parsed.timeout_ms.saturating_sub(elapsed);
+        thread::sleep(Duration::from_millis(
+            parsed.interval_ms.min(remaining).max(1),
+        ));
+    }
+}
+
 fn render_wait(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let usage = render_wait_usage();
     if is_help_request(args) {
@@ -4148,7 +4285,11 @@ fn render_next_json(
 }
 
 fn render_next_command_json(agent_id: &str, registered: bool, has_messages: bool) -> String {
-    let commands = next_commands(agent_id, registered, has_messages)
+    render_command_list_json(next_commands(agent_id, registered, has_messages))
+}
+
+fn render_command_list_json(commands: Vec<String>) -> String {
+    let commands = commands
         .into_iter()
         .map(|command| format!(r#"    "{}""#, json_escape(&command)))
         .collect::<Vec<_>>()
@@ -4231,13 +4372,118 @@ fn next_commands(agent_id: &str, registered: bool, has_messages: bool) -> Vec<St
             "conu reply {agent_id} --latest --file ./reply.bin --json"
         ));
     } else {
-        commands.push(format!(
-            "conu wait {agent_id} --process-ipc --timeout-ms 30000 --json"
-        ));
+        commands.push(format!("conu listen {agent_id} --json"));
     }
 
     commands.push("conu status --json".to_string());
     commands
+}
+
+fn listen_commands(agent_id: &str, delivered: bool) -> Vec<String> {
+    if delivered {
+        vec![
+            format!("conu pull {agent_id} --dir ./agent-inbox --process-ipc --json"),
+            format!("conu reply {agent_id} --latest --file ./reply.bin --json"),
+            format!("conu next {agent_id} --json"),
+        ]
+    } else {
+        vec![
+            format!("conu listen {agent_id} --json"),
+            format!("conu next {agent_id} --json"),
+            "conu status --json".to_string(),
+        ]
+    }
+}
+
+fn render_listen_json(
+    agent_id: &str,
+    entry: Option<&InboxEntry>,
+    status: &str,
+    waited_ms: u64,
+    process_ipc: bool,
+    commands: &[String],
+) -> String {
+    let message = entry
+        .map(render_wait_message_json)
+        .unwrap_or_else(|| "null".to_string());
+    let commands = render_command_list_json(commands.to_vec());
+
+    format!(
+        r#"{{
+  "agentId": "{}",
+  "status": "{}",
+  "message": {},
+  "waitedMs": {},
+  "processIpc": {},
+  "commands": {},
+  "pathDisplayed": false,
+  "contentsDisplayed": false
+}}"#,
+        json_escape(agent_id),
+        json_escape(status),
+        message,
+        waited_ms,
+        process_ipc,
+        commands
+    )
+}
+
+fn render_listen_text(
+    agent_id: &str,
+    entry: Option<&InboxEntry>,
+    status: &str,
+    waited_ms: u64,
+    process_ipc: bool,
+    commands: &[String],
+) -> String {
+    let message = entry
+        .map(|entry| {
+            let stream = entry
+                .stream_id
+                .as_deref()
+                .map(|stream_id| format!("\nstream: {stream_id}"))
+                .unwrap_or_default();
+            format!(
+                r"message
+  envelope: {}
+  kind: {}{stream}
+  from: {}
+  to: {}
+  receipt: {}
+  bytes: {}
+  deliveredAtUnix: {}",
+                entry.envelope_id,
+                entry.kind,
+                entry.from_agent_id,
+                entry.to_agent_id,
+                entry.receipt_id,
+                entry.payload_bytes,
+                entry.delivered_at_unix
+            )
+        })
+        .unwrap_or_else(|| "message\n  none".to_string());
+    let commands = commands
+        .iter()
+        .map(|command| format!("  {command}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r"conU listen
+
+status: {status}
+agent: {agent_id}
+waitedMs: {waited_ms}
+processIpc: {process_ipc}
+{message}
+
+next commands
+{commands}
+
+privacy
+  payload view  contentsDisplayed=false
+  local paths    pathDisplayed=false"
+    )
 }
 
 fn render_inbox_overview_text(records: &[InboxOverviewRecord]) -> String {
@@ -4274,7 +4520,7 @@ next
   conu inbox
   conu inbox <agent-id>
   conu history <agent-id>
-  conu wait <agent-id> --process-ipc --timeout-ms 30000 --json
+  conu listen <agent-id> --json
   conu receive <agent-id> <envelope-id> --output <file>
 
 privacy
@@ -4698,6 +4944,15 @@ struct AgentNextArgs {
     json: bool,
 }
 
+struct AgentListenArgs {
+    agent_id: String,
+    after_envelope_id: Option<String>,
+    timeout_ms: u64,
+    interval_ms: u64,
+    process_ipc: bool,
+    json: bool,
+}
+
 struct MessageReplyArgs {
     agent_id: String,
     envelope_id: Option<String>,
@@ -4890,6 +5145,77 @@ fn parse_agent_next_args(args: &[String]) -> Result<AgentNextArgs, CliOutput> {
     };
 
     Ok(AgentNextArgs { agent_id, json })
+}
+
+fn parse_agent_listen_args(args: &[String]) -> Result<AgentListenArgs, CliOutput> {
+    const MAX_TIMEOUT_MS: u64 = 300_000;
+    const MAX_INTERVAL_MS: u64 = 10_000;
+
+    let mut json = false;
+    let mut process_ipc = true;
+    let mut timeout_ms = 30_000;
+    let mut interval_ms = 250;
+    let mut after_envelope_id = None;
+    let mut agent_id = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--process-ipc" => process_ipc = true,
+            "--no-process-ipc" => process_ipc = false,
+            "--after" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_listen_usage()));
+                };
+                after_envelope_id = Some(value.clone());
+                index += 1;
+            }
+            "--timeout-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_listen_usage()));
+                };
+                timeout_ms = match value.parse::<u64>() {
+                    Ok(value) if value <= MAX_TIMEOUT_MS => value,
+                    _ => return Err(CliOutput::failure(2, render_listen_usage())),
+                };
+                index += 1;
+            }
+            "--interval-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_listen_usage()));
+                };
+                interval_ms = match value.parse::<u64>() {
+                    Ok(value) if (1..=MAX_INTERVAL_MS).contains(&value) => value,
+                    _ => return Err(CliOutput::failure(2, render_listen_usage())),
+                };
+                index += 1;
+            }
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            value => {
+                if agent_id.is_some() {
+                    return Err(CliOutput::failure(2, render_listen_usage()));
+                }
+                agent_id = Some(value.to_string());
+            }
+        }
+        index += 1;
+    }
+
+    let Some(agent_id) = agent_id else {
+        return Err(CliOutput::failure(2, render_listen_usage()));
+    };
+
+    Ok(AgentListenArgs {
+        agent_id,
+        after_envelope_id,
+        timeout_ms,
+        interval_ms,
+        process_ipc,
+        json,
+    })
 }
 
 fn parse_message_reply_args(args: &[String]) -> Result<MessageReplyArgs, CliOutput> {
@@ -5307,6 +5633,20 @@ example:
 shows:
   metadata-only readiness, inbox count, newest message metadata, and safe next commands for one agent
   message contents are never printed
+  pathDisplayed=false contentsDisplayed=false"
+        .to_string()
+}
+
+fn render_listen_usage() -> String {
+    r"usage:
+  conu listen <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--no-process-ipc] [--json]
+
+example:
+  conu listen agent.beta --json
+
+purpose:
+  wait for the next inbox message for one agent with IPC processing enabled by default
+  output shows envelope metadata and safe pull/reply commands only
   pathDisplayed=false contentsDisplayed=false"
         .to_string()
 }
@@ -9497,6 +9837,7 @@ fn connect_next_steps(
             "conu chat {} {}",
             local_agents[0].agent_id, local_agents[1].agent_id
         ));
+        steps.push(format!("conu listen {} --json", local_agents[1].agent_id));
     }
 
     if let Some((room, agent)) = rooms.iter().find_map(|room| {
@@ -15227,7 +15568,7 @@ next
   conu agents register <agent-id> <display-name> --messages true
   echo <payload> | conu send <from-agent> <to-agent> --stdin
   conu send <from-agent> <to-agent> --file ./message.bin --json
-  conu wait <to-agent> --process-ipc --timeout-ms 30000 --json
+  conu listen <to-agent> --json
 
 privacy
   temp state    removed after smoke
@@ -16154,7 +16495,7 @@ next
   conu connect local {} {}
   conu chat
   conu send {} {} --file ./message.bin --json
-  conu wait {} --process-ipc --timeout-ms 30000 --json
+  conu listen {} --json
   conu inbox {}
   conu history {}
   conu rooms publish {} {} build --stdin
@@ -16840,6 +17181,7 @@ Start:
 Messages:
   conu inbox [agent-id]
   conu next <agent-id> --json
+  conu listen <agent-id> --json
   conu history <agent-id>
   conu wait <agent-id> --process-ipc --timeout-ms 30000 --json
   conu receive <agent-id> <envelope-id> --output <file>
@@ -16899,6 +17241,7 @@ Usage:
   conu send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
   conu inbox [agent-id] [--json]
   conu next <agent-id> [--json]
+  conu listen <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--no-process-ipc] [--json]
   conu history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu receive <agent-id> <envelope-id> --output <file> [--json]
@@ -17375,12 +17718,8 @@ mod tests {
         );
         assert!(output.stdout.contains("conu inbox agent.beta"));
         assert!(output.stdout.contains("conu next agent.beta --json"));
+        assert!(output.stdout.contains("conu listen agent.beta --json"));
         assert!(output.stdout.contains("conu history agent.beta"));
-        assert!(
-            output
-                .stdout
-                .contains("conu wait agent.beta --process-ipc --timeout-ms 30000 --json")
-        );
         assert!(!output.stdout.contains("conu update apply"));
         assert!(output.stderr.is_empty());
     }
@@ -17418,11 +17757,7 @@ mod tests {
         assert!(output.stdout.contains("registered: yes"));
         assert!(output.stdout.contains("presence: ready"));
         assert!(output.stdout.contains("inboxMessages: 0"));
-        assert!(
-            output
-                .stdout
-                .contains("conu wait agent.receiver --process-ipc --timeout-ms 30000 --json")
-        );
+        assert!(output.stdout.contains("conu listen agent.receiver --json"));
         assert!(
             output
                 .stdout
@@ -17431,6 +17766,79 @@ mod tests {
         assert!(!output.stdout.contains("private message"));
         assert!(output.stdout.contains("contentsDisplayed=false"));
         assert!(output.stdout.contains("pathDisplayed=false"));
+    }
+
+    #[test]
+    fn listen_for_unregistered_agent_suggests_ready_without_waiting() {
+        let home = temp_home("listen-unregistered");
+
+        let output = run_with_home(["listen", "agent.new", "--json"], Some(home.clone()));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"agentId\": \"agent.new\""));
+        assert!(output.stdout.contains("\"status\": \"not_registered\""));
+        assert!(output.stdout.contains("\"message\": null"));
+        assert!(
+            output
+                .stdout
+                .contains("conu ready agent.new <display-name> --json")
+        );
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains(home.to_str().expect("path utf8")));
+        assert!(!output.stdout.contains("private message"));
+    }
+
+    #[test]
+    fn listen_timeout_is_payload_safe_and_suggests_retry() {
+        let home = temp_home("listen-timeout");
+        register_test_agent(&home, "agent.receiver");
+
+        let output = run_with_home(
+            ["listen", "agent.receiver", "--timeout-ms", "0", "--json"],
+            Some(home),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"timeout\""));
+        assert!(output.stdout.contains("\"processIpc\": true"));
+        assert!(output.stdout.contains("conu listen agent.receiver --json"));
+        assert!(output.stdout.contains("conu next agent.receiver --json"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private message"));
+    }
+
+    #[test]
+    fn listen_delivered_message_suggests_pull_and_latest_reply_without_payload() {
+        let home = temp_home("listen-delivered");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private listen payload contents",
+        );
+
+        let output = run_with_home(["listen", "agent.receiver", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"delivered\""));
+        assert!(output.stdout.contains("\"fromAgentId\": \"agent.sender\""));
+        assert!(
+            output
+                .stdout
+                .contains("conu pull agent.receiver --dir ./agent-inbox --process-ipc --json")
+        );
+        assert!(
+            output
+                .stdout
+                .contains("conu reply agent.receiver --latest --file ./reply.bin --json")
+        );
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private listen payload contents"));
     }
 
     #[test]
@@ -17479,6 +17887,7 @@ mod tests {
         assert!(output.stdout.contains("conu dashboard"));
         assert!(output.stdout.contains("conu setup --start"));
         assert!(output.stdout.contains("conu connect"));
+        assert!(output.stdout.contains("conu listen <agent>"));
         assert!(output.stdout.contains("conu inbox"));
         assert!(output.stdout.contains("conu status"));
         assert!(output.stdout.contains("conu smoke"));
@@ -17496,6 +17905,7 @@ mod tests {
             assert_eq!(output.code, 0, "{}", output.stderr);
             assert!(output.stdout.contains("Start:"));
             assert!(output.stdout.contains("conu setup --start"));
+            assert!(output.stdout.contains("conu listen <agent-id> --json"));
             assert!(output.stdout.contains("conu help commands"));
             assert!(output.stdout.contains("contentsDisplayed=false"));
             assert!(!output.stdout.contains("conu agents prepare <agent-id>"));
@@ -17592,6 +18002,9 @@ mod tests {
                 )
         }));
         assert!(items.iter().any(|item| {
+            item.command == "conu listen agent.beta --json" && item.title == "Agent listen"
+        }));
+        assert!(items.iter().any(|item| {
             item.command == "conu connect room room.dev agent.third" && item.title == "Room join"
         }));
         assert!(items.iter().all(|item| {
@@ -17607,6 +18020,7 @@ mod tests {
                 .stdout
                 .contains("conu connect room room.dev agent.third")
         );
+        assert!(selector.stdout.contains("conu listen agent.beta --json"));
         assert!(selector.stdout.contains("conu chat agent.alpha agent.beta"));
         assert!(
             !selector
@@ -17796,7 +18210,7 @@ mod tests {
                 .stdout
                 .contains("conu connect local agent.frontend agent.qa")
         );
-        assert!(output.stdout.contains("conu wait agent.qa"));
+        assert!(output.stdout.contains("conu listen agent.qa --json"));
         assert!(
             output
                 .stdout
