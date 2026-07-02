@@ -1090,6 +1090,7 @@ where
             }
         }
         "status" => render_status(&args[1..], home_override),
+        "ready" => render_ready(&args[1..], home_override),
         "agents" => render_agents(&args[1..], home_override),
         "peers" => render_peers(&args[1..], home_override, stdin_payload),
         "send" => render_send(&args[1..], home_override, stdin_payload),
@@ -1667,6 +1668,26 @@ fn render_agent_prepare(args: &[String], home_override: Option<PathBuf>) -> CliO
         Ok(report) => CliOutput::success(render_agent_prepare_text(&report)),
         Err(error) => CliOutput::failure(1, format!("conU agents prepare failed\n\n{error}")),
     }
+}
+
+fn render_ready(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    if args.is_empty() || is_help_request(args) {
+        return CliOutput::success(render_ready_usage());
+    }
+
+    retitle_agent_prepare_output(render_agent_prepare(args, home_override))
+}
+
+fn retitle_agent_prepare_output(mut output: CliOutput) -> CliOutput {
+    output.stdout = output
+        .stdout
+        .replace("conU agents prepare", "conU ready")
+        .replace("conu agents prepare", "conu ready");
+    output.stderr = output
+        .stderr
+        .replace("conU agents prepare", "conU ready")
+        .replace("conu agents prepare", "conu ready");
+    output
 }
 
 fn render_agent_export(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
@@ -2573,6 +2594,21 @@ fn render_agents_register_usage() -> String {
 
 fn render_agents_prepare_usage() -> String {
     "usage: conu agents prepare <agent-id> <display-name> [--kind <kind>] [--presence <ready|busy|idle|offline>] [--connect <agent-id>] [--stream-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence-capability <true|false>] [--json]".to_string()
+}
+
+fn render_ready_usage() -> String {
+    r"usage:
+  conu ready <agent-id> <display-name> [--kind <kind>] [--presence <ready|busy|idle|offline>] [--connect <agent-id>] [--stream-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence-capability <true|false>] [--json]
+
+examples:
+  conu ready agent.worker Worker-Agent
+  conu ready agent.worker Worker-Agent --connect agent.peer --room room.dev
+
+purpose:
+  initialize conU state, register the agent, mark it ready, and optionally open a stream or room
+  same engine as conu agents prepare
+  contentsDisplayed=false"
+        .to_string()
 }
 
 fn render_agents_heartbeat_usage() -> String {
@@ -15874,6 +15910,7 @@ Usage:
 Start:
   conu                  open the Up/Down menu in a terminal
   conu setup --start    create two local agents and start conUD
+  conu ready <id> <name> register one agent and mark it ready
   conu connect          choose an agent action
   conu chat             send one private local message
 
@@ -15922,6 +15959,7 @@ Usage:
   conu dashboard
   conu init
   conu status [--json]
+  conu ready <agent-id> <display-name> [--kind <kind>] [--presence <ready|busy|idle|offline>] [--connect <agent-id>] [--stream-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence-capability <true|false>] [--json]
   conu agents [--json]
   conu agents prepare <agent-id> <display-name> [--kind <kind>] [--presence <ready|busy|idle|offline>] [--connect <agent-id>] [--stream-kind <kind>] [--room <room-id>] [--room-name <display-name>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence-capability <true|false>] [--json]
   conu agents register <agent-id> <display-name> [--kind <kind>] [--messages <true|false>] [--streams <true|false>] [--rooms <true|false>] [--files <true|false>] [--presence <true|false>] [--json]
@@ -17010,6 +17048,7 @@ mod tests {
             "setup",
             "smoke",
             "status",
+            "ready",
             "agents",
             "streams",
             "rooms",
@@ -17039,6 +17078,7 @@ mod tests {
         for args in [
             vec!["init", "--help"],
             vec!["status", "--help"],
+            vec!["ready", "--help"],
             vec!["agents", "--help"],
             vec!["agents", "-h"],
             vec!["agents", "help"],
@@ -20745,6 +20785,66 @@ mod tests {
         assert!(json.stdout.contains("\"created\": false"));
         assert!(json.stdout.contains("\"contentsDisplayed\": false"));
         assert!(!json.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn ready_short_command_prepares_agent_with_stream_room_and_json() {
+        let home = temp_home("agent-ready-short");
+
+        let peer = run_with_home(["ready", "agent.peer", "Peer Agent"], Some(home.clone()));
+        let output = run_with_home(
+            [
+                "ready",
+                "agent.worker",
+                "Worker Agent",
+                "--kind",
+                "coding-agent",
+                "--connect",
+                "agent.peer",
+                "--room",
+                "room.workshop",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(peer.code, 0, "{}", peer.stderr);
+        assert!(peer.stdout.contains("conU ready"));
+        assert!(!peer.stdout.contains("conU agents prepare"));
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"status\": \"ready\""));
+        assert!(output.stdout.contains("\"agentId\": \"agent.worker\""));
+        assert!(output.stdout.contains("\"kind\": \"coding-agent\""));
+        assert!(output.stdout.contains("\"presence\": \"ready\""));
+        assert!(output.stdout.contains("\"streamId\":"));
+        assert!(output.stdout.contains("\"roomId\": \"room.workshop\""));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private message contents"));
+        assert!(output.stderr.is_empty());
+
+        let agents = agents::list_local_agents(Some(home.clone())).expect("agents list");
+        assert!(agents.iter().any(|agent| {
+            agent.agent_id == "agent.worker"
+                && agent.display_name == "Worker Agent"
+                && agent.kind == "coding-agent"
+                && agent.presence == AgentPresence::Ready
+        }));
+
+        let stream_records = streams::list_streams(Some(home.clone())).expect("streams list");
+        assert!(stream_records.iter().any(|stream| {
+            stream.from_agent_id == "agent.worker"
+                && stream.to_agent_id == "agent.peer"
+                && stream.kind == "message"
+        }));
+
+        let room_records = rooms::list_rooms(Some(home)).expect("rooms list");
+        assert!(room_records.iter().any(|room| {
+            room.room_id == "room.workshop"
+                && room
+                    .participants
+                    .iter()
+                    .any(|participant| participant.agent_id == "agent.worker")
+        }));
     }
 
     #[test]
