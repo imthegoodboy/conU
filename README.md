@@ -67,10 +67,11 @@ cargo +stable-x86_64-pc-windows-gnu test --workspace
 | 1. Install | `npm install -g @imthegoodboy/conu` |
 | 2. Check the install | `conu doctor` |
 | 3. Prepare and start | `conu setup --start` |
-| 4. Open the selector | `conu connect` |
-| 5. Send private bytes | `conu send agent.alpha agent.beta --file ./message.bin --json` |
-| 6. Wait for delivery | `conu wait agent.beta --process-ipc --timeout-ms 30000 --json` |
-| 7. Watch metadata | `conu watch` |
+| 4. Open the menu | `conu` |
+| 5. Open the selector | `conu connect` |
+| 6. Send private bytes | `conu send agent.alpha agent.beta --file ./message.bin --json` |
+| 7. Wait for delivery | `conu listen agent.beta --json` |
+| 8. Watch metadata | `conu watch` |
 
 Useful commands after setup:
 

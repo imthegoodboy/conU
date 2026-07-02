@@ -41,6 +41,8 @@ use serde_json::{Map, Number, Value};
 use sha2::{Digest, Sha256};
 
 const MAX_CLI_PAYLOAD_FILE_BYTES: u64 = 64 * 1024;
+const MAX_MENU_RELAY_URL_BYTES: usize = 4096;
+const MAX_MENU_RELAY_TOKEN_BYTES: usize = 4096;
 
 /// A rendered CLI command result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +92,7 @@ fn unexpected_argument_error() -> CliOutput {
 enum MenuAction {
     Command(&'static [&'static str]),
     ConnectSelector,
+    OnlineSetupPrompt,
     Exit,
 }
 
@@ -133,10 +136,10 @@ const MENU_ITEMS: &[MenuItem] = &[
         action: MenuAction::Command(&["inbox"]),
     },
     MenuItem {
-        title: "Listen",
-        command: "conu listen <agent>",
-        detail: "choose agent listener",
-        action: MenuAction::ConnectSelector,
+        title: "Online",
+        command: "conu setup --relay <url> --start",
+        detail: "prompt for relay URL",
+        action: MenuAction::OnlineSetupPrompt,
     },
     MenuItem {
         title: "Agents",
@@ -289,10 +292,20 @@ struct SmokeHome {
     path: PathBuf,
 }
 
-struct TerminalMenuGuard;
+struct TerminalMenuGuard {
+    active: bool,
+}
 
-impl Drop for TerminalMenuGuard {
-    fn drop(&mut self) {
+impl TerminalMenuGuard {
+    fn active() -> Self {
+        Self { active: true }
+    }
+
+    fn restore(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
         let _ = crossterm::terminal::disable_raw_mode();
         let mut stdout = io::stdout();
         let _ = crossterm::execute!(
@@ -303,10 +316,16 @@ impl Drop for TerminalMenuGuard {
     }
 }
 
+impl Drop for TerminalMenuGuard {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
 /// Run the human terminal menu. Callers should gate this to real TTY sessions.
 pub fn run_terminal_menu() -> io::Result<CliOutput> {
     crossterm::terminal::enable_raw_mode()?;
-    let _guard = TerminalMenuGuard;
+    let mut guard = TerminalMenuGuard::active();
     let mut stdout = io::stdout();
     crossterm::execute!(
         stdout,
@@ -343,6 +362,10 @@ pub fn run_terminal_menu() -> io::Result<CliOutput> {
                     if item.action == MenuAction::ConnectSelector {
                         return run_connect_terminal_selector_loop(&mut stdout);
                     }
+                    if item.action == MenuAction::OnlineSetupPrompt {
+                        guard.restore();
+                        return prompt_online_setup();
+                    }
                     return Ok(run_menu_item(item));
                 }
                 crossterm::event::KeyEvent {
@@ -376,7 +399,7 @@ pub fn run_terminal_menu() -> io::Result<CliOutput> {
 /// `conu connect`, which renders a static metadata-only selector.
 pub fn run_connect_terminal_selector() -> io::Result<CliOutput> {
     crossterm::terminal::enable_raw_mode()?;
-    let _guard = TerminalMenuGuard;
+    let _guard = TerminalMenuGuard::active();
     let mut stdout = io::stdout();
     crossterm::execute!(
         stdout,
@@ -688,7 +711,145 @@ fn run_menu_item(item: MenuItem) -> CliOutput {
     match item.action {
         MenuAction::Command(args) => run(args.iter().copied()),
         MenuAction::ConnectSelector => run(["connect"]),
+        MenuAction::OnlineSetupPrompt => CliOutput::failure(
+            2,
+            "online setup prompt requires an interactive terminal; contentsDisplayed=false",
+        ),
         MenuAction::Exit => CliOutput::success("conU menu closed\ncontentsDisplayed=false"),
+    }
+}
+
+fn prompt_online_setup() -> io::Result<CliOutput> {
+    println!("conU online setup");
+    println!("connect this machine through a relay");
+    println!();
+
+    let relay_url = prompt_terminal_required_line("relay URL: ")?;
+    let token = prompt_hidden_optional_line("relay token (optional, hidden, Enter to skip): ")?;
+    println!();
+
+    let mut args = vec![
+        "setup".to_string(),
+        "--relay".to_string(),
+        relay_url,
+        "--start".to_string(),
+    ];
+    let stdin_payload = if let Some(token) = token {
+        args.push("--token-stdin".to_string());
+        token
+    } else {
+        Vec::new()
+    };
+
+    Ok(run_with_stdin(args, stdin_payload))
+}
+
+fn prompt_terminal_required_line(prompt: &str) -> io::Result<String> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "relay URL is required; contentsDisplayed=false",
+        ));
+    }
+    if value.len() > MAX_MENU_RELAY_URL_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("relay URL exceeds {MAX_MENU_RELAY_URL_BYTES} bytes; contentsDisplayed=false"),
+        ));
+    }
+    Ok(value.to_string())
+}
+
+struct RawModeGuard {
+    active: bool,
+}
+
+impl RawModeGuard {
+    fn active() -> io::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self { active: true })
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = crossterm::terminal::disable_raw_mode();
+            self.active = false;
+        }
+    }
+}
+
+fn prompt_hidden_optional_line(prompt: &str) -> io::Result<Option<Vec<u8>>> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+    let _guard = RawModeGuard::active()?;
+    let mut value = String::new();
+
+    loop {
+        if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+            match key {
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Enter,
+                    ..
+                } => break,
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Esc,
+                    ..
+                } => {
+                    println!();
+                    return Ok(None);
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Backspace,
+                    ..
+                } => {
+                    let _ = value.pop();
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char('c'),
+                    modifiers: crossterm::event::KeyModifiers::CONTROL,
+                    ..
+                } => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "online setup cancelled",
+                    ));
+                }
+                crossterm::event::KeyEvent {
+                    code: crossterm::event::KeyCode::Char(character),
+                    modifiers,
+                    ..
+                } if !modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                    if value.len().saturating_add(character.len_utf8()) > MAX_MENU_RELAY_TOKEN_BYTES
+                    {
+                        println!();
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "relay token exceeds {MAX_MENU_RELAY_TOKEN_BYTES} bytes; tokenDisplayed=false"
+                            ),
+                        ));
+                    }
+                    value.push(character);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    println!();
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value.as_bytes().to_vec()))
     }
 }
 
@@ -18325,7 +18486,7 @@ Usage:
 Start:
   conu                  open the Up/Down menu in a terminal
   conu setup --start    create two local agents and start conUD
-  conu online <relay> --token-stdin --verify
+  conu setup --relay <relay> --token-stdin --start
   conu invite --json    export a public invite card
   conu accept <file>    trust a public invite card
   conu ready <id> <name> register one agent and mark it ready
@@ -19042,8 +19203,9 @@ mod tests {
         assert!(output.stdout.contains("Use Up/Down"));
         assert!(output.stdout.contains("conu dashboard"));
         assert!(output.stdout.contains("conu setup --start"));
+        assert!(output.stdout.contains("conu setup --relay <url> --start"));
         assert!(output.stdout.contains("conu connect"));
-        assert!(output.stdout.contains("conu listen <agent>"));
+        assert!(!output.stdout.contains("conu listen <agent>"));
         assert!(output.stdout.contains("conu inbox"));
         assert!(output.stdout.contains("conu status"));
         assert!(output.stdout.contains("conu smoke"));
@@ -19061,6 +19223,11 @@ mod tests {
             assert_eq!(output.code, 0, "{}", output.stderr);
             assert!(output.stdout.contains("Start:"));
             assert!(output.stdout.contains("conu setup --start"));
+            assert!(
+                output
+                    .stdout
+                    .contains("conu setup --relay <relay> --token-stdin --start")
+            );
             assert!(output.stdout.contains("conu listen <agent-id> --json"));
             assert!(output.stdout.contains("conu help commands"));
             assert!(output.stdout.contains("contentsDisplayed=false"));
