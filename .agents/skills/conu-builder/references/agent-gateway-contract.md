@@ -91,6 +91,7 @@ Supported commands:
 ```txt
 conu messages send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
 conu next <agent-id> [--json]
+conu listen <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--no-process-ipc] [--json]
 conu messages inbox <agent-id> [--json]
 conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
 conu messages reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]

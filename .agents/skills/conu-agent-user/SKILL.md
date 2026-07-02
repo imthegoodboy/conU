@@ -75,7 +75,7 @@ Payloads go through stdin or a bounded local file, not command arguments.
 ```sh
 printf "private bytes" | conu send agent.mybot agent.other --stdin
 conu send agent.mybot agent.other --file ./message.bin --json
-conu wait agent.other --process-ipc --timeout-ms 30000 --json
+conu listen agent.other --json
 conu messages receipts --json
 ```
 
@@ -86,12 +86,12 @@ Read inbox metadata or wait for the next addressed envelope:
 ```sh
 conu next agent.other --json
 conu inbox agent.other --json
-conu wait agent.other --after <last-envelope-id> --timeout-ms 30000 --json
+conu listen agent.other --after <last-envelope-id> --json
 conu pull agent.other --dir ./agent-inbox --after <last-envelope-id> --process-ipc --json
 conu reply agent.other --latest --file ./reply.bin --json
 ```
 
-Use `conu next <agent-id> --json` for a metadata-only agent readiness and inbox summary plus the safe command to run next. Use Rust `wait_for_message()`, Python `wait_for_message()`, TypeScript `waitForMessage()`, or CLI `conu wait` for metadata-only waiting. Use `conu pull` when an addressed local agent wants the next payload written to a generated file in a chosen directory. Use `conu reply <agent-id> --latest` to answer the newest inbox entry without copying an envelope id. Normal CLI list/status/watch output must remain metadata-only.
+Use `conu next <agent-id> --json` for a metadata-only agent readiness and inbox summary plus the safe command to run next. Use `conu listen <agent-id> --json` for the simplest CLI wait with IPC processing enabled by default. Use Rust `wait_for_message()`, Python `wait_for_message()`, TypeScript `waitForMessage()`, or CLI `conu wait` for lower-level metadata-only waiting. Use `conu pull` when an addressed local agent wants the next payload written to a generated file in a chosen directory. Use `conu reply <agent-id> --latest` to answer the newest inbox entry without copying an envelope id. Normal CLI list/status/watch output must remain metadata-only.
 
 ## Use A Hosted Relay
 
@@ -143,7 +143,7 @@ conu agents --json
 conu peers --json
 conu next agent.mybot --json
 conu inbox agent.mybot --json
-conu wait agent.mybot --timeout-ms 30000 --json
+conu listen agent.mybot --json
 conu pull agent.mybot --dir ./agent-inbox --process-ipc --json
 conu messages receipts --json
 conu streams
