@@ -3413,11 +3413,16 @@ fn render_message_receive(args: &[String], home_override: Option<PathBuf>) -> Cl
         Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    let payload = match messages::read_message_payload(
-        home_override,
-        &parsed.agent_id,
-        &parsed.envelope_id,
-    ) {
+    if parsed.latest {
+        return render_message_receive_latest(parsed, home_override);
+    }
+
+    let envelope_id = parsed
+        .envelope_id
+        .as_deref()
+        .expect("non-latest receive has envelope id");
+    let payload = match messages::read_message_payload(home_override, &parsed.agent_id, envelope_id)
+    {
         Ok(payload) => payload,
         Err(_) => {
             return CliOutput::failure(
@@ -3441,7 +3446,7 @@ fn render_message_receive(args: &[String], home_override: Option<PathBuf>) -> Cl
   "contentsDisplayed": false
 }}"#,
             json_escape(&parsed.agent_id),
-            json_escape(&parsed.envelope_id),
+            json_escape(envelope_id),
             payload.len()
         ));
     }
@@ -3458,8 +3463,156 @@ output: local; pathDisplayed=false
 privacy
   payload view  contentsDisplayed=false",
         parsed.agent_id,
-        parsed.envelope_id,
+        envelope_id,
         payload.len()
+    ))
+}
+
+fn render_message_receive_latest(
+    parsed: MessageReceiveArgs,
+    home_override: Option<PathBuf>,
+) -> CliOutput {
+    let started = std::time::Instant::now();
+
+    loop {
+        if parsed.process_ipc
+            && let Err(error) = process_wait_ipc(home_override.clone())
+        {
+            return CliOutput::failure(1, format!("conU messages receive failed\n\n{error}"));
+        }
+
+        let entries = match messages::list_agent_inbox(home_override.clone(), &parsed.agent_id) {
+            Ok(entries) => entries,
+            Err(error) => {
+                return CliOutput::failure(1, format!("conU messages receive failed\n\n{error}"));
+            }
+        };
+        match newest_wait_entry(&entries, parsed.after_envelope_id.as_deref()) {
+            WaitEntrySearch::Found(entry) => {
+                return write_latest_receive_entry(parsed, home_override, entry, started);
+            }
+            WaitEntrySearch::MissingAfter => {
+                return CliOutput::failure(
+                    1,
+                    "conU messages receive failed\n\nafter envelope was not found in this agent inbox; contentsDisplayed=false pathDisplayed=false",
+                );
+            }
+            WaitEntrySearch::None => {}
+        }
+
+        let elapsed = waited_millis(started);
+        if elapsed >= parsed.timeout_ms {
+            return render_latest_receive_timeout(&parsed, elapsed);
+        }
+
+        let remaining = parsed.timeout_ms.saturating_sub(elapsed);
+        thread::sleep(Duration::from_millis(
+            parsed.interval_ms.min(remaining).max(1),
+        ));
+    }
+}
+
+fn write_latest_receive_entry(
+    parsed: MessageReceiveArgs,
+    home_override: Option<PathBuf>,
+    entry: InboxEntry,
+    started: std::time::Instant,
+) -> CliOutput {
+    let payload = match messages::read_message_payload(
+        home_override,
+        &parsed.agent_id,
+        &entry.envelope_id,
+    ) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return CliOutput::failure(
+                1,
+                "conU messages receive failed\n\npayload could not be read for the addressed local agent; pathDisplayed=false contentsDisplayed=false".to_string(),
+            );
+        }
+    };
+    if let Err(error) = write_message_receive_output(&parsed.output_path, payload.as_bytes()) {
+        return CliOutput::failure(1, format!("conU messages receive failed\n\n{error}"));
+    }
+    let waited_ms = waited_millis(started);
+
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "written",
+  "mode": "latest",
+  "agentId": "{}",
+  "envelopeId": "{}",
+  "fromAgentId": "{}",
+  "payloadBytes": {},
+  "waitedMs": {},
+  "processIpc": {},
+  "pathDisplayed": false,
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&parsed.agent_id),
+            json_escape(&entry.envelope_id),
+            json_escape(&entry.from_agent_id),
+            payload.len(),
+            waited_ms,
+            parsed.process_ipc
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU messages receive
+
+status: written
+mode: latest
+agent: {}
+from: {}
+envelope: {}
+bytes: {}
+waitedMs: {}
+output: local; pathDisplayed=false
+
+privacy
+  payload view  contentsDisplayed=false",
+        parsed.agent_id,
+        entry.from_agent_id,
+        entry.envelope_id,
+        payload.len(),
+        waited_ms
+    ))
+}
+
+fn render_latest_receive_timeout(parsed: &MessageReceiveArgs, waited_ms: u64) -> CliOutput {
+    if parsed.json {
+        return CliOutput::success(format!(
+            r#"{{
+  "status": "timeout",
+  "mode": "latest",
+  "agentId": "{}",
+  "envelopeId": null,
+  "waitedMs": {},
+  "processIpc": {},
+  "outputWritten": false,
+  "pathDisplayed": false,
+  "contentsDisplayed": false
+}}"#,
+            json_escape(&parsed.agent_id),
+            waited_ms,
+            parsed.process_ipc
+        ));
+    }
+
+    CliOutput::success(format!(
+        r"conU messages receive
+
+status: timeout
+mode: latest
+agent: {}
+waitedMs: {}
+output: not written; pathDisplayed=false
+
+privacy
+  payload view  contentsDisplayed=false",
+        parsed.agent_id, waited_ms
     ))
 }
 
@@ -4077,8 +4230,13 @@ struct MessageWaitArgs {
 
 struct MessageReceiveArgs {
     agent_id: String,
-    envelope_id: String,
+    envelope_id: Option<String>,
     output_path: PathBuf,
+    latest: bool,
+    after_envelope_id: Option<String>,
+    timeout_ms: u64,
+    interval_ms: u64,
+    process_ipc: bool,
     json: bool,
 }
 
@@ -4300,7 +4458,16 @@ fn parse_message_wait_args(args: &[String]) -> Result<MessageWaitArgs, CliOutput
 }
 
 fn parse_message_receive_args(args: &[String]) -> Result<MessageReceiveArgs, CliOutput> {
+    const MAX_TIMEOUT_MS: u64 = 300_000;
+    const MAX_INTERVAL_MS: u64 = 10_000;
+
     let mut json = false;
+    let mut latest = false;
+    let mut process_ipc = false;
+    let mut timeout_ms = 30_000;
+    let mut interval_ms = 250;
+    let mut after_envelope_id = None;
+    let mut wait_option_used = false;
     let mut output_path = None;
     let mut positional = Vec::new();
     let mut index = 0;
@@ -4308,6 +4475,41 @@ fn parse_message_receive_args(args: &[String]) -> Result<MessageReceiveArgs, Cli
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
+            "--latest" => latest = true,
+            "--process-ipc" => {
+                process_ipc = true;
+                wait_option_used = true;
+            }
+            "--after" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                after_envelope_id = Some(value.clone());
+                wait_option_used = true;
+                index += 1;
+            }
+            "--timeout-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                timeout_ms = match value.parse::<u64>() {
+                    Ok(value) if value <= MAX_TIMEOUT_MS => value,
+                    _ => return Err(CliOutput::failure(2, render_messages_usage())),
+                };
+                wait_option_used = true;
+                index += 1;
+            }
+            "--interval-ms" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                };
+                interval_ms = match value.parse::<u64>() {
+                    Ok(value) if (1..=MAX_INTERVAL_MS).contains(&value) => value,
+                    _ => return Err(CliOutput::failure(2, render_messages_usage())),
+                };
+                wait_option_used = true;
+                index += 1;
+            }
             "--output" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err(CliOutput::failure(2, render_messages_usage()));
@@ -4323,17 +4525,35 @@ fn parse_message_receive_args(args: &[String]) -> Result<MessageReceiveArgs, Cli
         index += 1;
     }
 
-    if positional.len() != 2 {
+    if !latest && wait_option_used {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    }
+    if latest && positional.len() != 1 {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    }
+    if !latest && positional.len() != 2 {
         return Err(CliOutput::failure(2, render_messages_usage()));
     }
     let Some(output_path) = output_path else {
         return Err(CliOutput::failure(2, render_messages_usage()));
     };
 
+    let agent_id = positional.remove(0);
+    let envelope_id = if latest {
+        None
+    } else {
+        Some(positional.remove(0))
+    };
+
     Ok(MessageReceiveArgs {
-        agent_id: positional.remove(0),
-        envelope_id: positional.remove(0),
+        agent_id,
+        envelope_id,
         output_path,
+        latest,
+        after_envelope_id,
+        timeout_ms,
+        interval_ms,
+        process_ipc,
         json,
     })
 }
@@ -4378,6 +4598,7 @@ fn render_messages_usage() -> String {
   conu messages reply <agent-id> <envelope-id> --stdin [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
+  conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receipts [--json]"
         .to_string()
 }
@@ -4448,9 +4669,14 @@ fn render_messages_wait_usage() -> String {
 fn render_receive_usage() -> String {
     r"usage:
   conu receive <agent-id> <envelope-id> --output <file> [--json]
+  conu receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
+
+example:
+  conu receive agent.beta --latest --output message.bin --process-ipc --json
 
 purpose:
   write addressed local payload bytes to a new file
+  --latest waits for the newest available message, or the next one after --after
   stdout still shows metadata only
   pathDisplayed=false contentsDisplayed=false"
         .to_string()
@@ -15919,6 +16145,7 @@ Messages:
   conu history <agent-id>
   conu wait <agent-id> --process-ipc --timeout-ms 30000 --json
   conu receive <agent-id> <envelope-id> --output <file>
+  conu receive <agent-id> --latest --output <file> --process-ipc
 
 Runtime:
   conu dashboard
@@ -15975,6 +16202,7 @@ Usage:
   conu history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu receive <agent-id> <envelope-id> --output <file> [--json]
+  conu receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu reply <agent-id> <envelope-id> --stdin [--json]
   conu messages send <from-agent> <to-agent> --stdin [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> --stdin [--json]
@@ -21505,6 +21733,108 @@ mod tests {
                 .contains(output_path.to_str().expect("path utf8"))
         );
         assert!(!output.stdout.contains("private message contents"));
+    }
+
+    #[test]
+    fn receive_latest_processes_queue_and_writes_payload_without_displaying_contents() {
+        let home = temp_home("message-receive-latest");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        let message = LocalMessage::new(
+            "agent.sender",
+            "agent.receiver",
+            OpaquePayload::from_bytes(b"private latest contents".to_vec()),
+        )
+        .expect("message valid");
+        messages::submit_local_message(Some(home.clone()), message).expect("message submits");
+        let output_path = home.join("latest.bin");
+
+        let output = run_with_home(
+            [
+                "receive",
+                "agent.receiver",
+                "--latest",
+                "--output",
+                output_path.to_str().expect("path utf8"),
+                "--process-ipc",
+                "--timeout-ms",
+                "1000",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(
+            fs::read(&output_path).expect("latest output reads"),
+            b"private latest contents"
+        );
+        assert!(output.stdout.contains("\"status\": \"written\""));
+        assert!(output.stdout.contains("\"mode\": \"latest\""));
+        assert!(output.stdout.contains("\"fromAgentId\": \"agent.sender\""));
+        assert!(output.stdout.contains("\"payloadBytes\": 23"));
+        assert!(output.stdout.contains("\"processIpc\": true"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(
+            !output
+                .stdout
+                .contains(output_path.to_str().expect("path utf8"))
+        );
+        assert!(!output.stdout.contains("private latest contents"));
+    }
+
+    #[test]
+    fn receive_latest_timeout_does_not_create_output_or_display_path() {
+        let home = temp_home("message-receive-latest-timeout");
+        register_test_agent(&home, "agent.receiver");
+        let output_path = home.join("timeout.bin");
+
+        let output = run_with_home(
+            [
+                "receive",
+                "agent.receiver",
+                "--latest",
+                "--output",
+                output_path.to_str().expect("path utf8"),
+                "--timeout-ms",
+                "0",
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(!output_path.exists());
+        assert!(output.stdout.contains("\"status\": \"timeout\""));
+        assert!(output.stdout.contains("\"outputWritten\": false"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(
+            !output
+                .stdout
+                .contains(output_path.to_str().expect("path utf8"))
+        );
+        assert!(!output.stdout.contains(home.to_str().expect("path utf8")));
+    }
+
+    #[test]
+    fn receive_latest_requires_latest_for_wait_options() {
+        let output = run_with_home(
+            [
+                "receive",
+                "agent.receiver",
+                "env.one",
+                "--output",
+                "received.bin",
+                "--process-ipc",
+            ],
+            Some(temp_home("message-receive-latest-usage")),
+        );
+
+        assert_eq!(output.code, 2);
+        assert!(output.stderr.contains("conu receive <agent-id> --latest"));
+        assert!(output.stdout.is_empty());
     }
 
     #[test]
