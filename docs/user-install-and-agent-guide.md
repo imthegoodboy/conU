@@ -274,14 +274,16 @@ PowerShell:
 ```powershell
 "opaque bytes from agent.builder" | conu messages send agent.builder agent.helper --stdin
 conu messages wait agent.helper --process-ipc --timeout-ms 30000 --json
+conu next agent.helper --json
 conu messages inbox agent.helper --json
 conu messages history agent.helper --limit 20 --json
 "reply bytes from agent.helper" | conu messages reply agent.helper <envelope-id> --stdin
+"reply bytes from agent.helper" | conu messages reply agent.helper --latest --stdin
 conu messages receive agent.helper <envelope-id> --output received.bin
 conu messages receipts --json
 ```
 
-The wait, inbox, history, and reply commands show metadata only: envelope id, sender, receiver, receipt id, byte count, and delivery time. They do not print the payload. `messages reply` uses inbox metadata to address the response and stdin for new bytes; it does not read the original payload. Use `messages receive` only when you intentionally want addressed local payload bytes written to a new file.
+The next, wait, inbox, history, and reply commands show metadata only: envelope id, sender, receiver, receipt id, byte count, delivery time, and safe next commands. They do not print the payload. `conu next <agent-id> --json` is the shortest agent-facing readiness and inbox summary. `messages reply` uses inbox metadata to address the response and stdin or `--file` for new bytes; `--latest` replies to the newest inbox entry without reading the original payload. Use `messages receive` only when you intentionally want addressed local payload bytes written to a new file.
 
 ## Connect Two Local Agents
 
@@ -658,9 +660,11 @@ Rules:
   conu rooms policy --json
   conu identity export --json
   conu agents export <agent-id> --json
+  conu next <agent-id> --json
   conu messages inbox <agent-id> --json
   conu messages history <agent-id> --limit 20 --json
   conu messages reply <agent-id> <envelope-id> --stdin
+  conu messages reply <agent-id> --latest --stdin
   conu messages wait <agent-id> --timeout-ms 30000 --json
   conu messages receive <agent-id> <envelope-id> --output <file>
   conu messages receipts --json

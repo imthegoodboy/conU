@@ -1098,6 +1098,7 @@ where
         "send" => render_send(&args[1..], home_override, stdin_payload),
         "inbox" => render_inbox(&args[1..], home_override),
         "history" => render_history(&args[1..], home_override),
+        "next" => render_next(&args[1..], home_override),
         "wait" => render_wait(&args[1..], home_override),
         "receive" => render_receive(&args[1..], home_override),
         "pull" => render_pull(&args[1..], home_override),
@@ -1258,6 +1259,11 @@ fn dashboard_next_actions(
             &mut actions,
             &mut seen,
             format!("conu inbox {}", to.agent_id),
+        );
+        push_dashboard_action(
+            &mut actions,
+            &mut seen,
+            format!("conu next {} --json", to.agent_id),
         );
         push_dashboard_action(
             &mut actions,
@@ -2854,6 +2860,47 @@ fn render_reply(
     )
 }
 
+fn render_next(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
+    let usage = render_next_usage();
+    if is_help_request(args) {
+        return CliOutput::success(usage);
+    }
+    let parsed = match parse_agent_next_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return error,
+    };
+    let agents = match agents::list_local_agents(home_override.clone()) {
+        Ok(agents) => agents,
+        Err(error) => return CliOutput::failure(1, format!("conU next failed\n\n{error}")),
+    };
+    let registered = agents
+        .iter()
+        .find(|agent| agent.agent_id == parsed.agent_id)
+        .cloned();
+    let inbox = if registered.is_some() {
+        match messages::list_agent_inbox(home_override, &parsed.agent_id) {
+            Ok(entries) => entries,
+            Err(error) => return CliOutput::failure(1, format!("conU next failed\n\n{error}")),
+        }
+    } else {
+        Vec::new()
+    };
+
+    if parsed.json {
+        return CliOutput::success(render_next_json(
+            &parsed.agent_id,
+            registered.as_ref(),
+            &inbox,
+        ));
+    }
+
+    CliOutput::success(render_next_text(
+        &parsed.agent_id,
+        registered.as_ref(),
+        &inbox,
+    ))
+}
+
 fn render_wait(args: &[String], home_override: Option<PathBuf>) -> CliOutput {
     let usage = render_wait_usage();
     if is_help_request(args) {
@@ -3238,11 +3285,10 @@ fn render_message_reply(
         Err(error) => return error,
     };
 
-    let target =
-        match reply_target_entry(home_override.clone(), &parsed.agent_id, &parsed.envelope_id) {
-            Ok(target) => target,
-            Err(error) => return CliOutput::failure(1, error),
-        };
+    let target = match reply_target_entry(home_override.clone(), &parsed) {
+        Ok(target) => target,
+        Err(error) => return CliOutput::failure(1, error),
+    };
     let before = inbox_ids(home_override.clone(), &target.from_agent_id);
     let payload_bytes = payload.len();
     let message = match LocalMessage::new(
@@ -4062,6 +4108,138 @@ fn render_inbox_overview_newest_json(entry: &InboxEntry) -> String {
     )
 }
 
+fn render_next_json(
+    agent_id: &str,
+    agent: Option<&LocalAgentRecord>,
+    entries: &[InboxEntry],
+) -> String {
+    let newest = entries
+        .last()
+        .map(render_inbox_overview_newest_json)
+        .unwrap_or_else(|| "null".to_string());
+    let commands = render_next_command_json(agent_id, agent.is_some(), !entries.is_empty());
+    let display_name = agent
+        .map(|agent| json_string(&agent.display_name))
+        .unwrap_or_else(|| "null".to_string());
+    let presence = agent
+        .map(|agent| json_string(agent.presence.as_str()))
+        .unwrap_or_else(|| "null".to_string());
+
+    format!(
+        r#"{{
+  "agentId": "{}",
+  "registered": {},
+  "displayName": {},
+  "presence": {},
+  "inboxMessages": {},
+  "newestMessage": {},
+  "commands": {},
+  "pathDisplayed": false,
+  "contentsDisplayed": false
+}}"#,
+        json_escape(agent_id),
+        agent.is_some(),
+        display_name,
+        presence,
+        entries.len(),
+        newest,
+        commands
+    )
+}
+
+fn render_next_command_json(agent_id: &str, registered: bool, has_messages: bool) -> String {
+    let commands = next_commands(agent_id, registered, has_messages)
+        .into_iter()
+        .map(|command| format!(r#"    "{}""#, json_escape(&command)))
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    if commands.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[\n{commands}\n  ]")
+    }
+}
+
+fn render_next_text(
+    agent_id: &str,
+    agent: Option<&LocalAgentRecord>,
+    entries: &[InboxEntry],
+) -> String {
+    let registered = yes_no(agent.is_some());
+    let display_name = agent
+        .map(|agent| agent.display_name.as_str())
+        .unwrap_or("not registered");
+    let presence = agent
+        .map(|agent| agent.presence.as_str())
+        .unwrap_or("not registered");
+    let newest = entries
+        .last()
+        .map(|entry| {
+            format!(
+                "{} from {} bytes {}",
+                entry.envelope_id, entry.from_agent_id, entry.payload_bytes
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
+    let commands = next_commands(agent_id, agent.is_some(), !entries.is_empty())
+        .into_iter()
+        .map(|command| format!("  {command}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r"conU next
+
+agent: {agent_id}
+registered: {registered}
+displayName: {display_name}
+presence: {presence}
+inboxMessages: {}
+newest: {newest}
+
+next commands
+{commands}
+
+privacy
+  payload view  contentsDisplayed=false
+  local paths    pathDisplayed=false",
+        entries.len()
+    )
+}
+
+fn next_commands(agent_id: &str, registered: bool, has_messages: bool) -> Vec<String> {
+    if !registered {
+        return vec![
+            format!("conu ready {agent_id} <display-name> --json"),
+            "conu setup --start".to_string(),
+            "conu status --json".to_string(),
+        ];
+    }
+
+    let mut commands = vec![
+        format!("conu agents heartbeat {agent_id} --presence ready --json"),
+        format!("conu inbox {agent_id} --json"),
+        format!("conu history {agent_id} --limit 20 --json"),
+    ];
+
+    if has_messages {
+        commands.push(format!(
+            "conu pull {agent_id} --dir ./agent-inbox --process-ipc --json"
+        ));
+        commands.push(format!(
+            "conu reply {agent_id} --latest --file ./reply.bin --json"
+        ));
+    } else {
+        commands.push(format!(
+            "conu wait {agent_id} --process-ipc --timeout-ms 30000 --json"
+        ));
+    }
+
+    commands.push("conu status --json".to_string());
+    commands
+}
+
 fn render_inbox_overview_text(records: &[InboxOverviewRecord]) -> String {
     let agents = if records.is_empty() {
         "  none registered yet".to_string()
@@ -4295,22 +4473,38 @@ privacy
 
 fn reply_target_entry(
     home_override: Option<PathBuf>,
-    agent_id: &str,
-    envelope_id: &str,
+    parsed: &MessageReplyArgs,
 ) -> Result<InboxEntry, String> {
-    let entries = messages::list_agent_inbox(home_override, agent_id).map_err(|_| {
+    let entries = messages::list_agent_inbox(home_override, &parsed.agent_id).map_err(|_| {
         "conU messages reply failed\n\nreply metadata could not be read for this local agent; contentsDisplayed=false".to_string()
     })?;
-    let Some(entry) = entries
-        .into_iter()
-        .find(|entry| entry.envelope_id == envelope_id && entry.to_agent_id == agent_id)
-    else {
+    if parsed.latest {
+        return entries
+            .into_iter()
+            .rev()
+            .find(|entry| entry.to_agent_id == parsed.agent_id.as_str())
+            .ok_or_else(|| {
+                "conU messages reply failed\n\nlatest reply target was not found in this agent inbox; contentsDisplayed=false"
+                    .to_string()
+            });
+    }
+
+    let Some(envelope_id) = parsed.envelope_id.as_deref() else {
         return Err(
-            "conU messages reply failed\n\nreply target was not found in this agent inbox; contentsDisplayed=false"
+            "conU messages reply failed\n\nreply target was not provided; contentsDisplayed=false"
                 .to_string(),
         );
     };
-    Ok(entry)
+
+    entries
+        .into_iter()
+        .find(|entry| {
+            entry.envelope_id == envelope_id && entry.to_agent_id == parsed.agent_id.as_str()
+        })
+        .ok_or_else(|| {
+            "conU messages reply failed\n\nreply target was not found in this agent inbox; contentsDisplayed=false"
+                .to_string()
+        })
 }
 
 fn render_receipts_json(receipts: &[DeliveryReceipt]) -> String {
@@ -4499,9 +4693,15 @@ struct MessageHistoryArgs {
     json: bool,
 }
 
+struct AgentNextArgs {
+    agent_id: String,
+    json: bool,
+}
+
 struct MessageReplyArgs {
     agent_id: String,
-    envelope_id: String,
+    envelope_id: Option<String>,
+    latest: bool,
     payload_input: Option<MessagePayloadInput>,
     json: bool,
 }
@@ -4666,8 +4866,35 @@ fn parse_message_history_args(args: &[String]) -> Result<MessageHistoryArgs, Cli
     })
 }
 
+fn parse_agent_next_args(args: &[String]) -> Result<AgentNextArgs, CliOutput> {
+    let mut json = false;
+    let mut agent_id = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if value.starts_with("--") => {
+                return Err(unknown_option_error());
+            }
+            value => {
+                if agent_id.is_some() {
+                    return Err(CliOutput::failure(2, render_next_usage()));
+                }
+                agent_id = Some(value.to_string());
+            }
+        }
+    }
+
+    let Some(agent_id) = agent_id else {
+        return Err(CliOutput::failure(2, render_next_usage()));
+    };
+
+    Ok(AgentNextArgs { agent_id, json })
+}
+
 fn parse_message_reply_args(args: &[String]) -> Result<MessageReplyArgs, CliOutput> {
     let mut json = false;
+    let mut latest = false;
     let mut payload_input = None;
     let mut positional = Vec::new();
     let mut index = 0;
@@ -4675,6 +4902,12 @@ fn parse_message_reply_args(args: &[String]) -> Result<MessageReplyArgs, CliOutp
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
+            "--latest" => {
+                if latest {
+                    return Err(CliOutput::failure(2, render_messages_usage()));
+                }
+                latest = true;
+            }
             "--stdin" => set_payload_input(&mut payload_input, MessagePayloadInput::Stdin)?,
             "--file" => {
                 let Some(value) = args.get(index + 1) else {
@@ -4694,13 +4927,21 @@ fn parse_message_reply_args(args: &[String]) -> Result<MessageReplyArgs, CliOutp
         index += 1;
     }
 
-    if positional.len() != 2 {
+    if latest && positional.len() != 1 {
+        return Err(CliOutput::failure(2, render_messages_usage()));
+    }
+    if !latest && positional.len() != 2 {
         return Err(CliOutput::failure(2, render_messages_usage()));
     }
 
     Ok(MessageReplyArgs {
         agent_id: positional.remove(0),
-        envelope_id: positional.remove(0),
+        envelope_id: if latest {
+            None
+        } else {
+            Some(positional.remove(0))
+        },
+        latest,
         payload_input,
         json,
     })
@@ -5011,6 +5252,7 @@ fn render_messages_usage() -> String {
   conu messages inbox [agent-id] [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu messages reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
+  conu messages reply <agent-id> --latest (--stdin|--file <path>) [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
@@ -5053,6 +5295,20 @@ shows:
 
 fn render_messages_inbox_usage() -> String {
     render_inbox_usage().replace("conu inbox", "conu messages inbox")
+}
+
+fn render_next_usage() -> String {
+    r"usage:
+  conu next <agent-id> [--json]
+
+example:
+  conu next agent.beta --json
+
+shows:
+  metadata-only readiness, inbox count, newest message metadata, and safe next commands for one agent
+  message contents are never printed
+  pathDisplayed=false contentsDisplayed=false"
+        .to_string()
 }
 
 fn render_history_usage() -> String {
@@ -5125,10 +5381,11 @@ fn render_messages_pull_usage() -> String {
 fn render_reply_usage() -> String {
     r"usage:
   conu reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
+  conu reply <agent-id> --latest (--stdin|--file <path>) [--json]
 
 example:
   echo <reply> | conu reply agent.beta <envelope-id> --stdin
-  conu reply agent.beta <envelope-id> --file ./reply.bin --json"
+  conu reply agent.beta --latest --file ./reply.bin --json"
         .to_string()
 }
 
@@ -16582,6 +16839,7 @@ Start:
 
 Messages:
   conu inbox [agent-id]
+  conu next <agent-id> --json
   conu history <agent-id>
   conu wait <agent-id> --process-ipc --timeout-ms 30000 --json
   conu receive <agent-id> <envelope-id> --output <file>
@@ -16640,17 +16898,20 @@ Usage:
   conu send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
   conu send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
   conu inbox [agent-id] [--json]
+  conu next <agent-id> [--json]
   conu history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu receive <agent-id> <envelope-id> --output <file> [--json]
   conu receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
+  conu reply <agent-id> --latest (--stdin|--file <path>) [--json]
   conu messages send <from-agent> <to-agent> (--stdin|--file <path>) [--json]
   conu messages send <from-agent> <to-agent> --peer <peer-node-id> (--stdin|--file <path>) [--json]
   conu messages inbox [agent-id] [--json]
   conu messages history <agent-id> [--after <envelope-id>] [--limit <count>] [--newest-first] [--json]
   conu messages reply <agent-id> <envelope-id> (--stdin|--file <path>) [--json]
+  conu messages reply <agent-id> --latest (--stdin|--file <path>) [--json]
   conu messages wait <agent-id> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receive <agent-id> <envelope-id> --output <file> [--json]
   conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
@@ -17113,6 +17374,7 @@ mod tests {
                 .contains("conu send agent.alpha agent.beta --file ./message.bin --json")
         );
         assert!(output.stdout.contains("conu inbox agent.beta"));
+        assert!(output.stdout.contains("conu next agent.beta --json"));
         assert!(output.stdout.contains("conu history agent.beta"));
         assert!(
             output
@@ -17121,6 +17383,90 @@ mod tests {
         );
         assert!(!output.stdout.contains("conu update apply"));
         assert!(output.stderr.is_empty());
+    }
+
+    #[test]
+    fn next_for_unregistered_agent_suggests_ready_without_paths_or_payloads() {
+        let home = temp_home("next-unregistered");
+
+        let output = run_with_home(["next", "agent.new", "--json"], Some(home.clone()));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"agentId\": \"agent.new\""));
+        assert!(output.stdout.contains("\"registered\": false"));
+        assert!(output.stdout.contains("\"inboxMessages\": 0"));
+        assert!(
+            output
+                .stdout
+                .contains("conu ready agent.new <display-name> --json")
+        );
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains(home.to_str().expect("path utf8")));
+        assert!(!output.stdout.contains("private message"));
+    }
+
+    #[test]
+    fn next_for_ready_agent_suggests_wait_when_inbox_is_empty() {
+        let home = temp_home("next-ready-empty");
+        register_test_agent(&home, "agent.receiver");
+
+        let output = run_with_home(["next", "agent.receiver"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("conU next"));
+        assert!(output.stdout.contains("registered: yes"));
+        assert!(output.stdout.contains("presence: ready"));
+        assert!(output.stdout.contains("inboxMessages: 0"));
+        assert!(
+            output
+                .stdout
+                .contains("conu wait agent.receiver --process-ipc --timeout-ms 30000 --json")
+        );
+        assert!(
+            output
+                .stdout
+                .contains("conu agents heartbeat agent.receiver --presence ready --json")
+        );
+        assert!(!output.stdout.contains("private message"));
+        assert!(output.stdout.contains("contentsDisplayed=false"));
+        assert!(output.stdout.contains("pathDisplayed=false"));
+    }
+
+    #[test]
+    fn next_for_ready_agent_with_inbox_suggests_pull_and_latest_reply_without_payload() {
+        let home = temp_home("next-ready-inbox");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private message contents",
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.receiver").expect("inbox reads");
+
+        let output = run_with_home(["next", "agent.receiver", "--json"], Some(home));
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(output.stdout.contains("\"registered\": true"));
+        assert!(output.stdout.contains("\"inboxMessages\": 1"));
+        assert!(output.stdout.contains(&inbox[0].envelope_id));
+        assert!(output.stdout.contains("\"fromAgentId\":\"agent.sender\""));
+        assert!(
+            output
+                .stdout
+                .contains("conu pull agent.receiver --dir ./agent-inbox --process-ipc --json")
+        );
+        assert!(
+            output
+                .stdout
+                .contains("conu reply agent.receiver --latest --file ./reply.bin --json")
+        );
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private message contents"));
     }
 
     #[test]
@@ -17772,6 +18118,7 @@ mod tests {
             vec!["send", "--help"],
             vec!["chat", "--help"],
             vec!["inbox", "--help"],
+            vec!["next", "--help"],
             vec!["history", "--help"],
             vec!["wait", "--help"],
             vec!["receive", "--help"],
@@ -21762,6 +22109,144 @@ mod tests {
                 .stdout
                 .contains(payload_path.to_str().expect("path utf8"))
         );
+    }
+
+    #[test]
+    fn messages_reply_latest_targets_newest_sender_without_payload() {
+        let home = temp_home("message-reply-latest");
+        register_test_agent(&home, "agent.first");
+        register_test_agent(&home, "agent.latest");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.first",
+            "agent.receiver",
+            b"old private message",
+        );
+        deliver_test_message(
+            &home,
+            "agent.latest",
+            "agent.receiver",
+            b"newest private message",
+        );
+        let receiver_inbox = messages::list_agent_inbox(Some(home.clone()), "agent.receiver")
+            .expect("receiver inbox reads");
+        let latest_envelope_id = receiver_inbox
+            .last()
+            .expect("latest message exists")
+            .envelope_id
+            .clone();
+
+        let output = run_with_home_and_stdin(
+            [
+                "messages",
+                "reply",
+                "agent.receiver",
+                "--latest",
+                "--stdin",
+                "--json",
+            ],
+            Some(home.clone()),
+            b"latest reply secret".to_vec(),
+        );
+        let first_inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.first").expect("first inbox");
+        let latest_inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.latest").expect("latest inbox");
+        let payload = messages::read_message_payload(
+            Some(home),
+            "agent.latest",
+            &latest_inbox[0].envelope_id,
+        )
+        .expect("latest reply payload reads");
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert!(first_inbox.is_empty());
+        assert_eq!(latest_inbox.len(), 1);
+        assert_eq!(latest_inbox[0].from_agent_id, "agent.receiver");
+        assert_eq!(latest_inbox[0].to_agent_id, "agent.latest");
+        assert_eq!(payload.as_bytes(), b"latest reply secret");
+        assert!(output.stdout.contains("\"status\": \"delivered\""));
+        assert!(
+            output
+                .stdout
+                .contains("\"fromAgentId\": \"agent.receiver\"")
+        );
+        assert!(output.stdout.contains("\"toAgentId\": \"agent.latest\""));
+        assert!(output.stdout.contains(&format!(
+            "\"inReplyToEnvelopeId\": \"{}\"",
+            latest_envelope_id
+        )));
+        assert!(output.stdout.contains("\"payloadBytes\": 19"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("old private message"));
+        assert!(!output.stdout.contains("newest private message"));
+        assert!(!output.stdout.contains("latest reply secret"));
+    }
+
+    #[test]
+    fn top_level_reply_latest_reads_file_without_displaying_path_or_contents() {
+        let home = temp_home("top-level-reply-latest-file");
+        register_test_agent(&home, "agent.sender");
+        register_test_agent(&home, "agent.receiver");
+        deliver_test_message(
+            &home,
+            "agent.sender",
+            "agent.receiver",
+            b"private original message",
+        );
+        let payload_path = home.join("latest-reply.bin");
+        fs::write(&payload_path, b"private latest file reply").expect("reply file writes");
+
+        let output = run_with_home(
+            [
+                "reply",
+                "agent.receiver",
+                "--latest",
+                "--file",
+                payload_path.to_str().expect("path utf8"),
+                "--json",
+            ],
+            Some(home.clone()),
+        );
+        let inbox =
+            messages::list_agent_inbox(Some(home.clone()), "agent.sender").expect("inbox reads");
+        let payload =
+            messages::read_message_payload(Some(home), "agent.sender", &inbox[0].envelope_id)
+                .expect("reply payload reads");
+
+        assert_eq!(output.code, 0, "{}", output.stderr);
+        assert_eq!(payload.as_bytes(), b"private latest file reply");
+        assert!(output.stdout.contains("\"status\": \"delivered\""));
+        assert!(output.stdout.contains("\"payloadBytes\": 25"));
+        assert!(output.stdout.contains("\"pathDisplayed\": false"));
+        assert!(output.stdout.contains("\"contentsDisplayed\": false"));
+        assert!(!output.stdout.contains("private latest file reply"));
+        assert!(!output.stdout.contains("private original message"));
+        assert!(
+            !output
+                .stdout
+                .contains(payload_path.to_str().expect("path utf8"))
+        );
+    }
+
+    #[test]
+    fn messages_reply_latest_empty_inbox_is_safe() {
+        let home = temp_home("message-reply-latest-empty");
+        register_test_agent(&home, "agent.receiver");
+
+        let output = run_with_home_and_stdin(
+            ["messages", "reply", "agent.receiver", "--latest", "--stdin"],
+            Some(home.clone()),
+            b"private reply contents".to_vec(),
+        );
+
+        assert_eq!(output.code, 1);
+        assert!(output.stderr.contains("latest reply target"));
+        assert!(output.stderr.contains("contentsDisplayed=false"));
+        assert!(!output.stderr.contains("private reply contents"));
+        assert!(!output.stderr.contains(home.to_str().expect("path utf8")));
     }
 
     #[test]
