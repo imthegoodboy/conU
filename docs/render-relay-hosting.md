@@ -114,16 +114,17 @@ secret values or rotate the token immediately after creation.
 
 ## User Node Setup
 
-Each user initializes conU, stores their assigned relay credential, trusts the peer, grants policy, and starts the daemon:
+Each user initializes conU, stores their assigned relay credential when needed, prepares local agents, and starts the daemon with the Render service URL:
 
 ```sh
-conu init
-cat ./node-a.token | conu relay credential set --stdin
-conu identity export --json
-conu peers trust <peer-node-id> "<peer name>" --exchange-key <hex> --relay wss://<service>.onrender.com/conu --signing-key <hex> --signature <hex> --signature-key-id <id>
-conu peers policy <peer-node-id> --messages true --streams true --rooms true
-conu start
+printf "$CONU_RELAY_TOKEN" | conu setup --relay https://<service>.onrender.com --token-stdin --start
+conu invite --relay https://<service>.onrender.com --json > invite.json
+conu accept <peer-invite.json>
+conu sessions sync --json
 ```
+
+If the relay does not require a token, omit `printf "$CONU_RELAY_TOKEN" |` and `--token-stdin`.
+`conu accept` grants the default messages, streams, and rooms policy. For manual repair or stricter workflows, run `conu peers policy <peer-node-id> --messages true --streams true --rooms true`.
 
 After both nodes trust each other and grant policy, agents can send:
 

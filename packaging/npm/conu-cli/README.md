@@ -71,7 +71,7 @@ Remote peers need a reachable relay URL when they are not on the same local rout
 | Step | PC 1 | PC 2 |
 | --- | --- | --- |
 | Install | `npm install -g @imthegoodboy/conu`<br>`conu doctor` | `npm install -g @imthegoodboy/conu`<br>`conu doctor` |
-| Prepare | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
+| Prepare | `conu setup --from agent.pc1 --to agent.pc1.helper --relay https://your-relay.example.com --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --relay https://your-relay.example.com --start` |
 | Create invite | `conu invite --relay https://your-relay.example.com --json > pc1-invite.json` | `conu invite --relay https://your-relay.example.com --json > pc2-invite.json` |
 | Exchange | Send `pc1-invite.json` to PC 2. | Send `pc2-invite.json` to PC 1. |
 | Trust peer | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
@@ -83,7 +83,7 @@ Only exchange public invite files. They contain public peer identity, route meta
 If your relay requires a token, configure it through stdin so it does not land in shell history:
 
 ```sh
-printf "$CONU_RELAY_TOKEN" | conu online https://your-relay.example.com --token-stdin --verify
+printf "$CONU_RELAY_TOKEN" | conu setup --relay https://your-relay.example.com --token-stdin --start
 ```
 
 ## Relay
@@ -152,8 +152,8 @@ conu inbox
 
 | 步骤 | 电脑 1 | 电脑 2 |
 | --- | --- | --- |
-| 准备 | `conu setup --from agent.pc1 --to agent.pc1.helper --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --start` |
-| 创建 invite | `conu invite --relay wss://your-relay.example.com/conu --json > pc1-invite.json` | `conu invite --relay wss://your-relay.example.com/conu --json > pc2-invite.json` |
+| 准备 | `conu setup --from agent.pc1 --to agent.pc1.helper --relay https://your-relay.example.com --start` | `conu setup --from agent.pc2 --to agent.pc2.helper --relay https://your-relay.example.com --start` |
+| 创建 invite | `conu invite --relay https://your-relay.example.com --json > pc1-invite.json` | `conu invite --relay https://your-relay.example.com --json > pc2-invite.json` |
 | 接受对方 | `conu accept pc2-invite.json` | `conu accept pc1-invite.json` |
 | 同步 | `conu sessions sync --json` | `conu sessions sync --json` |
 | 发送/接收 | `conu chat agent.pc1 agent.pc2` | `conu listen agent.pc2 --json` |
