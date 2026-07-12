@@ -100,7 +100,7 @@ A relay is needed for agents on different machines or networks unless direct QUI
 Prepare the local agents, store your assigned relay token, configure the relay endpoint, and start `conUD` in one command:
 
 ```sh
-cat ./node.token | conu setup --relay https://relay.example.com --token-stdin --start
+cat ./node.token | conu online https://relay.example.com --token-stdin --start
 ```
 
 If the token is already stored or the relay does not require one, omit `--token-stdin`. Export your public invite card:

@@ -108,7 +108,7 @@ Only the public invite file should be exchanged. It contains public peer identit
 If the relay requires a token, pipe it into setup with `--token-stdin`:
 
 ```sh
-printf "$CONU_RELAY_TOKEN" | conu setup --relay https://<relay-host> --token-stdin --start
+printf "$CONU_RELAY_TOKEN" | conu online https://<relay-host> --token-stdin --start
 ```
 
 ## Relay Hosting
@@ -246,7 +246,7 @@ cargo run -p conu-relay -- --check
 如果 relay 需要 token，用 stdin 配置，不要放进命令历史：
 
 ```sh
-printf "$CONU_RELAY_TOKEN" | conu setup --relay https://<relay-host> --token-stdin --start
+printf "$CONU_RELAY_TOKEN" | conu online https://<relay-host> --token-stdin --start
 ```
 
 ## 隐私规则

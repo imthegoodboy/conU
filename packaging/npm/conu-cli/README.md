@@ -85,7 +85,7 @@ Only exchange public invite files. They contain public peer identity, route meta
 If your relay requires a token, configure it through stdin so it does not land in shell history:
 
 ```sh
-printf "$CONU_RELAY_TOKEN" | conu setup --relay https://your-relay.example.com --token-stdin --start
+printf "$CONU_RELAY_TOKEN" | conu online https://your-relay.example.com --token-stdin --start
 ```
 
 ## Relay

@@ -7830,7 +7830,14 @@ fn render_online(
         args.to_vec()
     };
 
-    render_relay_setup(&setup_args, home_override, stdin_payload)
+    if setup_args.iter().any(|arg| arg == "--start") {
+        let mut local_setup_args = Vec::with_capacity(setup_args.len() + 1);
+        local_setup_args.push("--relay".to_string());
+        local_setup_args.extend(setup_args);
+        render_setup(&local_setup_args, home_override, stdin_payload)
+    } else {
+        render_relay_setup(&setup_args, home_override, stdin_payload)
+    }
 }
 
 fn online_endpoint_from_env() -> Option<String> {
@@ -8449,20 +8456,21 @@ fn render_relay_usage() -> String {
 }
 
 fn render_online_usage() -> String {
-    r"usage: conu online [<ws://host:port|wss://host/path|https://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+    r"usage: conu online [<ws://host:port|wss://host/path|https://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--start] [--json]
 
 simple:
-  printf <token> | conu online wss://relay.example.com/conu --token-stdin --verify
-  printf <token> | conu online https://conu-relay.onrender.com --token-stdin --verify
+  printf <token> | conu online wss://relay.example.com/conu --token-stdin --verify --start
+  printf <token> | conu online https://conu-relay.onrender.com --token-stdin --verify --start
 
 env endpoint:
   set CONU_RELAY_URL=https://conu-relay.onrender.com
-  printf <token> | conu online --token-stdin --verify
+  printf <token> | conu online --token-stdin --verify --start
 
 what it does:
   stores the relay token safely
   writes the default relay endpoint
   enables automatic relay sync
+  with --start, also creates local agents and starts conUD
 
 privacy:
   token bytes are read from stdin, not command history
@@ -18576,7 +18584,7 @@ Usage:
 Start:
   conu                  open the Up/Down menu in a terminal
   conu setup --start    create two local agents and start conUD
-  conu setup --relay <relay> --token-stdin --start
+  conu online <relay> --token-stdin --start
   conu invite --json    export a public invite card
   conu accept <file>    trust a public invite card
   conu sync             refresh accepted peers
@@ -18664,7 +18672,7 @@ Usage:
   conu messages receive <agent-id> --latest --output <file> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages pull <agent-id> --dir <directory> [--after <envelope-id>] [--timeout-ms <milliseconds>] [--interval-ms <milliseconds>] [--process-ipc] [--json]
   conu messages receipts [--json]
-  conu online [<ws://host:port|wss://host/path|https://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
+  conu online [<ws://host:port|wss://host/path|https://host/path>] [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--start] [--json]
   conu relay setup <ws://host:port|wss://host/path|https://host/path> [--token-stdin] [--verify] [--wait-ms <milliseconds>] [--json]
   conu relay sync [--wait-ms <milliseconds>] [--json]
   conu relay credential status [--json]
@@ -19318,7 +19326,7 @@ mod tests {
             assert!(
                 output
                     .stdout
-                    .contains("conu setup --relay <relay> --token-stdin --start")
+                    .contains("conu online <relay> --token-stdin --start")
             );
             assert!(output.stdout.contains("conu sync"));
             assert!(output.stdout.contains("conu listen <agent-id> --json"));
@@ -23796,6 +23804,46 @@ mod tests {
         assert!(setup.stdout.contains("\"credentialConfigured\": true"));
         assert!(status.stdout.contains("\"configured\": true"));
         assert!(!setup.stdout.contains(&token_text));
+        assert!(!status.stdout.contains(&token_text));
+    }
+
+    #[test]
+    fn online_alias_start_runs_hosted_local_setup_flow() {
+        let home = temp_home("online-alias-start");
+        let _lease = runtime::acquire_runtime(Some(home.clone())).expect("runtime starts");
+        let token = b"online-start-token-1234567890".to_vec();
+        let token_text = String::from_utf8(token.clone()).expect("token utf8");
+
+        let setup = run_with_home_and_stdin(
+            [
+                "online",
+                "https://conu-relay.onrender.com",
+                "--token-stdin",
+                "--start",
+                "--json",
+            ],
+            Some(home.clone()),
+            token,
+        );
+        let status = run_with_home(["relay", "credential", "status", "--json"], Some(home));
+
+        assert_eq!(setup.code, 0, "{}", setup.stderr);
+        assert_eq!(status.code, 0, "{}", status.stderr);
+        assert!(setup.stdout.contains("\"status\": \"ready\""));
+        assert!(setup.stdout.contains("\"mode\": \"local\""));
+        assert!(setup.stdout.contains("\"relay\": {"));
+        assert!(
+            setup
+                .stdout
+                .contains("\"endpoint\": \"wss://conu-relay.onrender.com\"")
+        );
+        assert!(setup.stdout.contains("\"credentialConfigured\": true"));
+        assert!(setup.stdout.contains("\"runtime\": {"));
+        assert!(setup.stdout.contains("\"status\": \"running\""));
+        assert!(setup.stdout.contains("\"launched\": false"));
+        assert!(status.stdout.contains("\"configured\": true"));
+        assert!(!setup.stdout.contains(&token_text));
+        assert!(setup.stderr.is_empty());
         assert!(!status.stdout.contains(&token_text));
     }
 
