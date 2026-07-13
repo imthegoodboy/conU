@@ -117,7 +117,7 @@ secret values or rotate the token immediately after creation.
 Each user initializes conU, stores their assigned relay credential when needed, prepares local agents, and starts the daemon with the Render service URL:
 
 ```sh
-printf "$CONU_RELAY_TOKEN" | conu setup --relay https://<service>.onrender.com --token-stdin --start
+printf "$CONU_RELAY_TOKEN" | conu online https://<service>.onrender.com --token-stdin --start
 conu invite --relay https://<service>.onrender.com --json > invite.json
 conu accept <peer-invite.json>
 conu sessions sync --json
