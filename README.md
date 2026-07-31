@@ -36,6 +36,8 @@ conU is a Rust CLI, daemon, relay, SDK, and MCP adapter that lets trusted agents
 | Relay | Forward peer-encrypted envelopes over WebSocket when direct routes are not available. |
 | Integrations | Use the CLI, Rust SDK, TypeScript SDK, Python wrapper, or MCP stdio adapter. |
 
+Status: actively maintained; bug fixes are in progress.
+
 ## Install
 
 ```sh
